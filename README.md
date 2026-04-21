@@ -6,6 +6,9 @@ This package is the Phase 1 OSS split core: it deliberately avoids sharing
 Rails code from the private backend while keeping the public device, app, CLI,
 MCP, and desktop bridge contracts familiar.
 
+For repository-specific development context, conventions, and architecture
+notes, see [AGENTS.md](AGENTS.md).
+
 ## Stack
 
 - Node 22
