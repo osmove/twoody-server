@@ -444,6 +444,34 @@
         }
       }
     },
+    "/bridge/folders/{folder_id}/contents": {
+      "get": {
+        "summary": "List the contents of a granted local folder",
+        "tags": [
+          "bridge"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "folder_id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/bridge/tasks": {
       "post": {
         "summary": "Enqueue a bridge task",

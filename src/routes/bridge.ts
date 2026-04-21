@@ -21,6 +21,23 @@ const taskMap = new Map<string, BridgeTask>();
 // Mac-bridge heartbeat presence (keyed by device_id)
 const bridgePresence = new Map<string, { nickname?: string; lastSeen: Date }>();
 
+function hasActiveBridge() {
+  const cutoff = new Date(Date.now() - 90_000);
+  return [...bridgePresence.values()].some((entry) => entry.lastSeen > cutoff);
+}
+
+async function waitForTaskResult(taskId: string, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const task = taskMap.get(taskId);
+    if (!task) throw new Error("Task not found");
+    if (task.status === "done") return task.result;
+    if (task.status === "error") throw new Error(task.errorMessage ?? "Bridge task failed");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`Bridge task ${taskId} timed out after ${timeoutMs}ms`);
+}
+
 export async function bridgeRoutes(app: FastifyInstance) {
   // GET /bridge/tasks/next — Mac app long-polls this
   app.get<{ Querystring: { wait?: string } }>(
@@ -128,9 +145,7 @@ export async function bridgeRoutes(app: FastifyInstance) {
       if (!auth) return;
 
       const cutoff = new Date(Date.now() - 90_000);
-      const active = [...bridgePresence.entries()].filter(
-        ([, v]) => v.lastSeen > cutoff
-      );
+      const active = [...bridgePresence.entries()].filter(([, v]) => v.lastSeen > cutoff);
 
       reply.send({
         active: active.length > 0,
@@ -145,7 +160,6 @@ export async function bridgeRoutes(app: FastifyInstance) {
     },
   });
 
-  // GET /bridge/folders — list granted local folders (stub for phase 1)
   app.get("/bridge/folders.json", {
     schema: {
       tags: ["bridge"],
@@ -155,9 +169,80 @@ export async function bridgeRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      reply.send({ folders: [], note: "Mac Bridge not connected" });
+
+      if (!hasActiveBridge()) {
+        return reply.code(503).send({ error: "bridge_offline" });
+      }
+
+      const id = Math.random().toString(36).slice(2);
+      const task: BridgeTask = {
+        id,
+        kind: "list_folders",
+        args: {},
+        enqueuedAt: new Date(),
+        status: "pending",
+      };
+
+      taskQueue.push(task);
+      taskMap.set(id, task);
+
+      try {
+        const result = await waitForTaskResult(id, 15_000);
+        reply.send(result ?? { folders: [] });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Bridge error";
+        if (message.includes("timed out")) {
+          return reply.code(504).send({ error: "bridge_timeout" });
+        }
+        reply.code(502).send({ error: "bridge_error", message });
+      }
     },
   });
+
+  app.get<{ Params: { folder_id: string }; Querystring: { sub_path?: string } }>(
+    "/bridge/folders/:folder_id/contents",
+    {
+      schema: {
+        tags: ["bridge"],
+        summary: "List the contents of a granted local folder",
+        security: [{ bearerAuth: [] }],
+      },
+      handler: async (req, reply) => {
+        const auth = await requireAuth(req, reply);
+        if (!auth) return;
+
+        if (!hasActiveBridge()) {
+          return reply.code(503).send({ error: "bridge_offline" });
+        }
+
+        const id = Math.random().toString(36).slice(2);
+        const task: BridgeTask = {
+          id,
+          kind: "list_dir",
+          args: {
+            folder_id: req.params.folder_id,
+            sub_path: req.query.sub_path ?? "",
+          },
+          enqueuedAt: new Date(),
+          status: "pending",
+        };
+
+        taskQueue.push(task);
+        taskMap.set(id, task);
+
+        try {
+          const result = await waitForTaskResult(id, 20_000);
+          reply.send(result ?? { items: [], folder_id: req.params.folder_id, sub_path: req.query.sub_path ?? "" });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Bridge error";
+          if (message.includes("timed out")) {
+            return reply.code(504).send({ error: "bridge_timeout" });
+          }
+          reply.code(502).send({ error: "bridge_error", message });
+        }
+      },
+    },
+  );
 
   // POST /bridge/tasks — enqueue a task (internal use by /queries processor)
   app.post<{
