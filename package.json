@@ -1,0 +1,28 @@
+{
+  "name": "@twoody/local-server",
+  "version": "0.1.0",
+  "description": "Twoody local server — self-hosted backend (BSL 1.1)",
+  "license": "SEE LICENSE IN LICENSE",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "bun --watch src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^9.0.0",
+    "better-sqlite3": "^11.0.0",
+    "drizzle-orm": "^0.31.0",
+    "fastify": "^4.28.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^20.0.0",
+    "drizzle-kit": "^0.22.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.4.0"
+  }
+}
