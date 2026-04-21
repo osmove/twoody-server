@@ -2,7 +2,7 @@
   "name": "@twoody/local-server",
   "version": "0.1.0",
   "description": "Twoody local server — self-hosted backend (BSL 1.1)",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "BUSL-1.1",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {

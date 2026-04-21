@@ -71,3 +71,9 @@ HOME_ASSISTANT_TOKEN=...
 The in-memory Bridge queue is good enough for Phase 1 developer preview.
 Moving task state to SQLite or Redis is the next durability step before a
 stable v1 contract.
+
+## License
+
+Twoody Local Server is licensed under BSL 1.1 with a change date of
+2030-04-21, after which the covered version converts to Apache 2.0. See
+[LICENSE](LICENSE).
