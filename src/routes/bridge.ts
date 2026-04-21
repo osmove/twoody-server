@@ -2,11 +2,40 @@ import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
 import { executeLocalTool } from "../tools.js";
 
+const BRIDGE_TASK_KINDS = [
+  "search",
+  "read",
+  "list_folders",
+  "list_dir",
+  "open_document",
+  "thumbnail",
+  "llm_infer",
+  "photos_recent",
+  "photos_by_date",
+  "app_open",
+  "shortcut_run",
+  "shortcut_list",
+  "ocr_image",
+] as const;
+
+type BridgeTaskKind = (typeof BRIDGE_TASK_KINDS)[number];
+
+const LOCAL_ONLY_TASK_KINDS = [
+  "smart_home",
+  "spotify",
+  "device_command",
+  "members_list",
+  "list_household_members",
+  "stereo_pair",
+] as const;
+
+type LocalOnlyTaskKind = (typeof LOCAL_ONLY_TASK_KINDS)[number];
+
 // Bridge task queue — in-memory for Phase 1
 // Phase 2 will move this to Redis for multi-process support
 interface BridgeTask {
   id: string;
-  kind: string;
+  kind: BridgeTaskKind | LocalOnlyTaskKind;
   args: Record<string, unknown>;
   enqueuedAt: Date;
   result?: unknown;
@@ -24,6 +53,14 @@ const bridgePresence = new Map<string, { nickname?: string; lastSeen: Date }>();
 function hasActiveBridge() {
   const cutoff = new Date(Date.now() - 90_000);
   return [...bridgePresence.values()].some((entry) => entry.lastSeen > cutoff);
+}
+
+function isBridgeTaskKind(value: string): value is BridgeTaskKind {
+  return (BRIDGE_TASK_KINDS as readonly string[]).includes(value);
+}
+
+function isLocalOnlyTaskKind(value: string): value is LocalOnlyTaskKind {
+  return (LOCAL_ONLY_TASK_KINDS as readonly string[]).includes(value);
 }
 
 async function waitForTaskResult(taskId: string, timeoutMs = 30_000) {
@@ -259,6 +296,13 @@ export async function bridgeRoutes(app: FastifyInstance) {
 
       const { kind, args = {} } = req.body ?? {};
       if (!kind) return reply.code(422).send({ error: "kind is required" });
+      if (!isBridgeTaskKind(kind) && !isLocalOnlyTaskKind(kind)) {
+        return reply.code(422).send({
+          error: "unsupported_kind",
+          supported_bridge_kinds: BRIDGE_TASK_KINDS,
+          supported_local_kinds: LOCAL_ONLY_TASK_KINDS,
+        });
+      }
 
       const id = Math.random().toString(36).slice(2);
       const task: BridgeTask = {
@@ -272,7 +316,7 @@ export async function bridgeRoutes(app: FastifyInstance) {
       taskQueue.push(task);
       taskMap.set(id, task);
 
-      if (["smart_home", "spotify", "device_command", "members_list", "list_household_members", "stereo_pair"].includes(kind)) {
+      if (isLocalOnlyTaskKind(kind)) {
         void executeLocalTool(kind, args, { userId: auth.userId })
           .then((result) => {
             task.status = "done";

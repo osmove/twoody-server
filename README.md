@@ -106,6 +106,10 @@ The in-memory Bridge queue is good enough for Phase 1 developer preview.
 Moving task state to SQLite or Redis is the next durability step before a
 stable v1 contract.
 
+The stable Bridge v1 task/update/result shapes are now documented in the
+desktop monorepo at `../twoody-mac/shared/bridge-v1.schema.json`. Keep this
+server's `/bridge/tasks*` routes aligned with that shared schema.
+
 ## License
 
 Twoody Local Server is licensed under BSL 1.1 with a change date of
