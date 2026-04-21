@@ -8,6 +8,8 @@ import { queryRoutes } from "./routes/queries.js";
 import { deviceRoutes } from "./routes/devices.js";
 import { bridgeRoutes } from "./routes/bridge.js";
 import { realtimeRoutes } from "./routes/realtime.js";
+import { memberRoutes } from "./routes/members.js";
+import { toolCallRoutes } from "./routes/toolCalls.js";
 
 export async function buildApp() {
   const app = Fastify({
@@ -34,6 +36,7 @@ export async function buildApp() {
         { name: "devices", description: "Device pairing and firmware routes" },
         { name: "bridge", description: "Mac Bridge polling and task queue" },
         { name: "realtime", description: "Realtime voice session proxies" },
+        { name: "members", description: "Household members and enrollment assets" },
       ],
       components: {
         securitySchemes: {
@@ -55,6 +58,8 @@ export async function buildApp() {
   await app.register(deviceRoutes);
   await app.register(bridgeRoutes);
   await app.register(realtimeRoutes);
+  await app.register(memberRoutes);
+  await app.register(toolCallRoutes);
 
   app.get("/admin", {
     schema: {

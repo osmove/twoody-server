@@ -60,11 +60,13 @@ TWOODY_PAIRING_CODE=123456 npm run dev
 | `POST` | `/devices/:id/transcripts` | transcript stub |
 | `GET` | `/devices/llm_keys` | local BYOK keys for firmware |
 | `POST` | `/devices/stereo_pair` | stereo pairing registration |
+| `POST` | `/tool_calls` | local tool execution for voice / realtime sessions |
 | `GET` | `/bridge/tasks/next` | Mac Bridge long-poll |
 | `PATCH` | `/bridge/tasks/:id` | Bridge task result/progress |
 | `GET` | `/bridge/tasks/:id` | poll task completion |
 | `POST` | `/bridge/tasks` | enqueue Bridge task |
 | `GET` | `/bridge/presence` | Bridge presence for CLI status |
+| `GET/POST/PATCH/DELETE` | `/members*` | members + enrollment assets |
 | `GET` | `/admin` | minimal local admin page |
 
 ## Environment

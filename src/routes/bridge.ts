@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
+import { executeLocalTool } from "../tools.js";
 
 // Bridge task queue — in-memory for Phase 1
 // Phase 2 will move this to Redis for multi-process support
@@ -185,6 +186,18 @@ export async function bridgeRoutes(app: FastifyInstance) {
 
       taskQueue.push(task);
       taskMap.set(id, task);
+
+      if (["smart_home", "spotify", "device_command", "members_list", "list_household_members", "stereo_pair"].includes(kind)) {
+        void executeLocalTool(kind, args, { userId: auth.userId })
+          .then((result) => {
+            task.status = "done";
+            task.result = result;
+          })
+          .catch((error) => {
+            task.status = "error";
+            task.errorMessage = error instanceof Error ? error.message : "Tool execution failed";
+          });
+      }
 
       reply.code(201).send({ id });
     },
