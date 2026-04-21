@@ -9,10 +9,13 @@
     "build": "tsc",
     "dev": "bun --watch src/index.ts",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "openapi": "npm run build && node scripts/write-openapi.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.0",
+    "@fastify/swagger": "^8.15.0",
+    "@fastify/swagger-ui": "^1.10.2",
     "better-sqlite3": "^11.0.0",
     "drizzle-orm": "^0.31.0",
     "fastify": "^4.28.0",

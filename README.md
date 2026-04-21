@@ -16,6 +16,7 @@ notes, see [AGENTS.md](AGENTS.md).
 - Fastify
 - SQLite via Drizzle ORM
 - Server-Sent Events for `/queries`
+- OpenAPI via `@fastify/swagger`
 
 ## Run
 
@@ -24,6 +25,17 @@ npm install
 npm run typecheck
 npm run dev
 ```
+
+Generate the committed OpenAPI contract:
+
+```bash
+npm run openapi
+```
+
+Interactive docs are available at:
+
+- `http://localhost:3000/docs`
+- `http://localhost:3000/openapi.json`
 
 By default the server listens on `http://0.0.0.0:3000`.
 
@@ -67,6 +79,12 @@ GEMINI_API_KEY=...
 BRIDGE_LOCAL_LLM_ENDPOINT=http://127.0.0.1:8080/v1
 HOME_ASSISTANT_URL=http://homeassistant.local:8123
 HOME_ASSISTANT_TOKEN=...
+```
+
+## Docker
+
+```bash
+docker compose up --build
 ```
 
 ## Notes

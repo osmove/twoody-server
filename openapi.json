@@ -1,0 +1,783 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Twoody Local Server API",
+    "description": "Self-hosted API surface for Twoody Local.",
+    "version": "0.1.0"
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "Bearer token"
+      }
+    },
+    "schemas": {}
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Server health",
+        "tags": [
+          "health"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": "string"
+                    },
+                    "uptime": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "version",
+                    "uptime"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/session/cli": {
+      "post": {
+        "summary": "Pair a CLI client with a 6-digit code",
+        "tags": [
+          "session"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "code"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string"
+                    },
+                    "user_id": {
+                      "type": "string"
+                    },
+                    "session_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "user_id",
+                    "session_id"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/session/me": {
+      "get": {
+        "summary": "Verify current bearer token",
+        "tags": [
+          "session"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/session": {
+      "delete": {
+        "summary": "Revoke current bearer token",
+        "tags": [
+          "session"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/queries": {
+      "post": {
+        "summary": "Stream a chat completion over SSE",
+        "tags": [
+          "queries"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "content"
+                ],
+                "properties": {
+                  "content": {
+                    "type": "string"
+                  },
+                  "channel": {
+                    "type": "string"
+                  },
+                  "format_shape": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "discussion_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/devices/pair": {
+      "post": {
+        "summary": "Pair a firmware device with a 6-digit code",
+        "tags": [
+          "devices"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "code"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "device_name": {
+                    "type": "string"
+                  },
+                  "client_kind": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/devices/pair/status": {
+      "get": {
+        "summary": "Poll pairing status for a device code",
+        "tags": [
+          "devices"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/devices/pair/register": {
+      "post": {
+        "summary": "Register a pairing code for a device to claim",
+        "tags": [
+          "devices"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/devices/{id}/update_check": {
+      "get": {
+        "summary": "Check for device OTA updates",
+        "tags": [
+          "devices"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/devices/{id}/update_events": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/devices/{id}/transcripts": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/devices/llm_keys": {
+      "get": {
+        "summary": "Fetch user LLM keys for direct provider use",
+        "tags": [
+          "devices"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/devices/stereo_pair": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/bridge/tasks/next": {
+      "get": {
+        "summary": "Long-poll the next bridge task",
+        "tags": [
+          "bridge"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/bridge/tasks/{id}": {
+      "patch": {
+        "summary": "Report bridge task progress or completion",
+        "tags": [
+          "bridge"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "get": {
+        "summary": "Poll task completion",
+        "tags": [
+          "bridge"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/bridge/presence": {
+      "get": {
+        "summary": "Check active Mac Bridge presence",
+        "tags": [
+          "bridge"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/bridge/folders.json": {
+      "get": {
+        "summary": "List granted local folders",
+        "tags": [
+          "bridge"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/bridge/tasks": {
+      "post": {
+        "summary": "Enqueue a bridge task",
+        "tags": [
+          "bridge"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/integrations/home_assistant/status": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/realtime_sessions": {
+      "post": {
+        "summary": "Create an ephemeral OpenAI Realtime session",
+        "tags": [
+          "realtime"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/admin": {
+      "get": {
+        "summary": "Admin placeholder UI",
+        "tags": [
+          "health"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "summary": "OpenAPI contract",
+        "tags": [
+          "health"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp": {
+      "delete": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "get": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "head": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "put": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "options": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "propfind": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "proppatch": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "mkcol": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "copy": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "move": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "lock": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "unlock": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "trace": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "search": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "report": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "mkcalendar": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000"
+    }
+  ],
+  "tags": [
+    {
+      "name": "health",
+      "description": "Server health and status"
+    },
+    {
+      "name": "session",
+      "description": "Pairing and auth sessions"
+    },
+    {
+      "name": "queries",
+      "description": "SSE chat and inference routes"
+    },
+    {
+      "name": "devices",
+      "description": "Device pairing and firmware routes"
+    },
+    {
+      "name": "bridge",
+      "description": "Mac Bridge polling and task queue"
+    },
+    {
+      "name": "realtime",
+      "description": "Realtime voice session proxies"
+    }
+  ]
+}

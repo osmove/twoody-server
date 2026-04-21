@@ -6,7 +6,24 @@ const { version } = createRequire(import.meta.url)("../../package.json") as {
 };
 
 export async function healthRoutes(app: FastifyInstance) {
-  app.get("/health", async (_req, reply) => {
-    reply.send({ status: "ok", version, uptime: process.uptime() });
+  app.get("/health", {
+    schema: {
+      tags: ["health"],
+      summary: "Server health",
+      response: {
+        200: {
+          type: "object",
+          properties: {
+            status: { type: "string" },
+            version: { type: "string" },
+            uptime: { type: "number" },
+          },
+          required: ["status", "version", "uptime"],
+        },
+      },
+    },
+    handler: async (_req, reply) => {
+      reply.send({ status: "ok", version, uptime: process.uptime() });
+    },
   });
 }

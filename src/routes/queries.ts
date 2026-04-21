@@ -11,47 +11,61 @@ interface QueryBody {
 
 // Minimal SSE streaming wrapper around OpenAI / Anthropic / Gemini / mlx-lm
 export async function queryRoutes(app: FastifyInstance) {
-  app.post<{ Body: QueryBody }>("/queries", async (req, reply) => {
-    const auth = await requireAuth(req, reply);
-    if (!auth) return;
+  app.post<{ Body: QueryBody }>("/queries", {
+    schema: {
+      tags: ["queries"],
+      summary: "Stream a chat completion over SSE",
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: "object",
+        required: ["content"],
+        properties: {
+          content: { type: "string" },
+          channel: { type: "string" },
+          format_shape: { type: "string" },
+          model: { type: "string" },
+          discussion_id: { type: "string" },
+        },
+      },
+      produces: ["text/event-stream"],
+    },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
 
-    const {
-      content,
-      channel = "cli",
-      model,
-    } = req.body;
+      const { content, channel = "cli", model } = req.body;
 
-    if (!content?.trim()) {
-      return reply.code(422).send({ error: "content is required" });
-    }
+      if (!content?.trim()) {
+        return reply.code(422).send({ error: "content is required" });
+      }
 
-    // Resolve provider and key from env
-    const provider = resolveProvider(model);
+      void channel;
+      const provider = resolveProvider(model);
 
-    reply.raw.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-    });
-
-    // Keepalive ping every 15 s (Heroku / nginx drops idle SSE after 30 s)
-    const keepalive = setInterval(() => {
-      reply.raw.write(": ping\n\n");
-    }, 15_000);
-
-    try {
-      await streamFromProvider(provider, content, model, (delta) => {
-        reply.raw.write(`data: ${JSON.stringify({ delta })}\n\n`);
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
       });
-      reply.raw.write("data: [DONE]\n\n");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      reply.raw.write(`data: ${JSON.stringify({ error: msg })}\n\n`);
-    } finally {
-      clearInterval(keepalive);
-      reply.raw.end();
-    }
+
+      const keepalive = setInterval(() => {
+        reply.raw.write(": ping\n\n");
+      }, 15_000);
+
+      try {
+        await streamFromProvider(provider, content, model, (delta) => {
+          reply.raw.write(`data: ${JSON.stringify({ delta })}\n\n`);
+        });
+        reply.raw.write("data: [DONE]\n\n");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Unknown error";
+        reply.raw.write(`data: ${JSON.stringify({ error: msg })}\n\n`);
+      } finally {
+        clearInterval(keepalive);
+        reply.raw.end();
+      }
+    },
   });
 }
 

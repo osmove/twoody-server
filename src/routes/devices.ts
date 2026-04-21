@@ -24,9 +24,23 @@ export async function deviceRoutes(app: FastifyInstance) {
   // POST /devices/pair — device firmware calls this with a 6-digit code
   app.post<{
     Body: { code: string; device_name?: string; client_kind?: string };
-  }>("/devices/pair", async (req, reply) => {
-    const { code, device_name, client_kind = "twoody" } = req.body ?? {};
-    if (!code) return reply.code(422).send({ error: "code is required" });
+  }>("/devices/pair", {
+    schema: {
+      tags: ["devices"],
+      summary: "Pair a firmware device with a 6-digit code",
+      body: {
+        type: "object",
+        required: ["code"],
+        properties: {
+          code: { type: "string" },
+          device_name: { type: "string" },
+          client_kind: { type: "string" },
+        },
+      },
+    },
+    handler: async (req, reply) => {
+      const { code, device_name, client_kind = "twoody" } = req.body ?? {};
+      if (!code) return reply.code(422).send({ error: "code is required" });
 
     // Accept env-var pairing code (created by `twoody serve`)
     const activeCode = process.env.TWOODY_PAIRING_CODE;
@@ -71,17 +85,22 @@ export async function deviceRoutes(app: FastifyInstance) {
       })
       .run();
 
-    reply.send({
-      device_id: deviceId,
-      user_token: token,
-      user_id: userId,
-    });
+      reply.send({
+        device_id: deviceId,
+        user_token: token,
+        user_id: userId,
+      });
+    },
   });
 
   // GET /devices/pair/status — CLI polls this while waiting for a device
-  app.get<{ Querystring: { code: string } }>(
-    "/devices/pair/status",
-    async (req, reply) => {
+  app.get<{ Querystring: { code: string } }>("/devices/pair/status", {
+    schema: {
+      tags: ["devices"],
+      summary: "Poll pairing status for a device code",
+      security: [{ bearerAuth: [] }],
+    },
+    handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
 
@@ -99,13 +118,17 @@ export async function deviceRoutes(app: FastifyInstance) {
         paired: Boolean(row.claimedAt),
         device_id: row.claimedBy ?? null,
       });
-    }
-  );
+    },
+  });
 
   // POST /devices/pair/register — CLI registers a code for a device to claim
-  app.post<{ Body: { code: string; device_name?: string } }>(
-    "/devices/pair/register",
-    async (req, reply) => {
+  app.post<{ Body: { code: string; device_name?: string } }>("/devices/pair/register", {
+    schema: {
+      tags: ["devices"],
+      summary: "Register a pairing code for a device to claim",
+      security: [{ bearerAuth: [] }],
+    },
+    handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
 
@@ -130,13 +153,16 @@ export async function deviceRoutes(app: FastifyInstance) {
         .run();
 
       reply.send({ ok: true, expires_at: expiresAt.toISOString() });
-    }
-  );
+    },
+  });
 
   // GET /devices/:id/update_check — firmware polls this for OTA kill-switch
-  app.get<{ Params: { id: string } }>(
-    "/devices/:id/update_check",
-    async (req, reply) => {
+  app.get<{ Params: { id: string } }>("/devices/:id/update_check", {
+    schema: {
+      tags: ["devices"],
+      summary: "Check for device OTA updates",
+    },
+    handler: async (_req, reply) => {
       const blocked =
         process.env.TWOODY_DEVICE_UPDATES_BLOCKED === "true";
       reply.send({
@@ -146,8 +172,8 @@ export async function deviceRoutes(app: FastifyInstance) {
         min_sha: process.env.TWOODY_DEVICE_MIN_SHA ?? null,
         server_version: version,
       });
-    }
-  );
+    },
+  });
 
   // POST /devices/:id/update_events — OTA telemetry
   app.post<{
@@ -169,13 +195,18 @@ export async function deviceRoutes(app: FastifyInstance) {
   });
 
   // GET /devices/llm_keys — device fetches user's LLM API keys
-  app.get("/devices/llm_keys", async (req, reply) => {
-    // No stored per-device keys in local-server — just relay env vars
-    reply.send({
-      openai_api_key: process.env.OPENAI_API_KEY ?? null,
-      anthropic_api_key: process.env.ANTHROPIC_API_KEY ?? null,
-      gemini_api_key: process.env.GEMINI_API_KEY ?? null,
-    });
+  app.get("/devices/llm_keys", {
+    schema: {
+      tags: ["devices"],
+      summary: "Fetch user LLM keys for direct provider use",
+    },
+    handler: async (_req, reply) => {
+      reply.send({
+        openai_api_key: process.env.OPENAI_API_KEY ?? null,
+        anthropic_api_key: process.env.ANTHROPIC_API_KEY ?? null,
+        gemini_api_key: process.env.GEMINI_API_KEY ?? null,
+      });
+    },
   });
 
   // POST /devices/stereo_pair — pair two devices for stereo
