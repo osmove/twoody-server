@@ -32,6 +32,17 @@ Generate the committed OpenAPI contract:
 npm run openapi
 ```
 
+Run the HTTP smoke test:
+
+```bash
+npm run smoke
+```
+
+The smoke test boots a throwaway local-server instance with a temporary SQLite
+data directory, pairs through `/session/cli`, exercises auth, members,
+`/tool_calls`, and verifies the explicit `bridge_offline` response when no
+desktop bridge is connected.
+
 Interactive docs are available at:
 
 - `http://localhost:3000/docs`

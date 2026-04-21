@@ -10,7 +10,8 @@
     "dev": "bun --watch src/index.ts",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "openapi": "npm run build && node scripts/write-openapi.mjs"
+    "openapi": "npm run build && node scripts/write-openapi.mjs",
+    "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.0",
