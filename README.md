@@ -107,7 +107,7 @@ Moving task state to SQLite or Redis is the next durability step before a
 stable v1 contract.
 
 The stable Bridge v1 task/update/result shapes are now documented in the
-desktop monorepo at `../twoody-mac/shared/bridge-v1.schema.json`. Keep this
+desktop monorepo at `../twoody-desktop/shared/bridge-v1.schema.json`. Keep this
 server's `/bridge/tasks*` routes aligned with that shared schema.
 
 ## License
