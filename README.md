@@ -26,6 +26,13 @@ npm run typecheck
 npm run dev
 ```
 
+Install the package globally if you want the `twoody-local-server` executable in
+your shell:
+
+```bash
+npm i -g @twoody/local-server
+```
+
 Generate the committed OpenAPI contract:
 
 ```bash
