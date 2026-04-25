@@ -1,5 +1,5 @@
 {
-  "name": "@twoody/server",
+  "name": "twoody-server",
   "version": "0.1.0",
   "description": "Twoody server — self-hosted backend (BSL 1.1)",
   "license": "BUSL-1.1",

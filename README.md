@@ -30,7 +30,7 @@ Install the package globally if you want the `twoody-server` executable in
 your shell:
 
 ```bash
-npm i -g @twoody/server
+npm i -g twoody-server
 ```
 
 Generate the committed OpenAPI contract:
