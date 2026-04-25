@@ -24,7 +24,7 @@ export async function buildApp() {
   await app.register(swagger, {
     openapi: {
       info: {
-        title: "Twoody Local Server API",
+        title: "Twoody Server API",
         description: "Self-hosted API surface for Twoody Local.",
         version: "0.1.0",
       },
@@ -72,7 +72,7 @@ export async function buildApp() {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Twoody Local Server</title>
+  <title>Twoody Server</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body { font-family: system-ui, sans-serif; max-width: 600px; margin: 4rem auto; padding: 0 1rem; }
@@ -83,7 +83,7 @@ export async function buildApp() {
   </style>
 </head>
 <body>
-  <h1><span class="status"></span>Twoody Local Server</h1>
+  <h1><span class="status"></span>Twoody Server</h1>
   <p>Server is running. Pair using <code>twoody setup</code> or the mobile app.</p>
   <ul>
     <li><a href="/health">/health</a> — server status</li>
@@ -91,7 +91,7 @@ export async function buildApp() {
     <li><a href="/openapi.json">/openapi.json</a> — OpenAPI contract</li>
   </ul>
   <p style="color:#666;font-size:.85em">
-    Full documentation: <a href="https://github.com/twoody/local-server">github.com/twoody/local-server</a>
+    Full documentation: <a href="https://github.com/twoody/server">github.com/twoody/server</a>
   </p>
 </body>
 </html>`);

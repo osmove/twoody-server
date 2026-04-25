@@ -1,8 +1,8 @@
-# AGENTS.md - Twoody Local Server
+# AGENTS.md - Twoody Server
 
 ## Purpose
 
-`twoody-local-server` is the self-hosted mini-backend for Twoody Local. It deliberately avoids sharing Rails code from the private backend while preserving the public contracts used by firmware, MCP, CLI, app local mode, and the Mac bridge.
+`twoody-server` is the self-hosted mini-backend for Twoody Local. It deliberately avoids sharing Rails code from the private backend while preserving the public contracts used by firmware, MCP, CLI, app local mode, and the Mac bridge.
 
 ## Stack
 

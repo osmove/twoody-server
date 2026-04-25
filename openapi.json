@@ -1,7 +1,7 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "Twoody Local Server API",
+    "title": "Twoody Server API",
     "description": "Self-hosted API surface for Twoody Local.",
     "version": "0.1.0"
   },

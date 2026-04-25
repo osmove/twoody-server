@@ -1,12 +1,12 @@
 {
-  "name": "@twoody/local-server",
+  "name": "@twoody/server",
   "version": "0.1.0",
-  "description": "Twoody local server — self-hosted backend (BSL 1.1)",
+  "description": "Twoody server — self-hosted backend (BSL 1.1)",
   "license": "BUSL-1.1",
   "main": "dist/index.js",
   "type": "module",
   "bin": {
-    "twoody-local-server": "./dist/index.js"
+    "twoody-server": "./dist/index.js"
   },
   "files": [
     "dist",

@@ -8,7 +8,7 @@ const PORT = process.env.PORT || "4320";
 const HOST = "127.0.0.1";
 const BASE_URL = `http://${HOST}:${PORT}`;
 const PAIRING_CODE = process.env.TWOODY_PAIRING_CODE || "654321";
-const dataDir = mkdtempSync(join(tmpdir(), "twoody-local-server-smoke-"));
+const dataDir = mkdtempSync(join(tmpdir(), "twoody-server-smoke-"));
 
 const child = spawn("npx", ["tsx", "src/index.ts"], {
   cwd: process.cwd(),
@@ -113,7 +113,7 @@ try {
     headers: authHeaders(token),
   });
 
-  console.log("Twoody local-server smoke test passed");
+  console.log("Twoody server smoke test passed");
 } finally {
   child.kill("SIGTERM");
   await sleep(250);

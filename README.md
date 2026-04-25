@@ -1,4 +1,4 @@
-# Twoody Local Server
+# Twoody Server
 
 Self-hosted mini-backend for local Twoody installs.
 
@@ -26,11 +26,11 @@ npm run typecheck
 npm run dev
 ```
 
-Install the package globally if you want the `twoody-local-server` executable in
+Install the package globally if you want the `twoody-server` executable in
 your shell:
 
 ```bash
-npm i -g @twoody/local-server
+npm i -g @twoody/server
 ```
 
 Generate the committed OpenAPI contract:
@@ -119,6 +119,6 @@ server's `/bridge/tasks*` routes aligned with that shared schema.
 
 ## License
 
-Twoody Local Server is licensed under BSL 1.1 with a change date of
+Twoody Server is licensed under BSL 1.1 with a change date of
 2030-04-21, after which the covered version converts to Apache 2.0. See
 [LICENSE](LICENSE).
