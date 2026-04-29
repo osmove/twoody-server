@@ -1,5 +1,7 @@
 # Twoody Server
 
+Part of [Twoody Local](https://twoody.com/local) — the open-source, self-hosted edition of Twoody.
+
 Self-hosted mini-backend for local Twoody installs.
 
 This package is the Phase 1 OSS split core: it deliberately avoids sharing
