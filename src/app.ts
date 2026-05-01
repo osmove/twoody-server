@@ -61,6 +61,17 @@ export async function buildApp() {
   await app.register(memberRoutes);
   await app.register(toolCallRoutes);
 
+  // Versioned aliases for API clients migrating away from root-level
+  // Rails-style paths. Health, docs, admin, MCP and WebSocket routes stay
+  // at the root; the HTTP API surface gets `/api/v1`.
+  await app.register(sessionRoutes, { prefix: "/api/v1" });
+  await app.register(queryRoutes, { prefix: "/api/v1" });
+  await app.register(deviceRoutes, { prefix: "/api/v1" });
+  await app.register(bridgeRoutes, { prefix: "/api/v1" });
+  await app.register(realtimeRoutes, { prefix: "/api/v1" });
+  await app.register(memberRoutes, { prefix: "/api/v1" });
+  await app.register(toolCallRoutes, { prefix: "/api/v1" });
+
   app.get("/admin", {
     schema: {
       tags: ["health"],
