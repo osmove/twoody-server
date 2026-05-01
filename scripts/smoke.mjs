@@ -108,6 +108,39 @@ try {
     throw new Error("Smoke test failed: local provider was not created as default");
   }
 
+  await jsonFetch("/providers/local", {
+    method: "POST",
+    headers: authHeaders(token),
+    expectedStatus: 409,
+    body: JSON.stringify({
+      url: "http://127.0.0.1:9/v1/",
+      model: "tiny-local-model",
+    }),
+  });
+
+  await jsonFetch("/providers/local", {
+    method: "POST",
+    headers: authHeaders(token),
+    expectedStatus: 422,
+    body: JSON.stringify({
+      url: "file:///tmp/not-a-provider",
+      model: "tiny-local-model",
+    }),
+  });
+
+  const patchedProvider = await jsonFetch(`/providers/${provider.provider.id}`, {
+    method: "PATCH",
+    headers: authHeaders(token),
+    body: JSON.stringify({
+      name: "Smoke Local LLM",
+      url: "http://127.0.0.1:9/v1/",
+      model: "tiny-local-model",
+    }),
+  });
+  if (patchedProvider.provider?.base_url !== "http://127.0.0.1:9/v1") {
+    throw new Error("Smoke test failed: provider patch did not normalize base_url");
+  }
+
   const providers = await jsonFetch("/providers", {
     headers: authHeaders(token),
   });

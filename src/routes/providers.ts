@@ -25,9 +25,26 @@ function serializeProvider(provider: typeof providers.$inferSelect) {
   };
 }
 
+function normalizeProviderUrl(value: string): string | null {
+  const normalized = value.trim().replace(/\/+$/, "");
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return normalized;
+  } catch {
+    return null;
+  }
+}
+
+function nonEmpty(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
 async function pingOpenAICompatible(baseUrl: string): Promise<{
   available: boolean;
   latency_ms: number | null;
+  checked_at: string;
 }> {
   const started = Date.now();
   try {
@@ -37,9 +54,10 @@ async function pingOpenAICompatible(baseUrl: string): Promise<{
     return {
       available: response.ok,
       latency_ms: Date.now() - started,
+      checked_at: new Date().toISOString(),
     };
   } catch {
-    return { available: false, latency_ms: null };
+    return { available: false, latency_ms: null, checked_at: new Date().toISOString() };
   }
 }
 
@@ -63,9 +81,9 @@ export async function providerRoutes(app: FastifyInstance) {
       const serialized = await Promise.all(
         rows.map(async (provider) => {
           const status =
-            provider.kind === "local_openai" && provider.baseUrl
+            provider.enabled && provider.kind === "local_openai" && provider.baseUrl
               ? await pingOpenAICompatible(provider.baseUrl)
-              : { available: provider.enabled, latency_ms: null };
+              : { available: provider.enabled, latency_ms: null, checked_at: new Date().toISOString() };
 
           return { ...serializeProvider(provider), status };
         })
@@ -87,12 +105,22 @@ export async function providerRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
 
-      const baseUrl = (req.body.base_url ?? req.body.url ?? "").trim().replace(/\/$/, "");
-      const model = req.body.model?.trim();
-      const name = req.body.name?.trim() || "Local LLM";
+      const baseUrl = normalizeProviderUrl(req.body.base_url ?? req.body.url ?? "");
+      const model = nonEmpty(req.body.model);
+      const name = nonEmpty(req.body.name) || "Local LLM";
 
       if (!baseUrl || !model) {
         return reply.code(422).send({ error: "url and model are required" });
+      }
+
+      const duplicate = db
+        .select({ id: providers.id })
+        .from(providers)
+        .where(and(eq(providers.userId, auth.userId), eq(providers.baseUrl, baseUrl), eq(providers.model, model)))
+        .limit(1)
+        .all();
+      if (duplicate.length > 0) {
+        return reply.code(409).send({ error: "provider_already_exists" });
       }
 
       const existing = db
@@ -154,11 +182,21 @@ export async function providerRoutes(app: FastifyInstance) {
         const updates: Partial<typeof providers.$inferInsert> = {
           updatedAt: new Date(),
         };
-        if (req.body.name !== undefined) updates.name = req.body.name.trim();
-        if (req.body.model !== undefined) updates.model = req.body.model.trim();
+        if (req.body.name !== undefined) {
+          const name = nonEmpty(req.body.name);
+          if (!name) return reply.code(422).send({ error: "name cannot be empty" });
+          updates.name = name;
+        }
+        if (req.body.model !== undefined) {
+          const model = nonEmpty(req.body.model);
+          if (!model) return reply.code(422).send({ error: "model cannot be empty" });
+          updates.model = model;
+        }
         if (req.body.enabled !== undefined) updates.enabled = req.body.enabled;
         if (req.body.url !== undefined || req.body.base_url !== undefined) {
-          updates.baseUrl = (req.body.base_url ?? req.body.url ?? "").trim().replace(/\/$/, "");
+          const baseUrl = normalizeProviderUrl(req.body.base_url ?? req.body.url ?? "");
+          if (!baseUrl) return reply.code(422).send({ error: "url must be http or https" });
+          updates.baseUrl = baseUrl;
         }
 
         db.update(providers)
@@ -235,7 +273,7 @@ export async function providerRoutes(app: FastifyInstance) {
         const [nextProvider] = db
           .select()
           .from(providers)
-          .where(eq(providers.userId, auth.userId))
+          .where(and(eq(providers.userId, auth.userId), eq(providers.enabled, true)))
           .limit(1)
           .all();
         if (nextProvider) {
