@@ -5,7 +5,8 @@ import { join } from "path";
 import { homedir } from "os";
 import { mkdirSync } from "fs";
 
-const DATA_DIR = process.env.TWOODY_DATA_DIR ?? join(homedir(), ".twoody", "data");
+export const DATA_DIR =
+  process.env.TWOODY_DATA_DIR ?? join(homedir(), ".twoody", "data");
 mkdirSync(DATA_DIR, { recursive: true });
 
 const sqlite = new Database(join(DATA_DIR, "local.db"));
@@ -18,6 +19,7 @@ export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
   email: text("email").notNull().unique(),
   name: text("name"),
+  passwordDigest: text("password_digest"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
@@ -48,6 +50,19 @@ export const devices = sqliteTable("devices", {
   tokenDigest: text("token_digest").notNull(),
   lastSeenAt: integer("last_seen_at", { mode: "timestamp" }),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+});
+
+export const providers = sqliteTable("providers", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id),
+  kind: text("kind").notNull(),
+  name: text("name").notNull(),
+  baseUrl: text("base_url"),
+  model: text("model"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 });
 
 export const discussions = sqliteTable("discussions", {
@@ -116,6 +131,7 @@ sqlite.exec(`
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL UNIQUE,
     name TEXT,
+    password_digest TEXT,
     created_at INTEGER NOT NULL
   );
 
@@ -146,6 +162,19 @@ sqlite.exec(`
     token_digest TEXT NOT NULL,
     last_seen_at INTEGER,
     created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS providers (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    base_url TEXT,
+    model TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS discussions (
@@ -207,6 +236,13 @@ sqlite.exec(`
     updated_at INTEGER NOT NULL
   );
 `);
+
+const userColumns = sqlite.prepare("PRAGMA table_info(users)").all() as Array<{
+  name: string;
+}>;
+if (!userColumns.some((column) => column.name === "password_digest")) {
+  sqlite.exec("ALTER TABLE users ADD COLUMN password_digest TEXT");
+}
 
 export const db = drizzle(sqlite);
 export { sqlite };

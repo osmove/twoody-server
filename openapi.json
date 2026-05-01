@@ -1,8 +1,8 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "Twoody Server API",
-    "description": "Self-hosted API surface for Twoody Local.",
+    "title": "Twoody Hub API",
+    "description": "Local-first API surface for Twoody Hub.",
     "version": "0.1.0"
   },
   "components": {
@@ -11,6 +11,11 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "Bearer token"
+      },
+      "userTokenAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-User-Token"
       }
     },
     "schemas": {}
@@ -52,9 +57,107 @@
         }
       }
     },
+    "/auth/signup": {
+      "post": {
+        "summary": "Create the first local Hub account with the setup token",
+        "tags": [
+          "session"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email",
+                  "password",
+                  "setup_token"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "setup_token": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/auth/signin": {
+      "post": {
+        "summary": "Sign in to a local Hub account",
+        "tags": [
+          "session"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email",
+                  "password"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  },
+                  "client_kind": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "summary": "Verify current local Hub token",
+        "tags": [
+          "session"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/session/cli": {
       "post": {
-        "summary": "Pair a CLI client with a 6-digit code",
+        "summary": "Pair a CLI client with an 8-character code",
         "tags": [
           "session"
         ],
@@ -192,7 +295,7 @@
     },
     "/devices/pair": {
       "post": {
-        "summary": "Pair a firmware device with a 6-digit code",
+        "summary": "Pair a firmware device with an 8-character code",
         "tags": [
           "devices"
         ],
@@ -339,6 +442,139 @@
     },
     "/devices/stereo_pair": {
       "post": {
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/providers": {
+      "get": {
+        "summary": "List configured LLM providers",
+        "tags": [
+          "providers"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/providers/local": {
+      "post": {
+        "summary": "Add a local OpenAI-compatible provider",
+        "tags": [
+          "providers"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/providers/{id}": {
+      "patch": {
+        "summary": "Update a provider",
+        "tags": [
+          "providers"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete a provider",
+        "tags": [
+          "providers"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/providers/{id}/default": {
+      "post": {
+        "summary": "Set the default LLM provider",
+        "tags": [
+          "providers"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
         "responses": {
           "200": {
             "description": "Default Response"
@@ -899,258 +1135,97 @@
         }
       }
     },
-    "/admin": {
-      "get": {
-        "summary": "Admin placeholder UI",
-        "tags": [
-          "health"
-        ],
-        "responses": {
-          "200": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/openapi.json": {
-      "get": {
-        "summary": "OpenAPI contract",
-        "tags": [
-          "health"
-        ],
-        "responses": {
-          "200": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/mcp": {
-      "delete": {
-        "summary": "Proxy to external MCP server",
-        "tags": [
-          "queries"
-        ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
-        "responses": {
-          "200": {
-            "description": "Default Response"
-          }
-        }
-      },
-      "get": {
-        "summary": "Proxy to external MCP server",
-        "tags": [
-          "queries"
-        ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
-        "responses": {
-          "200": {
-            "description": "Default Response"
-          }
-        }
-      },
-      "head": {
-        "summary": "Proxy to external MCP server",
-        "tags": [
-          "queries"
-        ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
-        "responses": {
-          "200": {
-            "description": "Default Response"
-          }
-        }
-      },
-      "patch": {
-        "summary": "Proxy to external MCP server",
-        "tags": [
-          "queries"
-        ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
-        "responses": {
-          "200": {
-            "description": "Default Response"
-          }
-        }
-      },
+    "/api/v1/auth/signup": {
       "post": {
-        "summary": "Proxy to external MCP server",
+        "summary": "Create the first local Hub account with the setup token",
         "tags": [
-          "queries"
+          "session"
         ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email",
+                  "password",
+                  "setup_token"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "setup_token": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Default Response"
           }
         }
-      },
-      "put": {
-        "summary": "Proxy to external MCP server",
+      }
+    },
+    "/api/v1/auth/signin": {
+      "post": {
+        "summary": "Sign in to a local Hub account",
         "tags": [
-          "queries"
+          "session"
         ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email",
+                  "password"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  },
+                  "client_kind": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Default Response"
           }
         }
-      },
-      "options": {
-        "summary": "Proxy to external MCP server",
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "summary": "Verify current local Hub token",
         "tags": [
-          "queries"
+          "session"
         ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
-        "responses": {
-          "200": {
-            "description": "Default Response"
+        "security": [
+          {
+            "bearerAuth": []
           }
-        }
-      },
-      "propfind": {
-        "summary": "Proxy to external MCP server",
-        "tags": [
-          "queries"
         ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
-        "responses": {
-          "200": {
-            "description": "Default Response"
-          }
-        }
-      },
-      "proppatch": {
-        "summary": "Proxy to external MCP server",
-        "tags": [
-          "queries"
-        ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
-        "responses": {
-          "200": {
-            "description": "Default Response"
-          }
-        }
-      },
-      "mkcol": {
-        "summary": "Proxy to external MCP server",
-        "tags": [
-          "queries"
-        ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
-        "responses": {
-          "200": {
-            "description": "Default Response"
-          }
-        }
-      },
-      "copy": {
-        "summary": "Proxy to external MCP server",
-        "tags": [
-          "queries"
-        ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
-        "responses": {
-          "200": {
-            "description": "Default Response"
-          }
-        }
-      },
-      "move": {
-        "summary": "Proxy to external MCP server",
-        "tags": [
-          "queries"
-        ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
-        "responses": {
-          "200": {
-            "description": "Default Response"
-          }
-        }
-      },
-      "lock": {
-        "summary": "Proxy to external MCP server",
-        "tags": [
-          "queries"
-        ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
-        "responses": {
-          "200": {
-            "description": "Default Response"
-          }
-        }
-      },
-      "unlock": {
-        "summary": "Proxy to external MCP server",
-        "tags": [
-          "queries"
-        ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
-        "responses": {
-          "200": {
-            "description": "Default Response"
-          }
-        }
-      },
-      "trace": {
-        "summary": "Proxy to external MCP server",
-        "tags": [
-          "queries"
-        ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
-        "responses": {
-          "200": {
-            "description": "Default Response"
-          }
-        }
-      },
-      "search": {
-        "summary": "Proxy to external MCP server",
-        "tags": [
-          "queries"
-        ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
-        "responses": {
-          "200": {
-            "description": "Default Response"
-          }
-        }
-      },
-      "report": {
-        "summary": "Proxy to external MCP server",
-        "tags": [
-          "queries"
-        ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
-        "responses": {
-          "200": {
-            "description": "Default Response"
-          }
-        }
-      },
-      "mkcalendar": {
-        "summary": "Proxy to external MCP server",
-        "tags": [
-          "queries"
-        ],
-        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
         "responses": {
           "200": {
             "description": "Default Response"
@@ -1160,7 +1235,7 @@
     },
     "/api/v1/session/cli": {
       "post": {
-        "summary": "Pair a CLI client with a 6-digit code",
+        "summary": "Pair a CLI client with an 8-character code",
         "tags": [
           "session"
         ],
@@ -1298,7 +1373,7 @@
     },
     "/api/v1/devices/pair": {
       "post": {
-        "summary": "Pair a firmware device with a 6-digit code",
+        "summary": "Pair a firmware device with an 8-character code",
         "tags": [
           "devices"
         ],
@@ -1445,6 +1520,139 @@
     },
     "/api/v1/devices/stereo_pair": {
       "post": {
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/providers": {
+      "get": {
+        "summary": "List configured LLM providers",
+        "tags": [
+          "providers"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/providers/local": {
+      "post": {
+        "summary": "Add a local OpenAI-compatible provider",
+        "tags": [
+          "providers"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/providers/{id}": {
+      "patch": {
+        "summary": "Update a provider",
+        "tags": [
+          "providers"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete a provider",
+        "tags": [
+          "providers"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/providers/{id}/default": {
+      "post": {
+        "summary": "Set the default LLM provider",
+        "tags": [
+          "providers"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
         "responses": {
           "200": {
             "description": "Default Response"
@@ -2004,6 +2212,265 @@
           }
         }
       }
+    },
+    "/admin": {
+      "get": {
+        "summary": "Admin placeholder UI",
+        "tags": [
+          "health"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "summary": "OpenAPI contract",
+        "tags": [
+          "health"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp": {
+      "delete": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "get": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "head": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "put": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "options": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "propfind": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "proppatch": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "mkcol": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "copy": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "move": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "lock": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "unlock": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "trace": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "search": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "report": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "mkcalendar": {
+        "summary": "Proxy to external MCP server",
+        "tags": [
+          "queries"
+        ],
+        "description": "Forwards requests to TWOODY_MCP_URL when configured.",
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
     }
   },
   "servers": [
@@ -2027,6 +2494,10 @@
     {
       "name": "devices",
       "description": "Device pairing and firmware routes"
+    },
+    {
+      "name": "providers",
+      "description": "Local-first LLM providers"
     },
     {
       "name": "bridge",

@@ -1,6 +1,5 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
-import { z } from "zod";
 import {
   db,
   authSessions,
@@ -10,18 +9,157 @@ import {
 import {
   authenticate,
   generateId,
-  generateToken,
-  sha256,
   getActivePairingCode,
-  ensureDefaultUser,
+  normalizePairingCode,
+  isValidPairingCode,
+  verifySetupToken,
+  hashPassword,
+  verifyPassword,
+  createAuthSession,
 } from "../auth.js";
 
 export async function sessionRoutes(app: FastifyInstance) {
-  // POST /session/cli — pair a CLI client with a 6-digit code
+  app.post<{
+    Body: {
+      email?: string;
+      password?: string;
+      name?: string;
+      setup_token?: string;
+    };
+  }>("/auth/signup", {
+    schema: {
+      tags: ["session"],
+      summary: "Create the first local Hub account with the setup token",
+      body: {
+        type: "object",
+        required: ["email", "password", "setup_token"],
+        properties: {
+          email: { type: "string" },
+          password: { type: "string" },
+          name: { type: "string" },
+          setup_token: { type: "string" },
+        },
+      },
+    },
+    handler: async (req, reply) => {
+      const email = req.body.email?.trim().toLowerCase();
+      const password = req.body.password ?? "";
+      const name = req.body.name?.trim() || null;
+      const setupToken = req.body.setup_token ?? "";
+
+      if (!email || !password || !setupToken) {
+        return reply
+          .code(422)
+          .send({ error: "email, password, and setup_token are required" });
+      }
+      if (password.length < 8) {
+        return reply.code(422).send({ error: "password must be at least 8 characters" });
+      }
+
+      const existing = db.select({ id: users.id }).from(users).limit(1).all();
+      if (existing.length > 0) {
+        return reply.code(409).send({ error: "local_setup_complete" });
+      }
+      if (!verifySetupToken(setupToken)) {
+        return reply.code(403).send({ error: "invalid_setup_token" });
+      }
+
+      const userId = generateId();
+      db.insert(users)
+        .values({
+          id: userId,
+          email,
+          name,
+          passwordDigest: await hashPassword(password),
+          createdAt: new Date(),
+        })
+        .run();
+
+      const { token, sessionId } = createAuthSession(userId, "desktop");
+      reply.code(201).send({
+        token,
+        user_id: userId,
+        session_id: sessionId,
+        user: { id: userId, email, name },
+      });
+    },
+  });
+
+  app.post<{
+    Body: { email?: string; password?: string; client_kind?: string };
+  }>("/auth/signin", {
+    schema: {
+      tags: ["session"],
+      summary: "Sign in to a local Hub account",
+      body: {
+        type: "object",
+        required: ["email", "password"],
+        properties: {
+          email: { type: "string" },
+          password: { type: "string" },
+          client_kind: { type: "string" },
+        },
+      },
+    },
+    handler: async (req, reply) => {
+      const email = req.body.email?.trim().toLowerCase();
+      const password = req.body.password ?? "";
+      if (!email || !password) {
+        return reply.code(422).send({ error: "email and password are required" });
+      }
+
+      const [user] = db
+        .select()
+        .from(users)
+        .where(eq(users.email, email))
+        .limit(1)
+        .all();
+
+      if (!user || !(await verifyPassword(password, user.passwordDigest))) {
+        return reply.code(401).send({ error: "invalid_credentials" });
+      }
+
+      const { token, sessionId } = createAuthSession(
+        user.id,
+        req.body.client_kind ?? "desktop"
+      );
+      reply.send({
+        token,
+        user_id: user.id,
+        session_id: sessionId,
+        user: { id: user.id, email: user.email, name: user.name },
+      });
+    },
+  });
+
+  app.get("/auth/me", {
+    schema: {
+      tags: ["session"],
+      summary: "Verify current local Hub token",
+      security: [{ bearerAuth: [] }],
+    },
+    handler: async (req, reply) => {
+      const auth = await authenticate(req);
+      if (!auth) return reply.code(401).send({ error: "Unauthorized" });
+
+      const [user] = db
+        .select()
+        .from(users)
+        .where(eq(users.id, auth.userId))
+        .limit(1)
+        .all();
+
+      if (!user) return reply.code(401).send({ error: "User not found" });
+
+      reply.send({ id: user.id, email: user.email, name: user.name });
+    },
+  });
+
+  // POST /session/cli — pair a CLI client with an 8-character code
   app.post<{ Body: { code: string } }>("/session/cli", {
     schema: {
       tags: ["session"],
-      summary: "Pair a CLI client with a 6-digit code",
+      summary: "Pair a CLI client with an 8-character code",
       body: {
         type: "object",
         required: ["code"],
@@ -40,14 +178,21 @@ export async function sessionRoutes(app: FastifyInstance) {
       },
     },
     handler: async (req, reply) => {
-      const { code } = req.body;
+      const code = normalizePairingCode(req.body.code ?? "");
+      if (!isValidPairingCode(code)) {
+        return reply.code(422).send({ error: "invalid_pairing_code" });
+      }
 
       // Accept: active env-var code OR a stored pairing_codes row
       const activeCode = getActivePairingCode();
       let userId: string;
 
       if (activeCode && code === activeCode) {
-        userId = ensureDefaultUser();
+        const [user] = db.select({ id: users.id }).from(users).limit(1).all();
+        if (!user) {
+          return reply.code(409).send({ error: "local_setup_required" });
+        }
+        userId = user.id;
       } else {
         // Look up stored code
         const [row] = db
@@ -58,12 +203,12 @@ export async function sessionRoutes(app: FastifyInstance) {
           .all();
 
         if (!row || row.claimedAt || !row.userId) {
-          return reply.code(422).send({ error: "Invalid or expired code" });
+          return reply.code(422).send({ error: "invalid_or_expired_code" });
         }
 
         const now = new Date();
         if (row.expiresAt < now) {
-          return reply.code(422).send({ error: "Code expired" });
+          return reply.code(422).send({ error: "code_expired" });
         }
 
         userId = row.userId;
@@ -73,18 +218,7 @@ export async function sessionRoutes(app: FastifyInstance) {
           .run();
       }
 
-      const token = generateToken();
-      const sessionId = generateId();
-      db.insert(authSessions)
-        .values({
-          id: sessionId,
-          userId,
-          tokenDigest: sha256(token),
-          clientKind: "cli",
-          createdAt: new Date(),
-          expiresAt: null,
-        })
-        .run();
+      const { token, sessionId } = createAuthSession(userId, "cli");
 
       reply.send({ token, user_id: userId, session_id: sessionId });
     },
@@ -123,6 +257,9 @@ export async function sessionRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await authenticate(req);
       if (!auth) return reply.code(401).send({ error: "Unauthorized" });
+      if (!auth.sessionId) {
+        return reply.code(401).send({ error: "session_token_required" });
+      }
 
       db.delete(authSessions)
         .where(eq(authSessions.id, auth.sessionId))

@@ -47,8 +47,19 @@ interface BridgeTask {
 const taskQueue: BridgeTask[] = [];
 const taskMap = new Map<string, BridgeTask>();
 
-// Mac-bridge heartbeat presence (keyed by device_id)
-const bridgePresence = new Map<string, { nickname?: string; lastSeen: Date }>();
+const CAPABILITY_KINDS = [
+  "document-provider",
+  "local-llm-provider",
+  "voice-device",
+] as const;
+
+type CapabilityKind = (typeof CAPABILITY_KINDS)[number];
+
+// Bridge/capability heartbeat presence (keyed by device_id)
+const bridgePresence = new Map<
+  string,
+  { nickname?: string; capabilities: CapabilityKind[]; lastSeen: Date }
+>();
 
 function hasActiveBridge() {
   const cutoff = new Date(Date.now() - 90_000);
@@ -61,6 +72,27 @@ function isBridgeTaskKind(value: string): value is BridgeTaskKind {
 
 function isLocalOnlyTaskKind(value: string): value is LocalOnlyTaskKind {
   return (LOCAL_ONLY_TASK_KINDS as readonly string[]).includes(value);
+}
+
+function parseCapabilities(raw: string | undefined): CapabilityKind[] {
+  if (!raw) return ["document-provider"];
+
+  let values: unknown;
+  try {
+    values = raw.trim().startsWith("[") ? JSON.parse(raw) : raw.split(",");
+  } catch {
+    values = raw.split(",");
+  }
+
+  if (!Array.isArray(values)) return ["document-provider"];
+
+  const normalized = values
+    .map((value) => String(value).trim())
+    .filter((value): value is CapabilityKind =>
+      (CAPABILITY_KINDS as readonly string[]).includes(value)
+    );
+
+  return normalized.length > 0 ? [...new Set(normalized)] : ["document-provider"];
 }
 
 async function waitForTaskResult(taskId: string, timeoutMs = 30_000) {
@@ -87,9 +119,13 @@ export async function bridgeRoutes(app: FastifyInstance) {
       handler: async (req, reply) => {
         const deviceId = req.headers["x-bridge-device-id"] as string | undefined;
         const nickname = req.headers["x-bridge-device-nickname"] as string | undefined;
+        const capabilities = parseCapabilities(
+          (req.headers["x-bridge-capabilities"] ??
+            req.headers["x-twoody-capabilities"]) as string | undefined
+        );
 
         if (deviceId) {
-          bridgePresence.set(deviceId, { nickname, lastSeen: new Date() });
+          bridgePresence.set(deviceId, { nickname, capabilities, lastSeen: new Date() });
         }
 
         const wait = Math.min(parseInt(req.query.wait ?? "0", 10), 30);
@@ -188,9 +224,11 @@ export async function bridgeRoutes(app: FastifyInstance) {
         active: active.length > 0,
         device_count: active.length,
         device_name: active[0]?.[1]?.nickname ?? null,
+        capabilities: [...new Set(active.flatMap(([, v]) => v.capabilities))],
         devices: active.map(([id, v]) => ({
           id,
           nickname: v.nickname,
+          capabilities: v.capabilities,
           last_seen: v.lastSeen.toISOString(),
         })),
       });

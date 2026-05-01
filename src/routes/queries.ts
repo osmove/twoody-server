@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
+import { db, providers } from "../db.js";
+import { eq } from "drizzle-orm";
 
 interface QueryBody {
   content: string;
@@ -40,65 +42,120 @@ export async function queryRoutes(app: FastifyInstance) {
       }
 
       void channel;
-      const provider = resolveProvider(model);
 
-      reply.raw.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no",
-      });
-
-      const keepalive = setInterval(() => {
-        reply.raw.write(": ping\n\n");
-      }, 15_000);
+      let sseStarted = false;
+      let keepalive: ReturnType<typeof setInterval> | null = null;
+      const startSse = () => {
+        if (sseStarted) return;
+        sseStarted = true;
+        reply.raw.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
+        });
+        keepalive = setInterval(() => {
+          reply.raw.write(": ping\n\n");
+        }, 15_000);
+      };
 
       try {
-        await streamFromProvider(provider, content, model, (delta) => {
+        const provider = resolveProvider(auth.userId, model);
+        await streamFromProvider(provider, content, (delta) => {
+          startSse();
           reply.raw.write(`data: ${JSON.stringify({ delta })}\n\n`);
         });
+        startSse();
         reply.raw.write("data: [DONE]\n\n");
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Unknown error";
+        if (!sseStarted) {
+          if (err instanceof LocalLlmUnavailableError) {
+            return reply.code(503).send({ error: "local_llm_unavailable", message: msg });
+          }
+          return reply.code(502).send({ error: "provider_error", message: msg });
+        }
         reply.raw.write(`data: ${JSON.stringify({ error: msg })}\n\n`);
       } finally {
-        clearInterval(keepalive);
-        reply.raw.end();
+        if (keepalive) clearInterval(keepalive);
+        if (sseStarted) reply.raw.end();
       }
     },
   });
 }
 
-type Provider = "openai" | "anthropic" | "gemini" | "mlx";
+type Provider =
+  | { kind: "openai"; model: string }
+  | { kind: "anthropic"; model: string }
+  | { kind: "gemini"; model: string }
+  | { kind: "local_openai"; model: string; baseUrl: string };
 
-function resolveProvider(model?: string): Provider {
-  if (model?.startsWith("claude")) return "anthropic";
-  if (model?.startsWith("gemini")) return "gemini";
-  if (model === "local" || model === "mlx") return "mlx";
-  // Env-driven default
-  if (process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY)
-    return "anthropic";
-  if (process.env.GEMINI_API_KEY && !process.env.OPENAI_API_KEY)
-    return "gemini";
-  if (process.env.BRIDGE_LOCAL_LLM_ENDPOINT) return "mlx";
-  return "openai";
+class LocalLlmUnavailableError extends Error {}
+
+function resolveProvider(userId: string, requestedModel?: string): Provider {
+  const configuredProviders = db
+    .select()
+    .from(providers)
+    .where(eq(providers.userId, userId))
+    .all()
+    .filter((provider) => provider.enabled);
+
+  const defaultProvider =
+    configuredProviders.find((provider) => provider.isDefault) ?? configuredProviders[0];
+
+  if (defaultProvider?.kind === "local_openai" && defaultProvider.baseUrl) {
+    return {
+      kind: "local_openai",
+      baseUrl: defaultProvider.baseUrl,
+      model: requestedModel ?? defaultProvider.model ?? "local",
+    };
+  }
+
+  if (process.env.BRIDGE_LOCAL_LLM_ENDPOINT) {
+    return {
+      kind: "local_openai",
+      baseUrl: process.env.BRIDGE_LOCAL_LLM_ENDPOINT,
+      model: requestedModel ?? "local",
+    };
+  }
+
+  if (process.env.TWOODY_CLOUD_FALLBACK_ENABLED === "true") {
+    if (requestedModel?.startsWith("claude")) {
+      return { kind: "anthropic", model: requestedModel };
+    }
+    if (requestedModel?.startsWith("gemini")) {
+      return { kind: "gemini", model: requestedModel };
+    }
+    if (process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
+      return { kind: "anthropic", model: requestedModel ?? "claude-haiku-4-5-20251001" };
+    }
+    if (process.env.GEMINI_API_KEY && !process.env.OPENAI_API_KEY) {
+      return { kind: "gemini", model: requestedModel ?? "gemini-2.0-flash" };
+    }
+    if (process.env.OPENAI_API_KEY) {
+      return { kind: "openai", model: requestedModel ?? "gpt-4o-mini" };
+    }
+  }
+
+  throw new LocalLlmUnavailableError(
+    "No local LLM provider is configured and cloud fallback is disabled"
+  );
 }
 
 async function streamFromProvider(
   provider: Provider,
   content: string,
-  model: string | undefined,
   onDelta: (text: string) => void
 ) {
-  switch (provider) {
+  switch (provider.kind) {
     case "openai":
-      return streamOpenAI(content, model ?? "gpt-4o-mini", onDelta);
+      return streamOpenAI(content, provider.model, onDelta);
     case "anthropic":
-      return streamAnthropic(content, model ?? "claude-haiku-4-5-20251001", onDelta);
+      return streamAnthropic(content, provider.model, onDelta);
     case "gemini":
-      return streamGemini(content, model ?? "gemini-2.0-flash", onDelta);
-    case "mlx":
-      return streamLocal(content, model ?? "local", onDelta);
+      return streamGemini(content, provider.model, onDelta);
+    case "local_openai":
+      return streamLocal(provider.baseUrl, content, provider.model, onDelta);
   }
 }
 
@@ -242,26 +299,29 @@ async function streamGemini(
 }
 
 async function streamLocal(
+  baseUrl: string,
   content: string,
   model: string,
   onDelta: (t: string) => void
 ) {
-  const endpoint =
-    process.env.BRIDGE_LOCAL_LLM_ENDPOINT ?? "http://127.0.0.1:8080/v1";
-
-  const res = await fetch(endpoint + "/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: "user", content }],
-      stream: true,
-    }),
-  });
+  const endpoint = baseUrl.replace(/\/$/, "");
+  let res: Response;
+  try {
+    res = await fetch(endpoint + "/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content }],
+        stream: true,
+      }),
+    });
+  } catch {
+    throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
+  }
 
   if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Local LLM ${res.status}: ${err}`);
+    throw new LocalLlmUnavailableError(`Local LLM provider returned ${res.status}`);
   }
 
   await consumeOpenAIStream(res, onDelta);

@@ -6,6 +6,7 @@ import { healthRoutes } from "./routes/health.js";
 import { sessionRoutes } from "./routes/session.js";
 import { queryRoutes } from "./routes/queries.js";
 import { deviceRoutes } from "./routes/devices.js";
+import { providerRoutes } from "./routes/providers.js";
 import { bridgeRoutes } from "./routes/bridge.js";
 import { realtimeRoutes } from "./routes/realtime.js";
 import { memberRoutes } from "./routes/members.js";
@@ -24,8 +25,8 @@ export async function buildApp() {
   await app.register(swagger, {
     openapi: {
       info: {
-        title: "Twoody Server API",
-        description: "Self-hosted API surface for Twoody Local.",
+        title: "Twoody Hub API",
+        description: "Local-first API surface for Twoody Hub.",
         version: "0.1.0",
       },
       servers: [{ url: "http://localhost:3000" }],
@@ -34,6 +35,7 @@ export async function buildApp() {
         { name: "session", description: "Pairing and auth sessions" },
         { name: "queries", description: "SSE chat and inference routes" },
         { name: "devices", description: "Device pairing and firmware routes" },
+        { name: "providers", description: "Local-first LLM providers" },
         { name: "bridge", description: "Mac Bridge polling and task queue" },
         { name: "realtime", description: "Realtime voice session proxies" },
         { name: "members", description: "Household members and enrollment assets" },
@@ -44,6 +46,11 @@ export async function buildApp() {
             type: "http",
             scheme: "bearer",
             bearerFormat: "Bearer token",
+          },
+          userTokenAuth: {
+            type: "apiKey",
+            in: "header",
+            name: "X-User-Token",
           },
         },
       },
@@ -56,6 +63,7 @@ export async function buildApp() {
   await app.register(sessionRoutes);
   await app.register(queryRoutes);
   await app.register(deviceRoutes);
+  await app.register(providerRoutes);
   await app.register(bridgeRoutes);
   await app.register(realtimeRoutes);
   await app.register(memberRoutes);
@@ -67,6 +75,7 @@ export async function buildApp() {
   await app.register(sessionRoutes, { prefix: "/api/v1" });
   await app.register(queryRoutes, { prefix: "/api/v1" });
   await app.register(deviceRoutes, { prefix: "/api/v1" });
+  await app.register(providerRoutes, { prefix: "/api/v1" });
   await app.register(bridgeRoutes, { prefix: "/api/v1" });
   await app.register(realtimeRoutes, { prefix: "/api/v1" });
   await app.register(memberRoutes, { prefix: "/api/v1" });
@@ -83,7 +92,7 @@ export async function buildApp() {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Twoody Server</title>
+  <title>Twoody Hub</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body { font-family: system-ui, sans-serif; max-width: 600px; margin: 4rem auto; padding: 0 1rem; }
@@ -94,8 +103,8 @@ export async function buildApp() {
   </style>
 </head>
 <body>
-  <h1><span class="status"></span>Twoody Server</h1>
-  <p>Server is running. Pair using <code>twoody setup</code> or the mobile app.</p>
+  <h1><span class="status"></span>Twoody Hub</h1>
+  <p>Hub is running. Create a local account, then pair using <code>twoody setup</code> or a device client.</p>
   <ul>
     <li><a href="/health">/health</a> — server status</li>
     <li><a href="/docs">/docs</a> — interactive API docs</li>

@@ -4,7 +4,7 @@ import {
   db,
   devices,
   pairingCodes,
-  authSessions,
+  users,
 } from "../db.js";
 import { createRequire } from "module";
 import {
@@ -13,7 +13,10 @@ import {
   generateId,
   generateToken,
   sha256,
-  ensureDefaultUser,
+  normalizePairingCode,
+  isValidPairingCode,
+  generatePairingCode,
+  getActivePairingCode,
 } from "../auth.js";
 
 const { version } = createRequire(import.meta.url)("../../package.json") as {
@@ -21,13 +24,13 @@ const { version } = createRequire(import.meta.url)("../../package.json") as {
 };
 
 export async function deviceRoutes(app: FastifyInstance) {
-  // POST /devices/pair — device firmware calls this with a 6-digit code
+  // POST /devices/pair — device firmware calls this with an 8-character code
   app.post<{
     Body: { code: string; device_name?: string; client_kind?: string };
   }>("/devices/pair", {
     schema: {
       tags: ["devices"],
-      summary: "Pair a firmware device with a 6-digit code",
+      summary: "Pair a firmware device with an 8-character code",
       body: {
         type: "object",
         required: ["code"],
@@ -39,51 +42,64 @@ export async function deviceRoutes(app: FastifyInstance) {
       },
     },
     handler: async (req, reply) => {
-      const { code, device_name, client_kind = "twoody" } = req.body ?? {};
+      const { device_name, client_kind = "twoody" } = req.body ?? {};
+      const code = normalizePairingCode(req.body?.code ?? "");
       if (!code) return reply.code(422).send({ error: "code is required" });
-
-    // Accept env-var pairing code (created by `twoody serve`)
-    const activeCode = process.env.TWOODY_PAIRING_CODE;
-    let userId: string;
-
-    if (activeCode && code === activeCode) {
-      userId = ensureDefaultUser();
-    } else {
-      const [row] = db
-        .select()
-        .from(pairingCodes)
-        .where(eq(pairingCodes.code, code))
-        .limit(1)
-        .all();
-
-      if (!row || row.claimedAt || !row.userId) {
-        return reply.code(422).send({ error: "Invalid or expired pairing code" });
-      }
-      if (row.expiresAt < new Date()) {
-        return reply.code(422).send({ error: "Pairing code expired" });
+      if (!isValidPairingCode(code)) {
+        return reply.code(422).send({ error: "invalid_pairing_code" });
       }
 
-      userId = row.userId;
-      db.update(pairingCodes)
-        .set({ claimedAt: new Date(), claimedBy: "device" })
-        .where(eq(pairingCodes.code, code))
+      // Accept env-var pairing code (created by `twoody serve`)
+      const activeCode = getActivePairingCode();
+      let userId: string;
+      let storedCode: string | null = null;
+
+      if (activeCode && code === activeCode) {
+        const [user] = db.select({ id: users.id }).from(users).limit(1).all();
+        if (!user) {
+          return reply.code(409).send({ error: "local_setup_required" });
+        }
+        userId = user.id;
+      } else {
+        const [row] = db
+          .select()
+          .from(pairingCodes)
+          .where(eq(pairingCodes.code, code))
+          .limit(1)
+          .all();
+
+        if (!row || row.claimedAt || !row.userId) {
+          return reply.code(422).send({ error: "invalid_or_expired_pairing_code" });
+        }
+        if (row.expiresAt < new Date()) {
+          return reply.code(422).send({ error: "pairing_code_expired" });
+        }
+
+        userId = row.userId;
+        storedCode = row.code;
+      }
+
+      const deviceId = generateId();
+      const token = generateToken();
+
+      db.insert(devices)
+        .values({
+          id: deviceId,
+          userId,
+          name: device_name ?? null,
+          clientKind: client_kind,
+          tokenDigest: sha256(token),
+          createdAt: new Date(),
+          lastSeenAt: new Date(),
+        })
         .run();
-    }
 
-    const deviceId = generateId();
-    const token = generateToken();
-
-    db.insert(devices)
-      .values({
-        id: deviceId,
-        userId,
-        name: device_name ?? null,
-        clientKind: client_kind,
-        tokenDigest: sha256(token),
-        createdAt: new Date(),
-        lastSeenAt: new Date(),
-      })
-      .run();
+      if (storedCode) {
+        db.update(pairingCodes)
+          .set({ claimedAt: new Date(), claimedBy: deviceId })
+          .where(eq(pairingCodes.code, storedCode))
+          .run();
+      }
 
       reply.send({
         device_id: deviceId,
@@ -104,7 +120,11 @@ export async function deviceRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
 
-      const { code } = req.query;
+      const code = normalizePairingCode(req.query.code ?? "");
+      if (!isValidPairingCode(code)) {
+        return reply.code(422).send({ error: "invalid_pairing_code" });
+      }
+
       const [row] = db
         .select()
         .from(pairingCodes)
@@ -122,7 +142,7 @@ export async function deviceRoutes(app: FastifyInstance) {
   });
 
   // POST /devices/pair/register — CLI registers a code for a device to claim
-  app.post<{ Body: { code: string; device_name?: string } }>("/devices/pair/register", {
+  app.post<{ Body: { code?: string; device_name?: string } }>("/devices/pair/register", {
     schema: {
       tags: ["devices"],
       summary: "Register a pairing code for a device to claim",
@@ -132,8 +152,11 @@ export async function deviceRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
 
-      const { code, device_name } = req.body ?? {};
-      if (!code) return reply.code(422).send({ error: "code is required" });
+      const rawCode = req.body?.code ?? generatePairingCode();
+      const code = normalizePairingCode(rawCode);
+      if (!isValidPairingCode(code)) {
+        return reply.code(422).send({ error: "invalid_pairing_code" });
+      }
 
       const now = new Date();
       const expiresAt = new Date(now.getTime() + 10 * 60 * 1000); // 10 min
@@ -148,11 +171,17 @@ export async function deviceRoutes(app: FastifyInstance) {
         })
         .onConflictDoUpdate({
           target: pairingCodes.code,
-          set: { expiresAt, claimedAt: null, claimedBy: null },
+          set: {
+            userId: auth.userId,
+            purpose: "device",
+            expiresAt,
+            claimedAt: null,
+            claimedBy: null,
+          },
         })
         .run();
 
-      reply.send({ ok: true, expires_at: expiresAt.toISOString() });
+      reply.send({ ok: true, code, expires_at: expiresAt.toISOString() });
     },
   });
 

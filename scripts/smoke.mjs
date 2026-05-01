@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -8,7 +8,7 @@ const PORT = process.env.PORT || "4320";
 const HOST = "127.0.0.1";
 const BASE_URL = `http://${HOST}:${PORT}`;
 const API_BASE_URL = `${BASE_URL}/api/v1`;
-const PAIRING_CODE = process.env.TWOODY_PAIRING_CODE || "654321";
+const PAIRING_CODE = process.env.TWOODY_PAIRING_CODE || "A7B9C2D4";
 const dataDir = mkdtempSync(join(tmpdir(), "twoody-server-smoke-"));
 
 const child = spawn("npx", ["tsx", "src/index.ts"], {
@@ -37,22 +37,92 @@ child.stderr.on("data", (chunk) => {
 try {
   await waitForHealth();
 
+  const setupToken = readFileSync(join(dataDir, "setup-token"), "utf8").trim();
+
+  const signup = await jsonFetch("/auth/signup", {
+    method: "POST",
+    headers: jsonHeaders(),
+    expectedStatus: 201,
+    body: JSON.stringify({
+      email: "smoke@example.com",
+      password: "correct horse battery staple",
+      name: "Smoke Test",
+      setup_token: setupToken,
+    }),
+  });
+
+  const token = signup.token;
+  if (!token) {
+    throw new Error("Smoke test failed: missing auth token from /auth/signup");
+  }
+
+  const signedIn = await jsonFetch("/auth/signin", {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({
+      email: "smoke@example.com",
+      password: "correct horse battery staple",
+      client_kind: "cli",
+    }),
+  });
+  if (!signedIn.token) {
+    throw new Error("Smoke test failed: missing auth token from /auth/signin");
+  }
+
   const pairing = await jsonFetch("/session/cli", {
     method: "POST",
     headers: jsonHeaders(),
-    body: JSON.stringify({ code: PAIRING_CODE }),
+    body: JSON.stringify({ code: PAIRING_CODE.toLowerCase() }),
   });
-
-  const token = pairing.token;
-  if (!token) {
+  if (!pairing.token) {
     throw new Error("Smoke test failed: missing auth token from /session/cli");
   }
 
-  const me = await jsonFetch("/session/me", {
-    headers: authHeaders(token),
+  const me = await jsonFetch("/auth/me", {
+    headers: xUserTokenHeaders(token),
   });
   if (!me.id) {
-    throw new Error("Smoke test failed: /session/me did not return a user");
+    throw new Error("Smoke test failed: /auth/me did not return a user");
+  }
+
+  const noProviderQuery = await jsonFetch("/queries", {
+    method: "POST",
+    headers: authHeaders(token),
+    expectedStatus: 503,
+    body: JSON.stringify({ content: "hello" }),
+  });
+  if (noProviderQuery.error !== "local_llm_unavailable") {
+    throw new Error("Smoke test failed: /queries did not enforce local-first fallback");
+  }
+
+  const provider = await jsonFetch("/providers/local", {
+    method: "POST",
+    headers: authHeaders(token),
+    expectedStatus: 201,
+    body: JSON.stringify({
+      url: "http://127.0.0.1:9/v1",
+      model: "tiny-local-model",
+    }),
+  });
+  if (!provider.provider?.id || provider.provider.is_default !== true) {
+    throw new Error("Smoke test failed: local provider was not created as default");
+  }
+
+  const providers = await jsonFetch("/providers", {
+    headers: authHeaders(token),
+  });
+  if (!Array.isArray(providers.providers) || providers.providers.length !== 1) {
+    throw new Error("Smoke test failed: /providers list is unexpected");
+  }
+
+  const localDownQuery = await jsonFetch("/queries", {
+    method: "POST",
+    headers: authHeaders(token),
+    expectedStatus: 503,
+    body: JSON.stringify({ content: "hello" }),
+  });
+  if (localDownQuery.error !== "local_llm_unavailable") {
+    throw new Error("Smoke test failed: local provider down should return local_llm_unavailable");
   }
 
   const createdMember = await jsonFetch("/members", {
@@ -163,5 +233,12 @@ function authHeaders(token) {
   return {
     ...jsonHeaders(),
     authorization: `Bearer ${token}`,
+  };
+}
+
+function xUserTokenHeaders(token) {
+  return {
+    ...jsonHeaders(),
+    "x-user-token": token,
   };
 }
