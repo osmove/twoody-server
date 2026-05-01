@@ -1,5 +1,5 @@
-import type { FastifyInstance } from "fastify";
-import { eq } from "drizzle-orm";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { and, eq } from "drizzle-orm";
 import {
   db,
   devices,
@@ -24,6 +24,33 @@ const { version } = createRequire(import.meta.url)("../../package.json") as {
 };
 
 export async function deviceRoutes(app: FastifyInstance) {
+  async function requireDeviceAccess(
+    req: FastifyRequest,
+    reply: FastifyReply,
+    deviceId: string
+  ): Promise<{ userId: string } | null> {
+    const auth = await authenticate(req);
+    if (!auth) {
+      reply.code(401).send({ error: "Unauthorized" });
+      return null;
+    }
+    if (auth.deviceId && auth.deviceId !== deviceId) {
+      reply.code(403).send({ error: "device_token_mismatch" });
+      return null;
+    }
+    const [device] = db
+      .select({ id: devices.id, userId: devices.userId })
+      .from(devices)
+      .where(and(eq(devices.id, deviceId), eq(devices.userId, auth.userId)))
+      .limit(1)
+      .all();
+    if (!device) {
+      reply.code(404).send({ error: "device_not_found" });
+      return null;
+    }
+    return { userId: auth.userId };
+  }
+
   // POST /devices/pair — device firmware calls this with an 8-character code
   app.post<{
     Body: { code: string; device_name?: string; client_kind?: string };
@@ -132,7 +159,9 @@ export async function deviceRoutes(app: FastifyInstance) {
         .limit(1)
         .all();
 
-      if (!row) return reply.code(404).send({ error: "Code not found" });
+      if (!row || row.userId !== auth.userId) {
+        return reply.code(404).send({ error: "Code not found" });
+      }
 
       reply.send({
         paired: Boolean(row.claimedAt),
@@ -160,6 +189,15 @@ export async function deviceRoutes(app: FastifyInstance) {
 
       const now = new Date();
       const expiresAt = new Date(now.getTime() + 10 * 60 * 1000); // 10 min
+      const [existing] = db
+        .select()
+        .from(pairingCodes)
+        .where(eq(pairingCodes.code, code))
+        .limit(1)
+        .all();
+      if (existing && existing.userId !== auth.userId && !existing.claimedAt && existing.expiresAt > now) {
+        return reply.code(409).send({ error: "pairing_code_in_use" });
+      }
 
       db.insert(pairingCodes)
         .values({
@@ -191,7 +229,9 @@ export async function deviceRoutes(app: FastifyInstance) {
       tags: ["devices"],
       summary: "Check for device OTA updates",
     },
-    handler: async (_req, reply) => {
+    handler: async (req, reply) => {
+      const access = await requireDeviceAccess(req, reply, req.params.id);
+      if (!access) return;
       const blocked =
         process.env.TWOODY_DEVICE_UPDATES_BLOCKED === "true";
       reply.send({
@@ -209,6 +249,8 @@ export async function deviceRoutes(app: FastifyInstance) {
     Params: { id: string };
     Body: { event: string; from_sha?: string; to_sha?: string; error?: string };
   }>("/devices/:id/update_events", async (req, reply) => {
+    const access = await requireDeviceAccess(req, reply, req.params.id);
+    if (!access) return;
     const { event, from_sha, to_sha } = req.body ?? {};
     app.log.info({ device_id: req.params.id, event, from_sha, to_sha }, "OTA event");
     reply.code(204).send();
@@ -219,6 +261,8 @@ export async function deviceRoutes(app: FastifyInstance) {
     Params: { id: string };
     Body: { transcript?: string; messages?: unknown[] };
   }>("/devices/:id/transcripts", async (req, reply) => {
+    const access = await requireDeviceAccess(req, reply, req.params.id);
+    if (!access) return;
     app.log.info({ device_id: req.params.id }, "Transcript saved");
     reply.code(201).send({ ok: true });
   });
@@ -229,7 +273,9 @@ export async function deviceRoutes(app: FastifyInstance) {
       tags: ["devices"],
       summary: "Fetch user LLM keys for direct provider use",
     },
-    handler: async (_req, reply) => {
+    handler: async (req, reply) => {
+      const auth = await authenticate(req);
+      if (!auth) return reply.code(401).send({ error: "Unauthorized" });
       reply.send({
         openai_api_key: process.env.OPENAI_API_KEY ?? null,
         anthropic_api_key: process.env.ANTHROPIC_API_KEY ?? null,
@@ -248,6 +294,19 @@ export async function deviceRoutes(app: FastifyInstance) {
       const { master_id, slave_id } = req.body ?? {};
       if (!master_id || !slave_id) {
         return reply.code(422).send({ error: "master_id and slave_id required" });
+      }
+      if (master_id === slave_id) {
+        return reply.code(422).send({ error: "master_id and slave_id must differ" });
+      }
+
+      const owned = db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(eq(devices.userId, auth.userId))
+        .all()
+        .map((device) => device.id);
+      if (!owned.includes(master_id) || !owned.includes(slave_id)) {
+        return reply.code(404).send({ error: "device_not_found" });
       }
 
       const pairId = `stereo-${master_id.slice(0, 8)}-${slave_id.slice(0, 8)}`;

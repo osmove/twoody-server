@@ -158,6 +158,34 @@ try {
     throw new Error("Smoke test failed: local provider down should return local_llm_unavailable");
   }
 
+  await jsonFetch("/devices/llm_keys", {
+    expectedStatus: 401,
+  });
+
+  const pairedDevice = await jsonFetch("/devices/pair", {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({ code: PAIRING_CODE, device_name: "smoke-pi" }),
+  });
+  if (!pairedDevice.device_id || !pairedDevice.user_token) {
+    throw new Error("Smoke test failed: device pairing did not return device credentials");
+  }
+
+  await jsonFetch(`/devices/${pairedDevice.device_id}/update_check`, {
+    expectedStatus: 401,
+  });
+
+  const updateCheck = await jsonFetch(`/devices/${pairedDevice.device_id}/update_check`, {
+    headers: authHeaders(pairedDevice.user_token),
+  });
+  if (updateCheck.server_version === undefined) {
+    throw new Error("Smoke test failed: authenticated update_check missing server_version");
+  }
+
+  await jsonFetch("/devices/llm_keys", {
+    headers: authHeaders(pairedDevice.user_token),
+  });
+
   const createdMember = await jsonFetch("/members", {
     method: "POST",
     headers: authHeaders(token),
