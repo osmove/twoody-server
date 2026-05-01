@@ -7,6 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 const PORT = process.env.PORT || "4320";
 const HOST = "127.0.0.1";
 const BASE_URL = `http://${HOST}:${PORT}`;
+const API_BASE_URL = `${BASE_URL}/api/v1`;
 const PAIRING_CODE = process.env.TWOODY_PAIRING_CODE || "654321";
 const dataDir = mkdtempSync(join(tmpdir(), "twoody-server-smoke-"));
 
@@ -139,7 +140,7 @@ async function waitForHealth() {
 
 async function jsonFetch(path, options = {}) {
   const { expectedStatus = 200, ...fetchOptions } = options;
-  const response = await fetch(`${BASE_URL}${path}`, fetchOptions);
+  const response = await fetch(`${API_BASE_URL}${path}`, fetchOptions);
   const text = await response.text();
   const payload = text ? JSON.parse(text) : {};
 
