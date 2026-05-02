@@ -10,7 +10,7 @@ const setupToken = ensureSetupToken();
 
 try {
   await app.listen({ port: PORT, host: HOST });
-  console.log(`\nTwoody Hub ready on http://${HOST}:${PORT}\n`);
+  console.log(`\nTwoody Server ready on http://${HOST}:${PORT}\n`);
   if (setupToken) {
     console.log("  First local account setup required.");
     console.log(`  Setup token: ${setupToken.token}`);

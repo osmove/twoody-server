@@ -25,8 +25,8 @@ export async function buildApp() {
   await app.register(swagger, {
     openapi: {
       info: {
-        title: "Twoody Hub API",
-        description: "Local-first API surface for Twoody Hub.",
+        title: "Twoody Server API",
+        description: "Local-first API surface for Twoody Server.",
         version: "0.1.0",
       },
       servers: [{ url: "http://localhost:3000" }],
@@ -92,7 +92,7 @@ export async function buildApp() {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Twoody Hub</title>
+  <title>Twoody Server</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body { font-family: system-ui, sans-serif; max-width: 600px; margin: 4rem auto; padding: 0 1rem; }
@@ -103,8 +103,8 @@ export async function buildApp() {
   </style>
 </head>
 <body>
-  <h1><span class="status"></span>Twoody Hub</h1>
-  <p>Hub is running. Create a local account, then pair using <code>twoody setup</code> or a device client.</p>
+  <h1><span class="status"></span>Twoody Server</h1>
+  <p>Server is running. Create a local account, then pair using <code>twoody setup</code> or a device client.</p>
   <ul>
     <li><a href="/health">/health</a> — server status</li>
     <li><a href="/docs">/docs</a> — interactive API docs</li>

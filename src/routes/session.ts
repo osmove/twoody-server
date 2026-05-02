@@ -29,7 +29,7 @@ export async function sessionRoutes(app: FastifyInstance) {
   }>("/auth/signup", {
     schema: {
       tags: ["session"],
-      summary: "Create the first local Hub account with the setup token",
+      summary: "Create the first local Server account with the setup token",
       body: {
         type: "object",
         required: ["email", "password", "setup_token"],
@@ -90,7 +90,7 @@ export async function sessionRoutes(app: FastifyInstance) {
   }>("/auth/signin", {
     schema: {
       tags: ["session"],
-      summary: "Sign in to a local Hub account",
+      summary: "Sign in to a local Server account",
       body: {
         type: "object",
         required: ["email", "password"],
@@ -135,7 +135,7 @@ export async function sessionRoutes(app: FastifyInstance) {
   app.get("/auth/me", {
     schema: {
       tags: ["session"],
-      summary: "Verify current local Hub token",
+      summary: "Verify current local Server token",
       security: [{ bearerAuth: [] }],
     },
     handler: async (req, reply) => {

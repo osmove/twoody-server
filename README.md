@@ -1,9 +1,9 @@
-# Twoody Hub (`twoody-server`)
+# Twoody Server (`twoody-server`)
 
 Part of [Twoody Local](https://twoody.com/local) — the open-source, self-hosted edition of Twoody.
 
-Local-first Hub for Twoody installs. The product role is **Twoody Hub**; this
-repo and binary remain `twoody-server`.
+Local-first server for Twoody installs. The product role is **Twoody Server**;
+this repo and binary remain `twoody-server`.
 
 This package is the Phase 1 OSS split core: it deliberately avoids sharing
 Rails code from the private backend while keeping the public device, app, CLI,
@@ -48,7 +48,7 @@ Run the HTTP smoke test:
 npm run smoke
 ```
 
-The smoke test boots a throwaway Hub instance with a temporary SQLite data
+The smoke test boots a throwaway Server instance with a temporary SQLite data
 directory, creates the first local account with the setup token, exercises
 signin, pairing, auth, local-first provider routing, members, `/tool_calls`,
 and verifies the explicit `bridge_offline` response when no document provider
@@ -61,7 +61,7 @@ Interactive docs are available at:
 
 By default the server listens on `http://0.0.0.0:3000`.
 
-On first boot, when no local user exists, the Hub writes a setup token to the
+On first boot, when no local user exists, the Server writes a setup token to the
 data directory and prints it to the logs. Use it with `/auth/signup` or a client
 onboarding flow to create the first local account.
 

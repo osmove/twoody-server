@@ -1,8 +1,8 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "Twoody Hub API",
-    "description": "Local-first API surface for Twoody Hub.",
+    "title": "Twoody Server API",
+    "description": "Local-first API surface for Twoody Server.",
     "version": "0.1.0"
   },
   "components": {
@@ -59,7 +59,7 @@
     },
     "/auth/signup": {
       "post": {
-        "summary": "Create the first local Hub account with the setup token",
+        "summary": "Create the first local Server account with the setup token",
         "tags": [
           "session"
         ],
@@ -101,7 +101,7 @@
     },
     "/auth/signin": {
       "post": {
-        "summary": "Sign in to a local Hub account",
+        "summary": "Sign in to a local Server account",
         "tags": [
           "session"
         ],
@@ -139,7 +139,7 @@
     },
     "/auth/me": {
       "get": {
-        "summary": "Verify current local Hub token",
+        "summary": "Verify current local Server token",
         "tags": [
           "session"
         ],
@@ -1137,7 +1137,7 @@
     },
     "/api/v1/auth/signup": {
       "post": {
-        "summary": "Create the first local Hub account with the setup token",
+        "summary": "Create the first local Server account with the setup token",
         "tags": [
           "session"
         ],
@@ -1179,7 +1179,7 @@
     },
     "/api/v1/auth/signin": {
       "post": {
-        "summary": "Sign in to a local Hub account",
+        "summary": "Sign in to a local Server account",
         "tags": [
           "session"
         ],
@@ -1217,7 +1217,7 @@
     },
     "/api/v1/auth/me": {
       "get": {
-        "summary": "Verify current local Hub token",
+        "summary": "Verify current local Server token",
         "tags": [
           "session"
         ],
