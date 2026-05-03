@@ -1,7 +1,7 @@
 # Twoody Trademark Policy
 
 The names **"Twoody"**, **"Twoody Local"**, **"Twoody Cloud"**, **"Twoody Private"**,
-**"Twoody Device"**, **"Twoody Work"**, and the Twoody logo are trademarks of
+**"Twoody Device"**, and the Twoody logo are trademarks of
 Jimmy Douieb / Osmove.
 
 This trademark policy is independent of the source-code license. The license
