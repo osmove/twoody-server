@@ -1,6 +1,6 @@
 {
   "name": "twoody-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Twoody server — self-hosted backend (BSL 1.1)",
   "license": "BUSL-1.1",
   "main": "dist/index.js",
@@ -28,6 +28,7 @@
     "@fastify/swagger": "^8.15.0",
     "@fastify/swagger-ui": "^1.10.2",
     "better-sqlite3": "^11.0.0",
+    "bonjour-service": "^1.3.0",
     "drizzle-orm": "^0.31.0",
     "fastify": "^4.28.0",
     "zod": "^3.23.0"
