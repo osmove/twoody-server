@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { requireAuth } from "../auth.js";
-import { db, providers } from "../db.js";
-import { eq } from "drizzle-orm";
+import { requireAuth, generateId } from "../auth.js";
+import { db, providers, discussions, messages } from "../db.js";
+import { and, eq } from "drizzle-orm";
 import { transcribeWavWithWhisperCpp, WhisperUnavailableError } from "../whisper.js";
 
 interface QueryBody {
@@ -86,7 +86,34 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
 
   const channel = parsed.channel ?? "cli";
   const model   = parsed.model ?? undefined;
-  void channel;
+
+  // Resolve / create the discussion before we open the SSE stream so
+  // the `final` event can carry the discussion_id back to the client.
+  // Reuses the most recently-active discussion within a 30-min window
+  // (mirrors the cloud's DiscussionResolver inactivity gate); past
+  // that, a fresh thread starts so an "ok thanks" hours later doesn't
+  // attach to yesterday's conversation.
+  const discussion = resolveDiscussion(
+    auth.userId,
+    parsed.discussion_id ?? null,
+    channel,
+  );
+
+  // Persist the user prompt up front so a streaming failure doesn't
+  // erase the question. Assistant message is inserted after the
+  // stream completes (or with a partial body on error).
+  insertMessage({
+    discussionId: discussion.id,
+    userId:       auth.userId,
+    role:         "user",
+    content,
+    provider:     null,
+    model:        null,
+  });
+  if (!discussion.title) {
+    setDiscussionTitle(discussion.id, content);
+  }
+  touchDiscussion(discussion.id);
 
   let sseStarted = false;
   let keepalive: ReturnType<typeof setInterval> | null = null;
@@ -120,12 +147,27 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       reply.raw.write(`event: message\ndata: ${escapeData(delta)}\n\n`);
     });
     startSse();
+
+    // Persist the assistant reply now that we have the full body.
+    // Same `provider`/`model` we just dispatched against — gives the
+    // history view a "answered by" chip per turn.
+    const providerModel = "model" in provider ? provider.model : null;
+    insertMessage({
+      discussionId: discussion.id,
+      userId:       auth.userId,
+      role:         "assistant",
+      content:      aggregated,
+      provider:     provider.kind,
+      model:        providerModel,
+    });
+    touchDiscussion(discussion.id);
+
     const finalPayload = {
       id:            null,
       ref:           null,
-      discussion_id: null,
+      discussion_id: discussion.id,
       provider:      provider.kind,
-      model:         "model" in provider ? provider.model : null,
+      model:         providerModel,
       text:          aggregated,
       message:       aggregated,
       status:        "responded",
@@ -492,4 +534,97 @@ async function consumeOpenAIStream(
       }
     }
   }
+}
+
+// ─── Discussion helpers ─────────────────────────────────────────────────────
+//
+// Self-hosted mode keeps history in the same SQLite the rest of the
+// server uses. Reuses the most recently-touched discussion within a
+// 30-min window — past that, a fresh one starts so a casual "thanks"
+// hours later doesn't reattach to last week's thread. Mirrors the
+// cloud's DiscussionResolver but trimmed to the only knob we need.
+
+const DISCUSSION_INACTIVITY_MS = 30 * 60 * 1000;
+
+function resolveDiscussion(
+  userId: string,
+  requestedId: string | null,
+  channel: string,
+): { id: string; title: string | null } {
+  if (requestedId) {
+    const [row] = db
+      .select()
+      .from(discussions)
+      .where(and(eq(discussions.id, requestedId), eq(discussions.userId, userId)))
+      .limit(1)
+      .all();
+    if (row) return { id: row.id, title: row.title };
+    // Requested id wasn't ours (or doesn't exist) — fall through to
+    // the inactivity-window resolution rather than 404'ing the chat.
+  }
+
+  const cutoff = new Date(Date.now() - DISCUSSION_INACTIVITY_MS);
+  const recent = db
+    .select()
+    .from(discussions)
+    .where(eq(discussions.userId, userId))
+    .all()
+    .filter((d) => d.lastActivityAt > cutoff)
+    .sort((a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime())[0];
+  if (recent) return { id: recent.id, title: recent.title };
+
+  const id = generateId();
+  const now = new Date();
+  db.insert(discussions)
+    .values({
+      id,
+      userId,
+      channel,
+      title: null,
+      createdAt: now,
+      lastActivityAt: now,
+    })
+    .run();
+  return { id, title: null };
+}
+
+function insertMessage(args: {
+  discussionId: string;
+  userId: string;
+  role: "user" | "assistant";
+  content: string;
+  provider: string | null;
+  model: string | null;
+}) {
+  db.insert(messages)
+    .values({
+      id:           generateId(),
+      discussionId: args.discussionId,
+      userId:       args.userId,
+      role:         args.role,
+      content:      args.content,
+      provider:     args.provider,
+      model:        args.model,
+      createdAt:    new Date(),
+    })
+    .run();
+}
+
+function setDiscussionTitle(id: string, prompt: string) {
+  // Cap at ~60 chars so the index list reads cleanly. Don't try to
+  // generate a "real" title via a separate LLM call — self-hosted
+  // mode optimises for token cost over polish.
+  const trimmed = prompt.trim().replace(/\s+/g, " ").slice(0, 60);
+  if (!trimmed) return;
+  db.update(discussions)
+    .set({ title: trimmed })
+    .where(eq(discussions.id, id))
+    .run();
+}
+
+function touchDiscussion(id: string) {
+  db.update(discussions)
+    .set({ lastActivityAt: new Date() })
+    .where(eq(discussions.id, id))
+    .run();
 }

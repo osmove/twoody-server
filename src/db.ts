@@ -75,8 +75,30 @@ export const discussions = sqliteTable("discussions", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull().references(() => users.id),
   channel: text("channel").notNull().default("cli"),
+  // Cached title for the index list — set on first message via the
+  // first ~60 chars of the user's prompt. Avoids a round-trip to
+  // generate "real" titles in self-hosted mode (no LLM budget for
+  // a separate naming call).
+  title: text("title"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   lastActivityAt: integer("last_activity_at", { mode: "timestamp" }).notNull(),
+});
+
+// One row per message in a discussion (user prompt or assistant
+// reply). Mirrors what the cloud serializes on `discussions/:id`
+// so the iPhone's chat view can render the history without
+// branching on backend. `model` and `provider` capture which LLM
+// answered each turn — useful when the user hops between gpt-5.5
+// and Twoody Private mid-discussion.
+export const messages = sqliteTable("messages", {
+  id: text("id").primaryKey(),
+  discussionId: text("discussion_id").notNull().references(() => discussions.id),
+  userId: text("user_id").notNull().references(() => users.id),
+  role: text("role").notNull(),
+  content: text("content").notNull(),
+  provider: text("provider"),
+  model: text("model"),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
 export const members = sqliteTable("members", {
@@ -188,9 +210,26 @@ sqlite.exec(`
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id),
     channel TEXT NOT NULL DEFAULT 'cli',
+    title TEXT,
     created_at INTEGER NOT NULL,
     last_activity_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    discussion_id TEXT NOT NULL REFERENCES discussions(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    provider TEXT,
+    model TEXT,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_messages_discussion_created
+    ON messages (discussion_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_discussions_user_activity
+    ON discussions (user_id, last_activity_at DESC);
 
   CREATE TABLE IF NOT EXISTS members (
     id TEXT PRIMARY KEY,
@@ -252,6 +291,13 @@ if (!userColumns.some((column) => column.name === "password_digest")) {
 }
 if (!userColumns.some((column) => column.name === "prefs_json")) {
   sqlite.exec("ALTER TABLE users ADD COLUMN prefs_json TEXT NOT NULL DEFAULT '{}'");
+}
+
+const discussionColumns = sqlite.prepare("PRAGMA table_info(discussions)").all() as Array<{
+  name: string;
+}>;
+if (!discussionColumns.some((column) => column.name === "title")) {
+  sqlite.exec("ALTER TABLE discussions ADD COLUMN title TEXT");
 }
 
 export const db = drizzle(sqlite);

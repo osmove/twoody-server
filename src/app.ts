@@ -15,6 +15,8 @@ import { toolCallRoutes } from "./routes/toolCalls.js";
 import { meRoutes } from "./routes/me.js";
 import { agentRoutes } from "./routes/agents.js";
 import { localLlmRoutes } from "./routes/localLlm.js";
+import { discussionRoutes } from "./routes/discussions.js";
+import { voiceRoutes } from "./routes/voices.js";
 
 export async function buildApp() {
   const app = Fastify({
@@ -87,6 +89,8 @@ export async function buildApp() {
   await app.register(meRoutes);
   await app.register(agentRoutes);
   await app.register(localLlmRoutes);
+  await app.register(discussionRoutes);
+  await app.register(voiceRoutes);
 
   // Versioned aliases for API clients migrating away from root-level
   // Rails-style paths. Health, docs, admin, MCP and WebSocket routes stay
@@ -102,6 +106,8 @@ export async function buildApp() {
   await app.register(meRoutes, { prefix: "/api/v1" });
   await app.register(agentRoutes, { prefix: "/api/v1" });
   await app.register(localLlmRoutes, { prefix: "/api/v1" });
+  await app.register(discussionRoutes, { prefix: "/api/v1" });
+  await app.register(voiceRoutes, { prefix: "/api/v1" });
 
   app.get("/admin", {
     schema: {
