@@ -54,10 +54,21 @@ export async function transcribeWavWithWhisperCpp(audio: Buffer): Promise<string
   }
 
   const workDir = await mkdtemp(join(tmpdir(), "twoody-stt-"));
-  const inputPath = join(workDir, "input.wav");
+  const rawPath = join(workDir, "input.raw");
+  const wavPath = join(workDir, "input.wav");
   const outputPath = join(workDir, "out");
   try {
-    await writeFile(inputPath, audio);
+    await writeFile(rawPath, audio);
+
+    // whisper.cpp's CLI only reads 16-bit PCM WAV. Anything else
+    // (m4a/aac from iOS, webm/opus from MediaRecorder in the
+    // desktop app, mp3 from the firmware fallback) needs a
+    // pre-pass through ffmpeg. We always run the conversion when
+    // ffmpeg is on PATH — the cost is ~50 ms for a few-second
+    // recording and it removes a whole class of "client format
+    // happens to match the model" footguns. The original WAV path
+    // still works as a fallback when ffmpeg is missing.
+    const inputPath = await ensureWavOrPassthrough(audio, rawPath, wavPath);
     await runWhisper(DEFAULT_BINARY, [
       "-m", modelPath,
       "-f", inputPath,
@@ -72,6 +83,64 @@ export async function transcribeWavWithWhisperCpp(audio: Buffer): Promise<string
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/// Decide whether the input buffer needs an ffmpeg pre-pass before
+/// hitting whisper.cpp. WAV (RIFF) bytes go straight through; anything
+/// else gets converted to 16 kHz mono 16-bit WAV via ffmpeg. The
+/// audio is already on disk at `rawPath`; the converted output (when
+/// it happens) lands at `wavPath`. Returns the path whisper should
+/// read.
+async function ensureWavOrPassthrough(
+  audio: Buffer,
+  rawPath: string,
+  wavPath: string,
+): Promise<string> {
+  if (looksLikeWav(audio)) return rawPath;
+
+  if (!(await binaryExists("ffmpeg"))) {
+    throw new WhisperUnavailableError(
+      "Audio is not WAV and ffmpeg isn't on PATH. " +
+        "Install with `brew install ffmpeg` so the server can convert " +
+        "iPhone m4a / desktop webm uploads before whisper.cpp."
+    );
+  }
+
+  await runFfmpeg([
+    "-y",
+    "-loglevel", "error",
+    "-i", rawPath,
+    "-ar", "16000",
+    "-ac", "1",
+    "-c:a", "pcm_s16le",
+    wavPath,
+  ]);
+  return wavPath;
+}
+
+/// RIFF magic + WAVE format identifier. Cheap byte sniff — no need
+/// to parse the chunk table to decide whether to skip ffmpeg.
+function looksLikeWav(buffer: Buffer): boolean {
+  if (buffer.length < 12) return false;
+  return (
+    buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+    buffer[8] === 0x57 && buffer[9] === 0x41 && buffer[10] === 0x56 && buffer[11] === 0x45
+  );
+}
+
+async function runFfmpeg(args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg exited ${code}: ${stderr.trim().slice(0, 400)}`));
+    });
+  });
 }
 
 async function pickModelPath(): Promise<string | null> {
