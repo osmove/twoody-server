@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import { healthRoutes } from "./routes/health.js";
@@ -11,6 +12,9 @@ import { bridgeRoutes } from "./routes/bridge.js";
 import { realtimeRoutes } from "./routes/realtime.js";
 import { memberRoutes } from "./routes/members.js";
 import { toolCallRoutes } from "./routes/toolCalls.js";
+import { meRoutes } from "./routes/me.js";
+import { agentRoutes } from "./routes/agents.js";
+import { localLlmRoutes } from "./routes/localLlm.js";
 
 export async function buildApp() {
   const app = Fastify({
@@ -20,6 +24,18 @@ export async function buildApp() {
   await app.register(cors, {
     origin: true,
     credentials: true,
+  });
+
+  // Multipart upload support — `/queries` accepts an inline audio_file
+  // from the watch / iPhone voice path, parsed as a Buffer for
+  // shell-out to whisper-cpp. 25 MB ceiling matches OpenAI's
+  // /v1/audio/transcriptions limit so a recording too long for the
+  // cloud also gets rejected here, with a clear error.
+  await app.register(multipart, {
+    limits: {
+      fileSize: 25 * 1024 * 1024,
+      files: 1,
+    },
   });
 
   await app.register(swagger, {
@@ -68,6 +84,9 @@ export async function buildApp() {
   await app.register(realtimeRoutes);
   await app.register(memberRoutes);
   await app.register(toolCallRoutes);
+  await app.register(meRoutes);
+  await app.register(agentRoutes);
+  await app.register(localLlmRoutes);
 
   // Versioned aliases for API clients migrating away from root-level
   // Rails-style paths. Health, docs, admin, MCP and WebSocket routes stay
@@ -80,6 +99,9 @@ export async function buildApp() {
   await app.register(realtimeRoutes, { prefix: "/api/v1" });
   await app.register(memberRoutes, { prefix: "/api/v1" });
   await app.register(toolCallRoutes, { prefix: "/api/v1" });
+  await app.register(meRoutes, { prefix: "/api/v1" });
+  await app.register(agentRoutes, { prefix: "/api/v1" });
+  await app.register(localLlmRoutes, { prefix: "/api/v1" });
 
   app.get("/admin", {
     schema: {

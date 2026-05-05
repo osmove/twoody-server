@@ -132,6 +132,77 @@ export async function sessionRoutes(app: FastifyInstance) {
     },
   });
 
+  // One-tap pairing flow for the iPhone/watch app: user pastes the
+  // setup token printed at first boot, app calls /auth/pair, server
+  // creates (or reuses) a single self-hosted user and returns a
+  // session token. No email/password dance — the network boundary
+  // is the trust boundary on a LAN-only deployment, and the user
+  // already proved possession of the setup token printed only on
+  // their Mac's terminal.
+  app.post<{
+    Body: { setup_token?: string; device_name?: string };
+  }>("/auth/pair", {
+    schema: {
+      tags: ["session"],
+      summary: "Trade a setup token for a session token (no email/password)",
+      body: {
+        type: "object",
+        required: ["setup_token"],
+        properties: {
+          setup_token: { type: "string" },
+          device_name: { type: "string" },
+        },
+      },
+    },
+    handler: async (req, reply) => {
+      const setupToken = req.body.setup_token?.trim() ?? "";
+      const deviceName = req.body.device_name?.trim() || "iPhone";
+
+      if (!setupToken) {
+        return reply.code(422).send({ error: "setup_token is required" });
+      }
+      if (!verifySetupToken(setupToken)) {
+        return reply.code(403).send({ error: "invalid_setup_token" });
+      }
+
+      // Reuse the existing first-account when the setup token has
+      // already been consumed once (e.g. the user paired via /auth/signup
+      // earlier). Otherwise create a "self-hosted" account on the
+      // fly so the iPhone doesn't have to ask for a name.
+      const [existing] = db.select().from(users).limit(1).all();
+      let userId: string;
+      let userRow: typeof users.$inferSelect;
+      if (existing) {
+        userId = existing.id;
+        userRow = existing;
+      } else {
+        userId = generateId();
+        db.insert(users)
+          .values({
+            id: userId,
+            email: `local-${userId.slice(0, 8)}@self-hosted.twoody`,
+            name: "Self-hosted user",
+            // No password set; signin remains blocked unless the
+            // user later flips this via a future /auth/set_password
+            // flow. Pair-token-only access is the design here.
+            passwordDigest: null,
+            createdAt: new Date(),
+          })
+          .run();
+        const [created] = db.select().from(users).where(eq(users.id, userId)).limit(1).all();
+        userRow = created!;
+      }
+
+      const { token, sessionId } = createAuthSession(userId, `pair:${deviceName}`);
+      reply.code(201).send({
+        token,
+        user_id: userId,
+        session_id: sessionId,
+        user: { id: userRow.id, email: userRow.email, name: userRow.name },
+      });
+    },
+  });
+
   app.get("/auth/me", {
     schema: {
       tags: ["session"],

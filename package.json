@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@fastify/cors": "^9.0.0",
+    "@fastify/multipart": "^8.3.1",
     "@fastify/swagger": "^8.15.0",
     "@fastify/swagger-ui": "^1.10.2",
     "better-sqlite3": "^11.0.0",

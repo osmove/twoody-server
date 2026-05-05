@@ -20,6 +20,12 @@ export const users = sqliteTable("users", {
   email: text("email").notNull().unique(),
   name: text("name"),
   passwordDigest: text("password_digest"),
+  // Free-form JSON blob for prefs the iPhone/watch surfaces sync via
+  // /me (default_provider, default_model, default_voice, audio_output,
+  // memory_enabled, sttProvider, etc.). Keeping it as a single column
+  // means new prefs don't need a migration — the server stays a thin
+  // pass-through, the app owns the schema.
+  prefsJson: text("prefs_json").notNull().default("{}"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
@@ -132,6 +138,7 @@ sqlite.exec(`
     email TEXT NOT NULL UNIQUE,
     name TEXT,
     password_digest TEXT,
+    prefs_json TEXT NOT NULL DEFAULT '{}',
     created_at INTEGER NOT NULL
   );
 
@@ -242,6 +249,9 @@ const userColumns = sqlite.prepare("PRAGMA table_info(users)").all() as Array<{
 }>;
 if (!userColumns.some((column) => column.name === "password_digest")) {
   sqlite.exec("ALTER TABLE users ADD COLUMN password_digest TEXT");
+}
+if (!userColumns.some((column) => column.name === "prefs_json")) {
+  sqlite.exec("ALTER TABLE users ADD COLUMN prefs_json TEXT NOT NULL DEFAULT '{}'");
 }
 
 export const db = drizzle(sqlite);
