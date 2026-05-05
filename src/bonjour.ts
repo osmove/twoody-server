@@ -20,6 +20,7 @@
 // exits, otherwise stale entries linger in the local mDNS cache for
 // up to 75 seconds (per RFC 6762).
 import { Bonjour } from "bonjour-service";
+import { hostname as osHostname } from "node:os";
 
 export type BonjourHandle = {
   stop(): Promise<void>;
@@ -43,7 +44,7 @@ export type BonjourOptions = {
 export function startBonjour(options: BonjourOptions): BonjourHandle {
   const bonjour = new Bonjour();
   const hostnameSuffix = process.env.HOSTNAME?.split(".")[0]
-    ?? require("os").hostname?.()?.split(".")[0]
+    ?? osHostname()?.split(".")[0]
     ?? "this-mac";
   const name = options.name ?? `Twoody Local · ${hostnameSuffix}`;
 
