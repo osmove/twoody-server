@@ -3,6 +3,7 @@ import { requireAuth, generateId } from "../auth.js";
 import { db, providers, discussions, messages } from "../db.js";
 import { and, eq } from "drizzle-orm";
 import { transcribeWavWithWhisperCpp, WhisperUnavailableError } from "../whisper.js";
+import { publish as publishEvent } from "../events.js";
 
 interface QueryBody {
   content?: string;
@@ -110,10 +111,26 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     provider:     null,
     model:        null,
   });
-  if (!discussion.title) {
+  const wasNewDiscussion = !discussion.title;
+  if (wasNewDiscussion) {
     setDiscussionTitle(discussion.id, content);
   }
   touchDiscussion(discussion.id);
+
+  if (wasNewDiscussion) {
+    publishEvent({
+      kind:         "discussion.created",
+      userId:       auth.userId,
+      discussionId: discussion.id,
+      title:        content.trim().replace(/\s+/g, " ").slice(0, 60),
+    });
+  }
+  publishEvent({
+    kind:         "message.appended",
+    userId:       auth.userId,
+    discussionId: discussion.id,
+    role:         "user",
+  });
 
   let sseStarted = false;
   let keepalive: ReturnType<typeof setInterval> | null = null;
@@ -161,6 +178,18 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       model:        providerModel,
     });
     touchDiscussion(discussion.id);
+    publishEvent({
+      kind:           "message.appended",
+      userId:         auth.userId,
+      discussionId:   discussion.id,
+      role:           "assistant",
+    });
+    publishEvent({
+      kind:           "discussion.touched",
+      userId:         auth.userId,
+      discussionId:   discussion.id,
+      lastActivityAt: new Date().toISOString(),
+    });
 
     const finalPayload = {
       id:            null,

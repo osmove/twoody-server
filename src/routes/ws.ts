@@ -1,0 +1,118 @@
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import { authenticate } from "../auth.js";
+import { subscribe } from "../events.js";
+
+// `/ws` — single WebSocket endpoint that fans out per-user server
+// events to connected clients. Mirrors what /cable does on the
+// cloud Rails backend, but stripped to the wire shape twoody-app /
+// twoody-desktop actually consume:
+//
+//   server → client
+//     {"type":"hello", "user_id":"…"}
+//     {"type":"discussion.created",  "discussion_id":"…", "title":"…"}
+//     {"type":"discussion.touched",  "discussion_id":"…", "last_activity_at":"…"}
+//     {"type":"message.appended",    "discussion_id":"…", "role":"user|assistant"}
+//
+//   client → server
+//     {"type":"ping"}    → server replies {"type":"pong"}
+//
+// Auth: bearer token in `?token=` query param, since browsers /
+// Electron renderers can't set custom headers on `new WebSocket(url)`.
+// The token is matched against `auth_sessions` + `devices` the same
+// way the HTTP routes do — same source of truth, no separate
+// session table.
+export async function wsRoutes(app: FastifyInstance) {
+  app.get("/ws", { websocket: true }, async (socket, req) => {
+    const token = (req.query as { token?: string }).token;
+    const auth = await authenticateFromToken(req, token);
+    if (!auth) {
+      socket.send(JSON.stringify({ type: "error", error: "unauthorized" }));
+      socket.close(1008, "unauthorized");
+      return;
+    }
+
+    socket.send(JSON.stringify({ type: "hello", user_id: auth.userId }));
+
+    // Per-user server-event subscription. Other users' events
+    // (different `userId`) are filtered server-side so a stray
+    // subscriber can't snoop the bus. The unsubscribe is fired
+    // when the socket closes — `socket.on("close", …)` below.
+    const unsubscribe = subscribe((event) => {
+      if (event.userId !== auth.userId) return;
+      const payload = serializeEvent(event);
+      try {
+        socket.send(JSON.stringify(payload));
+      } catch {
+        // Socket closed mid-send — `subscribe` callback fires on
+        // the bus's emit thread, so a closed-state isn't atomic.
+        // Best-effort send, the close handler unwires us.
+      }
+    });
+
+    socket.on("message", (raw: Buffer) => {
+      // The protocol is intentionally tiny — one client→server
+      // message type. Keepalive pings let the client distinguish
+      // "server is alive but quiet" from a dropped TCP socket.
+      let parsed: { type?: string };
+      try {
+        parsed = JSON.parse(raw.toString("utf-8"));
+      } catch {
+        return;
+      }
+      if (parsed.type === "ping") {
+        socket.send(JSON.stringify({ type: "pong" }));
+      }
+    });
+
+    socket.on("close", () => {
+      unsubscribe();
+    });
+  });
+}
+
+type SerializedEvent =
+  | {
+      type: "discussion.created";
+      discussion_id: string;
+      title: string | null;
+    }
+  | {
+      type: "discussion.touched";
+      discussion_id: string;
+      last_activity_at: string;
+    }
+  | {
+      type: "message.appended";
+      discussion_id: string;
+      role: "user" | "assistant";
+    };
+
+function serializeEvent(event: Parameters<Parameters<typeof subscribe>[0]>[0]): SerializedEvent {
+  switch (event.kind) {
+    case "discussion.created":
+      return { type: "discussion.created", discussion_id: event.discussionId, title: event.title };
+    case "discussion.touched":
+      return { type: "discussion.touched", discussion_id: event.discussionId, last_activity_at: event.lastActivityAt };
+    case "message.appended":
+      return { type: "message.appended", discussion_id: event.discussionId, role: event.role };
+  }
+}
+
+/// `authenticate()` reads X-User-Token / Authorization headers, which
+/// we don't get on a WebSocket upgrade in the browser. Instead the
+/// client sends `?token=…` in the URL — we synthesise a request-like
+/// object with the token in the standard header so the same auth
+/// path runs without duplication.
+async function authenticateFromToken(
+  req: FastifyRequest,
+  token: string | undefined,
+): Promise<{ userId: string } | null> {
+  if (!token) return null;
+  const synthetic = {
+    headers: {
+      authorization: `Bearer ${token}`,
+    },
+  } as unknown as FastifyRequest;
+  const auth = await authenticate(synthetic);
+  return auth ? { userId: auth.userId } : null;
+}

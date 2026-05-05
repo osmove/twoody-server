@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
+import websocket from "@fastify/websocket";
 import { healthRoutes } from "./routes/health.js";
 import { sessionRoutes } from "./routes/session.js";
 import { queryRoutes } from "./routes/queries.js";
@@ -17,6 +18,7 @@ import { agentRoutes } from "./routes/agents.js";
 import { localLlmRoutes } from "./routes/localLlm.js";
 import { discussionRoutes } from "./routes/discussions.js";
 import { voiceRoutes } from "./routes/voices.js";
+import { wsRoutes } from "./routes/ws.js";
 
 export async function buildApp() {
   const app = Fastify({
@@ -39,6 +41,12 @@ export async function buildApp() {
       files: 1,
     },
   });
+
+  // WebSocket plumbing — `/ws` fans out per-user server events
+  // (discussion created/touched, message appended) so the chat UI
+  // refreshes without polling. The plugin owns the upgrade
+  // handshake; route logic lives in `routes/ws.ts`.
+  await app.register(websocket);
 
   await app.register(swagger, {
     openapi: {
@@ -91,6 +99,7 @@ export async function buildApp() {
   await app.register(localLlmRoutes);
   await app.register(discussionRoutes);
   await app.register(voiceRoutes);
+  await app.register(wsRoutes);
 
   // Versioned aliases for API clients migrating away from root-level
   // Rails-style paths. Health, docs, admin, MCP and WebSocket routes stay
