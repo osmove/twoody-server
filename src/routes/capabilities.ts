@@ -36,10 +36,17 @@ export async function capabilitiesRoutes(app: FastifyInstance) {
       reply.send({
         has_billing:        false,
         has_org:            false,
-        has_memory:         false,
+        // Memories ship in v0.3+ (the /memories CRUD added in Phase 2
+        // of the OSS roadmap). Older twoody-server builds without
+        // these routes will report this flag as false and the desktop
+        // hides the tab — capability-driven nav handles the rollout.
+        has_memory:         true,
         has_browser_agent:  false,
         has_local_files:    true,
         has_devices:        true,
+        // /built_in_capabilities (skills) still needs to plumb through
+        // twoody-mcp. Until then, clients should hide the Capabilities
+        // tab on Local installs.
         has_skills:         false,
         providers_writable: true,
         deployment_kind:    "local",
