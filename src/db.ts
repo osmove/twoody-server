@@ -101,6 +101,39 @@ export const messages = sqliteTable("messages", {
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
+/// To-do items with optional due dates. Wire-compatible with the
+/// cloud Rails /tasks: same shape so the iPhone/desktop drives both
+/// backends from one TasksScreen. `priority` is an integer (Rails
+/// uses 0-2 for low/medium/high; we accept whatever the client sends
+/// and surface a `priority_label` for display).
+export const tasks = sqliteTable("tasks", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id),
+  title: text("title").notNull().default(""),
+  notes: text("notes"),
+  dueAt: integer("due_at", { mode: "timestamp" }),
+  doneAt: integer("done_at", { mode: "timestamp" }),
+  priority: integer("priority"),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
+/// Free-form notes — title + body, with pin and archive flags.
+/// Wire-compatible with the cloud Rails /notes (title, body, pinned,
+/// archived). `preview` is computed at serialization (first ~120
+/// chars of body) so the iPhone's NotesScreen + desktop's Notes tab
+/// render uniformly.
+export const notes = sqliteTable("notes", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id),
+  title: text("title"),
+  body: text("body").notNull().default(""),
+  pinned: integer("pinned", { mode: "boolean" }).notNull().default(false),
+  archived: integer("archived", { mode: "boolean" }).notNull().default(false),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
 /// Free-form facts the assistant can recall during conversations.
 /// Wire-compatible with the cloud Rails /memories: same shape so the
 /// iPhone/desktop can drive both backends from a single MemoriesScreen.
@@ -252,6 +285,35 @@ sqlite.exec(`
     ON messages (discussion_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_discussions_user_activity
     ON discussions (user_id, last_activity_at DESC);
+
+  CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    title TEXT NOT NULL DEFAULT '',
+    notes TEXT,
+    due_at INTEGER,
+    done_at INTEGER,
+    priority INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_tasks_user_done_due
+    ON tasks (user_id, done_at, due_at);
+
+  CREATE TABLE IF NOT EXISTS notes (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    title TEXT,
+    body TEXT NOT NULL DEFAULT '',
+    pinned INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_notes_user_pinned_updated
+    ON notes (user_id, pinned DESC, updated_at DESC);
 
   CREATE TABLE IF NOT EXISTS memories (
     id TEXT PRIMARY KEY,

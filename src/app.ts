@@ -20,6 +20,8 @@ import { agentRoutes } from "./routes/agents.js";
 import { localLlmRoutes } from "./routes/localLlm.js";
 import { discussionRoutes } from "./routes/discussions.js";
 import { memoryRoutes } from "./routes/memories.js";
+import { noteRoutes } from "./routes/notes.js";
+import { taskRoutes } from "./routes/tasks.js";
 import { voiceRoutes } from "./routes/voices.js";
 import { wsRoutes } from "./routes/ws.js";
 
@@ -104,6 +106,8 @@ export async function buildApp() {
   await app.register(localLlmRoutes);
   await app.register(discussionRoutes);
   await app.register(memoryRoutes);
+  await app.register(taskRoutes);
+  await app.register(noteRoutes);
   await app.register(voiceRoutes);
   await app.register(wsRoutes);
 
@@ -125,6 +129,8 @@ export async function buildApp() {
   await app.register(localLlmRoutes, { prefix: "/api/v1" });
   await app.register(discussionRoutes, { prefix: "/api/v1" });
   await app.register(memoryRoutes, { prefix: "/api/v1" });
+  await app.register(taskRoutes, { prefix: "/api/v1" });
+  await app.register(noteRoutes, { prefix: "/api/v1" });
   await app.register(voiceRoutes, { prefix: "/api/v1" });
 
   app.get("/admin", {
