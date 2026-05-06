@@ -1,15 +1,16 @@
 # Twoody Server (`twoody-server`)
 
-The **single-user** edition of Twoody, marketed as **Twoody Local**.
-Pairs with Twoody Desktop, Twoody App, Twoody Watch, Twoody CLI, and
-the device firmware over the same HTTP contract that Cloud
-(api.twoody.com) and Self-hosted (Rails Docker) expose.
+The **single-user** edition of **Twoody Self-hosted** — runs as a
+Fastify + SQLite Node binary on a single Mac, NAS or Pi. Pairs with
+Twoody Desktop, Twoody App, Twoody Watch, Twoody CLI, and the device
+firmware over the same HTTP contract that Cloud (api.twoody.com) and
+the multi-user Self-hosted edition (Rails Docker) expose.
 
-For multi-user deployments (households, agencies, on-prem teams), use
-**Twoody Self-hosted** — the Rails image distributed under
-`ghcr.io/osmove/twoody-server` with `TWOODY_DEPLOYMENT=team`. This
-TypeScript binary refuses to boot when more than one account exists on
-a publicly-bound port; see the boot guard in `src/index.ts`.
+For multi-user deployments (households, agencies, on-prem teams), run
+the Rails image distributed under `ghcr.io/osmove/twoody-server` with
+`TWOODY_DEPLOYMENT=team` instead. This TypeScript binary refuses to
+boot when more than one account exists on a publicly-bound port; see
+the boot guard in `src/index.ts`.
 
 This package is the Phase 1 OSS split core: it deliberately avoids sharing
 Rails code from the private backend while keeping the public device, app, CLI,

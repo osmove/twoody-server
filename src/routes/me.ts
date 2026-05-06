@@ -5,8 +5,9 @@ import { db, users } from "../db.js";
 
 // `/me` is the iPhone/watch app's bootstrap call. The cloud Rails
 // backend uses it for prefs, tier, quota, audio settings, local-LLM
-// flags, and a bunch of derived state. Twoody Local doesn't have
-// billing or quotas, so we serve a minimal-viable shape:
+// flags, and a bunch of derived state. The single-user Self-hosted
+// edition doesn't have billing or quotas, so we serve a
+// minimal-viable shape:
 //
 //   - id / email / name straight from the local user row
 //   - effective_tier = "self_hosted" so paywall checks short-circuit

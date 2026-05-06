@@ -6,7 +6,7 @@
 // users.
 //
 // We publish a single service:
-//   name: "Twoody Local"
+//   name: "Twoody Self-hosted · <hostname>"
 //   type: "twoody"             → advertised as `_twoody._tcp.local`
 //   port: <listen port>
 //   txt:
@@ -29,8 +29,8 @@ export type BonjourHandle = {
 export type BonjourOptions = {
   port: number;
   /// Service display name — shows up in the Discover UI on the app.
-  /// We default to "Twoody Local · <hostname>" so a household with
-  /// two Macs running twoody-server can tell them apart.
+  /// We default to "Twoody Self-hosted · <hostname>" so a household
+  /// with two Macs running twoody-server can tell them apart.
   name?: string;
   /// Service version stamped on the TXT record so clients can
   /// negotiate API compat without an extra HTTP round-trip.
@@ -46,7 +46,7 @@ export function startBonjour(options: BonjourOptions): BonjourHandle {
   const hostnameSuffix = process.env.HOSTNAME?.split(".")[0]
     ?? osHostname()?.split(".")[0]
     ?? "this-mac";
-  const name = options.name ?? `Twoody Local · ${hostnameSuffix}`;
+  const name = options.name ?? `Twoody Self-hosted · ${hostnameSuffix}`;
 
   const service = bonjour.publish({
     name,
@@ -56,7 +56,6 @@ export function startBonjour(options: BonjourOptions): BonjourHandle {
     txt: {
       version: options.version ?? "0.0.0",
       api:     "/api/v1",
-      mode:    "local",
       paired:  options.paired ? "true" : "false",
     },
   });

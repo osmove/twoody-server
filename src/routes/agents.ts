@@ -2,11 +2,12 @@ import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
 
 // `/agents` is the iPhone/watch app's catalog of personas (default,
-// secrétaire, custom rows). Twoody Local doesn't ship a curated
-// catalog — the user is the only operator and `system_prompt` on
-// `/me` is the canonical override surface here. We answer with an
-// empty list so the app's catalog UI gracefully shows the "no
-// custom agents" empty-state instead of throwing on a 404.
+// secrétaire, custom rows). The single-user Self-hosted edition
+// doesn't ship a curated catalog — the user is the only operator
+// and `system_prompt` on `/me` is the canonical override surface
+// here. We answer with an empty list so the app's catalog UI
+// gracefully shows the "no custom agents" empty-state instead of
+// throwing on a 404.
 //
 // When the local server gains a real Agent persona model, the wire
 // shape to match is `app/views/agents/_agent.json.jbuilder` from the
