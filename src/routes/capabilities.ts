@@ -21,12 +21,13 @@ export async function capabilitiesRoutes(app: FastifyInstance) {
             has_local_files:    { type: "boolean" },
             has_devices:        { type: "boolean" },
             has_skills:         { type: "boolean" },
+            has_emails:         { type: "boolean" },
             providers_writable: { type: "boolean" },
             deployment_kind:    { type: "string" },
           },
           required: [
             "has_billing", "has_org", "has_memory", "has_browser_agent",
-            "has_local_files", "has_devices", "has_skills",
+            "has_local_files", "has_devices", "has_skills", "has_emails",
             "providers_writable", "deployment_kind",
           ],
         },
@@ -50,6 +51,10 @@ export async function capabilitiesRoutes(app: FastifyInstance) {
         // OSS list (memory/tasks/notes/discussions/local_llm) is
         // enough to drive the desktop's Capabilities tab.
         has_skills:         true,
+        // No Postmark wiring on twoody-server — inbox / compose /
+        // identities / mail_domains all stay hidden. A future build
+        // could route through a self-hosted SMTP and flip this on.
+        has_emails:         false,
         providers_writable: true,
         deployment_kind:    "local",
       });

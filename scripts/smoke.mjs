@@ -44,6 +44,9 @@ try {
   if (capabilities.has_billing !== false || capabilities.providers_writable !== true) {
     throw new Error("Smoke test failed: /capabilities flags do not match the local profile");
   }
+  if (capabilities.has_emails !== false) {
+    throw new Error("Smoke test failed: /capabilities should report has_emails=false (no Postmark on twoody-server)");
+  }
 
   const deployment = await jsonFetch("/deployment");
   if (deployment.kind !== "local" || !deployment.version || !deployment.instance_name) {
