@@ -56,6 +56,7 @@ export function startBonjour(options: BonjourOptions): BonjourHandle {
     txt: {
       version: options.version ?? "0.0.0",
       api:     "/api/v1",
+      mode:    "local",
       paired:  options.paired ? "true" : "false",
     },
   });

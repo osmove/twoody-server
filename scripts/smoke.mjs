@@ -37,6 +37,19 @@ child.stderr.on("data", (chunk) => {
 try {
   await waitForHealth();
 
+  const capabilities = await jsonFetch("/capabilities");
+  if (capabilities.deployment_kind !== "local") {
+    throw new Error("Smoke test failed: /capabilities did not report deployment_kind=local");
+  }
+  if (capabilities.has_billing !== false || capabilities.providers_writable !== true) {
+    throw new Error("Smoke test failed: /capabilities flags do not match the local profile");
+  }
+
+  const deployment = await jsonFetch("/deployment");
+  if (deployment.kind !== "local" || !deployment.version || !deployment.instance_name) {
+    throw new Error("Smoke test failed: /deployment payload missing kind/version/instance_name");
+  }
+
   const setupToken = readFileSync(join(dataDir, "setup-token"), "utf8").trim();
 
   const signup = await jsonFetch("/auth/signup", {

@@ -5,6 +5,8 @@ import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import websocket from "@fastify/websocket";
 import { healthRoutes } from "./routes/health.js";
+import { capabilitiesRoutes } from "./routes/capabilities.js";
+import { deploymentRoutes } from "./routes/deployment.js";
 import { sessionRoutes } from "./routes/session.js";
 import { queryRoutes } from "./routes/queries.js";
 import { deviceRoutes } from "./routes/devices.js";
@@ -17,6 +19,7 @@ import { meRoutes } from "./routes/me.js";
 import { agentRoutes } from "./routes/agents.js";
 import { localLlmRoutes } from "./routes/localLlm.js";
 import { discussionRoutes } from "./routes/discussions.js";
+import { memoryRoutes } from "./routes/memories.js";
 import { voiceRoutes } from "./routes/voices.js";
 import { wsRoutes } from "./routes/ws.js";
 
@@ -86,6 +89,8 @@ export async function buildApp() {
   await app.register(swaggerUi, { routePrefix: "/docs" });
 
   await app.register(healthRoutes);
+  await app.register(capabilitiesRoutes);
+  await app.register(deploymentRoutes);
   await app.register(sessionRoutes);
   await app.register(queryRoutes);
   await app.register(deviceRoutes);
@@ -98,12 +103,15 @@ export async function buildApp() {
   await app.register(agentRoutes);
   await app.register(localLlmRoutes);
   await app.register(discussionRoutes);
+  await app.register(memoryRoutes);
   await app.register(voiceRoutes);
   await app.register(wsRoutes);
 
   // Versioned aliases for API clients migrating away from root-level
   // Rails-style paths. Health, docs, admin, MCP and WebSocket routes stay
   // at the root; the HTTP API surface gets `/api/v1`.
+  await app.register(capabilitiesRoutes, { prefix: "/api/v1" });
+  await app.register(deploymentRoutes, { prefix: "/api/v1" });
   await app.register(sessionRoutes, { prefix: "/api/v1" });
   await app.register(queryRoutes, { prefix: "/api/v1" });
   await app.register(deviceRoutes, { prefix: "/api/v1" });
@@ -116,6 +124,7 @@ export async function buildApp() {
   await app.register(agentRoutes, { prefix: "/api/v1" });
   await app.register(localLlmRoutes, { prefix: "/api/v1" });
   await app.register(discussionRoutes, { prefix: "/api/v1" });
+  await app.register(memoryRoutes, { prefix: "/api/v1" });
   await app.register(voiceRoutes, { prefix: "/api/v1" });
 
   app.get("/admin", {

@@ -1,0 +1,256 @@
+import type { FastifyInstance } from "fastify";
+import { and, desc, eq, isNull, like, or } from "drizzle-orm";
+import { db, memories } from "../db.js";
+import { requireAuth, generateId } from "../auth.js";
+
+// Cloud-shape /memories CRUD against the local SQLite store. Wire
+// shape mirrors `app/views/memories/_memory.json.jbuilder` on Rails:
+// top-level array on index, `{memory: ...}` payload on create/update,
+// 204 on destroy. The iPhone's MemoriesScreen and the desktop's
+// Memories tab can drive both backends without branching.
+//
+// `tags` is serialized as a JSON array on disk (`tags_json` column);
+// over the wire we expose it as `tags: string[]` so the cloud
+// jbuilder shape is preserved.
+
+interface MemoryRow {
+  id:                string;
+  user_id:           string;
+  kind:              string;
+  title:             string | null;
+  content:           string;
+  tags:              string[];
+  source:            string;
+  source_ref:        string | null;
+  entity_type:       string | null;
+  entity_id:         string | null;
+  superseded_by_id:  string | null;
+  created_at:        string;
+  updated_at:        string;
+}
+
+const KINDS = new Set(["user", "feedback", "project", "reference"]);
+
+function serialize(row: typeof memories.$inferSelect): MemoryRow {
+  let tags: string[] = [];
+  try {
+    const parsed = JSON.parse(row.tagsJson);
+    if (Array.isArray(parsed)) tags = parsed.filter((t): t is string => typeof t === "string");
+  } catch {
+    /* fall through to empty list — corrupted row shouldn't crash list */
+  }
+  return {
+    id:               row.id,
+    user_id:          row.userId,
+    kind:             row.kind,
+    title:            row.title,
+    content:          row.content,
+    tags,
+    source:           row.source,
+    source_ref:       row.sourceRef,
+    entity_type:      row.entityType,
+    entity_id:        row.entityId,
+    superseded_by_id: row.supersededById,
+    created_at:       row.createdAt.toISOString(),
+    updated_at:       row.updatedAt.toISOString(),
+  };
+}
+
+function readBody(raw: unknown): {
+  kind?:        string;
+  title?:       string | null;
+  content?:     string;
+  tags?:        string[];
+  source?:      string;
+  source_ref?:  string | null;
+  entity_type?: string | null;
+  entity_id?:   string | null;
+} {
+  const body = (raw as { memory?: Record<string, unknown> } | null)?.memory ?? {};
+  const out: Record<string, unknown> = {};
+  if (typeof body.kind === "string" && KINDS.has(body.kind)) out.kind = body.kind;
+  if (typeof body.title === "string" || body.title === null) out.title = body.title;
+  if (typeof body.content === "string") out.content = body.content;
+  if (Array.isArray(body.tags)) {
+    out.tags = body.tags.filter((t): t is string => typeof t === "string");
+  }
+  if (typeof body.source === "string") out.source = body.source;
+  if (typeof body.source_ref === "string" || body.source_ref === null) out.source_ref = body.source_ref;
+  if (typeof body.entity_type === "string" || body.entity_type === null) out.entity_type = body.entity_type;
+  if (typeof body.entity_id === "string" || body.entity_id === null) out.entity_id = body.entity_id;
+  return out as ReturnType<typeof readBody>;
+}
+
+export async function memoryRoutes(app: FastifyInstance) {
+  app.get<{
+    Querystring: {
+      q?:                  string;
+      kind?:               string;
+      include_superseded?: string;
+      entity_type?:        string;
+      entity_id?:          string;
+    };
+  }>("/memories", {
+    schema: {
+      tags: ["memories"],
+      summary: "List the current user's memories",
+      security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
+    },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      const { q, kind, include_superseded, entity_type, entity_id } = req.query;
+
+      const filters = [eq(memories.userId, auth.userId)];
+      if (kind && KINDS.has(kind)) filters.push(eq(memories.kind, kind));
+      if (include_superseded !== "1" && include_superseded !== "true") {
+        filters.push(isNull(memories.supersededById));
+      }
+      if (entity_type && entity_id) {
+        filters.push(eq(memories.entityType, entity_type));
+        filters.push(eq(memories.entityId, entity_id));
+      }
+      if (q && q.trim()) {
+        const pat = `%${q.trim()}%`;
+        const text = or(like(memories.title, pat), like(memories.content, pat));
+        if (text) filters.push(text);
+      }
+
+      const rows = db
+        .select()
+        .from(memories)
+        .where(and(...filters))
+        .orderBy(desc(memories.updatedAt), desc(memories.createdAt))
+        .limit(200)
+        .all();
+
+      reply.send(rows.map(serialize));
+    },
+  });
+
+  app.get<{ Params: { id: string } }>("/memories/:id", {
+    schema: {
+      tags: ["memories"],
+      summary: "Show a single memory",
+      security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
+    },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      const [row] = db
+        .select()
+        .from(memories)
+        .where(and(eq(memories.id, req.params.id), eq(memories.userId, auth.userId)))
+        .limit(1)
+        .all();
+      if (!row) return reply.code(404).send({ error: "not_found" });
+      reply.send(serialize(row));
+    },
+  });
+
+  app.post<{ Body: unknown }>("/memories", {
+    schema: {
+      tags: ["memories"],
+      summary: "Create a new memory",
+      security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
+      body: {
+        type: "object",
+        properties: {
+          memory: { type: "object", additionalProperties: true },
+        },
+      },
+    },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      const body = readBody(req.body);
+      const content = (body.content ?? "").trim();
+      if (!content) {
+        return reply.code(422).send({ errors: ["content can't be blank"] });
+      }
+      const now = new Date();
+      const id = generateId();
+      db.insert(memories)
+        .values({
+          id,
+          userId:        auth.userId,
+          kind:          body.kind ?? "user",
+          title:         body.title ?? null,
+          content,
+          tagsJson:      JSON.stringify(body.tags ?? []),
+          source:        body.source ?? "manual",
+          sourceRef:     body.source_ref ?? null,
+          entityType:    body.entity_type ?? null,
+          entityId:      body.entity_id ?? null,
+          createdAt:     now,
+          updatedAt:     now,
+        })
+        .run();
+      const [row] = db.select().from(memories).where(eq(memories.id, id)).limit(1).all();
+      reply.code(201).send(serialize(row!));
+    },
+  });
+
+  /// PATCH accepts `{memory: {...}}` like Rails. Only the fields the
+  /// caller sends are updated — others stay as they are. Tags is a
+  /// full replacement when present (matches Rails behaviour for an
+  /// array-typed permitted attribute).
+  app.patch<{ Params: { id: string }; Body: unknown }>("/memories/:id", {
+    schema: {
+      tags: ["memories"],
+      summary: "Update an existing memory",
+      security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
+      body: {
+        type: "object",
+        properties: {
+          memory: { type: "object", additionalProperties: true },
+        },
+      },
+    },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      const [existing] = db
+        .select()
+        .from(memories)
+        .where(and(eq(memories.id, req.params.id), eq(memories.userId, auth.userId)))
+        .limit(1)
+        .all();
+      if (!existing) return reply.code(404).send({ error: "not_found" });
+
+      const body = readBody(req.body);
+      const next = {
+        kind:          body.kind          ?? existing.kind,
+        title:         body.title         !== undefined ? body.title : existing.title,
+        content:       body.content       ?? existing.content,
+        tagsJson:      body.tags          ? JSON.stringify(body.tags) : existing.tagsJson,
+        source:        body.source        ?? existing.source,
+        sourceRef:     body.source_ref    !== undefined ? body.source_ref : existing.sourceRef,
+        entityType:    body.entity_type   !== undefined ? body.entity_type : existing.entityType,
+        entityId:      body.entity_id     !== undefined ? body.entity_id : existing.entityId,
+        updatedAt:     new Date(),
+      };
+      db.update(memories).set(next).where(eq(memories.id, existing.id)).run();
+      const [row] = db.select().from(memories).where(eq(memories.id, existing.id)).limit(1).all();
+      reply.send(serialize(row!));
+    },
+  });
+
+  app.delete<{ Params: { id: string } }>("/memories/:id", {
+    schema: {
+      tags: ["memories"],
+      summary: "Delete a memory",
+      security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
+    },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      const result = db
+        .delete(memories)
+        .where(and(eq(memories.id, req.params.id), eq(memories.userId, auth.userId)))
+        .run();
+      if (result.changes === 0) return reply.code(404).send({ error: "not_found" });
+      reply.code(204).send();
+    },
+  });
+}

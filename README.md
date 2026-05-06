@@ -1,9 +1,15 @@
 # Twoody Server (`twoody-server`)
 
-Part of [Twoody Local](https://twoody.com/local) — the open-source, self-hosted edition of Twoody.
+The **single-user** edition of Twoody, marketed as **Twoody Local**.
+Pairs with Twoody Desktop, Twoody App, Twoody Watch, Twoody CLI, and
+the device firmware over the same HTTP contract that Cloud
+(api.twoody.com) and Self-hosted (Rails Docker) expose.
 
-Local-first server for Twoody installs. The product role is **Twoody Server**;
-this repo and binary remain `twoody-server`.
+For multi-user deployments (households, agencies, on-prem teams), use
+**Twoody Self-hosted** — the Rails image distributed under
+`ghcr.io/osmove/twoody-server` with `TWOODY_DEPLOYMENT=team`. This
+TypeScript binary refuses to boot when more than one account exists on
+a publicly-bound port; see the boot guard in `src/index.ts`.
 
 This package is the Phase 1 OSS split core: it deliberately avoids sharing
 Rails code from the private backend while keeping the public device, app, CLI,

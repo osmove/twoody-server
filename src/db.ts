@@ -101,6 +101,28 @@ export const messages = sqliteTable("messages", {
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
+/// Free-form facts the assistant can recall during conversations.
+/// Wire-compatible with the cloud Rails /memories: same shape so the
+/// iPhone/desktop can drive both backends from a single MemoriesScreen.
+/// `kind` is one of "user" | "feedback" | "project" | "reference".
+/// `tagsJson` is a JSON array string (drizzle-only, exposed as
+/// `tags: string[]` over the wire).
+export const memories = sqliteTable("memories", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id),
+  kind: text("kind").notNull().default("user"),
+  title: text("title"),
+  content: text("content").notNull().default(""),
+  tagsJson: text("tags_json").notNull().default("[]"),
+  source: text("source").notNull().default("manual"),
+  sourceRef: text("source_ref"),
+  entityType: text("entity_type"),
+  entityId: text("entity_id"),
+  supersededById: text("superseded_by_id"),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
 export const members = sqliteTable("members", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull().references(() => users.id),
@@ -230,6 +252,25 @@ sqlite.exec(`
     ON messages (discussion_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_discussions_user_activity
     ON discussions (user_id, last_activity_at DESC);
+
+  CREATE TABLE IF NOT EXISTS memories (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    kind TEXT NOT NULL DEFAULT 'user',
+    title TEXT,
+    content TEXT NOT NULL DEFAULT '',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    source TEXT NOT NULL DEFAULT 'manual',
+    source_ref TEXT,
+    entity_type TEXT,
+    entity_id TEXT,
+    superseded_by_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_memories_user_updated
+    ON memories (user_id, updated_at DESC);
 
   CREATE TABLE IF NOT EXISTS members (
     id TEXT PRIMARY KEY,

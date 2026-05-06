@@ -2,12 +2,35 @@
 import { buildApp } from "./app.js";
 import { ensureSetupToken, getActivePairingCode } from "./auth.js";
 import { startBonjour } from "./bonjour.js";
+import { db, users } from "./db.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 const HOST = process.env.HOST ?? "0.0.0.0";
+
+// twoody-server is the single-user "Twoody Local" edition. Refuse to
+// boot when bound publicly with more than one auth account on disk —
+// that combination is a multi-user deployment for which clients should
+// use Twoody Self-hosted (Rails). Failing fast here is gentler than
+// silently shipping a server that has no rate limiting, no encrypted
+// AR fields, and no admin audit trail.
+function enforceSingleUserGuard() {
+  const isPubliclyBound = HOST === "0.0.0.0" || HOST === "::";
+  if (!isPubliclyBound) return;
+  const userCount = db.select().from(users).all().length;
+  if (userCount <= 1) return;
+  console.error(
+    `[twoody-server] Refusing to start: HOST=${HOST} with ${userCount} ` +
+    `accounts in the local DB. twoody-server is single-user — multi-user ` +
+    `deployments must use Twoody Self-hosted (Rails). ` +
+    `See https://twoody.com/products/server`,
+  );
+  process.exit(1);
+}
+
+enforceSingleUserGuard();
 
 const app = await buildApp();
 const setupToken = ensureSetupToken();
