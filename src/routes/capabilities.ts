@@ -44,10 +44,12 @@ export async function capabilitiesRoutes(app: FastifyInstance) {
         has_browser_agent:  false,
         has_local_files:    true,
         has_devices:        true,
-        // /built_in_capabilities (skills) still needs to plumb through
-        // twoody-mcp. Until then, clients should hide the Capabilities
-        // tab on Local installs.
-        has_skills:         false,
+        // Static capability catalogue ships in v0.3+ via
+        // /built_in_capabilities. MCP-discovered tools will fold in
+        // when twoody-mcp gets a discovery endpoint; until then the
+        // OSS list (memory/tasks/notes/discussions/local_llm) is
+        // enough to drive the desktop's Capabilities tab.
+        has_skills:         true,
         providers_writable: true,
         deployment_kind:    "local",
       });

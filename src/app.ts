@@ -18,6 +18,7 @@ import { toolCallRoutes } from "./routes/toolCalls.js";
 import { meRoutes } from "./routes/me.js";
 import { agentRoutes } from "./routes/agents.js";
 import { localLlmRoutes } from "./routes/localLlm.js";
+import { builtInCapabilitiesRoutes } from "./routes/builtInCapabilities.js";
 import { discussionRoutes } from "./routes/discussions.js";
 import { memoryRoutes } from "./routes/memories.js";
 import { noteRoutes } from "./routes/notes.js";
@@ -108,6 +109,7 @@ export async function buildApp() {
   await app.register(memoryRoutes);
   await app.register(taskRoutes);
   await app.register(noteRoutes);
+  await app.register(builtInCapabilitiesRoutes);
   await app.register(voiceRoutes);
   await app.register(wsRoutes);
 
@@ -131,6 +133,7 @@ export async function buildApp() {
   await app.register(memoryRoutes, { prefix: "/api/v1" });
   await app.register(taskRoutes, { prefix: "/api/v1" });
   await app.register(noteRoutes, { prefix: "/api/v1" });
+  await app.register(builtInCapabilitiesRoutes, { prefix: "/api/v1" });
   await app.register(voiceRoutes, { prefix: "/api/v1" });
 
   app.get("/admin", {
