@@ -118,6 +118,26 @@ export const tasks = sqliteTable("tasks", {
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 });
 
+/// User reminders with an optional notification time. Mirrors the
+/// Rails /reminders wire contract while staying local-only: no push
+/// scheduling happens here yet, but clients can create, complete,
+/// reopen, list, and soft-delete reminders against Twoody Server.
+export const reminders = sqliteTable("reminders", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id),
+  projectId: text("project_id"),
+  text: text("text").notNull().default(""),
+  title: text("title"),
+  subtitle: text("subtitle"),
+  notifyAt: integer("notify_at", { mode: "timestamp" }),
+  status: text("status").notNull().default("active"),
+  channel: text("channel").notNull().default("push"),
+  reminderType: text("reminder_type").notNull().default("once"),
+  cron: text("cron"),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
 /// Free-form notes — title + body, with pin and archive flags.
 /// Wire-compatible with the cloud Rails /notes (title, body, pinned,
 /// archived). `preview` is computed at serialization (first ~120
@@ -300,6 +320,25 @@ sqlite.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_tasks_user_done_due
     ON tasks (user_id, done_at, due_at);
+
+  CREATE TABLE IF NOT EXISTS reminders (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    project_id TEXT,
+    text TEXT NOT NULL DEFAULT '',
+    title TEXT,
+    subtitle TEXT,
+    notify_at INTEGER,
+    status TEXT NOT NULL DEFAULT 'active',
+    channel TEXT NOT NULL DEFAULT 'push',
+    reminder_type TEXT NOT NULL DEFAULT 'once',
+    cron TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_reminders_user_status_notify
+    ON reminders (user_id, status, notify_at);
 
   CREATE TABLE IF NOT EXISTS notes (
     id TEXT PRIMARY KEY,

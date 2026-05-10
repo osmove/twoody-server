@@ -22,6 +22,7 @@ import { builtInCapabilitiesRoutes } from "./routes/builtInCapabilities.js";
 import { discussionRoutes } from "./routes/discussions.js";
 import { memoryRoutes } from "./routes/memories.js";
 import { noteRoutes } from "./routes/notes.js";
+import { reminderRoutes } from "./routes/reminders.js";
 import { taskRoutes } from "./routes/tasks.js";
 import { voiceRoutes } from "./routes/voices.js";
 import { wsRoutes } from "./routes/ws.js";
@@ -108,6 +109,7 @@ export async function buildApp() {
   await app.register(discussionRoutes);
   await app.register(memoryRoutes);
   await app.register(taskRoutes);
+  await app.register(reminderRoutes);
   await app.register(noteRoutes);
   await app.register(builtInCapabilitiesRoutes);
   await app.register(voiceRoutes);
@@ -132,6 +134,7 @@ export async function buildApp() {
   await app.register(discussionRoutes, { prefix: "/api/v1" });
   await app.register(memoryRoutes, { prefix: "/api/v1" });
   await app.register(taskRoutes, { prefix: "/api/v1" });
+  await app.register(reminderRoutes, { prefix: "/api/v1" });
   await app.register(noteRoutes, { prefix: "/api/v1" });
   await app.register(builtInCapabilitiesRoutes, { prefix: "/api/v1" });
   await app.register(voiceRoutes, { prefix: "/api/v1" });

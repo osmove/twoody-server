@@ -250,6 +250,50 @@ try {
     throw new Error("Smoke test failed: bridge offline error contract changed");
   }
 
+  const reminder = await jsonFetch("/reminders", {
+    method: "POST",
+    headers: authHeaders(token),
+    expectedStatus: 201,
+    body: JSON.stringify({
+      reminder: {
+        text: "Smoke reminder",
+        notify_at: "2026-05-12T09:00:00.000Z",
+      },
+    }),
+  });
+  if (!reminder.id || reminder.status !== "active") {
+    throw new Error("Smoke test failed: reminder creation did not return an active reminder");
+  }
+
+  const activeReminders = await jsonFetch("/reminders", {
+    headers: authHeaders(token),
+  });
+  if (!Array.isArray(activeReminders) || activeReminders.length !== 1) {
+    throw new Error("Smoke test failed: /reminders list is unexpected");
+  }
+
+  const doneReminder = await jsonFetch(`/reminders/${reminder.id}`, {
+    method: "PATCH",
+    headers: authHeaders(token),
+    body: JSON.stringify({ reminder: { status: "done" } }),
+  });
+  if (doneReminder.status !== "done") {
+    throw new Error("Smoke test failed: reminder patch did not mark done");
+  }
+
+  await jsonFetch(`/reminders/${reminder.id}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+    expectedStatus: 204,
+  });
+
+  const deletedReminders = await jsonFetch("/reminders?filter=deleted", {
+    headers: authHeaders(token),
+  });
+  if (!Array.isArray(deletedReminders) || deletedReminders.length !== 1) {
+    throw new Error("Smoke test failed: deleted reminder filter is unexpected");
+  }
+
   await jsonFetch(`/members/${memberId}`, {
     method: "DELETE",
     headers: authHeaders(token),

@@ -65,6 +65,21 @@ export const BUILT_IN_CAPABILITIES: BuiltInCapabilityDef[] = [
     ],
   },
   {
+    slug:           "reminders",
+    label:          "Reminders",
+    description:    "Keep time-based reminders with active, done, and deleted states.",
+    icon:           "bell",
+    cost:           "free",
+    requires_setup: false,
+    default_on:     true,
+    tools: [
+      { name: "reminder_list", description: "List active, overdue, done, or deleted reminders." },
+      { name: "reminder_create", description: "Create a reminder with an optional notification time." },
+      { name: "reminder_update", description: "Mark a reminder done, reopen it, or change its text/time." },
+      { name: "reminder_delete", description: "Soft-delete a reminder." },
+    ],
+  },
+  {
     slug:           "notes",
     label:          "Notes",
     description:    "Free-form notes Twoody can pin, archive, or search.",
