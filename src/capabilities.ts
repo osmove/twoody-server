@@ -80,6 +80,21 @@ export const BUILT_IN_CAPABILITIES: BuiltInCapabilityDef[] = [
     ],
   },
   {
+    slug:           "contacts",
+    label:          "Contacts",
+    description:    "Store and search a local address book for people the assistant can reference.",
+    icon:           "contact",
+    cost:           "free",
+    requires_setup: false,
+    default_on:     true,
+    tools: [
+      { name: "contact_search", description: "Search contacts by name or email." },
+      { name: "contact_create", description: "Create a contact with optional email and phone." },
+      { name: "contact_update", description: "Edit local contact details." },
+      { name: "contact_delete", description: "Delete a local contact." },
+    ],
+  },
+  {
     slug:           "notes",
     label:          "Notes",
     description:    "Free-form notes Twoody can pin, archive, or search.",

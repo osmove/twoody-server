@@ -294,6 +294,36 @@ try {
     throw new Error("Smoke test failed: deleted reminder filter is unexpected");
   }
 
+  const contact = await jsonFetch("/contacts", {
+    method: "POST",
+    headers: authHeaders(token),
+    expectedStatus: 201,
+    body: JSON.stringify({
+      contact: {
+        name: "Sarah Smoke",
+        email: "sarah@example.com",
+        phone_number: "+33123456789",
+      },
+    }),
+  });
+  if (!contact.id || contact.email !== "sarah@example.com") {
+    throw new Error("Smoke test failed: contact creation did not return the expected contact");
+  }
+
+  const contactSearch = await jsonFetch("/contacts/search?q=Sarah&only_with_email=1", {
+    headers: authHeaders(token),
+  });
+  if (!Array.isArray(contactSearch.results) || contactSearch.results.length !== 1) {
+    throw new Error("Smoke test failed: contact search is unexpected");
+  }
+
+  const shownContact = await jsonFetch(`/contacts/${contact.id}`, {
+    headers: authHeaders(token),
+  });
+  if (shownContact.name !== "Sarah Smoke") {
+    throw new Error("Smoke test failed: contact show did not return the created contact");
+  }
+
   await jsonFetch(`/members/${memberId}`, {
     method: "DELETE",
     headers: authHeaders(token),

@@ -138,6 +138,26 @@ export const reminders = sqliteTable("reminders", {
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 });
 
+/// Lightweight local contacts. This intentionally stores the small
+/// common subset used by the CLI/app contact picker rather than the
+/// full phone-address-social Rails model.
+export const contacts = sqliteTable("contacts", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id),
+  name: text("name"),
+  firstName: text("first_name"),
+  middleName: text("middle_name"),
+  lastName: text("last_name"),
+  email: text("email"),
+  phoneCountryCode: text("phone_country_code"),
+  phoneNumber: text("phone_number"),
+  relationType: text("relation_type"),
+  relationSubtype: text("relation_subtype"),
+  origin: text("origin").notNull().default("local"),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
 /// Free-form notes — title + body, with pin and archive flags.
 /// Wire-compatible with the cloud Rails /notes (title, body, pinned,
 /// archived). `preview` is computed at serialization (first ~120
@@ -339,6 +359,26 @@ sqlite.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_reminders_user_status_notify
     ON reminders (user_id, status, notify_at);
+
+  CREATE TABLE IF NOT EXISTS contacts (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    name TEXT,
+    first_name TEXT,
+    middle_name TEXT,
+    last_name TEXT,
+    email TEXT,
+    phone_country_code TEXT,
+    phone_number TEXT,
+    relation_type TEXT,
+    relation_subtype TEXT,
+    origin TEXT NOT NULL DEFAULT 'local',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_contacts_user_name
+    ON contacts (user_id, name);
 
   CREATE TABLE IF NOT EXISTS notes (
     id TEXT PRIMARY KEY,
