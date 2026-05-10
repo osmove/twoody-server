@@ -48,7 +48,7 @@ export async function capabilitiesRoutes(app: FastifyInstance) {
         // Static capability catalogue ships in v0.3+ via
         // /built_in_capabilities. MCP-discovered tools will fold in
         // when twoody-mcp gets a discovery endpoint; until then the
-        // OSS list (memory/tasks/reminders/contacts/notes/discussions/local_llm) is
+        // OSS list (memory/tasks/reminders/contacts/calendar/notes/discussions/local_llm) is
         // enough to drive the desktop's Capabilities tab.
         has_skills:         true,
         // No Postmark wiring on twoody-server — inbox / compose /

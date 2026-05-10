@@ -95,6 +95,21 @@ export const BUILT_IN_CAPABILITIES: BuiltInCapabilityDef[] = [
     ],
   },
   {
+    slug:           "calendar",
+    label:          "Calendar",
+    description:    "Create and inspect local calendar events in the agenda view.",
+    icon:           "calendar",
+    cost:           "free",
+    requires_setup: false,
+    default_on:     true,
+    tools: [
+      { name: "event_list", description: "List local calendar events by date range." },
+      { name: "event_create", description: "Create a local calendar event." },
+      { name: "event_update", description: "Edit an existing local calendar event." },
+      { name: "event_delete", description: "Delete a local calendar event." },
+    ],
+  },
+  {
     slug:           "notes",
     label:          "Notes",
     description:    "Free-form notes Twoody can pin, archive, or search.",

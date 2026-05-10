@@ -158,6 +158,25 @@ export const contacts = sqliteTable("contacts", {
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 });
 
+/// Local calendar events. The table is named `events` to match the
+/// public REST resource, while the exported symbol stays explicit to
+/// avoid confusion with the server's internal event bus.
+export const calendarEvents = sqliteTable("events", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id),
+  name: text("name").notNull().default(""),
+  description: text("description"),
+  status: text("status").notNull().default("confirmed"),
+  kind: text("kind").notNull().default("event"),
+  notes: text("notes"),
+  startTime: integer("start_time", { mode: "timestamp" }).notNull(),
+  endTime: integer("end_time", { mode: "timestamp" }),
+  allDay: integer("all_day", { mode: "boolean" }).notNull().default(false),
+  location: text("location"),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
 /// Free-form notes — title + body, with pin and archive flags.
 /// Wire-compatible with the cloud Rails /notes (title, body, pinned,
 /// archived). `preview` is computed at serialization (first ~120
@@ -379,6 +398,25 @@ sqlite.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_contacts_user_name
     ON contacts (user_id, name);
+
+  CREATE TABLE IF NOT EXISTS events (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL DEFAULT '',
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'confirmed',
+    kind TEXT NOT NULL DEFAULT 'event',
+    notes TEXT,
+    start_time INTEGER NOT NULL,
+    end_time INTEGER,
+    all_day INTEGER NOT NULL DEFAULT 0,
+    location TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_events_user_start
+    ON events (user_id, start_time);
 
   CREATE TABLE IF NOT EXISTS notes (
     id TEXT PRIMARY KEY,

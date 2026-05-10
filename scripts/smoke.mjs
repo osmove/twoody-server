@@ -324,6 +324,42 @@ try {
     throw new Error("Smoke test failed: contact show did not return the created contact");
   }
 
+  const event = await jsonFetch("/events", {
+    method: "POST",
+    headers: authHeaders(token),
+    expectedStatus: 201,
+    body: JSON.stringify({
+      event: {
+        name: "Smoke calendar event",
+        start_time: "2026-05-12T09:00:00.000Z",
+        end_time: "2026-05-12T09:30:00.000Z",
+      },
+    }),
+  });
+  if (!event.id || event.name !== "Smoke calendar event") {
+    throw new Error("Smoke test failed: event creation did not return the expected event");
+  }
+
+  const agenda = await jsonFetch("/events?start_time=2026-05-12&end_time=2026-05-13", {
+    headers: authHeaders(token),
+  });
+  if (!Array.isArray(agenda.events) || agenda.events.length !== 1 || agenda.events[0].local_id !== event.id) {
+    throw new Error("Smoke test failed: event agenda list is unexpected");
+  }
+
+  const shownEvent = await jsonFetch(`/events/twoody:${event.id}`, {
+    headers: authHeaders(token),
+  });
+  if (shownEvent.name !== "Smoke calendar event") {
+    throw new Error("Smoke test failed: event show did not normalize twoody: IDs");
+  }
+
+  await jsonFetch(`/events/${event.id}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+    expectedStatus: 204,
+  });
+
   await jsonFetch(`/members/${memberId}`, {
     method: "DELETE",
     headers: authHeaders(token),
