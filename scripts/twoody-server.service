@@ -1,0 +1,18 @@
+[Unit]
+Description=Twoody Server (local-first Twoody backend)
+Documentation=https://github.com/twoody/server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/opt/twoody-server
+EnvironmentFile=/etc/twoody-server.env
+ExecStart=/usr/bin/node /opt/twoody-server/dist/index.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

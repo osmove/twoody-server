@@ -132,6 +132,70 @@ HOME_ASSISTANT_TOKEN=...
 docker compose up --build
 ```
 
+## Linux / Raspberry Pi
+
+For a headless install (Raspberry Pi 4/5, generic amd64/arm64 box), use
+the bundled bootstrap script. It installs Node 22, ripgrep, ffmpeg,
+poppler-utils, avahi-daemon, Ollama, copies the repo to
+`/opt/twoody-server`, builds prod deps (compiles `better-sqlite3` for
+the target architecture), and registers a systemd unit.
+
+```bash
+# On the target host, from a fresh checkout:
+sudo bash scripts/install-linux.sh
+```
+
+The installer writes a starter env file at `/etc/twoody-server.env` on
+first run and leaves it alone on subsequent runs. Edit it to point at
+your Home Assistant instance, granted folders, and optional upstream
+Twoody backend, then `sudo systemctl restart twoody-server`.
+
+```bash
+sudoedit /etc/twoody-server.env
+sudo systemctl restart twoody-server
+journalctl -u twoody-server -f
+```
+
+### In-process bridge mode
+
+A headless Linux deployment has no Mac long-polling
+`/bridge/tasks/next`, so set `TWOODY_SELF_BRIDGE=1` to run `search`,
+`read`, `list_folders`, `list_dir`, and `llm_infer` in the same Node
+process. The executors live under `src/executors/`:
+
+- **`search`** — ripgrep content match + `find` filename match, ranks
+  filename hits higher, scoped to `TWOODY_BRIDGE_FOLDERS`.
+- **`read`** — text/markdown directly, `pdftotext` for PDFs, 10 MB
+  file ceiling.
+- **`list_folders` / `list_dir`** — walks the granted folders.
+  `..` traversal blocked.
+- **`llm_infer`** — proxies the OpenAI-compatible body to
+  `BRIDGE_LOCAL_LLM_ENDPOINT` (Ollama at 11434 by default).
+
+`TWOODY_BRIDGE_FOLDERS` lists which paths the executors are allowed to
+touch:
+
+```bash
+# Colon-separated, optional Name=path label
+TWOODY_BRIDGE_FOLDERS=Documents=/home/pi/Documents:Media=/srv/share
+```
+
+A small denylist refuses `~/.ssh`, `/etc`, `/root`, `/boot`, etc. even
+if the operator lists them explicitly.
+
+The macOS-only bridge task kinds (`thumbnail`, `photos_recent`,
+`photos_by_date`, `app_open`, `shortcut_*`, `ocr_image`,
+`open_document`) stay queue-only on Linux — there is no equivalent
+native API.
+
+### Upstream bridge client
+
+When `TWOODY_BACKEND_URL` + `TWOODY_USER_TOKEN` are set, the server
+also long-polls an upstream Twoody backend and claims `smart_home_proxy`
++ the in-process bridge kinds on its behalf. This lets the iPhone/watch
+app talk to `api.twoody.com` while a household Pi runs the local-only
+tasks behind the user's LAN.
+
 ## Notes
 
 The in-memory Bridge queue is good enough for Phase 1 developer preview.
