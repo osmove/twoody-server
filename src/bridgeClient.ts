@@ -31,6 +31,14 @@ const POLL_BUDGET_MS = (POLL_WAIT_SECONDS + 10) * 1000;
 const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 
+// Catalog prewarm cadence. Backend caches with a 5-min TTL; we
+// refresh every 4 min so there's no measurable window where the LLM
+// would fall back to home_search_entities on a cold cache. First push
+// fires ~5s after boot so the bridge has time to register presence
+// before any state arrives.
+const CATALOG_PREWARM_INITIAL_DELAY_MS = 5_000;
+const CATALOG_PREWARM_INTERVAL_MS = 4 * 60 * 1000;
+
 type Task = {
   id: string;
   kind: string;
@@ -44,6 +52,7 @@ export interface BridgeClientOptions {
   homeAssistantToken: string;
   deviceNickname?: string;
   deviceIdPath?: string;
+  capabilities?: string[];
 }
 
 export interface BridgeClientHandle {
@@ -71,7 +80,44 @@ export function readBridgeClientEnv(): BridgeClientOptions | null {
     homeAssistantUrl: homeAssistantUrl.replace(/\/+$/, ""),
     homeAssistantToken,
     deviceNickname: process.env.TWOODY_BRIDGE_DEVICE_NICKNAME,
+    capabilities: deriveCapabilities(),
   };
+}
+
+/** Compute the list of task classes this worker can handle, based on
+ * the env that's actually configured at boot. Sent to the upstream as
+ * `X-Bridge-Capabilities` so the backend can avoid routing a task to
+ * a worker that can't fulfil it (multi-host case: Pi-1 with HA, Pi-2
+ * with files only, Mac with macOS-specific tasks).
+ *
+ *   document-provider    →  search, read, list_folders, list_dir
+ *   local-llm-provider   →  llm_infer
+ *   smart-home-proxy     →  smart_home_proxy
+ *
+ * Override with `TWOODY_BRIDGE_CAPABILITIES` (comma-separated) to pin
+ * the advertised set explicitly. */
+function deriveCapabilities(): string[] {
+  const override = process.env.TWOODY_BRIDGE_CAPABILITIES;
+  if (override && override.trim().length > 0) {
+    return override
+      .split(",")
+      .map((token) => token.trim())
+      .filter((token) => token.length > 0);
+  }
+  const caps: string[] = [];
+  const selfBridge = process.env.TWOODY_SELF_BRIDGE === "1";
+  const hasFolders = (process.env.TWOODY_BRIDGE_FOLDERS ?? "").trim().length > 0;
+  if (selfBridge && hasFolders) caps.push("document-provider");
+  if ((process.env.BRIDGE_LOCAL_LLM_ENDPOINT ?? "").trim().length > 0) {
+    caps.push("local-llm-provider");
+  }
+  if (
+    (process.env.HOME_ASSISTANT_URL ?? "").trim().length > 0 &&
+    (process.env.HOME_ASSISTANT_TOKEN ?? "").trim().length > 0
+  ) {
+    caps.push("smart-home-proxy");
+  }
+  return caps;
 }
 
 export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle {
@@ -80,6 +126,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   let stopped = false;
 
   void pollLoop();
+  void catalogPrewarmLoop();
 
   return {
     stop() {
@@ -87,6 +134,63 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
     },
     deviceId,
   };
+
+  // Periodically push the household's HA entity list to the backend
+  // so the LLM's prompt_guidance always carries the catalog and the
+  // first command after a Pi reboot doesn't pay for a cold-cache
+  // home_search_entities round-trip. No-op when HA isn't configured
+  // — that just means this Pi isn't the smart-home worker and the
+  // backend's cache will populate the legacy way (on the first
+  // home_search_entities tool call).
+  async function catalogPrewarmLoop() {
+    if (!opts.homeAssistantUrl || !opts.homeAssistantToken) return;
+
+    await sleep(CATALOG_PREWARM_INITIAL_DELAY_MS, () => stopped);
+    while (!stopped) {
+      try {
+        await prewarmCatalogOnce();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[bridge-client] catalog prewarm failed: ${message}`);
+      }
+      await sleep(CATALOG_PREWARM_INTERVAL_MS, () => stopped);
+    }
+  }
+
+  async function prewarmCatalogOnce() {
+    const haRes = await fetch(`${opts.homeAssistantUrl}/api/states`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${opts.homeAssistantToken}`,
+        Accept: "application/json",
+      },
+    });
+    if (!haRes.ok) {
+      throw new Error(`HA /api/states status=${haRes.status}`);
+    }
+    const states = await haRes.json();
+    if (!Array.isArray(states)) {
+      throw new Error("HA /api/states returned non-array");
+    }
+
+    const pushRes = await fetch(`${opts.backendUrl}/smart_home/catalog.json`, {
+      method: "POST",
+      headers: {
+        "X-User-Token": opts.userToken,
+        "X-Bridge-Device-Id": deviceId,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ states }),
+    });
+    if (!pushRes.ok) {
+      const body = await pushRes.text().catch(() => "");
+      throw new Error(`backend /smart_home/catalog status=${pushRes.status} body=${body.slice(0, 200)}`);
+    }
+    const payload = (await pushRes.json().catch(() => ({}))) as { entities?: number };
+    console.log(
+      `[bridge-client] catalog prewarm pushed ${states.length} HA states (${payload.entities ?? "?"} controllable cached)`,
+    );
+  }
 
   async function pollLoop() {
     let consecutiveFailures = 0;
@@ -119,18 +223,18 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), POLL_BUDGET_MS);
     try {
+      const headers: Record<string, string> = {
+        "X-User-Token": opts.userToken,
+        "X-Bridge-Device-Id": deviceId,
+        "X-Bridge-Device-Nickname": nickname,
+        Accept: "application/json",
+      };
+      if (opts.capabilities && opts.capabilities.length > 0) {
+        headers["X-Bridge-Capabilities"] = opts.capabilities.join(",");
+      }
       const res = await fetch(
         `${opts.backendUrl}/bridge/tasks/next?wait=${POLL_WAIT_SECONDS}`,
-        {
-          method: "GET",
-          headers: {
-            "X-User-Token": opts.userToken,
-            "X-Bridge-Device-Id": deviceId,
-            "X-Bridge-Device-Nickname": nickname,
-            Accept: "application/json",
-          },
-          signal: controller.signal,
-        },
+        { method: "GET", headers, signal: controller.signal },
       );
 
       if (res.status === 204) return null;
