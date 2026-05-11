@@ -39,7 +39,8 @@ fi
 
 {
   echo "=== $(date +'%Y-%m-%dT%H:%M:%S%z') sync starting ==="
-  /usr/bin/rsync -az --delete \
+  # --max-size skips large binaries; the executor's read cap is 10 MB.
+  /usr/bin/rsync -az --delete --max-size=25M \
     --exclude '.DS_Store' --exclude '.localized' \
     --exclude 'node_modules' --exclude '*.tmp' \
     "${FOLDERS[@]/#/$SRC_BASE/}" \

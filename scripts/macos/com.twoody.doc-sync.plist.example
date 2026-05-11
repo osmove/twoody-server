@@ -32,6 +32,8 @@
     <string>/usr/bin/rsync</string>
     <string>-az</string>
     <string>--delete</string>
+    <!-- Skip large binaries; the executor's read cap is 10 MB. -->
+    <string>--max-size=25M</string>
     <string>--exclude=.DS_Store</string>
     <string>--exclude=.localized</string>
     <string>--exclude=node_modules</string>
