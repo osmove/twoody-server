@@ -186,9 +186,14 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
       const body = await pushRes.text().catch(() => "");
       throw new Error(`backend /smart_home/catalog status=${pushRes.status} body=${body.slice(0, 200)}`);
     }
-    const payload = (await pushRes.json().catch(() => ({}))) as { entities?: number };
+    const payload = (await pushRes.json().catch(() => ({}))) as {
+      entities?: number;
+      cached?: number;
+      received?: number;
+    };
+    const cached = payload.cached ?? payload.entities ?? "?";
     console.log(
-      `[bridge-client] catalog prewarm pushed ${states.length} HA states (${payload.entities ?? "?"} controllable cached)`,
+      `[bridge-client] catalog prewarm pushed ${states.length} HA states (${cached} controllable cached)`,
     );
   }
 
