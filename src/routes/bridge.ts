@@ -53,6 +53,30 @@ interface BridgeTask {
 const taskQueue: BridgeTask[] = [];
 const taskMap = new Map<string, BridgeTask>();
 
+/** Read-only snapshot of the in-memory bridge state, used by /admin
+ * to render "what just ran on this Pi?" without exposing the live
+ * mutable maps. Returns the most recent 50 tasks, newest first. */
+export function bridgeSnapshot() {
+  const recent = [...taskMap.values()]
+    .sort((a, b) => b.enqueuedAt.getTime() - a.enqueuedAt.getTime())
+    .slice(0, 50)
+    .map((task) => ({
+      id: task.id,
+      kind: task.kind,
+      status: task.status,
+      enqueued_at: task.enqueuedAt.toISOString(),
+      has_result: task.result !== undefined,
+      error_message: task.errorMessage ?? null,
+    }));
+  const presence = [...bridgePresence.entries()].map(([id, value]) => ({
+    device_id: id,
+    nickname: value.nickname ?? null,
+    capabilities: value.capabilities,
+    last_seen: value.lastSeen.toISOString(),
+  }));
+  return { recent, presence };
+}
+
 const CAPABILITY_KINDS = [
   "document-provider",
   "local-llm-provider",

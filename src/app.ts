@@ -11,7 +11,9 @@ import { sessionRoutes } from "./routes/session.js";
 import { queryRoutes } from "./routes/queries.js";
 import { deviceRoutes } from "./routes/devices.js";
 import { providerRoutes } from "./routes/providers.js";
-import { bridgeRoutes } from "./routes/bridge.js";
+import { bridgeRoutes, bridgeSnapshot } from "./routes/bridge.js";
+import { bridgeClientHistory, readBridgeClientEnv } from "./bridgeClient.js";
+import { hostname as osHostname } from "node:os";
 import { realtimeRoutes } from "./routes/realtime.js";
 import { memberRoutes } from "./routes/members.js";
 import { toolCallRoutes } from "./routes/toolCalls.js";
@@ -151,34 +153,116 @@ export async function buildApp() {
   app.get("/admin", {
     schema: {
       tags: ["health"],
-      summary: "Admin placeholder UI",
+      summary: "Admin dashboard (server status + recent bridge activity)",
       response: { 200: { type: "string" } },
     },
     handler: async (_req, reply) => {
+      const snapshot = bridgeSnapshot();
+      const bridgeOpts = readBridgeClientEnv();
+      const upstream = bridgeOpts?.backendUrl ?? null;
+      const advertisedCaps = bridgeOpts?.capabilities ?? [];
+      const hostname = osHostname();
+
+      const escape = (value: unknown) =>
+        String(value ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+
+      const taskRows = snapshot.recent.length === 0
+        ? `<tr><td colspan="4" class="muted">No bridge tasks yet.</td></tr>`
+        : snapshot.recent.map((task) => `
+          <tr class="status-${task.status}">
+            <td><code>${escape(task.id.slice(0, 8))}</code></td>
+            <td>${escape(task.kind)}</td>
+            <td>${escape(task.status)}${task.error_message ? ` <span class="muted">— ${escape(task.error_message.slice(0, 80))}</span>` : ""}</td>
+            <td class="muted">${escape(task.enqueued_at)}</td>
+          </tr>`).join("");
+
+      const clientHistory = bridgeClientHistory();
+      const clientRows = clientHistory.length === 0
+        ? `<tr><td colspan="5" class="muted">No upstream tasks claimed yet.</td></tr>`
+        : clientHistory.map((entry) => `
+          <tr class="status-${entry.status}">
+            <td><code>${escape(entry.id.slice(0, 8))}</code></td>
+            <td>${escape(entry.kind)}</td>
+            <td>${escape(entry.status)}${entry.error_message ? ` <span class="muted">— ${escape(entry.error_message.slice(0, 80))}</span>` : ""}</td>
+            <td class="muted">${entry.elapsed_ms != null ? `${entry.elapsed_ms} ms` : "—"}</td>
+            <td class="muted">${escape(entry.claimed_at)}</td>
+          </tr>`).join("");
+
+      const presenceRows = snapshot.presence.length === 0
+        ? `<tr><td colspan="3" class="muted">No external bridge workers polling.</td></tr>`
+        : snapshot.presence.map((entry) => `
+          <tr>
+            <td>${escape(entry.nickname ?? entry.device_id.slice(0, 8))}</td>
+            <td>${entry.capabilities.map((c) => `<code>${escape(c)}</code>`).join(" ")}</td>
+            <td class="muted">${escape(entry.last_seen)}</td>
+          </tr>`).join("");
+
+      const capsHtml = advertisedCaps.length === 0
+        ? `<span class="muted">none — set TWOODY_SELF_BRIDGE=1 + BRIDGE_LOCAL_LLM_ENDPOINT + HOME_ASSISTANT_URL etc.</span>`
+        : advertisedCaps.map((c) => `<code>${escape(c)}</code>`).join(" ");
+
       reply.type("text/html").send(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Twoody Server</title>
+  <title>Twoody Server — ${escape(hostname)}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="10">
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 4rem auto; padding: 0 1rem; }
+    body { font-family: system-ui, sans-serif; max-width: 980px; margin: 2rem auto; padding: 0 1rem; color: #1f2937; }
     h1 { font-size: 1.5rem; }
-    .status { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #22c55e; margin-right: .5rem; }
-    code { background: #f4f4f4; padding: .1rem .3rem; border-radius: 3px; font-size: .9em; }
+    h2 { font-size: 1rem; margin-top: 2rem; border-bottom: 1px solid #e5e7eb; padding-bottom: .25rem; }
+    .green { color: #22c55e; }
+    .muted { color: #6b7280; font-size: .9em; }
+    code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .85em; }
+    table { width: 100%; border-collapse: collapse; font-size: .9em; }
+    th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
+    th { color: #6b7280; font-weight: 500; font-size: .8em; text-transform: uppercase; letter-spacing: .04em; }
+    tr.status-done td { }
+    tr.status-error td { background: #fef2f2; }
+    tr.status-pending td, tr.status-streaming td { background: #fffbeb; }
+    .pair { display: grid; grid-template-columns: 180px 1fr; gap: .25rem .75rem; margin: .5rem 0; }
     a { color: #3b82f6; }
   </style>
 </head>
 <body>
-  <h1><span class="status"></span>Twoody Server</h1>
-  <p>Server is running. Create a local account, then pair using <code>twoody setup</code> or a device client.</p>
-  <ul>
-    <li><a href="/health">/health</a> — server status</li>
-    <li><a href="/docs">/docs</a> — interactive API docs</li>
-    <li><a href="/openapi.json">/openapi.json</a> — OpenAPI contract</li>
-  </ul>
-  <p style="color:#666;font-size:.85em">
-    Full documentation: <a href="https://github.com/twoody/server">github.com/twoody/server</a>
+  <h1><span class="green">●</span> Twoody Server <span class="muted">— ${escape(hostname)}</span></h1>
+
+  <div class="pair">
+    <div class="muted">Upstream backend</div>
+    <div>${upstream ? `<code>${escape(upstream)}</code>` : `<span class="muted">none (local-only mode)</span>`}</div>
+    <div class="muted">Advertised capabilities</div>
+    <div>${capsHtml}</div>
+  </div>
+
+  <h2>External bridge workers (polling this server)</h2>
+  <table>
+    <thead><tr><th>Device</th><th>Capabilities</th><th>Last seen</th></tr></thead>
+    <tbody>${presenceRows}</tbody>
+  </table>
+
+  <h2>Tasks this Pi claimed from the upstream backend (last 50)</h2>
+  <table>
+    <thead><tr><th>ID</th><th>Kind</th><th>Status</th><th>Elapsed</th><th>Claimed</th></tr></thead>
+    <tbody>${clientRows}</tbody>
+  </table>
+
+  <h2>Local in-process bridge tasks (last 50)</h2>
+  <p class="muted">Enqueued directly to this server (e.g. CLI / Desktop on the LAN).</p>
+  <table>
+    <thead><tr><th>ID</th><th>Kind</th><th>Status</th><th>Enqueued</th></tr></thead>
+    <tbody>${taskRows}</tbody>
+  </table>
+
+  <p class="muted" style="margin-top:2rem">
+    Auto-refresh every 10 s ·
+    <a href="/health">/health</a> ·
+    <a href="/docs">/docs</a> ·
+    <a href="/openapi.json">/openapi.json</a>
   </p>
 </body>
 </html>`);

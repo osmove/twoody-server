@@ -45,6 +45,40 @@ type Task = {
   args: Record<string, unknown>;
 };
 
+// Bounded history of the last upstream-claimed bridge tasks. The
+// in-memory `taskMap` in routes/bridge.ts only tracks tasks enqueued
+// LOCALLY on this server (smart_home / search / read called by a
+// LAN client), so without this ring buffer the /admin dashboard
+// has no way to surface "the Pi just claimed a smart_home_proxy
+// task from api.twoody.com". Kept here in the same module that
+// emits the `claimed task …` log line.
+export interface BridgeClientHistoryEntry {
+  id:           string;
+  kind:         string;
+  status:       "claimed" | "completed" | "failed";
+  claimed_at:   string;
+  completed_at?: string;
+  elapsed_ms?:  number;
+  error_message?: string;
+}
+
+const HISTORY_CAP = 50;
+const history: BridgeClientHistoryEntry[] = [];
+
+function recordHistory(entry: BridgeClientHistoryEntry) {
+  history.unshift(entry);
+  if (history.length > HISTORY_CAP) history.length = HISTORY_CAP;
+}
+
+export function bridgeClientHistory(): BridgeClientHistoryEntry[] {
+  return history.slice();
+}
+
+function updateHistory(id: string, patch: Partial<BridgeClientHistoryEntry>) {
+  const entry = history.find((h) => h.id === id);
+  if (entry) Object.assign(entry, patch);
+}
+
 export interface BridgeClientOptions {
   backendUrl: string;
   userToken: string;
@@ -211,6 +245,12 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
           console.log(
             `[bridge-client] claimed task ${task.id} kind=${task.kind} args=${argsPreview(task.args)}`,
           );
+          recordHistory({
+            id:         task.id,
+            kind:       task.kind,
+            status:     "claimed",
+            claimed_at: new Date().toISOString(),
+          });
           await handleTask(task);
         }
       } catch (error) {
@@ -267,14 +307,27 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
     try {
       const result = await runTask(task);
       await patchTask(task.id, { status: "done", result });
+      const elapsed = Date.now() - started;
       console.log(
-        `[bridge-client] completed task ${task.id} kind=${task.kind} elapsed=${Date.now() - started}ms`,
+        `[bridge-client] completed task ${task.id} kind=${task.kind} elapsed=${elapsed}ms`,
       );
+      updateHistory(task.id, {
+        status: "completed",
+        completed_at: new Date().toISOString(),
+        elapsed_ms: elapsed,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const elapsed = Date.now() - started;
       console.warn(
-        `[bridge-client] failed task ${task.id} kind=${task.kind} elapsed=${Date.now() - started}ms error=${message}`,
+        `[bridge-client] failed task ${task.id} kind=${task.kind} elapsed=${elapsed}ms error=${message}`,
       );
+      updateHistory(task.id, {
+        status: "failed",
+        completed_at: new Date().toISOString(),
+        elapsed_ms: elapsed,
+        error_message: message,
+      });
       await patchTask(task.id, { status: "error", error_message: message }).catch((err) => {
         console.warn(
           `[bridge-client] could not PATCH error for task ${task.id}: ${err instanceof Error ? err.message : err}`,
