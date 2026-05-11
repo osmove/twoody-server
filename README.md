@@ -196,6 +196,27 @@ also long-polls an upstream Twoody backend and claims `smart_home_proxy`
 app talk to `api.twoody.com` while a household Pi runs the local-only
 tasks behind the user's LAN.
 
+### Mac → Pi document sync
+
+The in-process bridge executors search/read against the Pi's local
+filesystem. To make a Mac's `~/Documents` reachable from the Pi
+without exposing the Mac to inbound SSH (Remote Login stays off),
+push from the Mac via rsync. Templates live in `scripts/macos/`:
+
+- `sync-docs-to-pi.sh` — one-shot push of curated subfolders, intended
+  to be run from a Terminal that already has Full Disk Access.
+- `com.twoody.doc-sync.plist.example` — launchd UserAgent that runs
+  the rsync every 30 minutes. Needs Full Disk Access on
+  `/usr/bin/rsync` (System Settings → Privacy & Security → Full Disk
+  Access → add `/usr/bin/rsync`).
+
+Configure `TWOODY_BRIDGE_FOLDERS` on the Pi to grant the synced
+directories, for example:
+
+```
+TWOODY_BRIDGE_FOLDERS=Permanent=/home/pi/mac-share/_Permanent:Osmove=/home/pi/mac-share/Osmove:Hyundai=/home/pi/mac-share/Hyundai
+```
+
 ## Notes
 
 The in-memory Bridge queue is good enough for Phase 1 developer preview.

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Periodic rsync from a Mac's ~/Documents to a household Twoody Pi.
+  Used when the Pi runs twoody-server with TWOODY_BRIDGE_FOLDERS
+  pointing at /home/pi/mac-share/<folder>: the Mac pushes the active
+  folders here every 30 minutes, the Pi searches/reads against local
+  files (faster than sshfs, no Mac SSH server required).
+
+  Install:
+    cp scripts/macos/com.twoody.doc-sync.plist.example \
+       ~/Library/LaunchAgents/com.twoody.doc-sync.plist
+    # edit paths for your user / folders
+    launchctl load ~/Library/LaunchAgents/com.twoody.doc-sync.plist
+
+  Permissions:
+    macOS TCC blocks /usr/bin/rsync invoked from launchd from reading
+    ~/Documents by default. Grant Full Disk Access to /usr/bin/rsync
+    via System Settings → Privacy & Security → Full Disk Access.
+
+  SSH:
+    Pre-arrange passwordless SSH from the Mac user to pi@<pi-host>.
+    Use `Host twoody-pi` in ~/.ssh/config so the plist stays portable.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.twoody.doc-sync</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/rsync</string>
+    <string>-az</string>
+    <string>--delete</string>
+    <string>--exclude=.DS_Store</string>
+    <string>--exclude=.localized</string>
+    <string>--exclude=node_modules</string>
+    <string>--exclude=*.tmp</string>
+    <!-- Source folders — edit for your install -->
+    <string>/Users/REPLACE_ME/Documents/_Permanent</string>
+    <string>/Users/REPLACE_ME/Documents/Osmove</string>
+    <string>/Users/REPLACE_ME/Documents/Ordatel</string>
+    <string>/Users/REPLACE_ME/Documents/Hyundai</string>
+    <!-- Destination — twoody-pi alias in ~/.ssh/config -->
+    <string>twoody-pi:/home/pi/mac-share/</string>
+  </array>
+
+  <key>StartInterval</key>
+  <integer>1800</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE_ME/Library/Twoody/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE_ME/Library/Twoody/logs/launchd.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>
