@@ -61,6 +61,43 @@ function runWhisper(audioPath: string, outBase: string, language: string | undef
   });
 }
 
+// whisper-cli's built-in loader only understands flac/mp3/ogg/wav.
+// iOS records m4a/AAC, Android records m4a, web records webm/opus —
+// none of which it can decode. Anything that isn't already in the
+// safe-list gets a quick ffmpeg pass to 16 kHz mono PCM WAV first.
+const WHISPER_NATIVE_FORMATS = new Set(["mp3", "ogg", "wav", "flac"]);
+
+function pickInputExtension(mime: string): string {
+  if (mime.includes("mp3")) return "mp3";
+  if (mime.includes("flac")) return "flac";
+  if (mime.includes("ogg") || mime.includes("opus")) return "ogg";
+  if (mime.includes("wav") || mime.includes("pcm")) return "wav";
+  if (mime.includes("m4a") || mime.includes("aac")) return "m4a";
+  if (mime.includes("webm")) return "webm";
+  return "bin";
+}
+
+function transcodeToWav(srcPath: string, dstPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const args = [
+      "-y", "-loglevel", "error",
+      "-i", srcPath,
+      "-ar", "16000",
+      "-ac", "1",
+      "-c:a", "pcm_s16le",
+      dstPath,
+    ];
+    const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    proc.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg exit=${code}: ${stderr.slice(-400)}`));
+    });
+  });
+}
+
 export async function runTranscribe(args: Record<string, unknown>) {
   if (!whisperReady()) {
     throw new Error("whisper_not_configured");
@@ -77,22 +114,22 @@ export async function runTranscribe(args: Record<string, unknown>) {
     throw new Error(`audio_too_large size=${buffer.byteLength} cap=${MAX_AUDIO_BYTES}`);
   }
 
-  // Pick a reasonable extension so whisper.cpp's loader (which sniffs
-  // by content but still respects the filename) finds the right
-  // demuxer. Defaults to .wav.
-  const ext = mime.includes("mp3") ? ".mp3"
-    : mime.includes("m4a") || mime.includes("aac") ? ".m4a"
-    : mime.includes("ogg") || mime.includes("opus") ? ".ogg"
-    : mime.includes("webm") ? ".webm"
-    : ".wav";
-
+  const inputExt = pickInputExtension(mime);
   const dir = await mkdtemp(join(tmpdir(), "twoody-bridge-stt-"));
-  const audioPath = join(dir, `input${ext}`);
+  const audioPath = join(dir, `input.${inputExt}`);
   const outBase = join(dir, "out");
   await writeFile(audioPath, buffer);
 
   try {
-    await runWhisper(audioPath, outBase, language);
+    // Transcode anything whisper-cli can't decode natively. Adds
+    // ~50-150 ms on a short clip — much cheaper than a Whisper round-
+    // trip miss and silently empty output.
+    let whisperInput = audioPath;
+    if (!WHISPER_NATIVE_FORMATS.has(inputExt)) {
+      whisperInput = join(dir, "input.wav");
+      await transcodeToWav(audioPath, whisperInput);
+    }
+    await runWhisper(whisperInput, outBase, language);
     const text = (await readFile(`${outBase}.txt`, "utf8")).trim();
     return { text };
   } finally {
