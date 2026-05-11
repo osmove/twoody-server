@@ -95,6 +95,9 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
         const task = await pollOnce();
         consecutiveFailures = 0;
         if (task) {
+          console.log(
+            `[bridge-client] claimed task ${task.id} kind=${task.kind} args=${argsPreview(task.args)}`,
+          );
           await handleTask(task);
         }
       } catch (error) {
@@ -147,14 +150,21 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   }
 
   async function handleTask(task: Task) {
+    const started = Date.now();
     try {
       const result = await runTask(task);
       await patchTask(task.id, { status: "done", result });
+      console.log(
+        `[bridge-client] completed task ${task.id} kind=${task.kind} elapsed=${Date.now() - started}ms`,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[bridge-client] failed task ${task.id} kind=${task.kind} elapsed=${Date.now() - started}ms error=${message}`,
+      );
       await patchTask(task.id, { status: "error", error_message: message }).catch((err) => {
         console.warn(
-          `[bridge-client] failed to PATCH error for task ${task.id}: ${err instanceof Error ? err.message : err}`,
+          `[bridge-client] could not PATCH error for task ${task.id}: ${err instanceof Error ? err.message : err}`,
         );
       });
     }
@@ -262,6 +272,27 @@ function resolveDeviceId(explicitPath?: string): string {
     );
   }
   return fresh;
+}
+
+/** Compact one-line preview of task args for log lines. Keeps the
+ * filename + entity_id visible without dumping multi-kilobyte
+ * payloads (PDF reads, LLM prompts) into journalctl. */
+function argsPreview(args: Record<string, unknown>): string {
+  try {
+    const preview: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(args)) {
+      if (typeof v === "string") {
+        preview[k] = v.length > 80 ? v.slice(0, 77) + "…" : v;
+      } else if (typeof v === "number" || typeof v === "boolean" || v === null) {
+        preview[k] = v;
+      } else {
+        preview[k] = `<${Array.isArray(v) ? "array" : typeof v}>`;
+      }
+    }
+    return JSON.stringify(preview);
+  } catch {
+    return "<unprintable>";
+  }
 }
 
 async function sleep(ms: number, shouldStop: () => boolean) {
