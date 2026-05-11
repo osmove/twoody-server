@@ -24,7 +24,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { executeBridgeTask, isSelfBridgeKind } from "./executors/index.js";
+import { executeBridgeTask, isSelfBridgeKind, whisperReady } from "./executors/index.js";
 
 const POLL_WAIT_SECONDS = 25;
 const POLL_BUDGET_MS = (POLL_WAIT_SECONDS + 10) * 1000;
@@ -117,6 +117,10 @@ function deriveCapabilities(): string[] {
   ) {
     caps.push("smart-home-proxy");
   }
+  // Advertised only when the whisper.cpp binary + model exist on
+  // disk. Same probe as the in-process executor, so the cap string
+  // never lies about what the worker can actually run.
+  if (whisperReady()) caps.push("audio-transcribe-provider");
   return caps;
 }
 

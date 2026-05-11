@@ -21,6 +21,7 @@ const BRIDGE_TASK_KINDS = [
   "shortcut_run",
   "shortcut_list",
   "ocr_image",
+  "transcribe",
 ] as const;
 
 type BridgeTaskKind = (typeof BRIDGE_TASK_KINDS)[number];

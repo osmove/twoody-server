@@ -15,6 +15,7 @@ import { runListFolders } from "./listFolders.js";
 import { runLlmInfer } from "./llmInfer.js";
 import { runRead } from "./read.js";
 import { runSearch } from "./search.js";
+import { runTranscribe, whisperReady } from "./transcribe.js";
 
 export const SELF_BRIDGE_KINDS = [
   "search",
@@ -22,6 +23,7 @@ export const SELF_BRIDGE_KINDS = [
   "list_folders",
   "list_dir",
   "llm_infer",
+  "transcribe",
 ] as const;
 
 export type SelfBridgeKind = (typeof SELF_BRIDGE_KINDS)[number];
@@ -49,5 +51,9 @@ export async function executeBridgeTask(
       return runListDir(args);
     case "llm_infer":
       return runLlmInfer(args);
+    case "transcribe":
+      return runTranscribe(args);
   }
 }
+
+export { whisperReady };
