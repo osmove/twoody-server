@@ -39,6 +39,17 @@ export function whisperReady(): boolean {
   return existsSync(whisperBin()) && existsSync(whisperModel());
 }
 
+// whisper-cli wants an ISO 639-1 code ("fr", "en", "de") for -l. The
+// Rails side sends User#language which is BCP-47 ("fr-FR", "en-US")
+// — passing that verbatim makes whisper-cli print its help banner
+// and exit, silently producing no transcript. Strip to the leading
+// language tag and fall back to "auto" for unknowns.
+function normalizeWhisperLanguage(language: string | undefined): string {
+  if (!language) return "auto";
+  const lead = language.trim().toLowerCase().split(/[-_]/, 1)[0];
+  return /^[a-z]{2,3}$/.test(lead) ? lead : "auto";
+}
+
 function runWhisper(audioPath: string, outBase: string, language: string | undefined): Promise<void> {
   return new Promise((resolve, reject) => {
     const args = [
@@ -48,7 +59,7 @@ function runWhisper(audioPath: string, outBase: string, language: string | undef
       "-otxt",
       "-nt",
       "-t", String(whisperThreads()),
-      "-l", language?.trim() || "auto",
+      "-l", normalizeWhisperLanguage(language),
     ];
     const proc = spawn(whisperBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
