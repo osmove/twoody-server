@@ -2,6 +2,7 @@
 import { buildApp } from "./app.js";
 import { ensureSetupToken, getActivePairingCode } from "./auth.js";
 import { startBonjour } from "./bonjour.js";
+import { readBridgeClientEnv, startBridgeClient } from "./bridgeClient.js";
 import { db, users } from "./db.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -85,12 +86,29 @@ try {
     }
   }
 
+  // Bridge client — long-polls an upstream Twoody backend so the
+  // backend's smart_home_proxy / Mac-Bridge tasks land on this LAN.
+  // Inert unless TWOODY_BACKEND_URL + TWOODY_USER_TOKEN +
+  // HOME_ASSISTANT_URL + HOME_ASSISTANT_TOKEN are all set. Failures
+  // here don't affect the HTTP listener; the user can drop the
+  // backend env vars to disable it.
+  const bridgeOpts = readBridgeClientEnv();
+  const bridgeClient = bridgeOpts ? startBridgeClient(bridgeOpts) : null;
+  if (bridgeClient) {
+    console.log(`  Bridge client connected to ${bridgeOpts!.backendUrl} (device id ${bridgeClient.deviceId.slice(0, 8)}…)\n`);
+  }
+
   // Graceful shutdown so the mDNS cache doesn't keep stale entries
   // for ~75 s after we exit. SIGINT (Ctrl-C) and SIGTERM (launchd /
   // Docker) both get the cleanup; uncaught exits skip it on purpose
   // since `service.stop` is async and we'd be racing the OS exit.
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, async () => {
+      try {
+        bridgeClient?.stop();
+      } catch {
+        // Best-effort.
+      }
       try {
         await bonjour?.stop();
       } catch {
