@@ -239,3 +239,41 @@ server's `/bridge/tasks*` routes aligned with that shared schema.
 Twoody Server is licensed under BSL 1.1 with a change date of
 2030-04-21, after which the covered version converts to Apache 2.0. See
 [LICENSE](LICENSE).
+
+### Local STT (whisper.cpp)
+
+`POST /audio/transcriptions` proxies multipart audio uploads to a
+local `whisper-cli` (whisper.cpp) and returns `{ text: "…" }`. Wire-
+compatible with the subset of OpenAI's `POST /v1/audio/transcriptions`
+the iPhone / Watch app uses, so swapping the endpoint URL is enough
+to keep voice queries on the LAN.
+
+On a Raspberry Pi 5, build whisper.cpp once:
+
+```bash
+sudo apt install -y cmake build-essential
+git clone --depth 1 https://github.com/ggml-org/whisper.cpp /home/pi/whisper.cpp
+cd /home/pi/whisper.cpp
+cmake -B build -DGGML_NATIVE=ON
+cmake --build build --config Release -j 4
+./models/download-ggml-model.sh base       # ~148 MB
+```
+
+Then expose the binary + model via env:
+
+```bash
+WHISPER_BIN=/home/pi/whisper.cpp/build/bin/whisper-cli
+WHISPER_MODEL=/home/pi/whisper.cpp/models/ggml-base.bin
+WHISPER_THREADS=4
+```
+
+The route returns `503 whisper_not_configured` when either path is
+missing, so a vanilla install without whisper.cpp keeps booting.
+
+### Pi state backup
+
+`scripts/macos/backup-pi-state.sh` + the matching launchd plist pull
+`/home/pi/.twoody/data/` (the SQLite DB + WAL + setup token) from the
+Pi to `~/Library/Twoody/backups/<TIMESTAMP>/` on the Mac every 12 h
+and keep the last 14 snapshots. Pair with `latest` symlink for easy
+recovery.

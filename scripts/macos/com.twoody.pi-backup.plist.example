@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Companion to `backup-pi-state.sh`. Pulls the Pi's twoody-server
+  SQLite state to ~/Library/Twoody/backups/<TIMESTAMP>/ every 12 h.
+  The Pi holds the only copy of paired tokens / voice profiles /
+  memories / etc. — losing the SD card without a snapshot means
+  re-pairing every client.
+
+  Install:
+    cp scripts/macos/com.twoody.pi-backup.plist.example \
+       ~/Library/LaunchAgents/com.twoody.pi-backup.plist
+    cp scripts/macos/backup-pi-state.sh \
+       ~/Library/Twoody/backup-pi-state.sh
+    chmod +x ~/Library/Twoody/backup-pi-state.sh
+    launchctl load ~/Library/LaunchAgents/com.twoody.pi-backup.plist
+
+  Edit the script's REMOTE_HOST default if your SSH alias isn't
+  `twoody-pi`. No special TCC grant needed — the script only writes
+  to ~/Library/ and reads remote files via SSH.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.twoody.pi-backup</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/REPLACE_ME/Library/Twoody/backup-pi-state.sh</string>
+  </array>
+
+  <key>StartInterval</key>
+  <integer>43200</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE_ME/Library/Twoody/logs/pi-backup.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE_ME/Library/Twoody/logs/pi-backup.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>

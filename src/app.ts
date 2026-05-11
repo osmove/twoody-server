@@ -26,6 +26,7 @@ import { memoryRoutes } from "./routes/memories.js";
 import { noteRoutes } from "./routes/notes.js";
 import { reminderRoutes } from "./routes/reminders.js";
 import { taskRoutes } from "./routes/tasks.js";
+import { transcriptionRoutes } from "./routes/transcriptions.js";
 import { voiceRoutes } from "./routes/voices.js";
 import { wsRoutes } from "./routes/ws.js";
 
@@ -117,6 +118,7 @@ export async function buildApp() {
   await app.register(noteRoutes);
   await app.register(builtInCapabilitiesRoutes);
   await app.register(voiceRoutes);
+  await app.register(transcriptionRoutes);
   await app.register(wsRoutes);
 
   // Versioned aliases for API clients migrating away from root-level
@@ -144,6 +146,7 @@ export async function buildApp() {
   await app.register(noteRoutes, { prefix: "/api/v1" });
   await app.register(builtInCapabilitiesRoutes, { prefix: "/api/v1" });
   await app.register(voiceRoutes, { prefix: "/api/v1" });
+  await app.register(transcriptionRoutes, { prefix: "/api/v1" });
 
   app.get("/admin", {
     schema: {

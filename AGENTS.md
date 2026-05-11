@@ -38,6 +38,29 @@ Future routes should be versioned or covered by an OpenAPI/conformance test befo
   surface; this repo is the backend contract, not just one implementation detail.
 - Do not log secrets, user LLM keys, auth tokens, or local filesystem paths unnecessarily.
 
+## Vocabulary: capability vs skill vs built-in capability
+
+Three "capability"-flavoured terms coexist; they describe different
+layers and should not be conflated.
+
+- **Skill** (Rails, retiring) — user-facing feature toggle
+  (`smart_home`, `memory`, `calendar`). Settled in `app/models/skill.rb`
+  and `User#skill_enabled?`. Will eventually be replaced by
+  `BuiltInCapability` per Cockpit's D-vocabulary direction.
+- **BuiltInCapability** (OSS-bound, canonical) — the cross-stack name
+  for the same concept. `src/routes/builtInCapabilities.ts` is the
+  Server-side surface; clients consume the static catalog from there.
+- **Bridge capability** (this server's runtime layer) — what a bridge
+  *worker* declares it can fulfil via `X-Bridge-Capabilities`:
+  `document-provider`, `local-llm-provider`, `smart-home-proxy`. It
+  drives task routing (`BridgeTask::KIND_CAPABILITY`), not feature
+  toggling. A user turning a Skill on does not change which bridge
+  capability any worker advertises.
+
+When in doubt, "capability" in this codebase means the routing layer.
+Use "skill" / "built-in capability" when talking about user-facing
+features.
+
 ## Bridge runtime modes
 
 The bridge accepts tasks via `POST /bridge/tasks` and serves them via
