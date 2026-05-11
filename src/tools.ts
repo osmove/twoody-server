@@ -130,15 +130,135 @@ async function runSmartHome(arguments_: Record<string, unknown>) {
   };
 }
 
-async function runSpotify(arguments_: Record<string, unknown>) {
-  return {
-    ok: true,
-    provider: "local-server-stub",
-    action: arguments_.action ?? null,
-    query: arguments_.query ?? null,
-    volume: arguments_.volume ?? null,
-    note: "Spotify transport is not wired yet in local-server; command accepted for future routing.",
+// Spotify Web API control. Configure on the host with:
+//   SPOTIFY_CLIENT_ID=...
+//   SPOTIFY_CLIENT_SECRET=...
+//   SPOTIFY_REFRESH_TOKEN=...   (obtained via the OAuth Authorization Code flow once)
+//   SPOTIFY_DEVICE_ID=...       (optional — Spotify Connect device to target;
+//                               defaults to whichever device is "active" on the
+//                               account, which is what the iPhone/desktop client
+//                               just used)
+//
+// Supported `action` values mirror the cloud SpotifyProcessor:
+//   play, pause, next, previous, volume, search_and_play
+// `query` is used by search_and_play; `volume` (0-100) by volume.
+
+interface SpotifyToken {
+  accessToken: string;
+  expiresAt: number;
+}
+
+let cachedToken: SpotifyToken | null = null;
+
+async function fetchSpotifyToken(): Promise<string> {
+  if (cachedToken && cachedToken.expiresAt > Date.now() + 30_000) {
+    return cachedToken.accessToken;
+  }
+  const clientId = process.env.SPOTIFY_CLIENT_ID?.trim();
+  const clientSecret = process.env.SPOTIFY_CLIENT_SECRET?.trim();
+  const refreshToken = process.env.SPOTIFY_REFRESH_TOKEN?.trim();
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error("spotify_not_configured");
+  }
+  const basic = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+  const res = await fetch("https://accounts.spotify.com/api/token", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${basic}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken }).toString(),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`spotify_token_refresh_failed status=${res.status} body=${body.slice(0, 200)}`);
+  }
+  const json = (await res.json()) as { access_token?: string; expires_in?: number };
+  if (!json.access_token) throw new Error("spotify_token_refresh_no_access_token");
+  cachedToken = {
+    accessToken: json.access_token,
+    expiresAt: Date.now() + (json.expires_in ?? 3600) * 1000,
   };
+  return cachedToken.accessToken;
+}
+
+async function spotifyApi(
+  method: "GET" | "PUT" | "POST",
+  path: string,
+  body?: unknown,
+): Promise<{ status: number; body: unknown }> {
+  const token = await fetchSpotifyToken();
+  const init: RequestInit = {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+  };
+  if (body !== undefined) init.body = JSON.stringify(body);
+  const deviceId = process.env.SPOTIFY_DEVICE_ID?.trim();
+  // Spotify Connect supports an optional `device_id` query param on most
+  // playback endpoints; passing it pins the action to that device.
+  const url = deviceId && (path.startsWith("/me/player/play") || path.startsWith("/me/player/pause") || path.startsWith("/me/player/next") || path.startsWith("/me/player/previous") || path.startsWith("/me/player/volume"))
+    ? `https://api.spotify.com/v1${path}${path.includes("?") ? "&" : "?"}device_id=${encodeURIComponent(deviceId)}`
+    : `https://api.spotify.com/v1${path}`;
+  const res = await fetch(url, init);
+  const text = await res.text();
+  let parsed: unknown = text;
+  try { parsed = text ? JSON.parse(text) : null; } catch { /* keep raw */ }
+  return { status: res.status, body: parsed };
+}
+
+async function runSpotify(arguments_: Record<string, unknown>) {
+  const action = String(arguments_.action ?? "").trim().toLowerCase();
+  try {
+    switch (action) {
+      case "play":
+      case "resume": {
+        const r = await spotifyApi("PUT", "/me/player/play");
+        return { ok: r.status >= 200 && r.status < 300, action: "play", status: r.status };
+      }
+      case "pause": {
+        const r = await spotifyApi("PUT", "/me/player/pause");
+        return { ok: r.status >= 200 && r.status < 300, action: "pause", status: r.status };
+      }
+      case "next":
+      case "skip": {
+        const r = await spotifyApi("POST", "/me/player/next");
+        return { ok: r.status >= 200 && r.status < 300, action: "next", status: r.status };
+      }
+      case "previous":
+      case "back": {
+        const r = await spotifyApi("POST", "/me/player/previous");
+        return { ok: r.status >= 200 && r.status < 300, action: "previous", status: r.status };
+      }
+      case "volume": {
+        const level = Math.max(0, Math.min(Number(arguments_.volume ?? arguments_.level ?? 50), 100));
+        const r = await spotifyApi("PUT", `/me/player/volume?volume_percent=${Math.round(level)}`);
+        return { ok: r.status >= 200 && r.status < 300, action: "volume", level, status: r.status };
+      }
+      case "search_and_play":
+      case "play_track": {
+        const query = String(arguments_.query ?? "").trim();
+        if (!query) return { ok: false, error: "query_required" };
+        const search = await spotifyApi("GET", `/search?type=track&limit=1&q=${encodeURIComponent(query)}`);
+        const track = (search.body as { tracks?: { items?: Array<{ uri?: string; name?: string; artists?: Array<{ name?: string }> }> } })?.tracks?.items?.[0];
+        if (!track?.uri) return { ok: false, error: "no_track_found", query };
+        const play = await spotifyApi("PUT", "/me/player/play", { uris: [track.uri] });
+        return {
+          ok: play.status >= 200 && play.status < 300,
+          action: "play_track",
+          track: { uri: track.uri, name: track.name, artists: (track.artists ?? []).map((a) => a.name).filter(Boolean) },
+          status: play.status,
+        };
+      }
+      default:
+        return { ok: false, error: "unknown_action", action };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: message };
+  }
 }
 
 async function runDeviceCommand(arguments_: Record<string, unknown>, userId: string) {

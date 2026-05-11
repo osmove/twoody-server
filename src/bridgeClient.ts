@@ -24,7 +24,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { executeBridgeTask, isSelfBridgeKind, whisperReady } from "./executors/index.js";
+import { executeBridgeTask, isSelfBridgeKind, tesseractReady, whisperReady } from "./executors/index.js";
 
 const POLL_WAIT_SECONDS = 25;
 const POLL_BUDGET_MS = (POLL_WAIT_SECONDS + 10) * 1000;
@@ -155,6 +155,10 @@ function deriveCapabilities(): string[] {
   // disk. Same probe as the in-process executor, so the cap string
   // never lies about what the worker can actually run.
   if (whisperReady()) caps.push("audio-transcribe-provider");
+  // OCR is the cheapest port from twoody-mac (Vision.framework →
+  // tesseract). Advertise only when tesseract is present so a host
+  // without it (default install) doesn't claim ocr_image tasks.
+  if (tesseractReady()) caps.push("ocr-provider");
   return caps;
 }
 

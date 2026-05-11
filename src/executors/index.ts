@@ -13,6 +13,7 @@
 import { runListDir } from "./listDir.js";
 import { runListFolders } from "./listFolders.js";
 import { runLlmInfer } from "./llmInfer.js";
+import { runOcr, tesseractReady } from "./ocr.js";
 import { runRead } from "./read.js";
 import { runSearch } from "./search.js";
 import { runTranscribe, whisperReady } from "./transcribe.js";
@@ -24,6 +25,7 @@ export const SELF_BRIDGE_KINDS = [
   "list_dir",
   "llm_infer",
   "transcribe",
+  "ocr_image",
 ] as const;
 
 export type SelfBridgeKind = (typeof SELF_BRIDGE_KINDS)[number];
@@ -53,7 +55,9 @@ export async function executeBridgeTask(
       return runLlmInfer(args);
     case "transcribe":
       return runTranscribe(args);
+    case "ocr_image":
+      return runOcr(args);
   }
 }
 
-export { whisperReady };
+export { whisperReady, tesseractReady };
