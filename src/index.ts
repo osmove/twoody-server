@@ -95,7 +95,8 @@ try {
   const bridgeOpts = readBridgeClientEnv();
   const bridgeClient = bridgeOpts ? startBridgeClient(bridgeOpts) : null;
   if (bridgeClient) {
-    console.log(`  Bridge client connected to ${bridgeOpts!.backendUrl} (device id ${bridgeClient.deviceId.slice(0, 8)}…)\n`);
+    const caps = bridgeOpts!.capabilities?.length ? bridgeOpts!.capabilities.join(",") : "<none>";
+    console.log(`  Bridge client connected to ${bridgeOpts!.backendUrl} (device id ${bridgeClient.deviceId.slice(0, 8)}…, capabilities: ${caps})\n`);
   }
 
   // Graceful shutdown so the mDNS cache doesn't keep stale entries

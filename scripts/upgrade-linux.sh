@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Push the locally-built twoody-server dist to a remote Linux host
+# (Raspberry Pi, generic amd64/arm64) and restart the systemd service.
+#
+# Idempotent: rebuilds the TS sources if needed, rsyncs `dist/`, runs
+# `npm ci --omit=dev` if `package.json` changed (so native modules
+# like `better-sqlite3` recompile for the target architecture), and
+# nudges systemd. Safe to re-run after every commit.
+#
+# Usage (from a twoody-server checkout on your laptop):
+#   scripts/upgrade-linux.sh                       # uses defaults
+#   scripts/upgrade-linux.sh user@host             # custom SSH target
+#   scripts/upgrade-linux.sh twoody-pi /opt/foo    # custom remote path
+#
+# Defaults:
+#   TARGET=twoody-pi              (SSH alias in ~/.ssh/config)
+#   REMOTE_PATH=/opt/twoody-server
+#   SERVICE=twoody-server.service
+#
+# Env overrides:
+#   TWOODY_PI_HOST, TWOODY_PI_PATH, TWOODY_PI_SERVICE
+#
+# Pre-conditions:
+#   - Passwordless SSH from this host to the target
+#   - Target user has sudo for `systemctl restart`
+#   - Target host already provisioned via `install-linux.sh`
+
+set -euo pipefail
+
+TARGET="${1:-${TWOODY_PI_HOST:-twoody-pi}}"
+REMOTE_PATH="${2:-${TWOODY_PI_PATH:-/opt/twoody-server}}"
+SERVICE="${TWOODY_PI_SERVICE:-twoody-server.service}"
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
+
+log() { echo "[upgrade] $*"; }
+
+if [[ ! -f package.json ]]; then
+  echo "[upgrade] No package.json in $(pwd) — run from a twoody-server checkout." >&2
+  exit 1
+fi
+
+log "Building TypeScript dist…"
+if [[ ! -d node_modules ]]; then
+  npm install
+fi
+npm run build
+
+log "Rsyncing dist/ + package metadata to ${TARGET}:${REMOTE_PATH}/"
+rsync -az --delete \
+  --exclude '.DS_Store' \
+  dist \
+  package.json \
+  package-lock.json \
+  openapi.json \
+  README.md \
+  LICENSE \
+  scripts \
+  "${TARGET}:${REMOTE_PATH}/"
+
+# Hash-compare package-lock.json on the remote; only run npm ci if
+# the lock changed, otherwise the native rebuild is wasted effort.
+LOCAL_LOCK_HASH=$(shasum -a 256 package-lock.json | awk '{print $1}')
+REMOTE_LOCK_HASH=$(ssh "$TARGET" "shasum -a 256 ${REMOTE_PATH}/package-lock.json 2>/dev/null | awk '{print \$1}'" || echo "")
+LAST_LOCK_HASH=$(ssh "$TARGET" "cat ${REMOTE_PATH}/.last-lock-hash 2>/dev/null" || echo "")
+
+if [[ -z "$LAST_LOCK_HASH" || "$LOCAL_LOCK_HASH" != "$LAST_LOCK_HASH" ]]; then
+  log "package-lock.json changed → npm ci --omit=dev on ${TARGET}"
+  ssh "$TARGET" "cd ${REMOTE_PATH} && npm ci --omit=dev"
+  ssh "$TARGET" "echo '${LOCAL_LOCK_HASH}' > ${REMOTE_PATH}/.last-lock-hash"
+else
+  log "package-lock.json unchanged, skipping npm ci"
+fi
+
+log "Restarting ${SERVICE}…"
+ssh "$TARGET" "sudo systemctl restart ${SERVICE}"
+
+sleep 2
+log "Service status:"
+ssh "$TARGET" "sudo systemctl is-active ${SERVICE} && curl -s -m 3 http://localhost:3000/health || echo '(health probe failed)'"
+
+log "Done. Tail logs with: ssh ${TARGET} 'sudo journalctl -u ${SERVICE} -f'"
