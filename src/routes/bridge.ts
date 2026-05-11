@@ -1,6 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
 import { executeLocalTool } from "../tools.js";
+import {
+  executeBridgeTask,
+  isSelfBridgeKind,
+  selfBridgeEnabled,
+} from "../executors/index.js";
 
 const BRIDGE_TASK_KINDS = [
   "search",
@@ -62,6 +67,7 @@ const bridgePresence = new Map<
 >();
 
 function hasActiveBridge() {
+  if (selfBridgeEnabled()) return true;
   const cutoff = new Date(Date.now() - 90_000);
   return [...bridgePresence.values()].some((entry) => entry.lastSeen > cutoff);
 }
@@ -108,7 +114,9 @@ async function waitForTaskResult(taskId: string, timeoutMs = 30_000) {
 }
 
 export async function bridgeRoutes(app: FastifyInstance) {
-  // GET /bridge/tasks/next — Mac app long-polls this
+  // GET /bridge/tasks/next — Mac app long-polls this. In self-bridge
+  // mode there is no external worker to claim tasks, so only kinds
+  // that aren't auto-executed in-process are exposed here.
   app.get<{ Querystring: { wait?: string } }>(
     "/bridge/tasks/next",
     {
@@ -130,9 +138,17 @@ export async function bridgeRoutes(app: FastifyInstance) {
 
         const wait = Math.min(parseInt(req.query.wait ?? "0", 10), 30);
         const deadline = Date.now() + wait * 1000;
+        const selfBridge = selfBridgeEnabled();
 
         while (true) {
-          const task = taskQueue.find((t) => t.status === "pending");
+          const task = taskQueue.find((t) => {
+            if (t.status !== "pending") return false;
+            // Tasks already routed to the in-process executor stay
+            // off the worker poll path so they don't get claimed
+            // twice.
+            if (selfBridge && isSelfBridgeKind(t.kind)) return false;
+            return true;
+          });
           if (task) {
             task.status = "streaming";
             return reply.send({
@@ -261,6 +277,18 @@ export async function bridgeRoutes(app: FastifyInstance) {
       taskQueue.push(task);
       taskMap.set(id, task);
 
+      if (selfBridgeEnabled()) {
+        void executeBridgeTask("list_folders", {})
+          .then((result) => {
+            task.status = "done";
+            task.result = result;
+          })
+          .catch((error) => {
+            task.status = "error";
+            task.errorMessage = error instanceof Error ? error.message : "Bridge task failed";
+          });
+      }
+
       try {
         const result = await waitForTaskResult(id, 15_000);
         reply.send(result ?? { folders: [] });
@@ -304,6 +332,18 @@ export async function bridgeRoutes(app: FastifyInstance) {
 
         taskQueue.push(task);
         taskMap.set(id, task);
+
+        if (selfBridgeEnabled()) {
+          void executeBridgeTask("list_dir", task.args)
+            .then((result) => {
+              task.status = "done";
+              task.result = result;
+            })
+            .catch((error) => {
+              task.status = "error";
+              task.errorMessage = error instanceof Error ? error.message : "Bridge task failed";
+            });
+        }
 
         try {
           const result = await waitForTaskResult(id, 20_000);
@@ -363,6 +403,18 @@ export async function bridgeRoutes(app: FastifyInstance) {
           .catch((error) => {
             task.status = "error";
             task.errorMessage = error instanceof Error ? error.message : "Tool execution failed";
+          });
+      } else if (selfBridgeEnabled() && isSelfBridgeKind(kind)) {
+        // Headless Linux deployment: no external Mac worker is going to
+        // claim this task, so execute it in-process and mark it done.
+        void executeBridgeTask(kind, args)
+          .then((result) => {
+            task.status = "done";
+            task.result = result;
+          })
+          .catch((error) => {
+            task.status = "error";
+            task.errorMessage = error instanceof Error ? error.message : "Bridge task failed";
           });
       }
 

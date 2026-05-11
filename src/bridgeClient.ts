@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { executeBridgeTask, isSelfBridgeKind } from "./executors/index.js";
 
 const POLL_WAIT_SECONDS = 25;
 const POLL_BUDGET_MS = (POLL_WAIT_SECONDS + 10) * 1000;
@@ -53,11 +54,16 @@ export interface BridgeClientHandle {
 export function readBridgeClientEnv(): BridgeClientOptions | null {
   const backendUrl = process.env.TWOODY_BACKEND_URL;
   const userToken = process.env.TWOODY_USER_TOKEN;
-  const homeAssistantUrl = process.env.HOME_ASSISTANT_URL;
-  const homeAssistantToken = process.env.HOME_ASSISTANT_TOKEN;
-
   if (!backendUrl || !userToken) return null;
-  if (!homeAssistantUrl || !homeAssistantToken) return null;
+
+  // HA env vars stay required only when the Pi is expected to serve
+  // smart_home_proxy tasks. The Linux executor kinds (`search` / `read`
+  // / `llm_infer` / `list_*`) work without HA — so the bridge client
+  // can run with empty HA creds and still cover the document and LLM
+  // surfaces. Keep the smart_home_proxy handler honest: it'll error
+  // back to the backend if HA isn't configured.
+  const homeAssistantUrl = process.env.HOME_ASSISTANT_URL ?? "";
+  const homeAssistantToken = process.env.HOME_ASSISTANT_TOKEN ?? "";
 
   return {
     backendUrl: backendUrl.replace(/\/+$/, ""),
@@ -159,6 +165,14 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
       case "smart_home_proxy":
         return runSmartHomeProxy(task.args, opts);
       default:
+        if (isSelfBridgeKind(task.kind)) {
+          // Pi-as-worker for an upstream Twoody backend: the cloud's
+          // LocalFilesProcessor and LocalLlmService enqueue `search` /
+          // `read` / `list_folders` / `list_dir` / `llm_infer` tasks
+          // that the legacy Mac Bridge used to claim. The Pi reuses
+          // the same in-process executors here.
+          return executeBridgeTask(task.kind, task.args);
+        }
         throw new Error(`unsupported_kind:${task.kind}`);
     }
   }
@@ -189,6 +203,9 @@ async function runSmartHomeProxy(
   args: Record<string, unknown>,
   opts: BridgeClientOptions,
 ): Promise<{ status: number; body: unknown }> {
+  if (!opts.homeAssistantUrl || !opts.homeAssistantToken) {
+    throw new Error("home_assistant_not_configured");
+  }
   const method = String(args.method ?? "GET").toUpperCase();
   const path = String(args.path ?? "");
   if (!path.startsWith("/")) {
