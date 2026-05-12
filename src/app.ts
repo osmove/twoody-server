@@ -20,6 +20,7 @@ import { toolCallRoutes } from "./routes/toolCalls.js";
 import { meRoutes } from "./routes/me.js";
 import { agentRoutes } from "./routes/agents.js";
 import { localLlmRoutes } from "./routes/localLlm.js";
+import { llmModelsRoutes } from "./routes/llmModels.js";
 import { builtInCapabilitiesRoutes } from "./routes/builtInCapabilities.js";
 import { calendarEventRoutes } from "./routes/calendarEvents.js";
 import { contactRoutes } from "./routes/contacts.js";
@@ -111,6 +112,7 @@ export async function buildApp() {
   await app.register(meRoutes);
   await app.register(agentRoutes);
   await app.register(localLlmRoutes);
+  await app.register(llmModelsRoutes);
   await app.register(calendarEventRoutes);
   await app.register(contactRoutes);
   await app.register(discussionRoutes);
@@ -139,6 +141,7 @@ export async function buildApp() {
   await app.register(meRoutes, { prefix: "/api/v1" });
   await app.register(agentRoutes, { prefix: "/api/v1" });
   await app.register(localLlmRoutes, { prefix: "/api/v1" });
+  await app.register(llmModelsRoutes, { prefix: "/api/v1" });
   await app.register(calendarEventRoutes, { prefix: "/api/v1" });
   await app.register(contactRoutes, { prefix: "/api/v1" });
   await app.register(discussionRoutes, { prefix: "/api/v1" });
