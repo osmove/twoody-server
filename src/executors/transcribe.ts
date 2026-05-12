@@ -90,9 +90,22 @@ function pickInputExtension(mime: string): string {
 
 function transcodeToWav(srcPath: string, dstPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
+    // silenceremove trims silence at the start AND at the end of the
+    // clip. Apple Watch / iOS voice recorders include a VAD grace
+    // period of 0.5-1.5 s on either side that whisper has to chew
+    // through — for a 3 s recording that's 33 % of the runtime spent
+    // on dead air. Threshold -40 dB is conservative (won't clip
+    // quiet speech); start_silence/stop_silence keep 80 ms of
+    // breathing room before/after the actual speech so whisper's
+    // word boundaries don't get clipped.
+    const silenceFilter = [
+      "silenceremove=start_periods=1:start_silence=0.08:start_threshold=-40dB",
+      "silenceremove=stop_periods=-1:stop_silence=0.3:stop_threshold=-40dB",
+    ].join(",");
     const args = [
       "-y", "-loglevel", "error",
       "-i", srcPath,
+      "-af", silenceFilter,
       "-ar", "16000",
       "-ac", "1",
       "-c:a", "pcm_s16le",
