@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
+import { LOCAL_ONLY, outboundFetch } from "../outbound.js";
 
 // Proxy ephemeral OpenAI Realtime tokens for devices / watch app
 export async function realtimeRoutes(app: FastifyInstance) {
@@ -13,6 +14,11 @@ export async function realtimeRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
 
+      // Realtime voice streams the user's audio to OpenAI.
+      if (LOCAL_ONLY) {
+        return reply.code(403).send({ error: "local_only" });
+      }
+
       const key = process.env.OPENAI_API_KEY;
       if (!key) {
         return reply.code(503).send({ error: "OPENAI_API_KEY not configured" });
@@ -21,7 +27,7 @@ export async function realtimeRoutes(app: FastifyInstance) {
       const model = process.env.OPENAI_MODEL ?? "gpt-4o-realtime-preview";
       const voice = process.env.OPENAI_VOICE ?? "cedar";
 
-      const res = await fetch("https://api.openai.com/v1/realtime/sessions", {
+      const res = await outboundFetch("https://api.openai.com/v1/realtime/sessions", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${key}`,

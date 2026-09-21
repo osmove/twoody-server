@@ -7,6 +7,7 @@ import {
   voiceProfiles,
   wakeWordSamples,
 } from "./db.js";
+import { outboundFetch } from "./outbound.js";
 
 export async function executeLocalTool(
   name: string,
@@ -109,7 +110,7 @@ async function runSmartHome(arguments_: Record<string, unknown>) {
     [domain, service] = action.split(".", 2);
   }
 
-  const response = await fetch(`${haUrl}/api/services/${domain}/${service}`, {
+  const response = await outboundFetch(`${haUrl}/api/services/${domain}/${service}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -161,7 +162,7 @@ async function fetchSpotifyToken(): Promise<string> {
     throw new Error("spotify_not_configured");
   }
   const basic = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
-  const res = await fetch("https://accounts.spotify.com/api/token", {
+  const res = await outboundFetch("https://accounts.spotify.com/api/token", {
     method: "POST",
     headers: {
       Authorization: `Basic ${basic}`,
@@ -202,7 +203,7 @@ async function spotifyApi(
   const url = deviceId && (path.startsWith("/me/player/play") || path.startsWith("/me/player/pause") || path.startsWith("/me/player/next") || path.startsWith("/me/player/previous") || path.startsWith("/me/player/volume"))
     ? `https://api.spotify.com/v1${path}${path.includes("?") ? "&" : "?"}device_id=${encodeURIComponent(deviceId)}`
     : `https://api.spotify.com/v1${path}`;
-  const res = await fetch(url, init);
+  const res = await outboundFetch(url, init);
   const text = await res.text();
   let parsed: unknown = text;
   try { parsed = text ? JSON.parse(text) : null; } catch { /* keep raw */ }

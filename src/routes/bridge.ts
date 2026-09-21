@@ -6,6 +6,7 @@ import {
   isSelfBridgeKind,
   selfBridgeEnabled,
 } from "../executors/index.js";
+import { outboundFetch } from "../outbound.js";
 
 const BRIDGE_TASK_KINDS = [
   "search",
@@ -456,7 +457,7 @@ export async function bridgeRoutes(app: FastifyInstance) {
     if (!haUrl) return reply.code(404).send({ error: "not_configured" });
 
     try {
-      const res = await fetch(haUrl + "/api/", {
+      const res = await outboundFetch(haUrl + "/api/", {
         headers: {
           Authorization: `Bearer ${process.env.HOME_ASSISTANT_TOKEN ?? ""}`,
         },

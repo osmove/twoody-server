@@ -7,6 +7,7 @@ import {
   users,
 } from "../db.js";
 import { createRequire } from "module";
+import { LOCAL_ONLY } from "../outbound.js";
 import {
   authenticate,
   requireAuth,
@@ -276,10 +277,12 @@ export async function deviceRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await authenticate(req);
       if (!auth) return reply.code(401).send({ error: "Unauthorized" });
+      // In local-only mode a paired device must not be handed keys it
+      // could use to reach a cloud provider on its own.
       reply.send({
-        openai_api_key: process.env.OPENAI_API_KEY ?? null,
-        anthropic_api_key: process.env.ANTHROPIC_API_KEY ?? null,
-        gemini_api_key: process.env.GEMINI_API_KEY ?? null,
+        openai_api_key: LOCAL_ONLY ? null : process.env.OPENAI_API_KEY ?? null,
+        anthropic_api_key: LOCAL_ONLY ? null : process.env.ANTHROPIC_API_KEY ?? null,
+        gemini_api_key: LOCAL_ONLY ? null : process.env.GEMINI_API_KEY ?? null,
       });
     },
   });

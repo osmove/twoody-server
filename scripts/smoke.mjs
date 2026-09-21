@@ -415,11 +415,127 @@ try {
     headers: authHeaders(token),
   });
 
+  await smokeLocalOnly();
+
   console.log("Twoody server smoke test passed");
 } finally {
   child.kill("SIGTERM");
   await sleep(250);
   rmSync(dataDir, { recursive: true, force: true });
+}
+
+// Second instance with TWOODY_LOCAL_ONLY=1 and everything that would
+// normally open a cloud path switched on: the gate has to win.
+async function smokeLocalOnly() {
+  const port = String(Number(PORT) + 1);
+  const base = `http://${HOST}:${port}/api/v1`;
+  const dir = mkdtempSync(join(tmpdir(), "twoody-server-smoke-local-only-"));
+  const server = spawn("npx", ["tsx", "src/index.ts"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      HOST,
+      PORT: port,
+      TWOODY_DATA_DIR: dir,
+      TWOODY_BONJOUR_DISABLED: "1",
+      TWOODY_LOCAL_ONLY: "1",
+      TWOODY_CLOUD_FALLBACK_ENABLED: "true",
+      OPENAI_API_KEY: "sk-smoke-not-a-real-key",
+      LOG_LEVEL: "error",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let serverLogs = "";
+  server.stdout.on("data", (chunk) => {
+    serverLogs += chunk.toString();
+  });
+  server.stderr.on("data", (chunk) => {
+    serverLogs += chunk.toString();
+  });
+
+  const call = async (path, options = {}) => {
+    const { expectedStatus = 200, ...fetchOptions } = options;
+    const response = await fetch(`${base}${path}`, fetchOptions);
+    const text = await response.text();
+    if (response.status !== expectedStatus) {
+      throw new Error(
+        `Smoke test failed (local-only): ${fetchOptions.method || "GET"} ${path} -> expected ${expectedStatus}, got ${response.status}\n${text}\n${serverLogs}`
+      );
+    }
+    return text ? JSON.parse(text) : {};
+  };
+
+  try {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      try {
+        if ((await fetch(`http://${HOST}:${port}/health`)).ok) break;
+      } catch (_error) {
+        // Boot still in progress.
+      }
+      await sleep(200);
+    }
+
+    const capabilities = await call("/capabilities");
+    const deployment = await call("/deployment");
+    if (capabilities.local_only !== true || deployment.local_only !== true) {
+      throw new Error("Smoke test failed (local-only): local_only flag not reported");
+    }
+
+    const signup = await call("/auth/signup", {
+      method: "POST",
+      headers: jsonHeaders(),
+      expectedStatus: 201,
+      body: JSON.stringify({
+        email: "local-only@example.com",
+        password: "correct horse battery staple",
+        setup_token: readFileSync(join(dir, "setup-token"), "utf8").trim(),
+      }),
+    });
+    const headers = authHeaders(signup.token);
+
+    // Cloud fallback is enabled and a key is present, yet no provider
+    // means no answer rather than a call to OpenAI.
+    const noFallback = await call("/queries", {
+      method: "POST",
+      headers,
+      expectedStatus: 503,
+      body: JSON.stringify({ content: "hello" }),
+    });
+    if (noFallback.error !== "local_llm_unavailable") {
+      throw new Error("Smoke test failed (local-only): cloud fallback was not disabled");
+    }
+
+    const realtime = await call("/realtime_sessions", { method: "POST", headers, expectedStatus: 403, body: "{}" });
+    if (realtime.error !== "local_only") {
+      throw new Error("Smoke test failed (local-only): /realtime_sessions was not refused");
+    }
+
+    const keys = await call("/devices/llm_keys", { headers });
+    if (keys.openai_api_key !== null) {
+      throw new Error("Smoke test failed (local-only): /devices/llm_keys leaked a cloud key");
+    }
+
+    // A "local" provider that actually points at a public host.
+    await call("/providers/local", {
+      method: "POST",
+      headers,
+      expectedStatus: 201,
+      body: JSON.stringify({ url: "https://8.8.8.8/v1", model: "not-local" }),
+    });
+    const publicProvider = await call("/queries", {
+      method: "POST",
+      headers,
+      expectedStatus: 403,
+      body: JSON.stringify({ content: "hello" }),
+    });
+    if (publicProvider.error !== "local_only") {
+      throw new Error("Smoke test failed (local-only): public provider URL was not refused");
+    }
+  } finally {
+    server.kill("SIGTERM");
+    await sleep(250);
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 async function waitForHealth() {

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { LOCAL_ONLY } from "../outbound.js";
 
 // Public feature-flag surface. Mirrors the JSON shape returned by Rails
 // (`/api/v1/capabilities`) so a single client codepath can introspect
@@ -24,6 +25,7 @@ export async function capabilitiesRoutes(app: FastifyInstance) {
             has_emails:         { type: "boolean" },
             providers_writable: { type: "boolean" },
             deployment_kind:    { type: "string" },
+            local_only:         { type: "boolean" },
           },
           required: [
             "has_billing", "has_org", "has_memory", "has_browser_agent",
@@ -57,6 +59,9 @@ export async function capabilitiesRoutes(app: FastifyInstance) {
         has_emails:         false,
         providers_writable: true,
         deployment_kind:    "local",
+        // True when TWOODY_LOCAL_ONLY is set: the server refuses every
+        // call to a host outside this machine / the private network.
+        local_only:         LOCAL_ONLY,
       });
     },
   });

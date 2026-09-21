@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { hostname as osHostname } from "node:os";
 import { createRequire } from "module";
+import { LOCAL_ONLY } from "../outbound.js";
 
 const { version } = createRequire(import.meta.url)("../../package.json") as {
   version: string;
@@ -22,6 +23,7 @@ export async function deploymentRoutes(app: FastifyInstance) {
             kind:          { type: "string" },
             version:       { type: "string" },
             instance_name: { type: "string" },
+            local_only:    { type: "boolean" },
           },
           required: ["kind", "version", "instance_name"],
         },
@@ -32,6 +34,7 @@ export async function deploymentRoutes(app: FastifyInstance) {
         kind:          "local",
         version,
         instance_name: process.env.TWOODY_INSTANCE_NAME?.trim() || osHostname(),
+        local_only:    LOCAL_ONLY,
       });
     },
   });

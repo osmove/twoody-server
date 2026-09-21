@@ -4,6 +4,7 @@ import { ensureSetupToken, getActivePairingCode } from "./auth.js";
 import { startBonjour } from "./bonjour.js";
 import { readBridgeClientEnv, startBridgeClient } from "./bridgeClient.js";
 import { db, users } from "./db.js";
+import { LOCAL_ONLY, isPrivateUrl } from "./outbound.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -51,6 +52,9 @@ function readPackageVersion(): string {
 try {
   await app.listen({ port: PORT, host: HOST });
   console.log(`\nTwoody Server ready on http://${HOST}:${PORT}\n`);
+  if (LOCAL_ONLY) {
+    console.log("  Local-only mode: calls outside this machine / the private network are refused.\n");
+  }
   if (setupToken) {
     console.log("  First local account setup required.");
     console.log(`  Setup token: ${setupToken.token}`);
@@ -93,7 +97,15 @@ try {
   // here don't affect the HTTP listener; the user can drop the
   // backend env vars to disable it.
   const bridgeOpts = readBridgeClientEnv();
-  const bridgeClient = bridgeOpts ? startBridgeClient(bridgeOpts) : null;
+  // The bridge client ships document text, LLM output and Home
+  // Assistant state to its upstream backend, so local-only mode keeps
+  // it off unless that backend is itself on the private network.
+  const bridgeAllowed =
+    !bridgeOpts || !LOCAL_ONLY || (await isPrivateUrl(bridgeOpts.backendUrl));
+  if (bridgeOpts && !bridgeAllowed) {
+    console.log(`  Local-only mode: bridge client to ${bridgeOpts.backendUrl} not started.\n`);
+  }
+  const bridgeClient = bridgeOpts && bridgeAllowed ? startBridgeClient(bridgeOpts) : null;
   if (bridgeClient) {
     const caps = bridgeOpts!.capabilities?.length ? bridgeOpts!.capabilities.join(",") : "<none>";
     console.log(`  Bridge client connected to ${bridgeOpts!.backendUrl} (device id ${bridgeClient.deviceId.slice(0, 8)}…, capabilities: ${caps})\n`);

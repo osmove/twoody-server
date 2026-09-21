@@ -25,6 +25,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { executeBridgeTask, isSelfBridgeKind, tesseractReady, whisperReady } from "./executors/index.js";
+import { outboundFetch } from "./outbound.js";
 
 const POLL_WAIT_SECONDS = 25;
 const POLL_BUDGET_MS = (POLL_WAIT_SECONDS + 10) * 1000;
@@ -200,7 +201,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   }
 
   async function prewarmCatalogOnce() {
-    const haRes = await fetch(`${opts.homeAssistantUrl}/api/states`, {
+    const haRes = await outboundFetch(`${opts.homeAssistantUrl}/api/states`, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${opts.homeAssistantToken}`,
@@ -215,7 +216,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
       throw new Error("HA /api/states returned non-array");
     }
 
-    const pushRes = await fetch(`${opts.backendUrl}/smart_home/catalog.json`, {
+    const pushRes = await outboundFetch(`${opts.backendUrl}/smart_home/catalog.json`, {
       method: "POST",
       headers: {
         "X-User-Token": opts.userToken,
@@ -285,7 +286,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
       if (opts.capabilities && opts.capabilities.length > 0) {
         headers["X-Bridge-Capabilities"] = opts.capabilities.join(",");
       }
-      const res = await fetch(
+      const res = await outboundFetch(
         `${opts.backendUrl}/bridge/tasks/next?wait=${POLL_WAIT_SECONDS}`,
         { method: "GET", headers, signal: controller.signal },
       );
@@ -361,7 +362,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
     id: string,
     body: { status: "done"; result: unknown } | { status: "error"; error_message: string },
   ) {
-    const res = await fetch(`${opts.backendUrl}/bridge/tasks/${id}`, {
+    const res = await outboundFetch(`${opts.backendUrl}/bridge/tasks/${id}`, {
       method: "PATCH",
       headers: {
         "X-User-Token": opts.userToken,
@@ -408,7 +409,7 @@ async function runSmartHomeProxy(
     (init.headers as Record<string, string>)["Content-Type"] = "application/json";
   }
 
-  const res = await fetch(url, init);
+  const res = await outboundFetch(url, init);
   const text = await res.text();
   let parsed: unknown = text;
   if (text) {

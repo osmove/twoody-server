@@ -122,6 +122,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 GEMINI_API_KEY=...
 BRIDGE_LOCAL_LLM_ENDPOINT=http://127.0.0.1:8080/v1
 TWOODY_CLOUD_FALLBACK_ENABLED=false
+TWOODY_LOCAL_ONLY=1
 HOME_ASSISTANT_URL=http://homeassistant.local:8123
 HOME_ASSISTANT_TOKEN=...
 ```
@@ -226,6 +227,14 @@ stable v1 contract.
 `/queries` is local-first: configure a local OpenAI-compatible provider, or set
 `BRIDGE_LOCAL_LLM_ENDPOINT` for the legacy local endpoint. Cloud keys are only
 used when `TWOODY_CLOUD_FALLBACK_ENABLED=true`.
+
+`TWOODY_LOCAL_ONLY=1` goes further: the server refuses every outbound call to
+a host that is not this machine or a private-network address, whatever else is
+configured. Cloud fallback, `/realtime_sessions`, Spotify and an upstream
+bridge backend are all off, `/devices/llm_keys` returns no keys, and
+`/capabilities` and `/deployment` report `local_only: true` so clients can show
+it. Downloading a model through Ollama is unaffected (Ollama makes that call,
+and it carries no user content).
 
 Bridge pollers can declare capabilities with `X-Bridge-Capabilities`, using a
 comma-separated or JSON array value such as `document-provider,local-llm-provider`.

@@ -68,6 +68,17 @@ Run `npm test` (node:test via tsx) and `npm run smoke`; the smoke test
 asserts what a second turn puts on the wire using a fake
 OpenAI-compatible server.
 
+## Outbound calls and local-only mode
+
+Never call `fetch` directly in `src/`. Every outbound HTTP call goes through
+`outboundFetch` in `src/outbound.ts`; `test/outbound.test.ts` fails on a bare
+`fetch(`. With `TWOODY_LOCAL_ONLY=1` that gate refuses any host that does not
+resolve to loopback or a private range (RFC 1918, link-local, CGNAT/Tailscale,
+IPv6 ULA), and names that do not resolve count as public. Routes whose whole
+purpose is a cloud call (`/realtime_sessions`, cloud fallback in `/queries`,
+the upstream bridge client) also check `LOCAL_ONLY` up front to return a clean
+`local_only` error. The flag is reported by `/capabilities` and `/deployment`.
+
 ## Vocabulary: capability vs skill vs built-in capability
 
 Three "capability"-flavoured terms coexist; they describe different

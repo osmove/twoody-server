@@ -12,6 +12,7 @@ import {
   type MemoryRow,
 } from "../chatContext.js";
 import { createThinkFilter } from "../thinkFilter.js";
+import { LOCAL_ONLY, LocalOnlyError, outboundFetch } from "../outbound.js";
 
 interface QueryBody {
   content?: string;
@@ -236,6 +237,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       if (err instanceof LocalLlmUnavailableError) {
         return reply.code(503).send({ error: "local_llm_unavailable", message: msg });
       }
+      if (err instanceof LocalOnlyError) {
+        return reply.code(403).send({ error: "local_only", message: msg });
+      }
       return reply.code(502).send({ error: "provider_error", message: msg });
     }
     reply.raw.write(`event: error\ndata: ${JSON.stringify({ message: msg })}\n\n`);
@@ -351,7 +355,7 @@ function resolveProvider(userId: string, requestedModel?: string): Provider {
     };
   }
 
-  if (process.env.TWOODY_CLOUD_FALLBACK_ENABLED === "true") {
+  if (process.env.TWOODY_CLOUD_FALLBACK_ENABLED === "true" && !LOCAL_ONLY) {
     if (requestedModel?.startsWith("claude")) {
       return { kind: "anthropic", model: requestedModel };
     }
@@ -408,7 +412,7 @@ async function streamOpenAI(
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error("OPENAI_API_KEY not set");
 
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+  const res = await outboundFetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,
@@ -440,7 +444,7 @@ async function streamAnthropic(
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("ANTHROPIC_API_KEY not set");
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const res = await outboundFetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "x-api-key": key,
@@ -504,7 +508,7 @@ async function streamGemini(
   if (!key) throw new Error("GEMINI_API_KEY not set");
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${key}`;
-  const res = await fetch(url, {
+  const res = await outboundFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -585,12 +589,15 @@ async function streamLocal(
 
   const post = async (payload: object): Promise<Response> => {
     try {
-      return await fetch(endpoint + "/chat/completions", {
+      return await outboundFetch(endpoint + "/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-    } catch {
+    } catch (err) {
+      // A provider URL outside the private network is a configuration
+      // problem the user must see, not a runtime that happens to be down.
+      if (err instanceof LocalOnlyError) throw err;
       throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
     }
   };

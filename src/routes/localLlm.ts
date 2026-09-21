@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
 import { hostname as osHostname } from "node:os";
+import { outboundFetch } from "../outbound.js";
 
 // `/local_llm/status` mirrors the cloud's fleet-status endpoint so
 // the RN app's "Twoody Private" indicator can show "Mac connected ·
@@ -94,7 +95,7 @@ async function probeOpenAICompatible(endpoint: string): Promise<{
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 1500);
   try {
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await outboundFetch(url, { signal: controller.signal });
     clearTimeout(timer);
     if (!res.ok) return { ok: false, loadedModel: null, models: [] };
     const json = (await res.json()) as ModelsListResponse;

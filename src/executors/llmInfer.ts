@@ -1,3 +1,4 @@
+import { outboundFetch } from "../outbound.js";
 // `llm_infer` task — proxy a chat completion to the local OpenAI-compatible LLM.
 //
 // `BRIDGE_LOCAL_LLM_ENDPOINT` should point at the `/v1` root of an
@@ -31,7 +32,7 @@ export async function runLlmInfer(args: Record<string, unknown>) {
   const endpoint = (process.env.BRIDGE_LOCAL_LLM_ENDPOINT ?? DEFAULT_ENDPOINT).replace(/\/+$/, "");
   const url = `${endpoint}/chat/completions`;
 
-  const res = await fetch(url, {
+  const res = await outboundFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

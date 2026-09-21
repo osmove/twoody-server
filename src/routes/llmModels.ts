@@ -19,6 +19,7 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
 import { randomUUID } from "node:crypto";
+import { outboundFetch } from "../outbound.js";
 
 const DEFAULT_OLLAMA = "http://127.0.0.1:11434";
 
@@ -79,7 +80,7 @@ interface PullJob {
 const pulls = new Map<string, PullJob>();
 
 async function ollamaTags(): Promise<OllamaTag[]> {
-  const res = await fetch(`${ollamaUrl()}/api/tags`, {
+  const res = await outboundFetch(`${ollamaUrl()}/api/tags`, {
     signal: AbortSignal.timeout(5_000),
   });
   if (!res.ok) throw new Error(`ollama_tags_status_${res.status}`);
@@ -88,7 +89,7 @@ async function ollamaTags(): Promise<OllamaTag[]> {
 }
 
 async function ollamaDelete(name: string): Promise<void> {
-  const res = await fetch(`${ollamaUrl()}/api/delete`, {
+  const res = await outboundFetch(`${ollamaUrl()}/api/delete`, {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name }),
@@ -105,7 +106,7 @@ async function startOllamaPull(job: PullJob): Promise<void> {
   // in-memory job state. The endpoint returns when the stream ends
   // (success or error). No await on the caller side — fire-and-forget.
   try {
-    const res = await fetch(`${ollamaUrl()}/api/pull`, {
+    const res = await outboundFetch(`${ollamaUrl()}/api/pull`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: job.model, stream: true }),

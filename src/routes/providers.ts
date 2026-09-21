@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { db, providers } from "../db.js";
 import { generateId, requireAuth } from "../auth.js";
+import { outboundFetch } from "../outbound.js";
 
 type ProviderPatchBody = {
   name?: string;
@@ -48,7 +49,7 @@ async function pingOpenAICompatible(baseUrl: string): Promise<{
 }> {
   const started = Date.now();
   try {
-    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
+    const response = await outboundFetch(`${baseUrl.replace(/\/$/, "")}/models`, {
       signal: AbortSignal.timeout(2500),
     });
     return {

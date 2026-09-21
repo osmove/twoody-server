@@ -32,6 +32,7 @@ import { taskRoutes } from "./routes/tasks.js";
 import { transcriptionRoutes } from "./routes/transcriptions.js";
 import { voiceRoutes } from "./routes/voices.js";
 import { wsRoutes } from "./routes/ws.js";
+import { outboundFetch } from "./outbound.js";
 
 export async function buildApp() {
   const app = Fastify({
@@ -298,7 +299,7 @@ export async function buildApp() {
         });
       }
 
-      const upstream = await fetch(mcpUrl, {
+      const upstream = await outboundFetch(mcpUrl, {
         method: req.method,
         headers: req.headers as Record<string, string>,
         body: req.method !== "GET" ? JSON.stringify(req.body) : undefined,
