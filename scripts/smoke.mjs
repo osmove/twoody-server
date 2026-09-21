@@ -399,6 +399,12 @@ try {
     throw new Error("Smoke test failed: bridge task result was not recorded");
   }
 
+  // The standalone worker (what the desktop app runs for a cloud
+  // account): pointed at this server as its backend and at a fake
+  // runtime, it must pick up an llm_infer task, stream it, and report
+  // the completion in the envelope the Rails backend reads.
+  await smokeBridgeWorker(token);
+
   // The MCP proxy acts with the user's token upstream: never open.
   const mcpAnonymous = await fetch(`${BASE_URL}/mcp`, { method: "POST", headers: jsonHeaders(), body: "{}" });
   if (mcpAnonymous.status !== 401) {
@@ -695,10 +701,80 @@ async function jsonFetch(path, options = {}) {
 // Minimal OpenAI-compatible streaming endpoint. It rejects
 // `chat_template_kwargs` once, the way a strict server would, and opens
 // its reply with a reasoning block the way Qwen3 does.
+async function smokeBridgeWorker(token) {
+  const runtime = await startFakeLlm();
+  const home = mkdtempSync(join(tmpdir(), "twoody-worker-smoke-"));
+  const worker = spawn("npx", ["tsx", "src/bridgeWorker.ts"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      HOME: home, // keeps the worker's device id out of the real home
+      TWOODY_BACKEND_URL: API_BASE_URL,
+      TWOODY_USER_TOKEN: token,
+      TWOODY_BRIDGE_DEVICE_NICKNAME: "Smoke\u2019s Mac",
+      BRIDGE_LOCAL_LLM_ENDPOINTS: `http://${HOST}:9/v1,${runtime.url}/v1`, // the first one is down
+      BRIDGE_LOCAL_LLM_MODEL: "tiny-local-model",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let workerLogs = "";
+  worker.stdout.on("data", (chunk) => (workerLogs += chunk));
+  worker.stderr.on("data", (chunk) => (workerLogs += chunk));
+
+  try {
+    const deadline = Date.now() + 20_000;
+    let presence;
+    do {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      presence = await jsonFetch("/bridge/presence", { headers: authHeaders(token) });
+    } while (!presence.capabilities?.includes("local-llm-provider") && Date.now() < deadline);
+    if (!presence.capabilities?.includes("local-llm-provider")) {
+      throw new Error(`Smoke test failed: the standalone worker never registered.\n${workerLogs}`);
+    }
+
+    const task = await jsonFetch("/bridge/tasks", {
+      method: "POST",
+      headers: authHeaders(token),
+      expectedStatus: 201,
+      body: JSON.stringify({
+        kind: "llm_infer",
+        args: { openai_body_json: JSON.stringify({ model: "local", messages: [{ role: "user", content: "Hi" }], max_tokens: 64 }) },
+      }),
+    });
+
+    let finished;
+    do {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      finished = await jsonFetch(`/bridge/tasks/${task.id}`, { headers: authHeaders(token) });
+    } while (finished.status !== "done" && finished.status !== "error" && Date.now() < deadline);
+
+    if (finished.status !== "done") {
+      throw new Error(`Smoke test failed: llm_infer through the worker ended as ${finished.status} (${finished.error_message}).\n${workerLogs}`);
+    }
+    const completion = JSON.parse(finished.result.response_json);
+    const answer = completion.choices[0].message.content;
+    if (answer !== "Hello from the fake model" || finished.delta !== answer) {
+      throw new Error(`Smoke test failed: worker completion ${JSON.stringify(answer)} / streamed ${JSON.stringify(finished.delta)}`);
+    }
+    if (finished.result.model_used !== "tiny-local-model" || runtime.requests.at(-1).model !== "tiny-local-model") {
+      throw new Error("Smoke test failed: the placeholder model was not replaced by the worker's default");
+    }
+  } finally {
+    worker.kill("SIGTERM");
+    await runtime.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 async function startFakeLlm() {
   const requests = [];
   let rejectedOnce = false;
   const server = createServer((req, res) => {
+    if (req.method === "GET") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "tiny-local-model" }, { id: "text-embedding-tiny" }] }));
+      return;
+    }
     let raw = "";
     req.on("data", (chunk) => {
       raw += chunk;

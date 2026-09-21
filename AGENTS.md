@@ -185,6 +185,21 @@ self-bridge kinds against the local LAN. That path turns the server
 into a household worker for `api.twoody.com` (or a self-hosted Rails
 upstream) without exposing HA / the filesystem publicly.
 
+`llm_infer` follows the contract of the macOS and firmware workers, and
+the Rails side depends on it (`LocalLlmService.chat_via_bridge` reads
+`result["response_json"]`): stream from the runtime, PATCH each batch of
+text as `{status: "streaming", delta}` in order, finish with
+`{response_json, model_used, latency_ms}`. The pieces live in
+`src/executors/`: `completionStream.ts` (pure: SSE splitting, rebuilding
+the completion and its tool calls, relaying deltas at the pace of the link), `localModels.ts`
+(which runtime holds which model, placeholder → default model) and
+`llmInfer.ts`. The poll loop does not wait for a completion to finish:
+backend presence lasts 90 s and is only renewed by polling.
+
+`src/bridgeWorker.ts` is a second entry point that runs only this client
+(no Fastify, no SQLite). It must stay free of `db.js` imports. The
+desktop app forks it and configures it with a `configure` message.
+
 ## Granted folders on Linux
 
 macOS uses NSOpenPanel + security-scoped bookmarks. On Linux the

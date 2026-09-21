@@ -12,7 +12,7 @@
 
 import { runListDir } from "./listDir.js";
 import { runListFolders } from "./listFolders.js";
-import { runLlmInfer } from "./llmInfer.js";
+import { runLlmInfer, type LlmInferHooks } from "./llmInfer.js";
 import { runOcr, tesseractReady } from "./ocr.js";
 import { runRead } from "./read.js";
 import { runSearch } from "./search.js";
@@ -41,6 +41,7 @@ export function selfBridgeEnabled(): boolean {
 export async function executeBridgeTask(
   kind: SelfBridgeKind,
   args: Record<string, unknown>,
+  hooks: LlmInferHooks = {},
 ): Promise<unknown> {
   switch (kind) {
     case "search":
@@ -52,7 +53,7 @@ export async function executeBridgeTask(
     case "list_dir":
       return runListDir(args);
     case "llm_infer":
-      return runLlmInfer(args);
+      return runLlmInfer(args, hooks);
     case "transcribe":
       return runTranscribe(args);
     case "ocr_image":

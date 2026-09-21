@@ -201,6 +201,32 @@ also long-polls an upstream Twoody backend and claims `smart_home_proxy`
 app talk to `api.twoody.com` while a household Pi runs the local-only
 tasks behind the user's LAN.
 
+#### Lending local models to an account
+
+`llm_infer` tasks run a chat completion on a local OpenAI-compatible
+runtime. The worker always streams: each piece of text is sent to the
+backend as `PATCH {status: "streaming", delta}` while the model writes,
+and the task ends with `{response_json, model_used, latency_ms}`, where
+`response_json` is an ordinary completion rebuilt from the stream (tool
+calls included). A leading `<think>` block is dropped from both.
+
+| Variable | Meaning |
+|----------|---------|
+| `BRIDGE_LOCAL_LLM_ENDPOINTS` | comma-separated `/v1` roots, in order of preference (`http://127.0.0.1:8080/v1,http://127.0.0.1:11434/v1`). A model is sent to the runtime that lists it; a model none of them lists is refused (`model_not_installed`), so a request from the backend can never start a download. |
+| `BRIDGE_LOCAL_LLM_ENDPOINT` | a single root, for existing setups |
+| `BRIDGE_LOCAL_LLM_MODEL` | the model to run when the backend sends a placeholder (`local`, `auto`). Without it, the first model a runtime lists. |
+
+On every poll the worker sends `X-Bridge-Heartbeat` with the chat models
+its runtimes hold (`downloaded_models`), the one in use and the machine's
+memory. The apps build their list of local models from it.
+
+`node dist/bridgeWorker.js` runs this worker alone — no HTTP server, no
+database — for a machine that only lends its models. The desktop app
+starts it that way (configured over the utility-process channel rather
+than the environment, so the account token is not readable by other
+programs) when a user signed in to a cloud account picks a model
+installed on the computer.
+
 ### Mac → Pi document sync
 
 The in-process bridge executors search/read against the Pi's local

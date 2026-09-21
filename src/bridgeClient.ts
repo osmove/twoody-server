@@ -11,20 +11,27 @@
 // Contract mirrors `twoody-mac/apps/macos/TwoodyMac/Bridge/BridgeService.swift`:
 //   GET  /bridge/tasks/next?wait=25   →  204 or 200 {id, kind, args}
 //   PATCH /bridge/tasks/:id            ←  {status: "done"|"error", result|error_message}
+//   PATCH /bridge/tasks/:id            ←  {status: "streaming", delta}   (llm_infer, repeated)
 //
 // Auth: X-User-Token bearer (same token the chat clients use).
 // Identity: X-Bridge-Device-Id (a stable UUID persisted under
 // ~/.twoody-server/bridge-device-id so a restart keeps the same row in
 // the backend's devices table).
+// Heartbeat: a worker that serves `llm_infer` also sends
+// X-Bridge-Heartbeat on every poll — the models its runtimes hold, the
+// one in use, the machine's memory. That list is what lets the apps
+// offer each local model by name.
 //
 // Only the kinds this client knows how to run get claimed; everything
 // else is reported as an error so the backend's waiter unblocks.
 
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, totalmem } from "node:os";
 import { dirname, join } from "node:path";
+import { createDeltaRelay } from "./executors/completionStream.js";
 import { executeBridgeTask, isSelfBridgeKind, tesseractReady, whisperReady } from "./executors/index.js";
+import { configuredDefaultModel, downloadedModels } from "./executors/localModels.js";
 import { outboundFetch } from "./outbound.js";
 
 const POLL_WAIT_SECONDS = 25;
@@ -88,7 +95,12 @@ export interface BridgeClientOptions {
   deviceNickname?: string;
   deviceIdPath?: string;
   capabilities?: string[];
+  /// Called when the link to the backend changes state, so a host
+  /// process can tell its user whether this machine is reachable.
+  onState?: (state: BridgeClientState) => void;
 }
+
+export type BridgeClientState = "online" | "auth_failed" | "unreachable";
 
 export interface BridgeClientHandle {
   stop(): void;
@@ -143,7 +155,7 @@ function deriveCapabilities(): string[] {
   const selfBridge = process.env.TWOODY_SELF_BRIDGE === "1";
   const hasFolders = (process.env.TWOODY_BRIDGE_FOLDERS ?? "").trim().length > 0;
   if (selfBridge && hasFolders) caps.push("document-provider");
-  if ((process.env.BRIDGE_LOCAL_LLM_ENDPOINT ?? "").trim().length > 0) {
+  if (`${process.env.BRIDGE_LOCAL_LLM_ENDPOINT ?? ""}${process.env.BRIDGE_LOCAL_LLM_ENDPOINTS ?? ""}`.trim().length > 0) {
     caps.push("local-llm-provider");
   }
   if (
@@ -165,8 +177,12 @@ function deriveCapabilities(): string[] {
 
 export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle {
   const deviceId = resolveDeviceId(opts.deviceIdPath);
-  const nickname = opts.deviceNickname ?? "twoody-server";
+  const nickname = asciiHeaderValue(opts.deviceNickname ?? "twoody-server") || "twoody-server";
+  const servesLlm = opts.capabilities?.includes("local-llm-provider") ?? false;
   let stopped = false;
+  // What the last completions looked like, for the heartbeat.
+  let lastModel: string | null = null;
+  let tokensPerSecond: number | null = null;
 
   void pollLoop();
   void catalogPrewarmLoop();
@@ -242,10 +258,16 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
 
   async function pollLoop() {
     let consecutiveFailures = 0;
+    let state: BridgeClientState | null = null;
+    const report = (next: BridgeClientState) => {
+      if (next !== state) opts.onState?.(next);
+      state = next;
+    };
     while (!stopped) {
       try {
         const task = await pollOnce();
         consecutiveFailures = 0;
+        report("online");
         if (task) {
           console.log(
             `[bridge-client] claimed task ${task.id} kind=${task.kind} args=${argsPreview(task.args)}`,
@@ -256,7 +278,11 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
             status:     "claimed",
             claimed_at: new Date().toISOString(),
           });
-          await handleTask(task);
+          // A completion can run for a minute or more. Presence on the
+          // backend only lives 90 s and is renewed by polling, so the
+          // loop keeps polling while the model writes.
+          if (task.kind === "llm_infer") void handleTask(task);
+          else await handleTask(task);
         }
       } catch (error) {
         consecutiveFailures += 1;
@@ -265,6 +291,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
           BACKOFF_MAX_MS,
         );
         const message = error instanceof Error ? error.message : String(error);
+        report(message.startsWith("auth_failed") ? "auth_failed" : "unreachable");
         console.warn(
           `[bridge-client] poll failed (attempt ${consecutiveFailures}, backoff ${backoff}ms): ${message}`,
         );
@@ -285,6 +312,13 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
       };
       if (opts.capabilities && opts.capabilities.length > 0) {
         headers["X-Bridge-Capabilities"] = opts.capabilities.join(",");
+      }
+      if (servesLlm) {
+        headers["X-Bridge-Heartbeat"] = heartbeatHeader({
+          loadedModel: lastModel ?? configuredDefaultModel(),
+          tokensPerSecond,
+          downloadedModels: await downloadedModels(),
+        });
       }
       const res = await outboundFetch(
         `${opts.backendUrl}/bridge/tasks/next?wait=${POLL_WAIT_SECONDS}`,
@@ -352,15 +386,47 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
           // `read` / `list_folders` / `list_dir` / `llm_infer` tasks
           // that the legacy Mac Bridge used to claim. The Pi reuses
           // the same in-process executors here.
+          if (task.kind === "llm_infer") return runStreamedInference(task);
           return executeBridgeTask(task.kind, task.args);
         }
         throw new Error(`unsupported_kind:${task.kind}`);
     }
   }
 
+  // Relays the text to the backend while the model writes it. The pieces
+  // land in order (the backend appends them to a list and replays it),
+  // and the stream from the runtime never waits for a request: a slow
+  // uplink must not slow the model down.
+  async function runStreamedInference(task: Task): Promise<unknown> {
+    const relay = createDeltaRelay((delta) =>
+      patchTask(task.id, { status: "streaming", delta }).catch((err) => {
+        console.warn(`[bridge-client] delta not delivered for task ${task.id}: ${err instanceof Error ? err.message : err}`);
+      }),
+    );
+
+    try {
+      return await executeBridgeTask("llm_infer", task.args, {
+        onDelta: relay.push,
+        onStats: ({ model, completionTokens, latencyMs }) => {
+          lastModel = model;
+          if (completionTokens > 0 && latencyMs > 0) {
+            const measured = completionTokens / (latencyMs / 1000);
+            tokensPerSecond = tokensPerSecond === null ? measured : tokensPerSecond * 0.7 + measured * 0.3;
+          }
+        },
+      });
+    } finally {
+      // Every piece must be in before the task is reported as over.
+      await relay.drain();
+    }
+  }
+
   async function patchTask(
     id: string,
-    body: { status: "done"; result: unknown } | { status: "error"; error_message: string },
+    body:
+      | { status: "done"; result: unknown }
+      | { status: "error"; error_message: string }
+      | { status: "streaming"; delta: string },
   ) {
     const res = await outboundFetch(`${opts.backendUrl}/bridge/tasks/${id}`, {
       method: "PATCH",
@@ -420,6 +486,38 @@ async function runSmartHomeProxy(
     }
   }
   return { status: res.status, body: parsed };
+}
+
+// ── Heartbeat ─────────────────────────────────────────────────────────
+
+const HEARTBEAT_MAX_MODELS = 60;
+
+/// One-line JSON for the X-Bridge-Heartbeat header. A value that could
+/// not be measured is left out rather than sent as a misleading zero.
+export function heartbeatHeader(input: {
+  loadedModel: string | null;
+  tokensPerSecond: number | null;
+  downloadedModels: string[];
+}): string {
+  const payload: Record<string, unknown> = {};
+  if (input.loadedModel) payload.loaded_model = input.loadedModel;
+  payload.ram_total_gb = Math.round((totalmem() / 2 ** 30) * 10) / 10;
+  if (input.tokensPerSecond !== null) payload.tok_per_sec_recent = Math.round(input.tokensPerSecond * 10) / 10;
+  if (input.downloadedModels.length > 0) payload.downloaded_models = input.downloadedModels.slice(0, HEARTBEAT_MAX_MODELS);
+  // Header values must be ASCII; JSON can spell anything else as \uXXXX.
+  return JSON.stringify(payload).replace(/[^\x20-\x7e]/g, (char) => "\\u" + char.charCodeAt(0).toString(16).padStart(4, "0"));
+}
+
+/// A computer name goes into a header as is, and macOS names contain
+/// typographic apostrophes and accents ("Jimmy’s MacBook Pro") that an
+/// HTTP client refuses there.
+export function asciiHeaderValue(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u2018\u2019\u02bc]/g, "'")
+    .replace(/[^\x20-\x7e]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 // ── Stable device identity ────────────────────────────────────────────
