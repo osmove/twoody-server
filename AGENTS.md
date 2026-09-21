@@ -65,6 +65,15 @@ blanket reuse window: it made "New conversation" in the desktop chat keep
 writing into the previous thread, and handed that thread to the model as
 history.
 
+A local runtime may ask for an API key: the one the desktop app ships is
+started with a key generated at each launch, because anything on the
+computer — a web page included — can reach a loopback port. The app hands
+the key over (`TWOODY_RUNTIME_KEYS`, a JSON map of base URL to key, for the
+embedded server; the `runtimeKeys` field of the worker's messages) and
+`src/runtimeAuth.ts` attaches it to the calls made to that runtime only.
+A key is never stored, and never accepted for an address that is not
+loopback.
+
 Keep anything that changes per turn out of the system message: local
 runtimes reuse their KV cache for the unchanged prefix, which is what
 makes follow-up turns fast.

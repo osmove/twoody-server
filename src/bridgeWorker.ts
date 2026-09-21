@@ -18,6 +18,7 @@
 
 import { readBridgeClientEnv, startBridgeClient, type BridgeClientHandle, type BridgeClientState } from "./bridgeClient.js";
 import { configureLocalModels } from "./executors/localModels.js";
+import { configureRuntimeKeys } from "./runtimeAuth.js";
 
 interface ConfigureMessage {
   type: "configure";
@@ -28,12 +29,15 @@ interface ConfigureMessage {
   deviceIdPath?: string;
   endpoints?: string[];
   defaultModel?: string | null;
+  /// Keys of the runtimes that ask for one, by base URL (see runtimeAuth.ts).
+  runtimeKeys?: Record<string, string>;
 }
 
 interface ModelsMessage {
   type: "models";
   endpoints?: string[];
   defaultModel?: string | null;
+  runtimeKeys?: Record<string, string>;
 }
 
 type ParentMessage = ConfigureMessage | ModelsMessage | { type: "stop" };
@@ -69,9 +73,11 @@ function start(options: Omit<ConfigureMessage, "type" | "endpoints" | "defaultMo
 if (parentPort) {
   parentPort.on("message", ({ data }) => {
     if (data.type === "configure") {
+      if (data.runtimeKeys) configureRuntimeKeys(data.runtimeKeys);
       configureLocalModels({ endpoints: data.endpoints, defaultModel: data.defaultModel });
       start(data);
     } else if (data.type === "models") {
+      if (data.runtimeKeys) configureRuntimeKeys(data.runtimeKeys);
       configureLocalModels({ endpoints: data.endpoints, defaultModel: data.defaultModel });
     } else if (data.type === "stop") {
       client?.stop();

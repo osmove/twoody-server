@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { outboundFetch } from "../outbound.js";
+import { runtimeAuthHeaders } from "../runtimeAuth.js";
 import { createThinkFilter } from "../thinkFilter.js";
 import { createCompletionAccumulator, createSseDataParser } from "./completionStream.js";
 import { resolveTarget } from "./localModels.js";
@@ -60,7 +61,7 @@ export async function runLlmInfer(args: Record<string, unknown>, hooks: LlmInfer
   const post = (payload: object) =>
     outboundFetch(`${endpoint}/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...runtimeAuthHeaders(endpoint) },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(inferenceTimeoutMs(body.max_tokens)),
     });

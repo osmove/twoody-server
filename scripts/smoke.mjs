@@ -776,6 +776,8 @@ async function smokeBridgeWorker(token) {
       TWOODY_BRIDGE_DEVICE_NICKNAME: "Smoke\u2019s Mac",
       BRIDGE_LOCAL_LLM_ENDPOINTS: `http://${HOST}:9/v1,${runtime.url}/v1`, // the first one is down
       BRIDGE_LOCAL_LLM_MODEL: "tiny-local-model",
+      // A runtime that asks for a key (the one the desktop app ships).
+      TWOODY_RUNTIME_KEYS: JSON.stringify({ [`${runtime.url}/v1`]: "smoke-key" }),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -818,6 +820,9 @@ async function smokeBridgeWorker(token) {
     if (answer !== "Hello from the fake model" || finished.delta !== answer) {
       throw new Error(`Smoke test failed: worker completion ${JSON.stringify(answer)} / streamed ${JSON.stringify(finished.delta)}`);
     }
+    if (runtime.authorizations.length === 0 || runtime.authorizations.some((value) => value !== "Bearer smoke-key")) {
+      throw new Error(`Smoke test failed: the worker did not present the runtime's key on every call (${JSON.stringify(runtime.authorizations)})`);
+    }
     if (finished.result.model_used !== "tiny-local-model" || runtime.requests.at(-1).model !== "tiny-local-model") {
       throw new Error("Smoke test failed: the placeholder model was not replaced by the worker's default");
     }
@@ -831,8 +836,10 @@ async function smokeBridgeWorker(token) {
 async function startFakeLlm() {
   const requests = [];
   const abandoned = [];
+  const authorizations = [];
   let rejectedOnce = false;
   const server = createServer((req, res) => {
+    authorizations.push(req.headers.authorization ?? null);
     if (req.method === "GET") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ data: [{ id: "tiny-local-model" }, { id: "text-embedding-tiny" }] }));
@@ -880,6 +887,7 @@ async function startFakeLlm() {
     url: `http://${HOST}:${server.address().port}`,
     requests,
     abandoned,
+    authorizations,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }

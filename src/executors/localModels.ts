@@ -1,4 +1,5 @@
 import { outboundFetch } from "../outbound.js";
+import { runtimeAuthHeaders } from "../runtimeAuth.js";
 
 // Which local runtimes this worker can use, which models they hold, and
 // which runtime serves a given model.
@@ -73,7 +74,10 @@ export async function listRuntimeModels(options: { fresh?: boolean } = {}): Prom
   const runtimes = await Promise.all(
     configuredEndpoints().map(async (endpoint): Promise<RuntimeModels> => {
       try {
-        const res = await outboundFetch(`${endpoint}/models`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+        const res = await outboundFetch(`${endpoint}/models`, {
+          headers: runtimeAuthHeaders(endpoint),
+          signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+        });
         if (!res.ok) return { endpoint, models: [] };
         const payload = (await res.json()) as { data?: Array<{ id?: unknown }> };
         const models = (payload.data ?? [])

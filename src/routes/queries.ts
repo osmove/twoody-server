@@ -12,6 +12,7 @@ import {
   type MemoryRow,
 } from "../chatContext.js";
 import { chooseDiscussion, reuseWindowMs } from "../discussionWindow.js";
+import { runtimeAuthHeaders } from "../runtimeAuth.js";
 import { createThinkFilter } from "../thinkFilter.js";
 import { hasIndexedDocuments, searchPassages } from "../documents/library.js";
 import { LOCAL_ONLY, LocalOnlyError, outboundFetch } from "../outbound.js";
@@ -652,7 +653,7 @@ async function streamLocal(
     try {
       return await outboundFetch(endpoint + "/chat/completions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...runtimeAuthHeaders(endpoint) },
         body: JSON.stringify(payload),
         signal,
       });

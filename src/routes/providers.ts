@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { db, providers } from "../db.js";
 import { generateId, requireAuth } from "../auth.js";
 import { outboundFetch } from "../outbound.js";
+import { runtimeAuthHeaders } from "../runtimeAuth.js";
 
 type ProviderPatchBody = {
   name?: string;
@@ -50,6 +51,7 @@ async function pingOpenAICompatible(baseUrl: string): Promise<{
   const started = Date.now();
   try {
     const response = await outboundFetch(`${baseUrl.replace(/\/$/, "")}/models`, {
+      headers: runtimeAuthHeaders(baseUrl),
       signal: AbortSignal.timeout(2500),
     });
     return {
