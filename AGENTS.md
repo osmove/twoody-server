@@ -38,6 +38,36 @@ Future routes should be versioned or covered by an OpenAPI/conformance test befo
   surface; this repo is the backend contract, not just one implementation detail.
 - Do not log secrets, user LLM keys, auth tokens, or local filesystem paths unnecessarily.
 
+## Chat context (`/queries`)
+
+Every turn sends the model a full message list, built by the pure
+`src/chatContext.ts` (no DB access, unit-tested in `test/`):
+
+1. One system message: base prompt (or the user's `system_prompt` pref,
+   which replaces it when `system_prompt_replace_base` is true), the date
+   at day granularity, the user's name, and `user` / `feedback` memories.
+2. The discussion history, newest messages first within
+   `TWOODY_HISTORY_MAX_MESSAGES` (20) and `TWOODY_HISTORY_MAX_CHARS`
+   (16000). Roles always alternate starting with `user`; an unanswered
+   prompt is folded into the next one.
+3. The current prompt, prefixed with the `project` / `reference`
+   memories whose text matches it. `memory_enabled: false` disables both
+   memory paths.
+
+Keep anything that changes per turn out of the system message: local
+runtimes reuse their KV cache for the unchanged prefix, which is what
+makes follow-up turns fast.
+
+Local providers also get `max_tokens` (`TWOODY_LOCAL_MAX_TOKENS`, 2048)
+and `chat_template_kwargs.enable_thinking: false`, retried without the
+latter on a 400/422. `src/thinkFilter.ts` drops a leading
+`<think>…</think>` block from the stream. Not handled yet: templates that
+pre-fill `<think>` so only the closing tag reaches the content stream.
+
+Run `npm test` (node:test via tsx) and `npm run smoke`; the smoke test
+asserts what a second turn puts on the wire using a fake
+OpenAI-compatible server.
+
 ## Vocabulary: capability vs skill vs built-in capability
 
 Three "capability"-flavoured terms coexist; they describe different

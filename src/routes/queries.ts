@@ -1,9 +1,17 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { requireAuth, generateId } from "../auth.js";
-import { db, providers, discussions, messages } from "../db.js";
-import { and, eq } from "drizzle-orm";
+import { db, providers, discussions, messages, memories, users } from "../db.js";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { transcribeWavWithWhisperCpp, WhisperUnavailableError } from "../whisper.js";
 import { publish as publishEvent } from "../events.js";
+import {
+  buildChatMessages,
+  HISTORY_MAX_MESSAGES,
+  type ChatMessage,
+  type HistoryRow,
+  type MemoryRow,
+} from "../chatContext.js";
+import { createThinkFilter } from "../thinkFilter.js";
 
 interface QueryBody {
   content?: string;
@@ -100,6 +108,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     channel,
   );
 
+  // Read the thread before the new prompt lands in it, so the history
+  // handed to the model never contains the current turn twice.
+  const history = loadHistory(discussion.id);
+
   // Persist the user prompt up front so a streaming failure doesn't
   // erase the question. Assistant message is inserted after the
   // stream completes (or with a partial body on error).
@@ -155,7 +167,14 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   let aggregated = "";
   try {
     const provider = resolveProvider(auth.userId, model);
-    await streamFromProvider(provider, content, (delta) => {
+    const userContext = loadUserContext(auth.userId);
+    const chatMessages = buildChatMessages({
+      ...userContext,
+      history,
+      content,
+      local: provider.kind === "local_openai",
+    });
+    const thinkFilter = createThinkFilter((delta) => {
       startSse();
       aggregated += delta;
       // Cloud-compat shape: per-token `event: message` with the
@@ -163,6 +182,13 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       // on event-name boundaries.
       reply.raw.write(`event: message\ndata: ${escapeData(delta)}\n\n`);
     });
+    await streamFromProvider(
+      provider,
+      chatMessages,
+      readTemperature(userContext.prefs),
+      thinkFilter.push,
+    );
+    thinkFilter.flush();
     startSse();
 
     // Persist the assistant reply now that we have the full body.
@@ -350,24 +376,33 @@ function resolveProvider(userId: string, requestedModel?: string): Provider {
 
 async function streamFromProvider(
   provider: Provider,
-  content: string,
+  chatMessages: ChatMessage[],
+  temperature: number | undefined,
   onDelta: (text: string) => void
 ) {
   switch (provider.kind) {
     case "openai":
-      return streamOpenAI(content, provider.model, onDelta);
+      return streamOpenAI(chatMessages, provider.model, temperature, onDelta);
     case "anthropic":
-      return streamAnthropic(content, provider.model, onDelta);
+      return streamAnthropic(chatMessages, provider.model, temperature, onDelta);
     case "gemini":
-      return streamGemini(content, provider.model, onDelta);
+      return streamGemini(chatMessages, provider.model, temperature, onDelta);
     case "local_openai":
-      return streamLocal(provider.baseUrl, content, provider.model, onDelta);
+      return streamLocal(provider.baseUrl, chatMessages, provider.model, temperature, onDelta);
   }
 }
 
+/// `default_temperature` comes from the client-owned prefs blob, so it
+/// is only trusted when it is a number in the usual 0–2 range.
+function readTemperature(prefs: Record<string, unknown>): number | undefined {
+  const value = prefs.default_temperature;
+  return typeof value === "number" && value >= 0 && value <= 2 ? value : undefined;
+}
+
 async function streamOpenAI(
-  content: string,
+  chatMessages: ChatMessage[],
   model: string,
+  temperature: number | undefined,
   onDelta: (t: string) => void
 ) {
   const key = process.env.OPENAI_API_KEY;
@@ -381,8 +416,10 @@ async function streamOpenAI(
     },
     body: JSON.stringify({
       model,
-      messages: [{ role: "user", content }],
+      messages: chatMessages,
       stream: true,
+      // gpt-5+ and the o-series reject a custom temperature.
+      ...(temperature !== undefined && !/^(gpt-5|o\d)/.test(model) ? { temperature } : {}),
     }),
   });
 
@@ -395,8 +432,9 @@ async function streamOpenAI(
 }
 
 async function streamAnthropic(
-  content: string,
+  chatMessages: ChatMessage[],
   model: string,
+  temperature: number | undefined,
   onDelta: (t: string) => void
 ) {
   const key = process.env.ANTHROPIC_API_KEY;
@@ -412,8 +450,12 @@ async function streamAnthropic(
     body: JSON.stringify({
       model,
       max_tokens: 4096,
-      messages: [{ role: "user", content }],
+      // Anthropic takes the system prompt as a top-level field and
+      // caps temperature at 1.
+      system: systemText(chatMessages),
+      messages: chatMessages.filter((message) => message.role !== "system"),
       stream: true,
+      ...(temperature !== undefined ? { temperature: Math.min(temperature, 1) } : {}),
     }),
   });
 
@@ -453,8 +495,9 @@ async function streamAnthropic(
 }
 
 async function streamGemini(
-  content: string,
+  chatMessages: ChatMessage[],
   model: string,
+  temperature: number | undefined,
   onDelta: (t: string) => void
 ) {
   const key = process.env.GEMINI_API_KEY;
@@ -465,7 +508,15 @@ async function streamGemini(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: content }] }],
+      systemInstruction: { parts: [{ text: systemText(chatMessages) }] },
+      // Gemini names the assistant role "model".
+      contents: chatMessages
+        .filter((message) => message.role !== "system")
+        .map((message) => ({
+          role: message.role === "assistant" ? "model" : "user",
+          parts: [{ text: message.content }],
+        })),
+      ...(temperature !== undefined ? { generationConfig: { temperature } } : {}),
     }),
   });
 
@@ -504,26 +555,49 @@ async function streamGemini(
   }
 }
 
+// mlx-lm stops at 512 tokens unless told otherwise, which cuts a
+// drafted letter or summary short. Override with TWOODY_LOCAL_MAX_TOKENS.
+const LOCAL_MAX_TOKENS = (() => {
+  const parsed = parseInt(process.env.TWOODY_LOCAL_MAX_TOKENS ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 2048;
+})();
+
 async function streamLocal(
   baseUrl: string,
-  content: string,
+  chatMessages: ChatMessage[],
   model: string,
+  temperature: number | undefined,
   onDelta: (t: string) => void
 ) {
   const endpoint = baseUrl.replace(/\/$/, "");
-  let res: Response;
-  try {
-    res = await fetch(endpoint + "/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "user", content }],
-        stream: true,
-      }),
-    });
-  } catch {
-    throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
+  const body = {
+    model,
+    messages: chatMessages,
+    stream: true,
+    max_tokens: LOCAL_MAX_TOKENS,
+    ...(temperature !== undefined ? { temperature } : {}),
+  };
+  // Qwen3-style models otherwise reason silently for 20-40 s before
+  // the first token. mlx-lm, vLLM and llama.cpp honour this switch and
+  // Ollama ignores it; a strict OpenAI-compatible server may reject the
+  // unknown field, hence the plain retry below.
+  const withoutThinking = { ...body, chat_template_kwargs: { enable_thinking: false } };
+
+  const post = async (payload: object): Promise<Response> => {
+    try {
+      return await fetch(endpoint + "/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
+    }
+  };
+
+  let res = await post(withoutThinking);
+  if (res.status === 400 || res.status === 422) {
+    res = await post(body);
   }
 
   if (!res.ok) {
@@ -531,6 +605,13 @@ async function streamLocal(
   }
 
   await consumeOpenAIStream(res, onDelta);
+}
+
+function systemText(chatMessages: ChatMessage[]): string {
+  return chatMessages
+    .filter((message) => message.role === "system")
+    .map((message) => message.content)
+    .join("\n\n");
 }
 
 async function consumeOpenAIStream(
@@ -615,6 +696,46 @@ function resolveDiscussion(
     })
     .run();
   return { id, title: null };
+}
+
+function loadHistory(discussionId: string): HistoryRow[] {
+  // `created_at` has one-second resolution, so a fast reply can share
+  // its timestamp with the prompt. `rowid` keeps insertion order.
+  const rows = db
+    .select({ role: messages.role, content: messages.content })
+    .from(messages)
+    .where(eq(messages.discussionId, discussionId))
+    .orderBy(desc(messages.createdAt), sql`rowid DESC`)
+    // Twice the cap: the trimmer skips empty rows and folds unanswered
+    // prompts together, so it needs some slack to fill its window.
+    .limit(HISTORY_MAX_MESSAGES * 2)
+    .all();
+  return rows.reverse();
+}
+
+function loadUserContext(userId: string): {
+  userName: string | null;
+  prefs: Record<string, unknown>;
+  memories: MemoryRow[];
+} {
+  const [user] = db.select().from(users).where(eq(users.id, userId)).limit(1).all();
+
+  let prefs: Record<string, unknown> = {};
+  try {
+    prefs = JSON.parse(user?.prefsJson || "{}");
+  } catch {
+    prefs = {};
+  }
+
+  const rows = db
+    .select({ kind: memories.kind, title: memories.title, content: memories.content })
+    .from(memories)
+    .where(and(eq(memories.userId, userId), isNull(memories.supersededById)))
+    .orderBy(desc(memories.updatedAt), asc(memories.id))
+    .limit(200)
+    .all();
+
+  return { userName: user?.name ?? null, prefs, memories: rows };
 }
 
 function insertMessage(args: {

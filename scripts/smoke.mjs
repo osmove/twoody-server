@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const PORT = process.env.PORT || "4320";
@@ -172,6 +173,49 @@ try {
   });
   if (localDownQuery.error !== "local_llm_unavailable") {
     throw new Error("Smoke test failed: local provider down should return local_llm_unavailable");
+  }
+
+  // Chat context: point the provider at a fake OpenAI-compatible
+  // server and check what a second turn actually puts on the wire.
+  const fakeLlm = await startFakeLlm();
+  try {
+    await jsonFetch(`/providers/${provider.provider.id}`, {
+      method: "PATCH",
+      headers: authHeaders(token),
+      body: JSON.stringify({ url: `${fakeLlm.url}/v1`, model: "tiny-local-model" }),
+    });
+    await jsonFetch("/memories", {
+      method: "POST",
+      headers: authHeaders(token),
+      expectedStatus: 201,
+      body: JSON.stringify({ memory: { kind: "user", title: "Job", content: "Patent attorney in Lyon." } }),
+    });
+
+    const firstTurn = await sseQuery(token, { content: "My client is called Dupont." });
+    if (firstTurn.final?.text !== "Hello from the fake model") {
+      throw new Error(`Smoke test failed: reasoning block leaked into the reply: ${JSON.stringify(firstTurn.final)}`);
+    }
+    if (fakeLlm.requests.length !== 2 || !fakeLlm.requests[0].chat_template_kwargs || fakeLlm.requests[1].chat_template_kwargs) {
+      throw new Error("Smoke test failed: /queries did not retry without chat_template_kwargs after a 400");
+    }
+
+    await sseQuery(token, { content: "What is my client's name?", discussion_id: firstTurn.final.discussion_id });
+    const sent = fakeLlm.requests[fakeLlm.requests.length - 1].messages;
+    const roles = sent.map((message) => message.role).join(",");
+    if (roles !== "system,user,assistant,user") {
+      throw new Error(`Smoke test failed: unexpected chat roles on the wire: ${roles}`);
+    }
+    if (!sent[0].content.includes("Patent attorney in Lyon.")) {
+      throw new Error("Smoke test failed: profile memory missing from the system prompt");
+    }
+    if (!sent[1].content.includes("Dupont") || sent[2].content !== "Hello from the fake model") {
+      throw new Error("Smoke test failed: previous turn missing from the chat history");
+    }
+    if (sent[3].content !== "What is my client's name?") {
+      throw new Error("Smoke test failed: current prompt is not the last message");
+    }
+  } finally {
+    await fakeLlm.close();
   }
 
   await jsonFetch("/devices/llm_keys", {
@@ -408,6 +452,58 @@ async function jsonFetch(path, options = {}) {
   }
 
   return payload;
+}
+
+// Minimal OpenAI-compatible streaming endpoint. It rejects
+// `chat_template_kwargs` once, the way a strict server would, and opens
+// its reply with a reasoning block the way Qwen3 does.
+async function startFakeLlm() {
+  const requests = [];
+  let rejectedOnce = false;
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += chunk;
+    });
+    req.on("end", () => {
+      const body = JSON.parse(raw);
+      requests.push(body);
+      if (body.chat_template_kwargs && !rejectedOnce) {
+        rejectedOnce = true;
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "unknown field chat_template_kwargs" }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      for (const content of ["<think>", "reasoning…", "</think>\n\n", "Hello from ", "the fake model"]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
+      }
+      res.end("data: [DONE]\n\n");
+    });
+  });
+  await new Promise((resolve) => server.listen(0, HOST, resolve));
+  return {
+    url: `http://${HOST}:${server.address().port}`,
+    requests,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
+
+async function sseQuery(token, body) {
+  const response = await fetch(`${API_BASE_URL}/queries`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  if (response.status !== 200) {
+    throw new Error(`Smoke test failed: POST /queries -> expected 200, got ${response.status}\n${text}\n${logs}`);
+  }
+  const finalEvent = text.split("\n\n").find((block) => block.startsWith("event: final"));
+  return {
+    text,
+    final: finalEvent ? JSON.parse(finalEvent.slice(finalEvent.indexOf("data: ") + 6)) : null,
+  };
 }
 
 function jsonHeaders() {
