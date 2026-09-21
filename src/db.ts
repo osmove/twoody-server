@@ -3,13 +3,34 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { join } from "path";
 import { homedir } from "os";
-import { mkdirSync } from "fs";
+import { chmodSync, existsSync, mkdirSync } from "fs";
 
 export const DATA_DIR =
   process.env.TWOODY_DATA_DIR ?? join(homedir(), ".twoody", "data");
-mkdirSync(DATA_DIR, { recursive: true });
+mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 
-const sqlite = new Database(join(DATA_DIR, "local.db"));
+const DB_PATH = join(DATA_DIR, "local.db");
+const sqlite = new Database(DB_PATH);
+
+// Conversations, memories and voice samples live in this file, so keep
+// it to the account that runs the server. The directory and the
+// database are tightened on every boot (existing installs were created
+// with the default umask); SQLite gives new -wal / -shm files the
+// permissions of the main database, hence the chmod before WAL is
+// switched on. Best-effort: some filesystems have no POSIX modes.
+for (const [path, mode] of [
+  [DATA_DIR, 0o700],
+  [DB_PATH, 0o600],
+  [`${DB_PATH}-wal`, 0o600],
+  [`${DB_PATH}-shm`, 0o600],
+] as const) {
+  try {
+    if (existsSync(path)) chmodSync(path, mode);
+  } catch {
+    // Leave the server usable on filesystems that refuse chmod.
+  }
+}
+
 sqlite.pragma("journal_mode = WAL");
 sqlite.pragma("foreign_keys = ON");
 

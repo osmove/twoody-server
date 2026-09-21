@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { requireAuth } from "../auth.js";
+import { generateId, requireAuth } from "../auth.js";
 import { executeLocalTool } from "../tools.js";
 import {
   executeBridgeTask,
@@ -42,6 +42,9 @@ type LocalOnlyTaskKind = (typeof LOCAL_ONLY_TASK_KINDS)[number];
 // Phase 2 will move this to Redis for multi-process support
 interface BridgeTask {
   id: string;
+  /// Owner of the task. A worker only ever sees, and reports on, tasks
+  /// enqueued by the account its own token belongs to.
+  userId: string;
   kind: BridgeTaskKind | LocalOnlyTaskKind;
   args: Record<string, unknown>;
   enqueuedAt: Date;
@@ -89,13 +92,15 @@ type CapabilityKind = (typeof CAPABILITY_KINDS)[number];
 // Bridge/capability heartbeat presence (keyed by device_id)
 const bridgePresence = new Map<
   string,
-  { nickname?: string; capabilities: CapabilityKind[]; lastSeen: Date }
+  { userId: string; nickname?: string; capabilities: CapabilityKind[]; lastSeen: Date }
 >();
 
-function hasActiveBridge() {
+function hasActiveBridge(userId: string) {
   if (selfBridgeEnabled()) return true;
   const cutoff = new Date(Date.now() - 90_000);
-  return [...bridgePresence.values()].some((entry) => entry.lastSeen > cutoff);
+  return [...bridgePresence.values()].some(
+    (entry) => entry.userId === userId && entry.lastSeen > cutoff
+  );
 }
 
 function isBridgeTaskKind(value: string): value is BridgeTaskKind {
@@ -149,8 +154,15 @@ export async function bridgeRoutes(app: FastifyInstance) {
       schema: {
         tags: ["bridge"],
         summary: "Long-poll the next bridge task",
+        security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
       },
       handler: async (req, reply) => {
+        // Task args carry search terms and full `llm_infer` prompts, so
+        // a worker must present a token (the session from `/auth/pair`
+        // or a paired device token) and only gets its own user's tasks.
+        const auth = await requireAuth(req, reply);
+        if (!auth) return;
+
         const deviceId = req.headers["x-bridge-device-id"] as string | undefined;
         const nickname = req.headers["x-bridge-device-nickname"] as string | undefined;
         const capabilities = parseCapabilities(
@@ -159,7 +171,12 @@ export async function bridgeRoutes(app: FastifyInstance) {
         );
 
         if (deviceId) {
-          bridgePresence.set(deviceId, { nickname, capabilities, lastSeen: new Date() });
+          bridgePresence.set(deviceId, {
+            userId: auth.userId,
+            nickname,
+            capabilities,
+            lastSeen: new Date(),
+          });
         }
 
         const wait = Math.min(parseInt(req.query.wait ?? "0", 10), 30);
@@ -169,6 +186,7 @@ export async function bridgeRoutes(app: FastifyInstance) {
         while (true) {
           const task = taskQueue.find((t) => {
             if (t.status !== "pending") return false;
+            if (t.userId !== auth.userId) return false;
             // Tasks already routed to the in-process executor stay
             // off the worker poll path so they don't get claimed
             // twice.
@@ -208,10 +226,16 @@ export async function bridgeRoutes(app: FastifyInstance) {
     schema: {
       tags: ["bridge"],
       summary: "Report bridge task progress or completion",
+      security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
     },
     handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+
       const task = taskMap.get(req.params.id);
-      if (!task) return reply.code(404).send({ error: "Task not found" });
+      if (!task || task.userId !== auth.userId) {
+        return reply.code(404).send({ error: "Task not found" });
+      }
 
       task.status = req.body.status;
       if (req.body.delta) task.delta = (task.delta ?? "") + req.body.delta;
@@ -234,7 +258,9 @@ export async function bridgeRoutes(app: FastifyInstance) {
       if (!auth) return;
 
       const task = taskMap.get(req.params.id);
-      if (!task) return reply.code(404).send({ error: "Task not found" });
+      if (!task || task.userId !== auth.userId) {
+        return reply.code(404).send({ error: "Task not found" });
+      }
 
       reply.send({
         id: task.id,
@@ -260,7 +286,9 @@ export async function bridgeRoutes(app: FastifyInstance) {
       if (!auth) return;
 
       const cutoff = new Date(Date.now() - 90_000);
-      const active = [...bridgePresence.entries()].filter(([, v]) => v.lastSeen > cutoff);
+      const active = [...bridgePresence.entries()].filter(
+        ([, v]) => v.userId === auth.userId && v.lastSeen > cutoff
+      );
 
       reply.send({
         active: active.length > 0,
@@ -287,13 +315,14 @@ export async function bridgeRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
 
-      if (!hasActiveBridge()) {
+      if (!hasActiveBridge(auth.userId)) {
         return reply.code(503).send({ error: "bridge_offline" });
       }
 
-      const id = Math.random().toString(36).slice(2);
+      const id = generateId();
       const task: BridgeTask = {
         id,
+        userId: auth.userId,
         kind: "list_folders",
         args: {},
         enqueuedAt: new Date(),
@@ -340,13 +369,14 @@ export async function bridgeRoutes(app: FastifyInstance) {
         const auth = await requireAuth(req, reply);
         if (!auth) return;
 
-        if (!hasActiveBridge()) {
+        if (!hasActiveBridge(auth.userId)) {
           return reply.code(503).send({ error: "bridge_offline" });
         }
 
-        const id = Math.random().toString(36).slice(2);
+        const id = generateId();
         const task: BridgeTask = {
           id,
+          userId: auth.userId,
           kind: "list_dir",
           args: {
             folder_id: req.params.folder_id,
@@ -408,9 +438,10 @@ export async function bridgeRoutes(app: FastifyInstance) {
         });
       }
 
-      const id = Math.random().toString(36).slice(2);
+      const id = generateId();
       const task: BridgeTask = {
         id,
+        userId: auth.userId,
         kind,
         args,
         enqueuedAt: new Date(),

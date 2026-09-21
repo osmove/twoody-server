@@ -294,6 +294,64 @@ try {
     throw new Error("Smoke test failed: bridge offline error contract changed");
   }
 
+  // Bridge worker routes: a token is required, a worker only ever sees
+  // its own user's tasks, and task ids are not guessable.
+  await jsonFetch("/bridge/tasks/next", { expectedStatus: 401 });
+  await jsonFetch("/bridge/tasks/anything", {
+    method: "PATCH",
+    headers: jsonHeaders(),
+    expectedStatus: 401,
+    body: JSON.stringify({ status: "done", result: {} }),
+  });
+
+  const enqueued = await jsonFetch("/bridge/tasks", {
+    method: "POST",
+    headers: authHeaders(token),
+    expectedStatus: 201,
+    body: JSON.stringify({ kind: "search", args: { query: "contrat Dupont" } }),
+  });
+  if (!/^[0-9a-f]{32}$/.test(enqueued.id)) {
+    throw new Error(`Smoke test failed: bridge task id is not a random 128-bit id: ${enqueued.id}`);
+  }
+
+  const claimed = await jsonFetch("/bridge/tasks/next", {
+    headers: { ...authHeaders(token), "x-bridge-device-id": "smoke-worker" },
+  });
+  if (claimed.id !== enqueued.id || claimed.args?.query !== "contrat Dupont") {
+    throw new Error("Smoke test failed: authenticated worker did not receive the queued task");
+  }
+
+  await fetch(`${API_BASE_URL}/bridge/tasks/${enqueued.id}`, {
+    method: "PATCH",
+    headers: authHeaders(token),
+    body: JSON.stringify({ status: "done", result: { hits: [] } }),
+  }).then((response) => {
+    if (response.status !== 204) {
+      throw new Error(`Smoke test failed: worker report -> expected 204, got ${response.status}`);
+    }
+  });
+  const finished = await jsonFetch(`/bridge/tasks/${enqueued.id}`, { headers: authHeaders(token) });
+  if (finished.status !== "done") {
+    throw new Error("Smoke test failed: bridge task result was not recorded");
+  }
+
+  // The MCP proxy acts with the user's token upstream: never open.
+  const mcpAnonymous = await fetch(`${BASE_URL}/mcp`, { method: "POST", headers: jsonHeaders(), body: "{}" });
+  if (mcpAnonymous.status !== 401) {
+    throw new Error(`Smoke test failed: anonymous /mcp -> expected 401, got ${mcpAnonymous.status}`);
+  }
+
+  // The admin page answers this machine, and refuses a cross-site read
+  // (CORS reflects any origin, so the browser would otherwise allow it).
+  const adminLocal = await fetch(`${BASE_URL}/admin`);
+  if (adminLocal.status !== 200) {
+    throw new Error(`Smoke test failed: /admin from loopback -> ${adminLocal.status}`);
+  }
+  const adminCrossSite = await fetch(`${BASE_URL}/admin`, { headers: { "sec-fetch-site": "cross-site" } });
+  if (adminCrossSite.status !== 403) {
+    throw new Error(`Smoke test failed: cross-site /admin -> ${adminCrossSite.status}`);
+  }
+
   const reminder = await jsonFetch("/reminders", {
     method: "POST",
     headers: authHeaders(token),

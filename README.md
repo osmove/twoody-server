@@ -102,13 +102,13 @@ TWOODY_PAIRING_CODE=A7B9C2D4 npm run dev
 | `GET` | `/devices/llm_keys` | local BYOK keys for firmware |
 | `POST` | `/devices/stereo_pair` | stereo pairing registration |
 | `POST` | `/tool_calls` | local tool execution for voice / realtime sessions |
-| `GET` | `/bridge/tasks/next` | Mac Bridge long-poll |
-| `PATCH` | `/bridge/tasks/:id` | Bridge task result/progress |
+| `GET` | `/bridge/tasks/next` | Bridge worker long-poll (token required, own user's tasks only) |
+| `PATCH` | `/bridge/tasks/:id` | Bridge task result/progress (token required) |
 | `GET` | `/bridge/tasks/:id` | poll task completion |
 | `POST` | `/bridge/tasks` | enqueue Bridge task |
 | `GET` | `/bridge/presence` | Bridge/capability presence for CLI status |
 | `GET/POST/PATCH/DELETE` | `/members*` | members + enrollment assets |
-| `GET` | `/admin` | minimal local admin page |
+| `GET` | `/admin` | minimal admin page — this machine only, or `TWOODY_ADMIN_TOKEN` from elsewhere |
 
 ## Environment
 
@@ -123,6 +123,7 @@ GEMINI_API_KEY=...
 BRIDGE_LOCAL_LLM_ENDPOINT=http://127.0.0.1:8080/v1
 TWOODY_CLOUD_FALLBACK_ENABLED=false
 TWOODY_LOCAL_ONLY=1
+TWOODY_ADMIN_TOKEN=a-long-random-string
 HOME_ASSISTANT_URL=http://homeassistant.local:8123
 HOME_ASSISTANT_TOKEN=...
 ```

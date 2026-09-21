@@ -8,6 +8,7 @@ import {
 } from "../db.js";
 import { createRequire } from "module";
 import { LOCAL_ONLY } from "../outbound.js";
+import { allowSecretAttempt } from "../rateLimit.js";
 import {
   authenticate,
   requireAuth,
@@ -70,6 +71,7 @@ export async function deviceRoutes(app: FastifyInstance) {
       },
     },
     handler: async (req, reply) => {
+      if (!allowSecretAttempt(req, reply, "devices/pair")) return;
       const { device_name, client_kind = "twoody" } = req.body ?? {};
       const code = normalizePairingCode(req.body?.code ?? "");
       if (!code) return reply.code(422).send({ error: "code is required" });

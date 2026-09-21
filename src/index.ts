@@ -5,6 +5,7 @@ import { startBonjour } from "./bonjour.js";
 import { readBridgeClientEnv, startBridgeClient } from "./bridgeClient.js";
 import { db, users } from "./db.js";
 import { LOCAL_ONLY, isPrivateUrl } from "./outbound.js";
+import { adminToken } from "./adminAccess.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -54,6 +55,12 @@ try {
   console.log(`\nTwoody Server ready on http://${HOST}:${PORT}\n`);
   if (LOCAL_ONLY) {
     console.log("  Local-only mode: calls outside this machine / the private network are refused.\n");
+  }
+  const admin = adminToken();
+  if (!admin) {
+    console.log("  Admin page: this machine only. Set TWOODY_ADMIN_TOKEN to open it from another device.\n");
+  } else if (admin.length < 16) {
+    console.log("  Admin page: TWOODY_ADMIN_TOKEN is shorter than 16 characters — pick a longer one.\n");
   }
   if (setupToken) {
     console.log("  First local account setup required.");

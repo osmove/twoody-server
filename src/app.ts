@@ -32,6 +32,8 @@ import { taskRoutes } from "./routes/tasks.js";
 import { transcriptionRoutes } from "./routes/transcriptions.js";
 import { voiceRoutes } from "./routes/voices.js";
 import { wsRoutes } from "./routes/ws.js";
+import { requireAdminAccess } from "./adminAccess.js";
+import { requireAuth } from "./auth.js";
 import { outboundFetch } from "./outbound.js";
 
 export async function buildApp() {
@@ -160,7 +162,9 @@ export async function buildApp() {
       summary: "Admin dashboard (server status + recent bridge activity)",
       response: { 200: { type: "string" } },
     },
-    handler: async (_req, reply) => {
+    handler: async (req, reply) => {
+      if (!requireAdminAccess(req, reply)) return;
+
       const snapshot = bridgeSnapshot();
       const bridgeOpts = readBridgeClientEnv();
       const upstream = bridgeOpts?.backendUrl ?? null;
@@ -291,6 +295,12 @@ export async function buildApp() {
       description: "Forwards requests to TWOODY_MCP_URL when configured.",
     },
     handler: async (req, reply) => {
+      // The MCP adapter behind this proxy acts with the user's own
+      // token, so an open proxy would hand every tool to anyone who can
+      // reach the port.
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+
       const mcpUrl = process.env.TWOODY_MCP_URL;
       if (!mcpUrl) {
         return reply.code(501).send({
@@ -299,13 +309,26 @@ export async function buildApp() {
         });
       }
 
+      // Forward only what MCP's HTTP transport needs. The caller's
+      // Twoody bearer stays here, and hop-by-hop headers such as `host`
+      // or `content-length` no longer describe the re-serialized body.
+      const forwarded: Record<string, string> = {};
+      for (const name of ["content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id"]) {
+        const value = req.headers[name];
+        if (typeof value === "string") forwarded[name] = value;
+      }
+
       const upstream = await outboundFetch(mcpUrl, {
         method: req.method,
-        headers: req.headers as Record<string, string>,
+        headers: forwarded,
         body: req.method !== "GET" ? JSON.stringify(req.body) : undefined,
       });
 
       reply.code(upstream.status);
+      for (const name of ["content-type", "mcp-session-id"]) {
+        const value = upstream.headers.get(name);
+        if (value) reply.header(name, value);
+      }
       const body = await upstream.text();
       reply.send(body);
     },

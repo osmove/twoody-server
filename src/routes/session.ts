@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
+import { allowSecretAttempt } from "../rateLimit.js";
 import {
   db,
   authSessions,
@@ -42,6 +43,7 @@ export async function sessionRoutes(app: FastifyInstance) {
       },
     },
     handler: async (req, reply) => {
+      if (!allowSecretAttempt(req, reply, "auth/signup")) return;
       const email = req.body.email?.trim().toLowerCase();
       const password = req.body.password ?? "";
       const name = req.body.name?.trim() || null;
@@ -102,6 +104,7 @@ export async function sessionRoutes(app: FastifyInstance) {
       },
     },
     handler: async (req, reply) => {
+      if (!allowSecretAttempt(req, reply, "auth/signin")) return;
       const email = req.body.email?.trim().toLowerCase();
       const password = req.body.password ?? "";
       if (!email || !password) {
@@ -155,6 +158,7 @@ export async function sessionRoutes(app: FastifyInstance) {
       },
     },
     handler: async (req, reply) => {
+      if (!allowSecretAttempt(req, reply, "auth/pair")) return;
       const setupToken = req.body.setup_token?.trim() ?? "";
       const deviceName = req.body.device_name?.trim() || "iPhone";
 
@@ -249,6 +253,7 @@ export async function sessionRoutes(app: FastifyInstance) {
       },
     },
     handler: async (req, reply) => {
+      if (!allowSecretAttempt(req, reply, "session/cli")) return;
       const code = normalizePairingCode(req.body.code ?? "");
       if (!isValidPairingCode(code)) {
         return reply.code(422).send({ error: "invalid_pairing_code" });

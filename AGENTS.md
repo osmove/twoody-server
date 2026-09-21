@@ -79,6 +79,28 @@ purpose is a cloud call (`/realtime_sessions`, cloud fallback in `/queries`,
 the upstream bridge client) also check `LOCAL_ONLY` up front to return a clean
 `local_only` error. The flag is reported by `/capabilities` and `/deployment`.
 
+## Access control
+
+- Every route that touches user data calls `requireAuth`. That includes the
+  bridge worker routes (`GET /bridge/tasks/next`, `PATCH /bridge/tasks/:id`):
+  task args carry search terms and full `llm_infer` prompts. A worker presents
+  the session from `/auth/pair` or a paired-device token, and only sees tasks
+  enqueued by that same user; bridge presence is per user as well. Task ids
+  come from `generateId()`.
+- `/mcp` requires auth too: the adapter behind it acts with the user's token.
+  Only the MCP transport headers are forwarded upstream, never the caller's
+  bearer.
+- `/admin` (`src/adminAccess.ts`): loopback only by default; with
+  `TWOODY_ADMIN_TOKEN` set, every request needs the token (Bearer,
+  `X-Admin-Token`, or `/admin?token=…` once, which sets an HttpOnly cookie
+  holding a digest and redirects). Cross-site requests are refused because
+  CORS reflects any origin. `/docs`, `/openapi.json` and `/health` stay open.
+- Routes that check a secret (`/auth/signup`, `/auth/signin`, `/auth/pair`,
+  `/session/cli`, `/devices/pair`, the admin token) go through
+  `allowSecretAttempt` in `src/rateLimit.ts`: 10 attempts per address and
+  route per 5 minutes (`TWOODY_AUTH_ATTEMPTS_LIMIT`), in memory.
+- The data directory is chmod 0700 and the SQLite files 0600 on every boot.
+
 ## Vocabulary: capability vs skill vs built-in capability
 
 Three "capability"-flavoured terms coexist; they describe different
