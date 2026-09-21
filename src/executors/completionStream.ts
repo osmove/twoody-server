@@ -145,13 +145,18 @@ export function createSseDataParser(onData: (payload: string) => void) {
 /// later and later. The first piece leaves at once: time to first token
 /// is what the user feels.
 ///
-/// `minIntervalMs` only caps the request rate of a very fast model on a
-/// very fast link.
+/// `minIntervalMs` spaces the requests out. The backend hands the pieces
+/// to the waiting chat one at a time, with a database read between two,
+/// and measured against production it absorbs about seven a second: sent
+/// faster, they queue up there and the text on screen falls behind the
+/// model (half of a 500-token answer was still unseen when it ended).
+/// A piece every 150 ms is two or three tokens at a time — smooth to read,
+/// and under that rate.
 export function createDeltaRelay(
   send: (text: string) => Promise<void>,
   options: { minIntervalMs?: number; now?: () => number; wait?: (ms: number) => Promise<void> } = {},
 ) {
-  const minIntervalMs = options.minIntervalMs ?? 40;
+  const minIntervalMs = options.minIntervalMs ?? 150;
   const now = options.now ?? Date.now;
   const wait = options.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let pending = "";

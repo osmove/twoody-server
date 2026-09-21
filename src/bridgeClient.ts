@@ -13,7 +13,10 @@
 //   PATCH /bridge/tasks/:id            ←  {status: "done"|"error", result|error_message}
 //   PATCH /bridge/tasks/:id            ←  {status: "streaming", delta}   (llm_infer, repeated)
 //
-// Auth: X-User-Token bearer (same token the chat clients use).
+// Auth: X-User-Token bearer (same token the chat clients use). The managed
+// backend binds a session to the device that signed in: a token minted
+// for an app is only accepted together with that app's X-Device-Token,
+// so a worker that borrows an app's session must send both.
 // Identity: X-Bridge-Device-Id (a stable UUID persisted under
 // ~/.twoody-server/bridge-device-id so a restart keeps the same row in
 // the backend's devices table).
@@ -36,8 +39,15 @@ import { outboundFetch } from "./outbound.js";
 
 const POLL_WAIT_SECONDS = 25;
 const POLL_BUDGET_MS = (POLL_WAIT_SECONDS + 10) * 1000;
+// A long poll only answers when a task arrives or the wait runs out, so
+// the first one after a start (or after a failure) is kept short: it is
+// how the worker learns, within a second, whether the backend accepts it.
+const PROBE_WAIT_SECONDS = 1;
 const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
+// A refused token does not fix itself in seconds: asking again that often
+// only fills the backend's logs with 401s.
+const AUTH_FAILED_BACKOFF_MS = 5 * 60_000;
 
 // Catalog prewarm cadence. Backend caches with a 5-min TTL; we
 // refresh every 4 min so there's no measurable window where the LLM
@@ -90,6 +100,9 @@ function updateHistory(id: string, patch: Partial<BridgeClientHistoryEntry>) {
 export interface BridgeClientOptions {
   backendUrl: string;
   userToken: string;
+  /// The device token of the app whose session `userToken` belongs to,
+  /// when that session is device-bound.
+  deviceToken?: string;
   homeAssistantUrl: string;
   homeAssistantToken: string;
   deviceNickname?: string;
@@ -124,6 +137,7 @@ export function readBridgeClientEnv(): BridgeClientOptions | null {
   return {
     backendUrl: backendUrl.replace(/\/+$/, ""),
     userToken,
+    deviceToken: process.env.TWOODY_DEVICE_TOKEN?.trim() || undefined,
     homeAssistantUrl: homeAssistantUrl.replace(/\/+$/, ""),
     homeAssistantToken,
     deviceNickname: process.env.TWOODY_BRIDGE_DEVICE_NICKNAME,
@@ -180,6 +194,12 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   const nickname = asciiHeaderValue(opts.deviceNickname ?? "twoody-server") || "twoody-server";
   const servesLlm = opts.capabilities?.includes("local-llm-provider") ?? false;
   let stopped = false;
+  /// Sent with every request to the backend.
+  const authHeaders: Record<string, string> = {
+    "X-User-Token": opts.userToken,
+    "X-Bridge-Device-Id": deviceId,
+    ...(opts.deviceToken ? { "X-Device-Token": opts.deviceToken } : {}),
+  };
   // What the last completions looked like, for the heartbeat.
   let lastModel: string | null = null;
   let tokensPerSecond: number | null = null;
@@ -234,11 +254,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
 
     const pushRes = await outboundFetch(`${opts.backendUrl}/smart_home/catalog.json`, {
       method: "POST",
-      headers: {
-        "X-User-Token": opts.userToken,
-        "X-Bridge-Device-Id": deviceId,
-        "Content-Type": "application/json",
-      },
+      headers: { ...authHeaders, "Content-Type": "application/json" },
       body: JSON.stringify({ states }),
     });
     if (!pushRes.ok) {
@@ -265,7 +281,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
     };
     while (!stopped) {
       try {
-        const task = await pollOnce();
+        const task = await pollOnce(state === "online" ? POLL_WAIT_SECONDS : PROBE_WAIT_SECONDS);
         consecutiveFailures = 0;
         report("online");
         if (task) {
@@ -286,12 +302,12 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
         }
       } catch (error) {
         consecutiveFailures += 1;
-        const backoff = Math.min(
-          BACKOFF_MIN_MS * 2 ** Math.min(consecutiveFailures - 1, 5),
-          BACKOFF_MAX_MS,
-        );
         const message = error instanceof Error ? error.message : String(error);
-        report(message.startsWith("auth_failed") ? "auth_failed" : "unreachable");
+        const authFailed = message.startsWith("auth_failed");
+        const backoff = authFailed
+          ? AUTH_FAILED_BACKOFF_MS
+          : Math.min(BACKOFF_MIN_MS * 2 ** Math.min(consecutiveFailures - 1, 5), BACKOFF_MAX_MS);
+        report(authFailed ? "auth_failed" : "unreachable");
         console.warn(
           `[bridge-client] poll failed (attempt ${consecutiveFailures}, backoff ${backoff}ms): ${message}`,
         );
@@ -300,13 +316,12 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
     }
   }
 
-  async function pollOnce(): Promise<Task | null> {
+  async function pollOnce(waitSeconds: number): Promise<Task | null> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), POLL_BUDGET_MS);
     try {
       const headers: Record<string, string> = {
-        "X-User-Token": opts.userToken,
-        "X-Bridge-Device-Id": deviceId,
+        ...authHeaders,
         "X-Bridge-Device-Nickname": nickname,
         Accept: "application/json",
       };
@@ -321,13 +336,14 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
         });
       }
       const res = await outboundFetch(
-        `${opts.backendUrl}/bridge/tasks/next?wait=${POLL_WAIT_SECONDS}`,
+        `${opts.backendUrl}/bridge/tasks/next?wait=${waitSeconds}`,
         { method: "GET", headers, signal: controller.signal },
       );
 
       if (res.status === 204) return null;
       if (res.status === 401 || res.status === 403) {
-        throw new Error(`auth_failed status=${res.status}`);
+        const reason = await res.text().catch(() => "");
+        throw new Error(`auth_failed status=${res.status} ${reason.slice(0, 120)}`.trim());
       }
       if (!res.ok) {
         const body = await res.text().catch(() => "");
@@ -430,11 +446,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   ) {
     const res = await outboundFetch(`${opts.backendUrl}/bridge/tasks/${id}`, {
       method: "PATCH",
-      headers: {
-        "X-User-Token": opts.userToken,
-        "X-Bridge-Device-Id": deviceId,
-        "Content-Type": "application/json",
-      },
+      headers: { ...authHeaders, "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     if (!res.ok) {

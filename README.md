@@ -215,6 +215,13 @@ calls included). A leading `<think>` block is dropped from both.
 | `BRIDGE_LOCAL_LLM_ENDPOINTS` | comma-separated `/v1` roots, in order of preference (`http://127.0.0.1:8080/v1,http://127.0.0.1:11434/v1`). A model is sent to the runtime that lists it; a model none of them lists is refused (`model_not_installed`), so a request from the backend can never start a download. |
 | `BRIDGE_LOCAL_LLM_ENDPOINT` | a single root, for existing setups |
 | `BRIDGE_LOCAL_LLM_MODEL` | the model to run when the backend sends a placeholder (`local`, `auto`). Without it, the first model a runtime lists. |
+| `TWOODY_DEVICE_TOKEN` | the device token of the app whose session `TWOODY_USER_TOKEN` is. The managed backend binds a session to the device that signed in and answers 401 ("Device token required.") to the token alone. |
+
+The first poll after a start or a failure asks for `wait=1`: a long poll
+only answers when a task arrives or the wait runs out, so this is how the
+worker (and the app that started it) knows within a second whether the
+backend accepts it. A refused token is retried every five minutes, not
+every few seconds. Streamed pieces are spaced 150 ms apart.
 
 On every poll the worker sends `X-Bridge-Heartbeat` with the chat models
 its runtimes hold (`downloaded_models`), the one in use and the machine's

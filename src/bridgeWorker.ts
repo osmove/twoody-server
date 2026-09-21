@@ -9,8 +9,8 @@
 //
 // Two ways to configure it:
 //   - the environment, like the full server (TWOODY_BACKEND_URL,
-//     TWOODY_USER_TOKEN, BRIDGE_LOCAL_LLM_ENDPOINTS, BRIDGE_LOCAL_LLM_MODEL,
-//     TWOODY_BRIDGE_DEVICE_NICKNAME);
+//     TWOODY_USER_TOKEN, TWOODY_DEVICE_TOKEN, BRIDGE_LOCAL_LLM_ENDPOINTS,
+//     BRIDGE_LOCAL_LLM_MODEL, TWOODY_BRIDGE_DEVICE_NICKNAME);
 //   - a `configure` message from the parent process, when started by
 //     Electron's utilityProcess. The account token then never appears in
 //     the process environment, which other processes of the same user
@@ -23,6 +23,7 @@ interface ConfigureMessage {
   type: "configure";
   backendUrl: string;
   userToken: string;
+  deviceToken?: string;
   deviceNickname?: string;
   deviceIdPath?: string;
   endpoints?: string[];
@@ -50,6 +51,7 @@ function start(options: Omit<ConfigureMessage, "type" | "endpoints" | "defaultMo
   client = startBridgeClient({
     backendUrl: options.backendUrl.replace(/\/+$/, ""),
     userToken: options.userToken,
+    deviceToken: options.deviceToken,
     homeAssistantUrl: "",
     homeAssistantToken: "",
     deviceNickname: options.deviceNickname,

@@ -19,9 +19,16 @@ import { resolveTarget } from "./localModels.js";
 // The model named in the request is honoured; a placeholder ("local",
 // "auto") becomes this machine's configured default. See localModels.ts.
 
-// Under the backend's own 180 s wait, so a stuck runtime is reported as
-// an error rather than as a timeout nobody can explain.
-const INFERENCE_TIMEOUT_MS = 170_000;
+// How long a completion may run. The backend waits 180 s for a short
+// answer and longer for a long one (60 s to warm up, then its slowest
+// supported machine, 7 tokens a second); this stays 10 s under it, so a
+// stuck runtime is reported as an error rather than as a timeout nobody
+// can explain.
+export function inferenceTimeoutMs(maxTokens: unknown): number {
+  const tokens = typeof maxTokens === "number" && maxTokens > 0 ? maxTokens : 512;
+  const backendWaitSeconds = Math.max(180, 60 + Math.ceil(tokens / 7));
+  return Math.min(backendWaitSeconds - 10, 15 * 60) * 1000;
+}
 
 export interface LlmInferResult {
   response_json: string;
@@ -55,7 +62,7 @@ export async function runLlmInfer(args: Record<string, unknown>, hooks: LlmInfer
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(INFERENCE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(inferenceTimeoutMs(body.max_tokens)),
     });
 
   let res = await post(request);

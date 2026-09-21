@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { asciiHeaderValue, heartbeatHeader } from "../src/bridgeClient.js";
 import { createCompletionAccumulator, createDeltaRelay, createSseDataParser } from "../src/executors/completionStream.js";
 import { configureLocalModels, isChatModelId, isPlaceholderModel, resolveTarget } from "../src/executors/localModels.js";
-import { runLlmInfer } from "../src/executors/llmInfer.js";
+import { inferenceTimeoutMs, runLlmInfer } from "../src/executors/llmInfer.js";
 
 test("a streamed completion is rebuilt as an ordinary one", () => {
   const accumulator = createCompletionAccumulator();
@@ -314,8 +314,15 @@ test("the worker relays a completion to the backend: heartbeat, ordered deltas, 
   const done = new Promise<void>((resolve) => (finished = resolve));
 
   const backend = createServer((req, res) => {
+    // Like the managed backend: the session is bound to a device, so the
+    // token alone is refused — on polls and on reports alike.
+    if (req.headers["x-device-token"] !== "device-xyz") {
+      res.statusCode = 401;
+      return res.end(JSON.stringify({ error: "Device token required." }));
+    }
     if (req.method === "GET" && req.url?.startsWith("/bridge/tasks/next")) {
       polls.push({
+        wait: new URL(req.url!, "http://x").searchParams.get("wait") ?? undefined,
         token: req.headers["x-user-token"] as string,
         device: req.headers["x-bridge-device-id"] as string,
         nickname: req.headers["x-bridge-device-nickname"] as string,
@@ -334,10 +341,13 @@ test("the worker relays a completion to the backend: heartbeat, ordered deltas, 
         );
       }
       pollsAfterClaim += 1;
+      // A real long poll: it answers when the wait the client asked for
+      // runs out (scaled down: 1 s of wait = 20 ms here).
+      const wait = Number(new URL(req.url!, "http://x").searchParams.get("wait"));
       return setTimeout(() => {
         res.statusCode = 204;
         res.end();
-      }, 20);
+      }, wait * 20);
     }
     if (req.method === "PATCH" && req.url === "/bridge/tasks/task-1") {
       let raw = "";
@@ -362,6 +372,7 @@ test("the worker relays a completion to the backend: heartbeat, ordered deltas, 
   const client = startBridgeClient({
     backendUrl,
     userToken: "token-abc",
+    deviceToken: "device-xyz",
     homeAssistantUrl: "",
     homeAssistantToken: "",
     deviceNickname: "Jimmy’s MacBook Pro",
@@ -373,6 +384,7 @@ test("the worker relays a completion to the backend: heartbeat, ordered deltas, 
   try {
     await done;
 
+    assert.equal(polls[0].wait, "1", "the first poll is a short probe, so the worker knows at once where it stands");
     assert.equal(polls[0].token, "token-abc");
     assert.equal(polls[0].device, client.deviceId);
     assert.equal(polls[0].nickname, "Jimmy's MacBook Pro");
@@ -397,9 +409,12 @@ test("the worker relays a completion to the backend: heartbeat, ordered deltas, 
     assert.equal(completion.usage.completion_tokens, 11);
     assert.equal(runtime.requests[0].model, "glm4:9b", "the model the user picked is the one that ran");
 
-    // The next heartbeat names the model that just ran.
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    // The worker kept polling while the model wrote, and the poll that
+    // follows the completion names the model that just ran.
     assert.ok(pollsAfterClaim >= 1, "the worker kept polling");
+    const seen = polls.length;
+    for (let i = 0; i < 100 && polls.length === seen; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(polls[polls.length - 1].wait, "25", "then it settles into long polls");
     assert.equal(JSON.parse(polls[polls.length - 1].heartbeat!).loaded_model, "glm4:9b");
   } finally {
     client.stop();
@@ -409,4 +424,54 @@ test("the worker relays a completion to the backend: heartbeat, ordered deltas, 
     await runtime.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a session bound to a device is refused without its device token, and the worker says so", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { startBridgeClient } = await import("../src/bridgeClient.js");
+
+  let polls = 0;
+  const backend = createServer((req, res) => {
+    polls += 1;
+    res.statusCode = req.headers["x-device-token"] ? 204 : 401;
+    res.end(req.headers["x-device-token"] ? "" : JSON.stringify({ error: "Device token required." }));
+  });
+  await new Promise<void>((resolve) => backend.listen(0, "127.0.0.1", resolve));
+  const backendUrl = `http://127.0.0.1:${(backend.address() as AddressInfo).port}`;
+  const dir = mkdtempSync(join(tmpdir(), "twoody-bridge-"));
+
+  const state = new Promise<string>((resolve) => {
+    const client = startBridgeClient({
+      backendUrl,
+      userToken: "token-abc",
+      homeAssistantUrl: "",
+      homeAssistantToken: "",
+      deviceIdPath: join(dir, "device-id"),
+      capabilities: [],
+      onState: (value) => {
+        client.stop();
+        resolve(value);
+      },
+    });
+  });
+
+  try {
+    assert.equal(await state, "auth_failed");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(polls, 1, "a refused token is not retried every second");
+  } finally {
+    const closed = new Promise<void>((resolve) => backend.close(() => resolve()));
+    backend.closeAllConnections();
+    await closed;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a completion may run as long as the backend waits for it, less ten seconds", () => {
+  assert.equal(inferenceTimeoutMs(512), 170_000);
+  assert.equal(inferenceTimeoutMs(undefined), 170_000);
+  assert.equal(inferenceTimeoutMs(2048), (60 + Math.ceil(2048 / 7) - 10) * 1000);
+  assert.equal(inferenceTimeoutMs(1_000_000), 15 * 60 * 1000);
 });
