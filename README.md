@@ -161,6 +161,14 @@ sudo systemctl restart twoody-server
 journalctl -u twoody-server -f
 ```
 
+### Stopping a reply
+
+`POST /queries` aborts its request to the runtime (or to a cloud provider)
+when the client closes the connection — the desktop's Stop button, a closed
+window. A local runtime would otherwise keep generating, for minutes on a long
+answer, and the next question would queue behind it. The text written so far is
+stored as the assistant's message, ending with an ellipsis.
+
 ### In-process bridge mode
 
 A headless Linux deployment has no Mac long-polling
