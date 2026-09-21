@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { requireAuth, generateId } from "../auth.js";
+import { requireAuth, generateId, PLACEHOLDER_USER_NAME } from "../auth.js";
 import { db, providers, discussions, messages, memories, users } from "../db.js";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { transcribeWavWithWhisperCpp, WhisperUnavailableError } from "../whisper.js";
@@ -742,7 +742,8 @@ function loadUserContext(userId: string): {
     .limit(200)
     .all();
 
-  return { userName: user?.name ?? null, prefs, memories: rows };
+  const userName = user?.name && user.name !== PLACEHOLDER_USER_NAME ? user.name : null;
+  return { userName, prefs, memories: rows };
 }
 
 function insertMessage(args: {

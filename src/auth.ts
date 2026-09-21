@@ -16,6 +16,11 @@ const scryptAsync = promisify(scrypt);
 const SETUP_TOKEN_PATH = join(DATA_DIR, "setup-token");
 const PAIRING_CODE_PATTERN = /^[A-Z0-9]{8}$/;
 
+/// Name given to the account `/auth/pair` creates when none exists yet.
+/// It is a label for the UI, not something the assistant should call
+/// its owner.
+export const PLACEHOLDER_USER_NAME = "Self-hosted user";
+
 export function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }

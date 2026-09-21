@@ -17,6 +17,7 @@ import {
   hashPassword,
   verifyPassword,
   createAuthSession,
+  PLACEHOLDER_USER_NAME,
 } from "../auth.js";
 
 export async function sessionRoutes(app: FastifyInstance) {
@@ -185,7 +186,7 @@ export async function sessionRoutes(app: FastifyInstance) {
           .values({
             id: userId,
             email: `local-${userId.slice(0, 8)}@self-hosted.twoody`,
-            name: "Self-hosted user",
+            name: PLACEHOLDER_USER_NAME,
             // No password set; signin remains blocked unless the
             // user later flips this via a future /auth/set_password
             // flow. Pair-token-only access is the design here.
