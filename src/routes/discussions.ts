@@ -80,7 +80,16 @@ export async function discussionRoutes(app: FastifyInstance) {
         rows = rows.filter((row) => titleHits.has(row.id) || bodyHits.has(row.id));
       }
 
-      rows = rows.sort((a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime());
+      // Most recent first. Timestamps have one-second resolution: two
+      // conversations active within the same second are told apart by
+      // insertion order (the table scan returns rows oldest first), so
+      // the one started last still comes first.
+      const position = new Map(rows.map((row, index) => [row.id, index]));
+      rows = rows.sort(
+        (a, b) =>
+          b.lastActivityAt.getTime() - a.lastActivityAt.getTime() ||
+          (position.get(b.id) ?? 0) - (position.get(a.id) ?? 0),
+      );
       if (before) {
         rows = rows.filter((row) => row.lastActivityAt.getTime() < before.getTime());
       }

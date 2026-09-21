@@ -54,6 +54,17 @@ Every turn sends the model a full message list, built by the pure
    memories whose text matches it. `memory_enabled: false` disables both
    memory paths.
 
+Which conversation a turn belongs to is decided by the pure
+`src/discussionWindow.ts` (same rule and table as the cloud backend's
+`DiscussionResolver`): the one named by `discussion_id`; otherwise a new
+one — a text surface owns its thread state, so naming none means "new
+conversation". Only voice surfaces continue the latest conversation
+without naming it (`device` for one minute, `watch` for ten), and
+`force_new_discussion: true` starts over everywhere. Do not bring back a
+blanket reuse window: it made "New conversation" in the desktop chat keep
+writing into the previous thread, and handed that thread to the model as
+history.
+
 Keep anything that changes per turn out of the system message: local
 runtimes reuse their KV cache for the unchanged prefix, which is what
 makes follow-up turns fast.

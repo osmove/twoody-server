@@ -215,6 +215,35 @@ try {
       throw new Error("Smoke test failed: current prompt is not the last message");
     }
 
+    // "New conversation": on a text surface, a message that names no
+    // conversation starts one, and must not inherit the previous exchange.
+    const threadsBefore = (await jsonFetch("/discussions", { headers: authHeaders(token) })).discussions.length;
+    const fresh = await sseQuery(token, { content: "Unrelated question.", channel: "desktop" });
+    if (!fresh.final?.discussion_id || fresh.final.discussion_id === firstTurn.final.discussion_id) {
+      throw new Error("Smoke test failed: a message without discussion_id was attached to the previous conversation");
+    }
+    const freshRoles = fakeLlm.requests[fakeLlm.requests.length - 1].messages.map((message) => message.role).join(",");
+    if (freshRoles !== "system,user") {
+      throw new Error(`Smoke test failed: a new conversation inherited an earlier exchange: ${freshRoles}`);
+    }
+    // A voice surface has no such button: two utterances a moment apart
+    // belong together, unless the client asks to start over.
+    const spoken = await sseQuery(token, { content: "What time is it?", channel: "device" });
+    const spokenAgain = await sseQuery(token, { content: "And tomorrow?", channel: "device" });
+    if (spokenAgain.final.discussion_id !== spoken.final.discussion_id) {
+      throw new Error("Smoke test failed: two utterances a moment apart landed in two conversations");
+    }
+    const startOver = await sseQuery(token, { content: "Start over.", channel: "device", force_new_discussion: true });
+    if (startOver.final.discussion_id === spoken.final.discussion_id) {
+      throw new Error("Smoke test failed: force_new_discussion did not start a new conversation");
+    }
+    // The new conversation (which the two utterances then continued) and
+    // the one started over: two more than before.
+    const threadsAfter = (await jsonFetch("/discussions", { headers: authHeaders(token) })).discussions.length;
+    if (threadsAfter !== threadsBefore + 2) {
+      throw new Error(`Smoke test failed: expected ${threadsBefore + 2} conversations, got ${threadsAfter}`);
+    }
+
     // Stop: the reader leaves mid-answer. The model must be stopped too,
     // and what was written kept in the conversation.
     const stopping = new AbortController();
@@ -236,8 +265,13 @@ try {
     if (fakeLlm.abandoned.length !== 1 || fakeLlm.abandoned[0] > 20) {
       throw new Error(`Smoke test failed: the runtime kept generating after the client left (${JSON.stringify(fakeLlm.abandoned)})`);
     }
+    // The stopped question named no conversation, so it started one: the
+    // most recent of the list.
     const afterStop = await jsonFetch("/discussions", { headers: authHeaders(token) });
     const stoppedThread = await jsonFetch(`/discussions/${afterStop.discussions[0].id}`, { headers: authHeaders(token) });
+    if (!stoppedThread.messages.some((message) => message.role === "user" && message.content === "SLOW ANSWER please")) {
+      throw new Error("Smoke test failed: the most recent conversation is not the one that was just stopped");
+    }
     const kept = stoppedThread.messages.filter((message) => message.role === "assistant").at(-1);
     if (!kept || !/^word1 word2 .*…$/.test(kept.content)) {
       throw new Error(`Smoke test failed: the text written before a stop was not kept: ${JSON.stringify(kept)}`);

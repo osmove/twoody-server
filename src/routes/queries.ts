@@ -11,6 +11,7 @@ import {
   type HistoryRow,
   type MemoryRow,
 } from "../chatContext.js";
+import { chooseDiscussion, reuseWindowMs } from "../discussionWindow.js";
 import { createThinkFilter } from "../thinkFilter.js";
 import { hasIndexedDocuments, searchPassages } from "../documents/library.js";
 import { LOCAL_ONLY, LocalOnlyError, outboundFetch } from "../outbound.js";
@@ -23,6 +24,9 @@ interface QueryBody {
   model?: string;
   provider?: string;
   discussion_id?: string;
+  /// "New conversation": never continue an earlier one, whatever the
+  /// channel. Same name as the cloud backend's parameter.
+  force_new_discussion?: boolean | string;
   // The watch + iPhone voice path nests fields under `query`. We
   // accept both flat and nested shapes so a single client codebase
   // can target either backend without case-by-case wire reshaping.
@@ -34,6 +38,7 @@ interface QueryBody {
     model?: string;
     provider?: string;
     discussion_id?: string;
+    force_new_discussion?: boolean | string;
     audio?: boolean | string;
     skip_transcription?: boolean | string;
   };
@@ -100,14 +105,14 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
 
   // Resolve / create the discussion before we open the SSE stream so
   // the `final` event can carry the discussion_id back to the client.
-  // Reuses the most recently-active discussion within a 30-min window
-  // (mirrors the cloud's DiscussionResolver inactivity gate); past
-  // that, a fresh thread starts so an "ok thanks" hours later doesn't
-  // attach to yesterday's conversation.
+  // A message that names no conversation starts one, except on a voice
+  // surface, where it continues the latest one for a short while (see
+  // discussionWindow.ts; same rule as the cloud's DiscussionResolver).
   const discussion = resolveDiscussion(
     auth.userId,
     parsed.discussion_id ?? null,
     channel,
+    readBool(parsed.force_new_discussion ?? parsed.query?.force_new_discussion, false),
   );
 
   // Read the thread before the new prompt lands in it, so the history
@@ -348,6 +353,7 @@ async function parseMultipartBody(req: FastifyRequest): Promise<ParsedBody | nul
     model:              (nested.model as string) ?? (fields.model as string),
     provider:           (nested.provider as string) ?? (fields.provider as string),
     discussion_id:      (nested.discussion_id as string) ?? (fields.discussion_id as string),
+    force_new_discussion: (nested.force_new_discussion as boolean | string) ?? (fields.force_new_discussion as boolean | string),
     audio:              (nested.audio as boolean | string) ?? (fields.audio as boolean | string),
     skip_transcription: (nested.skip_transcription as boolean | string) ?? (fields.skip_transcription as boolean | string),
     audioBuffer:        audioBuffer ?? undefined,
@@ -718,34 +724,23 @@ async function consumeOpenAIStream(
 // hours later doesn't reattach to last week's thread. Mirrors the
 // cloud's DiscussionResolver but trimmed to the only knob we need.
 
-const DISCUSSION_INACTIVITY_MS = 30 * 60 * 1000;
-
 function resolveDiscussion(
   userId: string,
   requestedId: string | null,
   channel: string,
+  forceNew: boolean,
 ): { id: string; title: string | null } {
-  if (requestedId) {
-    const [row] = db
-      .select()
-      .from(discussions)
-      .where(and(eq(discussions.id, requestedId), eq(discussions.userId, userId)))
-      .limit(1)
-      .all();
-    if (row) return { id: row.id, title: row.title };
-    // Requested id wasn't ours (or doesn't exist) — fall through to
-    // the inactivity-window resolution rather than 404'ing the chat.
-  }
+  const own = db.select().from(discussions).where(eq(discussions.userId, userId));
+  const explicit = requestedId && !forceNew
+    ? own.all().find((row) => row.id === requestedId) ?? null
+    : null;
+  // Only a voice surface ever continues a conversation it did not name.
+  const mostRecent = !forceNew && reuseWindowMs(channel) !== null
+    ? own.all().sort((a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime())[0] ?? null
+    : null;
 
-  const cutoff = new Date(Date.now() - DISCUSSION_INACTIVITY_MS);
-  const recent = db
-    .select()
-    .from(discussions)
-    .where(eq(discussions.userId, userId))
-    .all()
-    .filter((d) => d.lastActivityAt > cutoff)
-    .sort((a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime())[0];
-  if (recent) return { id: recent.id, title: recent.title };
+  const chosen = chooseDiscussion({ channel, forceNew, explicit, mostRecent });
+  if (chosen) return { id: chosen.id, title: chosen.title };
 
   const id = generateId();
   const now = new Date();
