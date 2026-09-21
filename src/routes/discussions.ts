@@ -151,9 +151,22 @@ export async function discussionRoutes(app: FastifyInstance) {
           content:    row.content,
           provider:   row.provider,
           model:      row.model,
+          sources:    parseSources(row.sourcesJson),
           created_at: row.createdAt.toISOString(),
         })),
       });
     },
   });
+}
+
+/// Document excerpts an assistant reply was given, so its [1], [2]…
+/// citations still resolve when the discussion is reopened.
+function parseSources(raw: string | null): unknown[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }

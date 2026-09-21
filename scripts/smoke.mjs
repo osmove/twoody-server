@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -213,6 +213,70 @@ try {
     }
     if (sent[3].content !== "What is my client's name?") {
       throw new Error("Smoke test failed: current prompt is not the last message");
+    }
+
+    // Document Q&A: grant a folder holding a copy of the fixtures, wait
+    // for the index, and check the excerpts reach the model with their
+    // sources coming back to the client.
+    // Not under the OS temp dir: on macOS that resolves to /private/var,
+    // which the server rightly refuses to index.
+    const library = mkdtempSync(join(process.cwd(), "smoke-docs-"));
+    try {
+      for (const name of ["contrat-dupont.pdf", "contrat-dupont.docx"]) {
+        cpSync(join(process.cwd(), "test", "fixtures", name), join(library, name));
+      }
+      await jsonFetch("/local_documents/folders", {
+        method: "POST",
+        headers: authHeaders(token),
+        expectedStatus: 422,
+        body: JSON.stringify({ path: "/etc" }),
+      });
+      await jsonFetch("/local_documents/folders", {
+        method: "POST",
+        headers: authHeaders(token),
+        expectedStatus: 201,
+        body: JSON.stringify({ path: library }),
+      });
+
+      let folders;
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        folders = await jsonFetch("/local_documents/folders", { headers: authHeaders(token) });
+        if (!folders.index.running && folders.folders[0]?.indexed === 2) break;
+        await sleep(250);
+      }
+      if (folders.folders[0]?.indexed !== 2) {
+        throw new Error(`Smoke test failed: documents were not indexed: ${JSON.stringify(folders)}`);
+      }
+
+      const found = await jsonFetch(`/local_documents/search?q=${encodeURIComponent("delai de preavis resiliation")}`, {
+        headers: authHeaders(token),
+      });
+      if (!found.passages.some((passage) => passage.name === "contrat-dupont.pdf" && passage.page === 1)) {
+        throw new Error(`Smoke test failed: search did not return the PDF passage: ${JSON.stringify(found)}`);
+      }
+
+      const documentTurn = await sseQuery(token, { content: "Quel est le préavis de résiliation du contrat ?" });
+      const lastMessage = fakeLlm.requests[fakeLlm.requests.length - 1].messages.at(-1).content;
+      if (!lastMessage.includes("[Excerpts from the user's documents]") || !lastMessage.includes("préavis de six mois")) {
+        throw new Error("Smoke test failed: document excerpts did not reach the model");
+      }
+      if (!documentTurn.final.sources?.some((source) => source.n === 1 && source.path.startsWith(library))) {
+        throw new Error(`Smoke test failed: sources missing from the final event: ${JSON.stringify(documentTurn.final.sources)}`);
+      }
+
+      const reopened = await jsonFetch(`/discussions/${documentTurn.final.discussion_id}`, { headers: authHeaders(token) });
+      if (!reopened.messages.at(-1).sources?.length) {
+        throw new Error("Smoke test failed: sources were not kept with the assistant message");
+      }
+
+      const known = await jsonFetch(`/local_documents/known?path=${encodeURIComponent("/etc/passwd")}`, { headers: authHeaders(token) });
+      if (known.known !== false) throw new Error("Smoke test failed: an arbitrary path was reported as indexed");
+
+      await fetch(`${API_BASE_URL}/local_documents/folders/${folders.folders[0].id}`, { method: "DELETE", headers: authHeaders(token) });
+      const afterRevoke = await jsonFetch(`/local_documents/search?q=preavis`, { headers: authHeaders(token) });
+      if (afterRevoke.passages.length !== 0) throw new Error("Smoke test failed: revoking a folder left its passages searchable");
+    } finally {
+      rmSync(library, { recursive: true, force: true });
     }
   } finally {
     await fakeLlm.close();

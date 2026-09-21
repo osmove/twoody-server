@@ -4,3 +4,4 @@ data/
 .env
 .env.*
 npm-debug.log*
+smoke-docs-*

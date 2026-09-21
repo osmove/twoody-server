@@ -26,6 +26,7 @@ export async function capabilitiesRoutes(app: FastifyInstance) {
             providers_writable: { type: "boolean" },
             deployment_kind:    { type: "string" },
             local_only:         { type: "boolean" },
+            has_document_index: { type: "boolean" },
           },
           required: [
             "has_billing", "has_org", "has_memory", "has_browser_agent",
@@ -62,6 +63,9 @@ export async function capabilitiesRoutes(app: FastifyInstance) {
         // True when TWOODY_LOCAL_ONLY is set: the server refuses every
         // call to a host outside this machine / the private network.
         local_only:         LOCAL_ONLY,
+        // Folders the user grants are indexed here (SQLite FTS5) and
+        // /queries cites passages from them.
+        has_document_index: true,
       });
     },
   });

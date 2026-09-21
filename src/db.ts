@@ -119,6 +119,9 @@ export const messages = sqliteTable("messages", {
   content: text("content").notNull(),
   provider: text("provider"),
   model: text("model"),
+  // JSON array of the document excerpts an assistant reply was given,
+  // so the citations [1], [2]… it contains stay resolvable in history.
+  sourcesJson: text("sources_json"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
@@ -234,6 +237,34 @@ export const memories = sqliteTable("memories", {
   supersededById: text("superseded_by_id"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
+/// Folders the user let Twoody read. Everything under them is indexed
+/// for document Q&A; nothing outside them is ever opened.
+export const documentFolders = sqliteTable("document_folders", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id),
+  path: text("path").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+});
+
+/// One row per indexed file. The text itself lives in the
+/// `document_chunks` FTS5 table (created below — drizzle has no
+/// virtual-table support), keyed by `document_id`.
+export const documents = sqliteTable("documents", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id),
+  folderId: text("folder_id").notNull().references(() => documentFolders.id),
+  path: text("path").notNull(),
+  name: text("name").notNull(),
+  ext: text("ext").notNull(),
+  size: integer("size").notNull(),
+  mtimeMs: integer("mtime_ms").notNull(),
+  // "indexed" | "empty" (no extractable text, e.g. a scanned PDF) | "error"
+  status: text("status").notNull(),
+  error: text("error"),
+  chars: integer("chars").notNull().default(0),
+  indexedAt: integer("indexed_at", { mode: "timestamp" }),
 });
 
 export const members = sqliteTable("members", {
@@ -472,6 +503,43 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS idx_memories_user_updated
     ON memories (user_id, updated_at DESC);
 
+  CREATE TABLE IF NOT EXISTS document_folders (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    path TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE (user_id, path)
+  );
+
+  CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    folder_id TEXT NOT NULL REFERENCES document_folders(id),
+    path TEXT NOT NULL,
+    name TEXT NOT NULL,
+    ext TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    mtime_ms INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT,
+    chars INTEGER NOT NULL DEFAULT 0,
+    indexed_at INTEGER,
+    UNIQUE (user_id, path)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_documents_folder ON documents (folder_id);
+
+  -- Full-text index of the extracted text. unicode61 with
+  -- remove_diacritics lets "delai preavis" find "délai de préavis".
+  CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks USING fts5(
+    text,
+    document_id UNINDEXED,
+    user_id UNINDEXED,
+    page UNINDEXED,
+    position UNINDEXED,
+    tokenize = 'unicode61 remove_diacritics 2'
+  );
+
   CREATE TABLE IF NOT EXISTS members (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id),
@@ -532,6 +600,13 @@ if (!userColumns.some((column) => column.name === "password_digest")) {
 }
 if (!userColumns.some((column) => column.name === "prefs_json")) {
   sqlite.exec("ALTER TABLE users ADD COLUMN prefs_json TEXT NOT NULL DEFAULT '{}'");
+}
+
+const messageColumns = sqlite.prepare("PRAGMA table_info(messages)").all() as Array<{
+  name: string;
+}>;
+if (!messageColumns.some((column) => column.name === "sources_json")) {
+  sqlite.exec("ALTER TABLE messages ADD COLUMN sources_json TEXT");
 }
 
 const discussionColumns = sqlite.prepare("PRAGMA table_info(discussions)").all() as Array<{

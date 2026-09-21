@@ -68,6 +68,35 @@ Run `npm test` (node:test via tsx) and `npm run smoke`; the smoke test
 asserts what a second turn puts on the wire using a fake
 OpenAI-compatible server.
 
+## Document Q&A (`src/documents/`)
+
+The user grants folders; the server indexes what is under them and
+`/queries` answers from it with citations. Nothing leaves the SQLite file.
+
+- `extract.ts` — pure-JS text extraction (unpdf for PDF page by page, fflate
+  for .docx / .odt, RTF, HTML, plain text with a Windows-1252 fallback). No
+  shelling out: a stock Mac has neither `pdftotext` nor `ripgrep`. The older
+  `src/executors/` search/read tasks still do, for the Linux bridge.
+- `chunk.ts` — ~1200-character passages cut on paragraphs, then sentences,
+  with a short overlap; a PDF page boundary always starts a new passage.
+- `query.ts` — question → FTS5 MATCH: stopwords dropped, terms OR-ed, long
+  words matched as a crude stem prefix, user-typed operators neutralised.
+- `library.ts` — folder grants (`canonicalFolder` refuses `/`, system roots,
+  a whole home directory, `~/Library` and hidden paths; symlinks are not
+  followed), incremental indexing keyed on size + mtime, one file at a time,
+  and `searchPassages` (BM25, passages far behind the best one dropped, at
+  most three per document).
+- Storage: `document_folders`, `documents`, and the FTS5 table
+  `document_chunks` (`unicode61 remove_diacritics 2`, so "delai" finds
+  "délai"). A scanned PDF ends up `status = "empty"`: there is no OCR yet.
+- `/queries` numbers the passages on the last user message, tells the model
+  in the system prompt to cite them as [1], [2] and to say when they do not
+  contain the answer, returns them as `sources` in the `final` event and
+  stores them in `messages.sources_json`.
+- Routes live under `/local_documents/*`, not `/documents`, which is the
+  Google Drive browser on the managed backend. `/capabilities` reports
+  `has_document_index`.
+
 ## Outbound calls and local-only mode
 
 Never call `fetch` directly in `src/`. Every outbound HTTP call goes through

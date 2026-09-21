@@ -24,6 +24,13 @@ export interface MemoryRow {
   content: string;
 }
 
+/// A passage retrieved from the user's own documents for this turn.
+export interface DocumentExcerpt {
+  name: string;
+  page: number | null;
+  text: string;
+}
+
 export interface ChatContextInput {
   userName: string | null;
   prefs: Record<string, unknown>;
@@ -32,6 +39,12 @@ export interface ChatContextInput {
   /// Newest first, superseded rows already excluded.
   memories: MemoryRow[];
   content: string;
+  /// Whether this user has an index at all. Decides a sentence of the
+  /// system prompt, so it must not flip from turn to turn.
+  hasDocuments?: boolean;
+  /// Passages matching the current prompt, best first. Numbered from 1
+  /// in the prompt; the reply cites them as [1], [2]…
+  excerpts?: DocumentExcerpt[];
   /// True when the turn is served by a model on the user's own machine.
   /// Drives the privacy wording of the base prompt — a cloud fallback
   /// turn must not tell the model that nothing leaves the computer.
@@ -72,8 +85,12 @@ export function buildChatMessages(input: ChatContextInput): ChatMessage[] {
     ...trimHistory(input.history),
   ];
 
-  const matched = formatMatchedMemories(usable, input.content);
-  const prompt = matched ? `${matched}\n\n${input.content}` : input.content;
+  // Per-turn context rides on the last message, never on the system
+  // prompt: excerpts first, then saved notes, then the question itself.
+  const context = [formatExcerpts(input.excerpts ?? []), formatMatchedMemories(usable, input.content)].filter(
+    (block): block is string => block !== null,
+  );
+  const prompt = [...context, input.content].join("\n\n");
 
   // A previous turn that failed mid-stream leaves a user message with
   // no reply. Fold the new prompt into it rather than sending two
@@ -101,6 +118,14 @@ function buildSystemPrompt(input: ChatContextInput, usable: MemoryRow[]): string
   const name = input.userName?.trim();
   if (name) facts.push(`The user's name is ${name}.`);
   sections.push(facts.join(" "));
+
+  if (input.hasDocuments) {
+    sections.push(
+      "The user has given you access to some of their documents. When a message comes with excerpts from them, " +
+        "base your answer on those excerpts and cite the ones you used like [1] or [2]. " +
+        "If the excerpts do not contain the answer, say so plainly instead of guessing.",
+    );
+  }
 
   const profile = formatMemoryList(
     usable.filter((memory) => PROFILE_KINDS.has(memory.kind)),
@@ -192,6 +217,15 @@ function formatMatchedMemories(usable: MemoryRow[], content: string): string | n
   const list = formatMemoryList(scored, MATCHED_MEMORY_CHARS);
   if (!list) return null;
   return `[Saved notes that may be relevant]\n${list}\n[End of saved notes]`;
+}
+
+function formatExcerpts(excerpts: DocumentExcerpt[]): string | null {
+  if (excerpts.length === 0) return null;
+  const blocks = excerpts.map((excerpt, index) => {
+    const where = excerpt.page === null ? excerpt.name : `${excerpt.name}, p. ${excerpt.page}`;
+    return `[${index + 1}] ${where}\n${excerpt.text}`;
+  });
+  return `[Excerpts from the user's documents]\n${blocks.join("\n\n")}\n[End of excerpts]`;
 }
 
 function formatMemoryList(rows: MemoryRow[], budget: number): string | null {

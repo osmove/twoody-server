@@ -108,6 +108,9 @@ TWOODY_PAIRING_CODE=A7B9C2D4 npm run dev
 | `POST` | `/bridge/tasks` | enqueue Bridge task |
 | `GET` | `/bridge/presence` | Bridge/capability presence for CLI status |
 | `GET/POST/PATCH/DELETE` | `/members*` | members + enrollment assets |
+| `GET/POST/DELETE` | `/local_documents/folders*` | grant or revoke a folder; index counts and progress |
+| `POST` | `/local_documents/reindex` | re-scan the granted folders |
+| `GET` | `/local_documents/search` | passages the index returns for a question |
 | `GET` | `/admin` | minimal admin page — this machine only, or `TWOODY_ADMIN_TOKEN` from elsewhere |
 
 ## Environment

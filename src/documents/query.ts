@@ -1,0 +1,66 @@
+// Turns a question into an FTS5 MATCH expression. Pure, so it is tested
+// without a database.
+//
+// The index is lexical (BM25), which suits the documents this is for:
+// contracts, filings and letters are searched by the names, numbers and
+// terms of art they contain. Two things make it forgiving enough for
+// questions asked in natural language:
+//   - the tokenizer folds case and diacritics ("delai" finds "délai");
+//   - longer words are reduced to a crude stem and matched as a prefix,
+//     so "redevances" finds "redevance" and "résilier" finds
+//     "résiliation".
+// Terms are OR-ed: BM25 then ranks passages that contain more of them,
+// and the rarer ones, first.
+
+const STOPWORDS = new Set([
+  // French
+  "les", "des", "une", "aux", "est", "sont", "ont", "pour", "par", "sur", "dans", "avec", "sans", "sous", "que", "qui",
+  "quoi", "quel", "quelle", "quels", "quelles", "dont", "mais", "donc", "car", "pas", "plus", "moins", "tres", "tout",
+  "tous", "toute", "toutes", "cette", "ces", "son", "ses", "leur", "leurs", "mon", "mes", "nos", "vos", "notre", "votre",
+  "elle", "elles", "ils", "nous", "vous", "etre", "avoir", "fait", "faire", "peut", "peux", "doit", "comme", "aussi",
+  "alors", "quand", "comment", "pourquoi", "combien", "entre", "selon", "dit", "dis", "moi", "toi", "lui", "merci",
+  "bonjour", "stp", "svp", "veux", "voudrais", "peut-on", "est-ce",
+  // English
+  "the", "and", "for", "are", "was", "were", "has", "have", "had", "with", "without", "from", "that", "this", "these",
+  "those", "what", "when", "where", "which", "who", "whom", "why", "how", "does", "did", "can", "could", "should",
+  "would", "will", "shall", "may", "not", "but", "you", "your", "our", "their", "its", "his", "her", "about", "into",
+  "please", "thanks", "hello", "tell", "give", "show",
+]);
+
+const MAX_TERMS = 12;
+
+export function queryTerms(text: string): string[] {
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  const normalized = text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  for (const word of normalized.split(/[^\p{L}\p{N}]+/u)) {
+    // Two-character tokens matter when they are numbers or codes ("R2", "42").
+    const keep = word.length >= 3 || /\d/.test(word);
+    if (!keep || STOPWORDS.has(word) || seen.has(word)) continue;
+    seen.add(word);
+    terms.push(word);
+    if (terms.length >= MAX_TERMS) break;
+  }
+  return terms;
+}
+
+/// null when the text holds nothing worth searching for.
+export function buildMatchQuery(text: string): string | null {
+  const terms = queryTerms(text);
+  if (terms.length === 0) return null;
+  return terms.map(matchTerm).join(" OR ");
+}
+
+function matchTerm(term: string): string {
+  // Tokens are letters and digits only, so quoting is enough to keep
+  // FTS5 operators (AND, OR, NOT, NEAR) literal.
+  if (term.length < 6 || /\d/.test(term)) return `"${term}"`;
+  return `"${stem(term)}"*`;
+}
+
+/// Not linguistics — just enough to bridge singular / plural and the
+/// commonest French and English endings.
+function stem(term: string): string {
+  const stripped = term.replace(/(ements|ement|ations|ation|ions|ion|ees|ee|es|er|ez|ent|ing|ed|s|x|e)$/, "");
+  return stripped.length >= 4 ? stripped : term.slice(0, Math.max(4, term.length - 1));
+}

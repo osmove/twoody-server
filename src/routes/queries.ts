@@ -12,6 +12,7 @@ import {
   type MemoryRow,
 } from "../chatContext.js";
 import { createThinkFilter } from "../thinkFilter.js";
+import { hasIndexedDocuments, searchPassages } from "../documents/library.js";
 import { LOCAL_ONLY, LocalOnlyError, outboundFetch } from "../outbound.js";
 
 interface QueryBody {
@@ -169,10 +170,24 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   try {
     const provider = resolveProvider(auth.userId, model);
     const userContext = loadUserContext(auth.userId);
+    // Passages from the user's own documents that match this prompt.
+    // The model sees them numbered; the client gets the same list to
+    // resolve the [1], [2]… the reply cites.
+    const passages = searchPassages(auth.userId, content);
+    const sources = passages.map((passage, index) => ({
+      n: index + 1,
+      document_id: passage.document_id,
+      name: passage.name,
+      path: passage.path,
+      page: passage.page,
+      snippet: passage.snippet,
+    }));
     const chatMessages = buildChatMessages({
       ...userContext,
       history,
       content,
+      hasDocuments: hasIndexedDocuments(auth.userId),
+      excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text })),
       local: provider.kind === "local_openai",
     });
     const thinkFilter = createThinkFilter((delta) => {
@@ -203,6 +218,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       content:      aggregated,
       provider:     provider.kind,
       model:        providerModel,
+      sources,
     });
     touchDiscussion(discussion.id);
     publishEvent({
@@ -229,6 +245,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       status:        "responded",
       transcription: parsed.text ? null : (audioBuffer ? content : null),
       language:      null,
+      sources,
     };
     reply.raw.write(`event: final\ndata: ${JSON.stringify(finalPayload)}\n\n`);
   } catch (err) {
@@ -753,6 +770,7 @@ function insertMessage(args: {
   content: string;
   provider: string | null;
   model: string | null;
+  sources?: unknown[];
 }) {
   db.insert(messages)
     .values({
@@ -763,6 +781,7 @@ function insertMessage(args: {
       content:      args.content,
       provider:     args.provider,
       model:        args.model,
+      sourcesJson:  args.sources && args.sources.length > 0 ? JSON.stringify(args.sources) : null,
       createdAt:    new Date(),
     })
     .run();

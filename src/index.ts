@@ -6,6 +6,7 @@ import { readBridgeClientEnv, startBridgeClient } from "./bridgeClient.js";
 import { db, users } from "./db.js";
 import { LOCAL_ONLY, isPrivateUrl } from "./outbound.js";
 import { adminToken } from "./adminAccess.js";
+import { reindex } from "./documents/library.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -117,6 +118,14 @@ try {
     const caps = bridgeOpts!.capabilities?.length ? bridgeOpts!.capabilities.join(",") : "<none>";
     console.log(`  Bridge client connected to ${bridgeOpts!.backendUrl} (device id ${bridgeClient.deviceId.slice(0, 8)}…, capabilities: ${caps})\n`);
   }
+
+  // Catch up with files added or changed while the server was off. A
+  // few seconds after boot, so first requests are not competing with it.
+  setTimeout(() => {
+    for (const { id } of db.select({ id: users.id }).from(users).all()) {
+      void reindex(id).catch((err) => app.log.error(err, "document indexing failed"));
+    }
+  }, 3_000).unref();
 
   // Graceful shutdown so the mDNS cache doesn't keep stale entries
   // for ~75 s after we exit. SIGINT (Ctrl-C) and SIGTERM (launchd /

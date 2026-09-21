@@ -32,6 +32,7 @@ import { taskRoutes } from "./routes/tasks.js";
 import { transcriptionRoutes } from "./routes/transcriptions.js";
 import { voiceRoutes } from "./routes/voices.js";
 import { wsRoutes } from "./routes/ws.js";
+import { localDocumentRoutes } from "./routes/localDocuments.js";
 import { requireAdminAccess } from "./adminAccess.js";
 import { requireAuth } from "./auth.js";
 import { outboundFetch } from "./outbound.js";
@@ -81,6 +82,7 @@ export async function buildApp() {
         { name: "bridge", description: "Mac Bridge polling and task queue" },
         { name: "realtime", description: "Realtime voice session proxies" },
         { name: "members", description: "Household members and enrollment assets" },
+        { name: "documents", description: "Granted folders, local index and search" },
       ],
       components: {
         securitySchemes: {
@@ -126,6 +128,7 @@ export async function buildApp() {
   await app.register(builtInCapabilitiesRoutes);
   await app.register(voiceRoutes);
   await app.register(transcriptionRoutes);
+  await app.register(localDocumentRoutes);
   await app.register(wsRoutes);
 
   // Versioned aliases for API clients migrating away from root-level
@@ -155,6 +158,7 @@ export async function buildApp() {
   await app.register(builtInCapabilitiesRoutes, { prefix: "/api/v1" });
   await app.register(voiceRoutes, { prefix: "/api/v1" });
   await app.register(transcriptionRoutes, { prefix: "/api/v1" });
+  await app.register(localDocumentRoutes, { prefix: "/api/v1" });
 
   app.get("/admin", {
     schema: {
