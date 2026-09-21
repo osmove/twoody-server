@@ -111,6 +111,9 @@ export interface BridgeClientOptions {
   /// Called when the link to the backend changes state, so a host
   /// process can tell its user whether this machine is reachable.
   onState?: (state: BridgeClientState) => void;
+  /// Called after each completion with the model that ran, so a host
+  /// process can show which model this machine last served.
+  onServed?: (model: string) => void;
 }
 
 export type BridgeClientState = "online" | "auth_failed" | "unreachable";
@@ -425,6 +428,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
         onDelta: relay.push,
         onStats: ({ model, completionTokens, latencyMs }) => {
           lastModel = model;
+          opts.onServed?.(model);
           if (completionTokens > 0 && latencyMs > 0) {
             const measured = completionTokens / (latencyMs / 1000);
             tokensPerSecond = tokensPerSecond === null ? measured : tokensPerSecond * 0.7 + measured * 0.3;

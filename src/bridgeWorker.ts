@@ -57,6 +57,7 @@ function start(options: Omit<ConfigureMessage, "type" | "endpoints" | "defaultMo
     deviceNickname: options.deviceNickname,
     deviceIdPath: options.deviceIdPath,
     capabilities: ["local-llm-provider"],
+    onServed: (model: string) => parentPort?.postMessage({ type: "served", model }),
     onState: (state: BridgeClientState) => {
       console.log(`[bridge-worker] ${state}`);
       parentPort?.postMessage({ type: "state", state, deviceId: client?.deviceId ?? null });
