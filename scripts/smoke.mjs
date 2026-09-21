@@ -215,6 +215,34 @@ try {
       throw new Error("Smoke test failed: current prompt is not the last message");
     }
 
+    // Stop: the reader leaves mid-answer. The model must be stopped too,
+    // and what was written kept in the conversation.
+    const stopping = new AbortController();
+    const stopped = await fetch(`${API_BASE_URL}/queries`, {
+      method: "POST",
+      headers: authHeaders(token),
+      body: JSON.stringify({ content: "SLOW ANSWER please" }),
+      signal: stopping.signal,
+    });
+    const stoppedReader = stopped.body.getReader();
+    let seen = "";
+    while (!seen.includes("word3")) {
+      const { value, done } = await stoppedReader.read();
+      if (done) break;
+      seen += new TextDecoder().decode(value);
+    }
+    stopping.abort();
+    await sleep(600);
+    if (fakeLlm.abandoned.length !== 1 || fakeLlm.abandoned[0] > 20) {
+      throw new Error(`Smoke test failed: the runtime kept generating after the client left (${JSON.stringify(fakeLlm.abandoned)})`);
+    }
+    const afterStop = await jsonFetch("/discussions", { headers: authHeaders(token) });
+    const stoppedThread = await jsonFetch(`/discussions/${afterStop.discussions[0].id}`, { headers: authHeaders(token) });
+    const kept = stoppedThread.messages.filter((message) => message.role === "assistant").at(-1);
+    if (!kept || !/^word1 word2 .*…$/.test(kept.content)) {
+      throw new Error(`Smoke test failed: the text written before a stop was not kept: ${JSON.stringify(kept)}`);
+    }
+
     // Document Q&A: grant a folder holding a copy of the fixtures, wait
     // for the index, and check the excerpts reach the model with their
     // sources coming back to the client.
@@ -768,6 +796,7 @@ async function smokeBridgeWorker(token) {
 
 async function startFakeLlm() {
   const requests = [];
+  const abandoned = [];
   let rejectedOnce = false;
   const server = createServer((req, res) => {
     if (req.method === "GET") {
@@ -789,6 +818,23 @@ async function startFakeLlm() {
         return;
       }
       res.writeHead(200, { "content-type": "text/event-stream" });
+      if (String(body.messages.at(-1)?.content).includes("SLOW ANSWER")) {
+        // A long answer, one word every 100 ms, until the client leaves.
+        let count = 0;
+        const timer = setInterval(() => {
+          count += 1;
+          res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: `word${count} ` } }] })}\n\n`);
+          if (count >= 200) {
+            clearInterval(timer);
+            res.end("data: [DONE]\n\n");
+          }
+        }, 100);
+        res.on("close", () => {
+          clearInterval(timer);
+          if (count < 200) abandoned.push(count);
+        });
+        return;
+      }
       for (const content of ["<think>", "reasoning…", "</think>\n\n", "Hello from ", "the fake model"]) {
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
       }
@@ -799,6 +845,7 @@ async function startFakeLlm() {
   return {
     url: `http://${HOST}:${server.address().port}`,
     requests,
+    abandoned,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }

@@ -166,9 +166,22 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     }, 15_000);
   };
 
+  // The reader left (closed the window, pressed Stop): stop the model
+  // too. A local runtime otherwise keeps generating, for minutes on a
+  // long answer, a reply nobody will read — and the next question queues
+  // behind it.
+  const upstream = new AbortController();
+  // The response's "close", not the request's: since Node 16 the latter
+  // fires as soon as the request body has been read.
+  reply.raw.on("close", () => {
+    if (!reply.raw.writableFinished) upstream.abort();
+  });
+
   let aggregated = "";
+  let answeredBy: { kind: string; model: string | null } | null = null;
   try {
     const provider = resolveProvider(auth.userId, model);
+    answeredBy = { kind: provider.kind, model: "model" in provider ? provider.model : null };
     const userContext = loadUserContext(auth.userId);
     // Passages from the user's own documents that match this prompt.
     // The model sees them numbered; the client gets the same list to
@@ -203,6 +216,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       chatMessages,
       readTemperature(userContext.prefs),
       thinkFilter.push,
+      upstream.signal,
     );
     thinkFilter.flush();
     startSse();
@@ -249,6 +263,22 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     };
     reply.raw.write(`event: final\ndata: ${JSON.stringify(finalPayload)}\n\n`);
   } catch (err) {
+    if (upstream.signal.aborted) {
+      // Keep what was written: the conversation would otherwise show a
+      // question with no answer, and the next turn's history would lack it.
+      if (aggregated.trim()) {
+        insertMessage({
+          discussionId: discussion.id,
+          userId:       auth.userId,
+          role:         "assistant",
+          content:      `${aggregated.trimEnd()}…`,
+          provider:     answeredBy?.kind ?? null,
+          model:        answeredBy?.model ?? null,
+        });
+        touchDiscussion(discussion.id);
+      }
+      return;
+    }
     const msg = err instanceof Error ? err.message : "Unknown error";
     if (!sseStarted) {
       if (err instanceof LocalLlmUnavailableError) {
@@ -399,17 +429,18 @@ async function streamFromProvider(
   provider: Provider,
   chatMessages: ChatMessage[],
   temperature: number | undefined,
-  onDelta: (text: string) => void
+  onDelta: (text: string) => void,
+  signal: AbortSignal,
 ) {
   switch (provider.kind) {
     case "openai":
-      return streamOpenAI(chatMessages, provider.model, temperature, onDelta);
+      return streamOpenAI(chatMessages, provider.model, temperature, onDelta, signal);
     case "anthropic":
-      return streamAnthropic(chatMessages, provider.model, temperature, onDelta);
+      return streamAnthropic(chatMessages, provider.model, temperature, onDelta, signal);
     case "gemini":
-      return streamGemini(chatMessages, provider.model, temperature, onDelta);
+      return streamGemini(chatMessages, provider.model, temperature, onDelta, signal);
     case "local_openai":
-      return streamLocal(provider.baseUrl, chatMessages, provider.model, temperature, onDelta);
+      return streamLocal(provider.baseUrl, chatMessages, provider.model, temperature, onDelta, signal);
   }
 }
 
@@ -424,13 +455,15 @@ async function streamOpenAI(
   chatMessages: ChatMessage[],
   model: string,
   temperature: number | undefined,
-  onDelta: (t: string) => void
+  onDelta: (t: string) => void,
+  signal: AbortSignal,
 ) {
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error("OPENAI_API_KEY not set");
 
   const res = await outboundFetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
+    signal,
     headers: {
       Authorization: `Bearer ${key}`,
       "Content-Type": "application/json",
@@ -456,13 +489,15 @@ async function streamAnthropic(
   chatMessages: ChatMessage[],
   model: string,
   temperature: number | undefined,
-  onDelta: (t: string) => void
+  onDelta: (t: string) => void,
+  signal: AbortSignal,
 ) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("ANTHROPIC_API_KEY not set");
 
   const res = await outboundFetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
+    signal,
     headers: {
       "x-api-key": key,
       "anthropic-version": "2023-06-01",
@@ -519,7 +554,8 @@ async function streamGemini(
   chatMessages: ChatMessage[],
   model: string,
   temperature: number | undefined,
-  onDelta: (t: string) => void
+  onDelta: (t: string) => void,
+  signal: AbortSignal,
 ) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY not set");
@@ -527,6 +563,7 @@ async function streamGemini(
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${key}`;
   const res = await outboundFetch(url, {
     method: "POST",
+    signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: systemText(chatMessages) }] },
@@ -588,7 +625,8 @@ async function streamLocal(
   chatMessages: ChatMessage[],
   model: string,
   temperature: number | undefined,
-  onDelta: (t: string) => void
+  onDelta: (t: string) => void,
+  signal: AbortSignal,
 ) {
   const endpoint = baseUrl.replace(/\/$/, "");
   const body = {
@@ -610,11 +648,13 @@ async function streamLocal(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
+        signal,
       });
     } catch (err) {
       // A provider URL outside the private network is a configuration
       // problem the user must see, not a runtime that happens to be down.
       if (err instanceof LocalOnlyError) throw err;
+      if (signal.aborted) throw err;
       throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
     }
   };
