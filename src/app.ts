@@ -42,6 +42,24 @@ export async function buildApp() {
     logger: { level: process.env.LOG_LEVEL ?? "info" },
   });
 
+  // A request that says it carries JSON and carries nothing is refused
+  // by Fastify 5, where Fastify 4 shrugged. That is defensible in the
+  // abstract and wrong here: the mobile app's `apiDelete` sets
+  // `Content-Type: application/json` on every call and sends no body,
+  // so upgrading would have answered 400 to every deletion from a
+  // phone. An empty body is read as no body, which is what it is.
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
+    const text = typeof body === "string" ? body.trim() : "";
+    if (text === "") return done(null, undefined);
+    try {
+      done(null, JSON.parse(text));
+    } catch (err) {
+      const failure = err as Error & { statusCode?: number };
+      failure.statusCode = 400;
+      done(failure, undefined);
+    }
+  });
+
   await app.register(cors, {
     origin: true,
     credentials: true,

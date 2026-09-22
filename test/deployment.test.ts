@@ -103,3 +103,33 @@ test("nothing installs the native module by compiling it", () => {
     assert.doesNotMatch(text, pattern, `${path} runs npm ci without --ignore-scripts`);
   }
 });
+
+// Fastify 5 refuses a request that announces JSON and carries nothing.
+// The mobile app's `apiDelete` does exactly that on every call, so the
+// server reads an empty body as no body — and has to keep doing it.
+test("a request that says JSON and carries nothing is not refused", async () => {
+  const { buildApp } = await import("../src/app.js");
+  const app = await buildApp();
+  try {
+    const answer = await app.inject({
+      method: "DELETE",
+      url: "/local_documents/folders/nothing-here",
+      headers: { "content-type": "application/json" },
+    });
+    // Unauthenticated, missing, anything — but not a complaint about
+    // the body, which is what a phone would have got.
+    assert.notEqual(answer.statusCode, 400, answer.body);
+    assert.doesNotMatch(answer.body, /EMPTY_JSON_BODY/);
+
+    // Real JSON still parses, and broken JSON is still refused.
+    const broken = await app.inject({
+      method: "POST",
+      url: "/auth/pair",
+      headers: { "content-type": "application/json" },
+      payload: "{not json",
+    });
+    assert.equal(broken.statusCode, 400);
+  } finally {
+    await app.close();
+  }
+});

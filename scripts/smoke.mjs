@@ -334,7 +334,12 @@ try {
       const known = await jsonFetch(`/local_documents/known?path=${encodeURIComponent("/etc/passwd")}`, { headers: authHeaders(token) });
       if (known.known !== false) throw new Error("Smoke test failed: an arbitrary path was reported as indexed");
 
-      await fetch(`${API_BASE_URL}/local_documents/folders/${folders.folders[0].id}`, { method: "DELETE", headers: authHeaders(token) });
+      // The answer was thrown away here, so a revoke that failed looked
+      // exactly like an index that would not clear.
+      const revoked = await fetch(`${API_BASE_URL}/local_documents/folders/${folders.folders[0].id}`, { method: "DELETE", headers: authHeaders(token) });
+      if (revoked.status !== 204) {
+        throw new Error(`Smoke test failed: revoking a folder answered ${revoked.status}: ${await revoked.text()}`);
+      }
       const afterRevoke = await jsonFetch(`/local_documents/search?q=preavis`, { headers: authHeaders(token) });
       if (afterRevoke.passages.length !== 0) throw new Error("Smoke test failed: revoking a folder left its passages searchable");
     } finally {
