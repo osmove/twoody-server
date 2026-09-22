@@ -58,7 +58,11 @@ export interface TunnelHost {
   /// Feed it every frame that arrives. It never throws: a frame that
   /// cannot be opened is reported and dropped, because the other side of
   /// a tunnel is not trusted to be well-behaved.
-  receive(frame: Buffer): Promise<void>;
+  ///
+  /// Answers whether the frame was this session's — which is also the
+  /// only proof of who sealed it, and is what lets a caller holding two
+  /// sessions know which one a frame belonged to.
+  receive(frame: Buffer): Promise<boolean>;
   /// Stops everything in flight. Safe to call twice.
   close(): void;
   /// How many requests are being served right now.
@@ -170,8 +174,8 @@ export function createTunnelHost(options: TunnelHostOptions): TunnelHost {
       return running.size;
     },
 
-    async receive(frame: Buffer): Promise<void> {
-      if (closed) return;
+    async receive(frame: Buffer): Promise<boolean> {
+      if (closed) return false;
       let opened: Buffer;
       try {
         opened = options.channel.open(frame);
@@ -181,7 +185,7 @@ export function createTunnelHost(options: TunnelHostOptions): TunnelHost {
         // dropped, and nothing is sent back: answering would tell
         // whoever sent it which of its guesses was closer.
         options.onError?.(err instanceof ChannelError ? err : new ChannelError("not_authentic", "frame refused"));
-        return;
+        return false;
       }
 
       let message: Message;
@@ -189,23 +193,26 @@ export function createTunnelHost(options: TunnelHostOptions): TunnelHost {
       try {
         ({ message, body } = decode(opened));
       } catch (err) {
+        // It opened, so it came from the other device; it just made no
+        // sense. The session is still theirs.
         options.onError?.(err instanceof ProtocolError ? err : new ProtocolError("message refused"));
-        return;
+        return true;
       }
 
       switch (message.t) {
         case "req":
           await serve(message, body);
-          return;
+          return true;
         case "abort":
           running.get(message.id)?.abort();
-          return;
+          return true;
         case "ping":
-          return;
+          return true;
         default:
           // `res`, `chunk`, `end`, `err` are this side's to send. Getting
           // one back means the other end is confused, not hostile.
           options.onError?.(new ProtocolError(`the phone sent a ${message.t}, which is this side's to send`));
+          return true;
       }
     },
 
