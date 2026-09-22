@@ -1,0 +1,218 @@
+import { Channel, ChannelError } from "./channel.js";
+import { decode, encode, MAX_BODY_BYTES, ProtocolError, type Message } from "./protocol.js";
+
+// This computer's end of the tunnel: it opens what the phone sealed,
+// runs the request against the Twoody server on this machine, and seals
+// the answer back.
+//
+// It is written against two functions — one to send a frame, one to be
+// called with each frame that arrives — and knows nothing about how they
+// reach the other side. That is what lets the whole exchange be tested
+// with the two ends in one process, and it is also true of the real
+// thing: the relay is one implementation of those two functions and a
+// direct socket would be another.
+//
+// What it will not do:
+//
+//   - reach anything but the local server. The phone sends a path, never
+//     a URL, and the base is fixed here. A tunnel that forwarded
+//     arbitrary URLs would be an open proxy sitting on someone's home
+//     network;
+//   - hold a request forever. Each one has a deadline, and a phone that
+//     goes through a tunnel gets the same 30 s a phone on the LAN gets,
+//     except for the streaming answers that are the point of this.
+
+export interface TunnelHostOptions {
+  channel: Channel;
+  /// Where the local Twoody server answers, e.g. http://127.0.0.1:8910.
+  localBaseUrl: string;
+  /// Hands a sealed frame to whatever carries it. May be async; a
+  /// rejection ends the exchange it belonged to, not the host.
+  send(frame: Buffer): void | Promise<void>;
+  /// How long a request may take before it is given up on. Streamed
+  /// answers are not bound by it once they have started.
+  timeoutMs?: number;
+  /// Only for tests.
+  fetchImpl?: typeof fetch;
+  onError?(err: unknown): void;
+}
+
+/// Headers that describe the hop rather than the request. Forwarding
+/// them would describe the wrong hop.
+const HOP_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+  "host",
+  "content-length",
+]);
+
+const CHUNK_BYTES = 64 * 1024;
+
+export interface TunnelHost {
+  /// Feed it every frame that arrives. It never throws: a frame that
+  /// cannot be opened is reported and dropped, because the other side of
+  /// a tunnel is not trusted to be well-behaved.
+  receive(frame: Buffer): Promise<void>;
+  /// Stops everything in flight. Safe to call twice.
+  close(): void;
+  /// How many requests are being served right now.
+  readonly inFlight: number;
+}
+
+export function createTunnelHost(options: TunnelHostOptions): TunnelHost {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const base = new URL(options.localBaseUrl);
+  const running = new Map<number, AbortController>();
+  let closed = false;
+
+  async function seal(message: Message, body?: Buffer): Promise<void> {
+    if (closed) return;
+    await options.send(options.channel.seal(encode(message, body)));
+  }
+
+  async function serve(request: Extract<Message, { t: "req" }>, body: Buffer): Promise<void> {
+    // A second request with a live id would leave the first unanswered
+    // and its abort ambiguous. The phone controls the ids, so this is a
+    // bug on its side, and it is told rather than silently served.
+    if (running.has(request.id)) {
+      await seal({ t: "err", id: request.id, message: "a request with this id is already running" });
+      return;
+    }
+
+    const url = new URL(request.path, base);
+    // `new URL("//evil.example/x", base)` keeps the scheme and changes
+    // the host, and a path is allowed to start with two slashes. The
+    // base is the only server this tunnel serves, so anything that
+    // moved off it is refused.
+    if (url.origin !== base.origin) {
+      await seal({ t: "err", id: request.id, message: "the tunnel only reaches the Twoody server on this computer" });
+      return;
+    }
+
+    const controller = new AbortController();
+    running.set(request.id, controller);
+    const deadline = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(request.headers)) {
+        if (!HOP_HEADERS.has(name)) headers.set(name, value);
+      }
+      const response = await fetchImpl(url, {
+        method: request.method,
+        headers,
+        // A view, not a copy: the body is already a slice of the frame
+        // this process decrypted. The cast is about the type of the
+        // backing store, which for a Buffer Node produced is always an
+        // ArrayBuffer and never a shared one.
+        body: body.length > 0 ? new Uint8Array(body.buffer as ArrayBuffer, body.byteOffset, body.byteLength) : undefined,
+        signal: controller.signal,
+        redirect: "manual",
+      });
+
+      const outHeaders: Record<string, string> = {};
+      response.headers.forEach((value, name) => {
+        if (!HOP_HEADERS.has(name.toLowerCase())) outHeaders[name.toLowerCase()] = value;
+      });
+      await seal({ t: "res", id: request.id, status: response.status, headers: outHeaders });
+
+      // Past the headers the answer may run for as long as the model
+      // takes: clearing the deadline here is what makes a streamed reply
+      // possible. An abort from the phone, or a closed host, still stops
+      // it.
+      clearTimeout(deadline);
+
+      if (response.body) {
+        const reader = response.body.getReader();
+        let sent = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (closed || controller.signal.aborted) {
+            await reader.cancel().catch(() => {});
+            break;
+          }
+          sent += value.byteLength;
+          if (sent > MAX_BODY_BYTES) {
+            await reader.cancel().catch(() => {});
+            await seal({ t: "err", id: request.id, message: "the answer is larger than the tunnel carries" });
+            return;
+          }
+          // One frame per chunk, split when a chunk is big: each frame
+          // is sealed on its own, and a huge one would sit in memory
+          // twice on both machines.
+          for (let offset = 0; offset < value.byteLength; offset += CHUNK_BYTES) {
+            await seal({ t: "chunk", id: request.id }, Buffer.from(value.buffer, value.byteOffset + offset, Math.min(CHUNK_BYTES, value.byteLength - offset)));
+          }
+        }
+      }
+      await seal({ t: "end", id: request.id });
+    } catch (err) {
+      const aborted = err instanceof Error && err.name === "AbortError";
+      // What went wrong reaching a server on this machine is not
+      // something to describe to the other end in detail.
+      await seal({ t: "err", id: request.id, message: aborted ? "the request was stopped" : "the Twoody server on this computer did not answer" }).catch(() => {});
+      if (!aborted) options.onError?.(err);
+    } finally {
+      clearTimeout(deadline);
+      running.delete(request.id);
+    }
+  }
+
+  return {
+    get inFlight() {
+      return running.size;
+    },
+
+    async receive(frame: Buffer): Promise<void> {
+      if (closed) return;
+      let opened: Buffer;
+      try {
+        opened = options.channel.open(frame);
+      } catch (err) {
+        // A frame that does not open is a frame the other device did not
+        // seal — a relay playing games, or bytes that got damaged. It is
+        // dropped, and nothing is sent back: answering would tell
+        // whoever sent it which of its guesses was closer.
+        options.onError?.(err instanceof ChannelError ? err : new ChannelError("not_authentic", "frame refused"));
+        return;
+      }
+
+      let message: Message;
+      let body: Buffer;
+      try {
+        ({ message, body } = decode(opened));
+      } catch (err) {
+        options.onError?.(err instanceof ProtocolError ? err : new ProtocolError("message refused"));
+        return;
+      }
+
+      switch (message.t) {
+        case "req":
+          await serve(message, body);
+          return;
+        case "abort":
+          running.get(message.id)?.abort();
+          return;
+        case "ping":
+          return;
+        default:
+          // `res`, `chunk`, `end`, `err` are this side's to send. Getting
+          // one back means the other end is confused, not hostile.
+          options.onError?.(new ProtocolError(`the phone sent a ${message.t}, which is this side's to send`));
+      }
+    },
+
+    close(): void {
+      closed = true;
+      for (const controller of running.values()) controller.abort();
+      running.clear();
+    },
+  };
+}
