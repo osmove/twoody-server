@@ -79,6 +79,17 @@ export const devices = sqliteTable("devices", {
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
+export const tunnelPeers = sqliteTable("tunnel_peers", {
+  // The device's long-lived X25519 public key, in hex. It is the name
+  // the tunnel knows it by: a device that loses its key is a device
+  // that pairs again.
+  publicKey: text("public_key").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id),
+  name: text("name"),
+  pairedAt: integer("paired_at", { mode: "timestamp" }).notNull(),
+  lastSeenAt: integer("last_seen_at", { mode: "timestamp" }),
+});
+
 export const providers = sqliteTable("providers", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull().references(() => users.id),
@@ -357,6 +368,14 @@ sqlite.exec(`
     token_digest TEXT NOT NULL,
     last_seen_at INTEGER,
     created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS tunnel_peers (
+    public_key TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    name TEXT,
+    paired_at INTEGER NOT NULL,
+    last_seen_at INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS providers (

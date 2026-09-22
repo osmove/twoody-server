@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import { allowSecretAttempt } from "../rateLimit.js";
+import { rememberTunnelPeer, tunnelIdentity } from "../tunnel/identity.js";
 import {
   db,
   authSessions,
@@ -143,8 +144,18 @@ export async function sessionRoutes(app: FastifyInstance) {
   // is the trust boundary on a LAN-only deployment, and the user
   // already proved possession of the setup token printed only on
   // their Mac's terminal.
+  //
+  // This is also where the two devices exchange their tunnel keys, and
+  // it is the only place they can: everything the tunnel promises rests
+  // on these keys having met here, on the same network, with a token
+  // the person read off their own screen. A device that sends its
+  // `tunnel_public_key` gets this computer's back, and from then on
+  // each recognises the other with no server in between — which is why
+  // the relay can carry their traffic without being able to read it or
+  // to stand in the middle of it. Sending no key pairs as before, and
+  // the tunnel simply is not available to that device.
   app.post<{
-    Body: { setup_token?: string; device_name?: string };
+    Body: { setup_token?: string; device_name?: string; tunnel_public_key?: string };
   }>("/auth/pair", {
     schema: {
       tags: ["session"],
@@ -155,6 +166,7 @@ export async function sessionRoutes(app: FastifyInstance) {
         properties: {
           setup_token: { type: "string" },
           device_name: { type: "string" },
+          tunnel_public_key: { type: "string" },
         },
       },
     },
@@ -168,6 +180,13 @@ export async function sessionRoutes(app: FastifyInstance) {
       }
       if (!verifySetupToken(setupToken)) {
         return reply.code(403).send({ error: "invalid_setup_token" });
+      }
+
+      // Checked before the account is touched: a device that sends
+      // something that is not a key should change nothing here.
+      const offered = req.body.tunnel_public_key?.trim().toLowerCase() ?? "";
+      if (offered && !/^[0-9a-f]{64}$/.test(offered)) {
+        return reply.code(422).send({ error: "tunnel_public_key must be 64 hexadecimal characters" });
       }
 
       // Reuse the existing first-account when the setup token has
@@ -198,12 +217,22 @@ export async function sessionRoutes(app: FastifyInstance) {
         userRow = created!;
       }
 
+      // The key swap, when the device brought one. This computer's key
+      // is handed over only after the setup token has been checked, so
+      // a device that is refused learns nothing about it.
+      let tunnelPublicKey: string | undefined;
+      if (offered) {
+        rememberTunnelPeer({ userId, publicKey: Buffer.from(offered, "hex"), name: deviceName });
+        tunnelPublicKey = tunnelIdentity().publicKey.toString("hex");
+      }
+
       const { token, sessionId } = createAuthSession(userId, `pair:${deviceName}`);
       reply.code(201).send({
         token,
         user_id: userId,
         session_id: sessionId,
         user: { id: userRow.id, email: userRow.email, name: userRow.name },
+        ...(tunnelPublicKey ? { tunnel_public_key: tunnelPublicKey } : {}),
       });
     },
   });
