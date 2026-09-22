@@ -3,9 +3,9 @@
 # (Raspberry Pi, generic amd64/arm64) and restart the systemd service.
 #
 # Idempotent: rebuilds the TS sources if needed, rsyncs `dist/`, runs
-# `npm ci --omit=dev` if `package.json` changed (so native modules
-# like `better-sqlite3` recompile for the target architecture), and
-# nudges systemd. Safe to re-run after every commit.
+# `npm ci --omit=dev --ignore-scripts` if `package.json` changed, and
+# nudges systemd. Safe to re-run after every commit. Nothing is compiled
+# on the target: better-sqlite3 ships a prebuilt binary per platform.
 #
 # Usage (from a twoody-server checkout on your laptop):
 #   scripts/upgrade-linux.sh                       # uses defaults
@@ -66,8 +66,8 @@ REMOTE_LOCK_HASH=$(ssh "$TARGET" "shasum -a 256 ${REMOTE_PATH}/package-lock.json
 LAST_LOCK_HASH=$(ssh "$TARGET" "cat ${REMOTE_PATH}/.last-lock-hash 2>/dev/null" || echo "")
 
 if [[ -z "$LAST_LOCK_HASH" || "$LOCAL_LOCK_HASH" != "$LAST_LOCK_HASH" ]]; then
-  log "package-lock.json changed → npm ci --omit=dev on ${TARGET}"
-  ssh "$TARGET" "cd ${REMOTE_PATH} && npm ci --omit=dev"
+  log "package-lock.json changed → npm ci --omit=dev --ignore-scripts on ${TARGET}"
+  ssh "$TARGET" "cd ${REMOTE_PATH} && npm ci --omit=dev --ignore-scripts"
   ssh "$TARGET" "echo '${LOCAL_LOCK_HASH}' > ${REMOTE_PATH}/.last-lock-hash"
 else
   log "package-lock.json unchanged, skipping npm ci"

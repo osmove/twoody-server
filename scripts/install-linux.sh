@@ -3,11 +3,12 @@
 # generic amd64/arm64 boxes). Provisions the runtime dependencies,
 # drops the systemd unit, and starts the service.
 #
-# Usage (on the target host):
-#   curl -fsSL https://raw.githubusercontent.com/twoody/server/main/scripts/install-linux.sh | sudo bash
-#
-# Or, from a checkout:
+# Usage, from a checkout on the target host:
 #   sudo bash scripts/install-linux.sh
+#
+# (There is no public URL to curl this from: the repository is private.
+# Copy the checkout over with scp or rsync, or use scripts/upgrade-linux.sh
+# from a machine that has one.)
 #
 # Idempotent: re-running upgrades node and reinstalls the unit. The
 # env file at /etc/twoody-server.env is created on first run from
@@ -31,8 +32,13 @@ log() { echo "[install] $*"; }
 
 log "Installing system packages…"
 apt-get update -y -qq
+# No compiler: the one native module (better-sqlite3) ships a prebuilt
+# binary for linux-arm64 and linux-x64 and loads that. It also ships a
+# binding.gyp, which npm would compile on sight — several minutes on a
+# Pi, for a file the module never opens — so install scripts are skipped
+# below instead of a toolchain being installed here.
 apt-get install -y -qq \
-  curl ca-certificates gnupg git build-essential pkg-config \
+  curl ca-certificates gnupg git \
   ripgrep ffmpeg poppler-utils \
   avahi-daemon avahi-utils libnss-mdns \
   sqlite3
@@ -51,7 +57,12 @@ fi
 
 log "Preparing application directory at ${APP_DIR}…"
 install -d -o "${RUN_USER}" -g "${RUN_USER}" "${APP_DIR}"
-install -d -o "${RUN_USER}" -g "${RUN_USER}" "/home/${RUN_USER}/.twoody-server"
+# Where the database and the setup token live (DATA_DIR in src/db.ts),
+# and where the bridge client keeps its device id. Created up front so
+# the service never has to, and owned by the user it runs as.
+install -d -m 0700 -o "${RUN_USER}" -g "${RUN_USER}" "/home/${RUN_USER}/.twoody"
+install -d -m 0700 -o "${RUN_USER}" -g "${RUN_USER}" "/home/${RUN_USER}/.twoody/data"
+install -d -m 0700 -o "${RUN_USER}" -g "${RUN_USER}" "/home/${RUN_USER}/.twoody-server"
 
 if [[ -d "$(dirname "$0")/.." && -f "$(dirname "$0")/../package.json" ]]; then
   log "Copying repo to ${APP_DIR}…"
@@ -62,13 +73,16 @@ if [[ -d "$(dirname "$0")/.." && -f "$(dirname "$0")/../package.json" ]]; then
 fi
 
 if [[ -f "${APP_DIR}/package.json" ]]; then
-  log "Installing prod dependencies (compiles native modules for $(uname -m))…"
-  sudo -u "${RUN_USER}" -H bash -c "cd ${APP_DIR} && npm ci --omit=dev"
-fi
-
-if [[ ! -f "${APP_DIR}/dist/index.js" && -f "${APP_DIR}/tsconfig.json" ]]; then
-  log "Building TypeScript output…"
-  sudo -u "${RUN_USER}" -H bash -c "cd ${APP_DIR} && npx tsc"
+  if [[ -f "${APP_DIR}/dist/index.js" ]]; then
+    log "Installing runtime dependencies…"
+    sudo -u "${RUN_USER}" -H bash -c "cd ${APP_DIR} && npm ci --omit=dev --ignore-scripts"
+  else
+    # TypeScript is a dev dependency, so the build has to happen before
+    # the tree is pruned — installing with --omit=dev first and then
+    # reaching for `npx tsc` left nothing to reach for.
+    log "Building from source (TypeScript is a dev dependency)…"
+    sudo -u "${RUN_USER}" -H bash -c "cd ${APP_DIR} && npm ci --ignore-scripts && npx tsc && npm prune --omit=dev"
+  fi
 fi
 
 if [[ ! -f "${ENV_FILE}" ]]; then
@@ -84,6 +98,11 @@ install -m 0644 -o root -g root "${APP_DIR}/scripts/twoody-server.service" "${SE
 if [[ "${RUN_USER}" != "pi" ]]; then
   sed -i "s/^User=pi$/User=${RUN_USER}/" "${SERVICE_FILE}"
   sed -i "s/^Group=pi$/Group=${RUN_USER}/" "${SERVICE_FILE}"
+  # ProtectHome=read-only makes the whole of /home read-only; the two
+  # directories the server writes to have to be named, and they move
+  # with the user. Forgetting this starts a service that cannot open
+  # its own database.
+  sed -i "s#^ReadWritePaths=.*#ReadWritePaths=/home/${RUN_USER}/.twoody /home/${RUN_USER}/.twoody-server#" "${SERVICE_FILE}"
 fi
 
 systemctl daemon-reload
