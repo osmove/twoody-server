@@ -5,6 +5,7 @@ import { startBonjour } from "./bonjour.js";
 import { readBridgeClientEnv, startBridgeClient } from "./bridgeClient.js";
 import { db, users } from "./db.js";
 import { LOCAL_ONLY, isPrivateUrl } from "./outbound.js";
+import { readTunnelEnv, startTunnelService } from "./tunnel/index.js";
 import { adminToken } from "./adminAccess.js";
 import { reindex } from "./documents/library.js";
 import { readFileSync } from "node:fs";
@@ -119,6 +120,23 @@ try {
     console.log(`  Bridge client connected to ${bridgeOpts!.backendUrl} (device id ${bridgeClient.deviceId.slice(0, 8)}…, capabilities: ${caps})\n`);
   }
 
+  // The tunnel, when it is asked for: one wait at the relay per device
+  // paired on this network, so a phone away from home reaches this
+  // server without a port being opened on it. Off by default, and
+  // refused outright in local-only mode, where the relay is outside.
+  const tunnelOptions = readTunnelEnv(`http://127.0.0.1:${PORT}`);
+  let tunnel: ReturnType<typeof startTunnelService> = null;
+  if (tunnelOptions && LOCAL_ONLY) {
+    console.log("  Local-only mode: the tunnel is not started.\n");
+  } else if (tunnelOptions) {
+    tunnel = startTunnelService({ ...tunnelOptions, onError: (err) => app.log.debug({ err }, "tunnel") });
+    if (tunnel) {
+      console.log(`  Reachable from outside for ${tunnel.links.length} paired device(s).\n`);
+    } else {
+      console.log("  Tunnel asked for, but no device is paired for it yet. Pair one on this network first.\n");
+    }
+  }
+
   // Catch up with files added or changed while the server was off. A
   // few seconds after boot, so first requests are not competing with it.
   setTimeout(() => {
@@ -135,6 +153,11 @@ try {
     process.once(signal, async () => {
       try {
         bridgeClient?.stop();
+      } catch {
+        // Best-effort.
+      }
+      try {
+        tunnel?.stop();
       } catch {
         // Best-effort.
       }
