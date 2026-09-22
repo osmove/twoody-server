@@ -6,11 +6,11 @@ import { createRelayTransport, type RelayTransport } from "./relayTransport.js";
 // The other end: a phone, or anything else, reaching the Twoody on its
 // own computer through the relay.
 //
-// What it offers is `fetch`. Every screen of the app is written against
-// the HTTP the local server speaks, and the point of carrying that same
-// HTTP through the tunnel is that those screens do not have to know
-// where they are talking to. Swapping this in for `fetch` is the whole
-// change.
+// What it offers is one `request` that behaves like `fetch` and answers
+// with a Response. Every screen of the app is written against the HTTP
+// the local server speaks, and the point of carrying that same HTTP
+// through the tunnel is that those screens do not have to know where
+// they are talking to: wrapping this is the whole change.
 //
 // The answer comes back as a real Response with a streaming body, so a
 // reply being written token by token reaches the screen the same way it
@@ -38,8 +38,11 @@ export interface TunnelClient {
   /// Whether the relay has seen the computer recently. False means it
   /// is asleep or offline — worth saying, rather than waiting.
   readonly peerListening: boolean;
-  /// A path on the computer's Twoody server, never a whole URL.
-  fetch(path: string, init?: { method?: string; headers?: Record<string, string>; body?: Buffer | string; signal?: AbortSignal }): Promise<Response>;
+  /// Runs one request against the computer's Twoody server and answers
+  /// with a Response, streaming body and all. It takes a path rather
+  /// than a URL, which is why it is not called `fetch`: there is one
+  /// server at the other end and the caller does not choose it.
+  request(path: string, init?: { method?: string; headers?: Record<string, string>; body?: Buffer | string; signal?: AbortSignal }): Promise<Response>;
   stop(): void;
 }
 
@@ -170,7 +173,7 @@ export function startTunnelClient(options: TunnelClientOptions): TunnelClient {
       return transport.peerListening;
     },
 
-    async fetch(path, init = {}): Promise<Response> {
+    async request(path, init = {}): Promise<Response> {
       const open = await ready();
       const id = nextId++;
       const body = init.body === undefined ? Buffer.alloc(0) : Buffer.isBuffer(init.body) ? init.body : Buffer.from(init.body, "utf8");

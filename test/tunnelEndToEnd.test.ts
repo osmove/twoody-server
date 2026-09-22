@@ -149,7 +149,7 @@ test("a phone away from home reaches the Twoody on its computer", async (t) => {
   // Both derived the same name without telling the relay anything.
   assert.equal(client.rendezvous, link.rendezvous);
 
-  const response = await client.fetch("/health");
+  const response = await client.request("/health");
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true, secret: "le contenu de la conversation" });
   assert.deepEqual(local.calls, ["GET /health"]);
@@ -184,7 +184,7 @@ test("an answer being written arrives as it is written", async (t) => {
     await middle.close();
   });
 
-  const response = await client.fetch("/stream");
+  const response = await client.request("/stream");
   assert.equal(response.headers.get("content-type"), "text/event-stream");
 
   const pieces: Array<{ text: string; at: number }> = [];
@@ -282,7 +282,7 @@ test("a phone told its computer is not there does not wait for an answer", async
     await middle.close();
   });
 
-  await assert.rejects(client.fetch("/health"), /not connected|did not answer/);
+  await assert.rejects(client.request("/health"), /not connected|did not answer/);
 });
 
 test("a phone that reconnects takes its session back", async (t) => {
@@ -306,14 +306,14 @@ test("a phone that reconnects takes its session back", async (t) => {
   });
 
   const first = startTunnelClient({ backendUrl: middle.url, userToken: "telephone", identity: phone, peerStaticKey: computer.publicKey, waitSeconds: 2 });
-  await (await first.fetch("/health")).json();
+  await (await first.request("/health")).json();
   first.stop();
 
   // The same phone, a new session: new ephemeral keys, and the old
   // frames are worthless in it.
   const second = startTunnelClient({ backendUrl: middle.url, userToken: "telephone", identity: phone, peerStaticKey: computer.publicKey, waitSeconds: 2 });
   t.after(() => second.stop());
-  assert.deepEqual(await (await second.fetch("/health")).json(), { ok: true, secret: "le contenu de la conversation" });
+  assert.deepEqual(await (await second.request("/health")).json(), { ok: true, secret: "le contenu de la conversation" });
   assert.equal(local.calls.length, 2);
 });
 

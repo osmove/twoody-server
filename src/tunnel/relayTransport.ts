@@ -10,6 +10,8 @@
 // `send` and the `onFrames` that channel.ts and host.ts are written
 // against, with the network in between.
 
+import { outboundFetch } from "../outbound.js";
+
 export interface RelayTransportOptions {
   /// Where the relay answers, e.g. https://api.twoody.com.
   backendUrl: string;
@@ -45,7 +47,9 @@ const BACKOFF_MAX_MS = 15_000;
 const SEND_BATCH_MS = 20;
 
 export function createRelayTransport(options: RelayTransportOptions): RelayTransport {
-  const fetchImpl = options.fetchImpl ?? fetch;
+  // Through the gate, so a server started in local-only mode refuses
+  // to reach a relay on the internet rather than quietly using one.
+  const fetchImpl = options.fetchImpl ?? outboundFetch;
   const waitSeconds = options.waitSeconds ?? 25;
   const base = options.backendUrl.replace(/\/+$/, "");
   let stopped = false;

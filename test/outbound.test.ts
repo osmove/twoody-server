@@ -46,7 +46,11 @@ test("every outbound call in src/ goes through outboundFetch", () => {
         walk(path);
       } else if (name.endsWith(".ts") && path !== join(srcDir, "outbound.ts")) {
         readFileSync(path, "utf8").split("\n").forEach((line, index) => {
-          if (/(?<![\w.])fetch\(/.test(line)) offenders.push(`${path}:${index + 1}`);
+          // Called, or handed around as a value (`?? fetch`, `= fetch`):
+          // both reach the network without passing the gate.
+          if (/(?<![\w.])fetch\(/.test(line) || /(?:\?\?|=|,|\()\s*fetch\s*(?:[;,)]|$)/.test(line)) {
+            offenders.push(`${path}:${index + 1}`);
+          }
         });
       }
     }

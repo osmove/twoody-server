@@ -1,3 +1,4 @@
+import { outboundFetch } from "../outbound.js";
 import { Channel, ChannelError } from "./channel.js";
 import { decode, encode, MAX_BODY_BYTES, ProtocolError, type Message } from "./protocol.js";
 
@@ -70,7 +71,7 @@ export interface TunnelHost {
 }
 
 export function createTunnelHost(options: TunnelHostOptions): TunnelHost {
-  const fetchImpl = options.fetchImpl ?? fetch;
+  const fetchImpl = options.fetchImpl ?? outboundFetch;
   const timeoutMs = options.timeoutMs ?? 30_000;
   const base = new URL(options.localBaseUrl);
   const running = new Map<number, AbortController>();
