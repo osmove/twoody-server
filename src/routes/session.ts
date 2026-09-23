@@ -13,6 +13,8 @@ import {
   authenticate,
   generateId,
   getActivePairingCode,
+  hasUsers,
+  matchesActivePairingCode,
   normalizePairingCode,
   isValidPairingCode,
   verifySetupToken,
@@ -179,7 +181,17 @@ export async function sessionRoutes(app: FastifyInstance) {
       if (!setupToken) {
         return reply.code(422).send({ error: "setup_token is required" });
       }
-      if (!verifySetupToken(setupToken)) {
+      // The first device pairs with the setup token, which the server
+      // honours only while no account exists. After that, a device pairs
+      // into the existing account with the code this server was started
+      // with — shown on the computer's screen, new at every start.
+      //
+      // On Twoody Desktop "after that" is always: the desktop spends the
+      // setup token on its own account at first launch. Its QR code went
+      // on carrying that spent token, so every phone that scanned it was
+      // refused here. The code is what it shows now, in the same field,
+      // so a phone already in people's hands needs no update to use it.
+      if (!verifySetupToken(setupToken) && !(hasUsers() && matchesActivePairingCode(setupToken))) {
         return reply.code(403).send({ error: "invalid_setup_token" });
       }
 
@@ -190,10 +202,10 @@ export async function sessionRoutes(app: FastifyInstance) {
         return reply.code(422).send({ error: "tunnel_public_key must be 64 hexadecimal characters" });
       }
 
-      // Reuse the existing first-account when the setup token has
-      // already been consumed once (e.g. the user paired via /auth/signup
-      // earlier). Otherwise create a "self-hosted" account on the
-      // fly so the iPhone doesn't have to ask for a name.
+      // Reuse the existing account when there is one — which is the
+      // case for every pairing by code. Otherwise create a
+      // "self-hosted" account on the fly so the iPhone doesn't have to
+      // ask for a name.
       const [existing] = db.select().from(users).limit(1).all();
       let userId: string;
       let userRow: typeof users.$inferSelect;

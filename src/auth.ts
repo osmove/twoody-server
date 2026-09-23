@@ -197,3 +197,11 @@ export function getActivePairingCode(): string | null {
   const normalized = normalizePairingCode(code);
   return isValidPairingCode(normalized) ? normalized : null;
 }
+
+/// Whether `candidate` is the code this server was started with, compared
+/// in constant time. It is what a second device pairs with once an account
+/// exists: new at every start, and shown on the computer's own screen.
+export function matchesActivePairingCode(candidate: string): boolean {
+  const active = getActivePairingCode();
+  return active !== null && timingSafeStringEqual(active, normalizePairingCode(candidate));
+}
