@@ -162,12 +162,18 @@ try {
       tunnel?.stop();
       tunnel = null;
       const credentials = tunnelCredentialsFrom(data);
+      const report = (paired: number) => parentPort.postMessage({ type: "tunnel", running: tunnel !== null, paired });
       if (credentials) {
-        tunnel = startTunnelService({ ...credentials, localBaseUrl, onError: onTunnelError });
+        // A phone paired later changes what the desktop should show.
+        tunnel = startTunnelService({ ...credentials, localBaseUrl, onError: onTunnelError, onLinksChanged: report });
         announceTunnel(tunnel);
       }
-      parentPort.postMessage({ type: "tunnel", running: tunnel !== null, paired: tunnel?.links.length ?? 0 });
+      report(tunnel?.links.length ?? 0);
     });
+    // Said once the listener exists, so the credentials are not sent to a
+    // process that is not listening yet — the same handshake the bridge
+    // worker uses.
+    parentPort.postMessage({ type: "tunnel-ready" });
   }
 
   // Catch up with files added or changed while the server was off. A

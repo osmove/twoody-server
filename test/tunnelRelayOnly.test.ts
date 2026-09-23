@@ -175,9 +175,16 @@ test("a tunnel started in local-only mode sends nothing but its frames endpoint,
 test("a phone paired while the tunnel runs is waited for at once, and a removed one is let go", async () => {
   db.delete(tunnelPeers).run();
   recordTheNetwork();
-  const service = startTunnelService({ backendUrl: RELAY, userToken: "jeton-du-compte", localBaseUrl: "http://127.0.0.1:1" });
+  const told: number[] = [];
+  const service = startTunnelService({
+    backendUrl: RELAY,
+    userToken: "jeton-du-compte",
+    localBaseUrl: "http://127.0.0.1:1",
+    onLinksChanged: (paired) => told.push(paired),
+  });
   try {
     assert.equal(service.links.length, 0, "nobody paired yet");
+    assert.deepEqual(told, [], "the starting state is not news");
     const key = "b2".repeat(32);
     await pairAPhone(key);
     // No restart: the pairing route told the running tunnel.
@@ -187,6 +194,8 @@ test("a phone paired while the tunnel runs is waited for at once, and a removed 
     forgetTunnelPeer({ userId: id, publicKey: Buffer.from(key, "hex") });
     service.refresh();
     assert.equal(service.links.length, 0);
+    // Whoever shows the count — the desktop — heard both.
+    assert.deepEqual(told, [1, 0]);
   } finally {
     service.stop();
   }

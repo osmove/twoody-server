@@ -28,6 +28,9 @@ export interface TunnelServiceOptions {
   /// Where the Twoody server on this machine answers.
   localBaseUrl: string;
   onError?(err: unknown): void;
+  /// Told how many devices it waits for, whenever that changes — a
+  /// device paired or removed while it runs.
+  onLinksChanged?(paired: number): void;
   /// For tests standing in for the relay. Left out — as it always is
   /// outside tests — the tunnel goes through `relayFetch` and nowhere
   /// else.
@@ -111,8 +114,12 @@ export function startTunnelService(options: TunnelServiceOptions): TunnelService
   const identity = tunnelIdentity();
   const fetchImpl = options.fetchImpl ?? relayFetch(options.backendUrl);
   const links = new Map<string, TunnelHostLink>();
+  // The first look is the starting state, reported by whoever started
+  // the service; only what changes after it is news.
+  let starting = true;
 
   function refresh(): void {
+    const before = links.size;
     const paired = new Set<string>();
     // Every account on this server, which on a single-user install is
     // the one account. A peer is paired with an account, not with the
@@ -142,6 +149,7 @@ export function startTunnelService(options: TunnelServiceOptions): TunnelService
       link.stop();
       links.delete(key);
     }
+    if (!starting && links.size !== before) options.onLinksChanged?.(links.size);
   }
 
   const service: TunnelService = {
@@ -158,5 +166,6 @@ export function startTunnelService(options: TunnelServiceOptions): TunnelService
   };
   running = service;
   refresh();
+  starting = false;
   return service;
 }
