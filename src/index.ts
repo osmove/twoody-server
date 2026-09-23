@@ -162,13 +162,27 @@ try {
       tunnel?.stop();
       tunnel = null;
       const credentials = tunnelCredentialsFrom(data);
-      const report = (paired: number) => parentPort.postMessage({ type: "tunnel", running: tunnel !== null, paired });
+      // What the desktop shows: whether the tunnel runs, how many devices
+      // it waits for, and whether the relay answers — each of which can
+      // change while it runs.
+      const report = () =>
+        parentPort.postMessage({
+          type: "tunnel",
+          running: tunnel !== null,
+          paired: tunnel?.links.length ?? 0,
+          reachable: tunnel?.reachable ?? null,
+        });
       if (credentials) {
-        // A phone paired later changes what the desktop should show.
-        tunnel = startTunnelService({ ...credentials, localBaseUrl, onError: onTunnelError, onLinksChanged: report });
+        tunnel = startTunnelService({
+          ...credentials,
+          localBaseUrl,
+          onError: onTunnelError,
+          onLinksChanged: report,
+          onReachabilityChanged: report,
+        });
         announceTunnel(tunnel);
       }
-      report(tunnel?.links.length ?? 0);
+      report();
     });
     // Said once the listener exists, so the credentials are not sent to a
     // process that is not listening yet — the same handshake the bridge

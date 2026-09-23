@@ -38,16 +38,19 @@ const seen: Seen[] = [];
 /// Replaces the network. Each request that gets this far is written
 /// down with the account token it carried, and answered like a relay
 /// with nothing waiting — after a moment, as a long poll would.
+let relayStatus = 200;
+
 function recordTheNetwork(): void {
   seen.length = 0;
+  relayStatus = 200;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = input instanceof Request ? input.url : String(input);
     const method = init?.method ?? (input instanceof Request ? input.method : "GET");
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
     seen.push({ line: `${method} ${url}`, token: headers.get("x-user-token") });
     await new Promise((resolve) => setTimeout(resolve, 20));
-    return new Response(JSON.stringify({ frames: [], peer_listening: false }), {
-      status: 200,
+    return new Response(JSON.stringify(relayStatus === 200 ? { frames: [], peer_listening: false } : { error: "not found" }), {
+      status: relayStatus,
       headers: { "content-type": "application/json" },
     });
   }) as typeof fetch;
@@ -167,7 +170,9 @@ test("a tunnel started in local-only mode sends nothing but its frames endpoint,
     service.stop();
   }
   for (const { line, token } of seen) {
-    assert.match(line, /^GET https:\/\/relay\.twoody\.invalid\/api\/v1\/tunnel\/frames\?rendezvous=[0-9a-f]{32}&as=host&wait=25$/);
+    // A first short wait to learn at once whether the relay answers, then
+    // the long ones.
+    assert.match(line, /^GET https:\/\/relay\.twoody\.invalid\/api\/v1\/tunnel\/frames\?rendezvous=[0-9a-f]{32}&as=host&wait=(1|25)$/);
     assert.equal(token, "jeton-du-compte");
   }
 });
@@ -196,6 +201,34 @@ test("a phone paired while the tunnel runs is waited for at once, and a removed 
     assert.equal(service.links.length, 0);
     // Whoever shows the count — the desktop — heard both.
     assert.deepEqual(told, [1, 0]);
+  } finally {
+    service.stop();
+  }
+});
+
+// "Waiting at the relay" is what the desktop shows, and it is only true
+// while the relay answers — a relay not deployed yet answers 404.
+test("a relay that does not answer is said not to, and one that starts to, is said to", async () => {
+  await pairAPhone("f6".repeat(32));
+  recordTheNetwork();
+  relayStatus = 404;
+  const told: Array<boolean | null> = [];
+  const service = startTunnelService({
+    backendUrl: RELAY,
+    userToken: "jeton-du-compte",
+    localBaseUrl: "http://127.0.0.1:1",
+    onReachabilityChanged: (reachable) => told.push(reachable),
+  });
+  try {
+    assert.equal(service.reachable, null, "nothing known before the first wait comes back");
+    await until(() => told.length >= 1, "the relay's first answer");
+    assert.deepEqual(told, [false]);
+    assert.equal(service.reachable, false);
+
+    relayStatus = 200;
+    await until(() => told.length >= 2, "the relay to start answering");
+    assert.deepEqual(told, [false, true]);
+    assert.equal(service.reachable, true);
   } finally {
     service.stop();
   }

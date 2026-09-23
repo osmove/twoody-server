@@ -27,6 +27,11 @@ export interface RelayTransportOptions {
   onError?(err: unknown): void;
   /// Called when the relay says nobody is listening on the other side.
   onPeerChanged?(listening: boolean): void;
+  /// Called when the relay starts or stops answering: the first wait that
+  /// comes back, and the first that fails after one that did. What the
+  /// person is shown depends on it — "waiting at the relay" is only true
+  /// while the relay answers.
+  onReachable?(reachable: boolean): void;
   fetchImpl?: typeof fetch;
   waitSeconds?: number;
 }
@@ -54,6 +59,7 @@ export function createRelayTransport(options: RelayTransportOptions): RelayTrans
   const base = options.backendUrl.replace(/\/+$/, "");
   let stopped = false;
   let peerListening = false;
+  let reachable: boolean | null = null;
   let pending: Buffer[] = [];
   let flushing: Promise<void> | null = null;
   let flushTimer: NodeJS.Timeout | null = null;
@@ -68,6 +74,12 @@ export function createRelayTransport(options: RelayTransportOptions): RelayTrans
     return out;
   }
 
+  function noteReachable(next: boolean): void {
+    if (next === reachable) return;
+    reachable = next;
+    options.onReachable?.(next);
+  }
+
   function notePeer(listening: unknown): void {
     const next = listening === true;
     if (next === peerListening) return;
@@ -77,15 +89,20 @@ export function createRelayTransport(options: RelayTransportOptions): RelayTrans
 
   async function poll(): Promise<void> {
     let backoff = BACKOFF_MIN_MS;
+    // The first wait is short: whether the relay answers at all should be
+    // known in a second, not after a whole long poll with nothing in it.
+    let wait = Math.min(1, waitSeconds);
     while (!stopped) {
       try {
         const url = new URL(`${base}/api/v1/tunnel/frames`);
         url.searchParams.set("rendezvous", options.rendezvous);
         url.searchParams.set("as", options.as);
-        url.searchParams.set("wait", String(waitSeconds));
+        url.searchParams.set("wait", String(wait));
+        wait = waitSeconds;
         const response = await fetchImpl(url, { headers: headers(), signal: inFlight.signal });
         if (!response.ok) throw new Error(`relay answered ${response.status}`);
         const body = (await response.json()) as { frames?: unknown; peer_listening?: unknown };
+        noteReachable(true);
         notePeer(body.peer_listening);
         backoff = BACKOFF_MIN_MS;
 
@@ -93,6 +110,7 @@ export function createRelayTransport(options: RelayTransportOptions): RelayTrans
         if (frames.length > 0 && !stopped) await options.onFrames(frames);
       } catch (err) {
         if (stopped || (err instanceof Error && err.name === "AbortError")) return;
+        noteReachable(false);
         options.onError?.(err);
         // A relay that is down, a network that is gone, a token that was
         // refused: all of them want the same thing, which is to stop

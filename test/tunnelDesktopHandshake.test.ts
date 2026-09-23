@@ -106,40 +106,46 @@ test("the desktop's server waits at the relay with credentials it was handed, an
     await nextMessage(child, (m) => m.type === "tunnel-ready", "the server to say it listens");
 
     child.send({ type: "tunnel", backendUrl: `${relay.url}/`, userToken: "jeton-du-compte", deviceToken: "cet-ordinateur" });
+    // Nobody paired: nothing waits at the relay, so nothing is known of it.
     assert.deepEqual(await nextMessage(child, (m) => m.type === "tunnel", "the tunnel's first report"), {
       type: "tunnel",
       running: true,
       paired: 0,
+      reachable: null,
     });
     assert.deepEqual(relay.hits, [], "nobody paired: nothing to wait for, nothing sent");
 
     // A phone pairs on this network while the tunnel runs.
     const setupToken = readFileSync(join(dataDir, "setup-token"), "utf8").trim();
     const reported = nextMessage(child, (m) => m.type === "tunnel" && m.paired === 1, "the pairing to be reported");
+    const answered = nextMessage(child, (m) => m.type === "tunnel" && m.reachable === true, "the relay's answer to be reported");
     const pairing = await fetch(`http://127.0.0.1:${port}/auth/pair`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ setup_token: setupToken, device_name: "iPhone de Jimmy", tunnel_public_key: "c3".repeat(32) }),
     });
     assert.equal(pairing.status, 201);
-    assert.deepEqual(await reported, { type: "tunnel", running: true, paired: 1 });
+    assert.deepEqual(await reported, { type: "tunnel", running: true, paired: 1, reachable: null });
+    // The first wait is short, so whether the relay answers is known at once.
+    assert.deepEqual(await answered, { type: "tunnel", running: true, paired: 1, reachable: true });
 
     // And from then on it waits at the relay — there only, with the
     // credentials it was handed.
     await until(() => relay.hits.length >= 1, "the first wait at the relay");
     for (const hit of relay.hits) {
       assert.equal(hit.method, "GET");
-      assert.match(hit.path, /^\/api\/v1\/tunnel\/frames\?rendezvous=[0-9a-f]{32}&as=host&wait=25$/);
+      assert.match(hit.path, /^\/api\/v1\/tunnel\/frames\?rendezvous=[0-9a-f]{32}&as=host&wait=(1|25)$/);
       assert.equal(hit.token, "jeton-du-compte");
       assert.equal(hit.device, "cet-ordinateur");
     }
 
     // Signed out on the desktop: the credentials are taken back.
     child.send({ type: "tunnel" });
-    assert.deepEqual(await nextMessage(child, (m) => m.type === "tunnel", "the stop to be reported"), {
+    assert.deepEqual(await nextMessage(child, (m) => m.type === "tunnel" && m.running === false, "the stop to be reported"), {
       type: "tunnel",
       running: false,
       paired: 0,
+      reachable: null,
     });
     // The poll in flight may land; nothing after it.
     await new Promise((resolve) => setTimeout(resolve, 400));

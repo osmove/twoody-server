@@ -31,6 +31,8 @@ export interface TunnelHostLinkOptions {
   /// The Twoody server on this machine.
   localBaseUrl: string;
   onError?(err: unknown): void;
+  /// Whether the relay answers this link's waits (relayTransport.ts).
+  onReachable?(reachable: boolean): void;
   fetchImpl?: typeof fetch;
   waitSeconds?: number;
 }
@@ -85,6 +87,7 @@ export function startTunnelHostLink(options: TunnelHostLinkOptions): TunnelHostL
     rendezvous,
     as: "host",
     onError: options.onError,
+    onReachable: options.onReachable,
     fetchImpl: options.fetchImpl,
     waitSeconds: options.waitSeconds,
     onFrames: async (frames) => {
