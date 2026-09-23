@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { LOCAL_ONLY } from "../outbound.js";
+import { runningTunnel } from "../tunnel/index.js";
 
 // Public feature-flag surface. Mirrors the JSON shape returned by Rails
 // (`/api/v1/capabilities`) so a single client codepath can introspect
@@ -27,6 +28,7 @@ export async function capabilitiesRoutes(app: FastifyInstance) {
             deployment_kind:    { type: "string" },
             local_only:         { type: "boolean" },
             has_document_index: { type: "boolean" },
+            tunnel_relay:       { type: ["string", "null"] },
           },
           required: [
             "has_billing", "has_org", "has_memory", "has_browser_agent",
@@ -61,8 +63,14 @@ export async function capabilitiesRoutes(app: FastifyInstance) {
         providers_writable: true,
         deployment_kind:    "local",
         // True when TWOODY_LOCAL_ONLY is set: the server refuses every
-        // call to a host outside this machine / the private network.
+        // call to a host outside this machine / the private network —
+        // save sealed tunnel frames to the relay named below, if any.
         local_only:         LOCAL_ONLY,
+        // The relay this server waits at for its paired devices, as an
+        // origin; null when it is not reachable from outside. With
+        // local_only, it is the one address anything leaves for, so a
+        // client that shows "nothing leaves" has to be able to say this.
+        tunnel_relay:       runningTunnel()?.relay ?? null,
         // Folders the user grants are indexed here (SQLite FTS5) and
         // /queries cites passages from them.
         has_document_index: true,

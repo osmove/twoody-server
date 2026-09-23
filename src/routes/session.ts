@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import { allowSecretAttempt } from "../rateLimit.js";
 import { rememberTunnelPeer, tunnelIdentity } from "../tunnel/identity.js";
+import { tunnelPeersChanged } from "../tunnel/index.js";
 import {
   db,
   authSessions,
@@ -224,6 +225,10 @@ export async function sessionRoutes(app: FastifyInstance) {
       if (offered) {
         rememberTunnelPeer({ userId, publicKey: Buffer.from(offered, "hex"), name: deviceName });
         tunnelPublicKey = tunnelIdentity().publicKey.toString("hex");
+        // A tunnel already waiting at the relay starts waiting for this
+        // device too, without a restart: the phone paired at home is
+        // expected to reach home as soon as it leaves.
+        tunnelPeersChanged();
       }
 
       const { token, sessionId } = createAuthSession(userId, `pair:${deviceName}`);

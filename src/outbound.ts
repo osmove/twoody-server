@@ -64,15 +64,72 @@ export async function isPrivateUrl(url: string | URL): Promise<boolean> {
   }
 }
 
-export async function outboundFetch(url: string | URL, init?: RequestInit): Promise<Response> {
-  if (LOCAL_ONLY && !(await isPrivateUrl(url))) {
-    let host = String(url);
+export async function outboundFetch(url: string | URL | Request, init?: RequestInit): Promise<Response> {
+  // Judged by where it goes; sent as it came, method and body included.
+  const href = url instanceof Request ? url.url : url;
+  if (LOCAL_ONLY && !(await isPrivateUrl(href))) {
+    let host = String(href);
     try {
-      host = new URL(url).host;
+      host = new URL(href).host;
     } catch {
       // Keep the raw value in the message.
     }
     throw new LocalOnlyError(host);
   }
   return fetch(url, init);
+}
+
+// The one door local-only mode has, and only for the tunnel.
+//
+// Local-only promises that nothing readable leaves this machine. The
+// tunnel keeps that promise — every frame is sealed with keys only the
+// two paired devices hold, and the relay carries bytes it cannot open —
+// but it cannot keep it without reaching one outside address: a
+// computer at home has no port anyone can call, so it has to go and
+// fetch what its phone left at the relay.
+//
+// So the gate gets exactly one door, as narrow as the transport allows:
+// the relay's origin, the single path the transport uses, and nothing
+// else. A different path on the same host, a look-alike host, another
+// port — all go through the ordinary gate and are refused there. And the
+// door does not open over cleartext to anything outside the private
+// network, in any mode: the account token rides in a header beside the
+// sealed frames, and it is not sealed.
+
+/// The only path the tunnel's transport asks of the relay
+/// (relayTransport.ts), under the relay's own base path.
+export const RELAY_FRAMES_PATH = "/api/v1/tunnel/frames";
+
+export class RelayRefusedError extends Error {
+  constructor(reason: string) {
+    super(`Refused on the way to the relay: ${reason}`);
+    this.name = "RelayRefusedError";
+  }
+}
+
+/// A fetch for the tunnel: the relay's frames endpoint goes through the
+/// door, everything else through `outboundFetch` as usual.
+export function relayFetch(relayUrl: string | URL): typeof fetch {
+  const relay = new URL(relayUrl);
+  const framesPath = `${relay.pathname.replace(/\/+$/, "")}${RELAY_FRAMES_PATH}`;
+
+  return (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    let target: URL | null = null;
+    try {
+      target = new URL(input instanceof Request ? input.url : input);
+    } catch {
+      // Not a URL: the ordinary gate will say so.
+    }
+
+    // The parser has already resolved "..", "%2e%2e" and the like, so
+    // an exact comparison is a comparison of where the request really
+    // goes, not of how it was spelled.
+    if (target && target.origin === relay.origin && target.pathname === framesPath) {
+      if (target.protocol !== "https:" && !(await isPrivateUrl(target))) {
+        throw new RelayRefusedError(`${target.host} is outside the private network and not reached over HTTPS`);
+      }
+      return fetch(input, init);
+    }
+    return outboundFetch(input, init);
+  }) as typeof fetch;
 }

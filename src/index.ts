@@ -5,7 +5,13 @@ import { startBonjour } from "./bonjour.js";
 import { readBridgeClientEnv, startBridgeClient } from "./bridgeClient.js";
 import { db, users } from "./db.js";
 import { LOCAL_ONLY, isPrivateUrl } from "./outbound.js";
-import { readTunnelEnv, startTunnelService } from "./tunnel/index.js";
+import {
+  readTunnelEnv,
+  startTunnelService,
+  tunnelCredentialsFrom,
+  type TunnelParentPort,
+  type TunnelService,
+} from "./tunnel/index.js";
 import { adminToken } from "./adminAccess.js";
 import { reindex } from "./documents/library.js";
 import { readFileSync } from "node:fs";
@@ -122,19 +128,46 @@ try {
 
   // The tunnel, when it is asked for: one wait at the relay per device
   // paired on this network, so a phone away from home reaches this
-  // server without a port being opened on it. Off by default, and
-  // refused outright in local-only mode, where the relay is outside.
-  const tunnelOptions = readTunnelEnv(`http://127.0.0.1:${PORT}`);
-  let tunnel: ReturnType<typeof startTunnelService> = null;
-  if (tunnelOptions && LOCAL_ONLY) {
-    console.log("  Local-only mode: the tunnel is not started.\n");
-  } else if (tunnelOptions) {
-    tunnel = startTunnelService({ ...tunnelOptions, onError: (err) => app.log.debug({ err }, "tunnel") });
-    if (tunnel) {
-      console.log(`  Reachable from outside for ${tunnel.links.length} paired device(s).\n`);
-    } else {
-      console.log("  Tunnel asked for, but no device is paired for it yet. Pair one on this network first.\n");
-    }
+  // server without a port being opened on it. Off by default. In
+  // local-only mode it is the one thing allowed out, through the one
+  // door that mode has: the relay's frames endpoint, carrying frames the
+  // relay cannot open (outbound.ts, `relayFetch`).
+  const localBaseUrl = `http://127.0.0.1:${PORT}`;
+  const onTunnelError = (err: unknown) => app.log.debug({ err }, "tunnel");
+  const announceTunnel = (service: TunnelService) => {
+    const paired = service.links.length;
+    const through = LOCAL_ONLY ? `, and local-only lets out nothing but sealed frames to ${service.relay}` : ` via ${service.relay}`;
+    console.log(
+      paired > 0
+        ? `  Reachable from outside for ${paired} paired device(s)${through}.\n`
+        : `  Tunnel waiting at ${service.relay}: no device is paired for it yet. Pair one on this network first.\n`,
+    );
+  };
+  const tunnelOptions = readTunnelEnv(localBaseUrl);
+  let tunnel: TunnelService | null = null;
+  if (tunnelOptions) {
+    tunnel = startTunnelService({ ...tunnelOptions, onError: onTunnelError });
+    announceTunnel(tunnel);
+  }
+
+  // Twoody Desktop runs this server as a utility process and hands it
+  // the account's credentials by message rather than through the
+  // environment, where any process of the same user could read them.
+  // TWOODY_TUNNEL=1 is still what opts in: a server started without it
+  // ignores the message.
+  const parentPort = (process as unknown as { parentPort?: TunnelParentPort }).parentPort;
+  if (parentPort && process.env.TWOODY_TUNNEL === "1") {
+    parentPort.on("message", ({ data }) => {
+      if ((data as { type?: unknown } | null)?.type !== "tunnel") return;
+      tunnel?.stop();
+      tunnel = null;
+      const credentials = tunnelCredentialsFrom(data);
+      if (credentials) {
+        tunnel = startTunnelService({ ...credentials, localBaseUrl, onError: onTunnelError });
+        announceTunnel(tunnel);
+      }
+      parentPort.postMessage({ type: "tunnel", running: tunnel !== null, paired: tunnel?.links.length ?? 0 });
+    });
   }
 
   // Catch up with files added or changed while the server was off. A
