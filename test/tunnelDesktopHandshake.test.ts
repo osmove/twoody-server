@@ -23,6 +23,7 @@ interface Hit {
   path: string;
   token: string | undefined;
   device: string | undefined;
+  accept: string | undefined;
 }
 
 async function standInRelay(): Promise<{ server: Server; url: string; hits: Hit[] }> {
@@ -33,6 +34,7 @@ async function standInRelay(): Promise<{ server: Server; url: string; hits: Hit[
       path: req.url ?? "",
       token: req.headers["x-user-token"] as string | undefined,
       device: req.headers["x-device-token"] as string | undefined,
+      accept: req.headers.accept,
     });
     // Nothing waiting, after a moment — as a long poll would answer.
     setTimeout(() => {
@@ -111,23 +113,23 @@ test("the desktop's server waits at the relay with credentials it was handed, an
       type: "tunnel",
       running: true,
       paired: 0,
-      reachable: null,
+      relay: null,
     });
     assert.deepEqual(relay.hits, [], "nobody paired: nothing to wait for, nothing sent");
 
     // A phone pairs on this network while the tunnel runs.
     const setupToken = readFileSync(join(dataDir, "setup-token"), "utf8").trim();
     const reported = nextMessage(child, (m) => m.type === "tunnel" && m.paired === 1, "the pairing to be reported");
-    const answered = nextMessage(child, (m) => m.type === "tunnel" && m.reachable === true, "the relay's answer to be reported");
+    const answered = nextMessage(child, (m) => m.type === "tunnel" && m.relay === "answering", "the relay's answer to be reported");
     const pairing = await fetch(`http://127.0.0.1:${port}/auth/pair`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ setup_token: setupToken, device_name: "iPhone de Jimmy", tunnel_public_key: "c3".repeat(32) }),
     });
     assert.equal(pairing.status, 201);
-    assert.deepEqual(await reported, { type: "tunnel", running: true, paired: 1, reachable: null });
+    assert.deepEqual(await reported, { type: "tunnel", running: true, paired: 1, relay: null });
     // The first wait is short, so whether the relay answers is known at once.
-    assert.deepEqual(await answered, { type: "tunnel", running: true, paired: 1, reachable: true });
+    assert.deepEqual(await answered, { type: "tunnel", running: true, paired: 1, relay: "answering" });
 
     // And from then on it waits at the relay — there only, with the
     // credentials it was handed.
@@ -137,6 +139,8 @@ test("the desktop's server waits at the relay with credentials it was handed, an
       assert.match(hit.path, /^\/api\/v1\/tunnel\/frames\?rendezvous=[0-9a-f]{32}&as=host&wait=(1|25)$/);
       assert.equal(hit.token, "jeton-du-compte");
       assert.equal(hit.device, "cet-ordinateur");
+      // So a refused session comes back as a 401, not a sign-in page.
+      assert.equal(hit.accept, "application/json");
     }
 
     // Signed out on the desktop: the credentials are taken back.
@@ -145,7 +149,7 @@ test("the desktop's server waits at the relay with credentials it was handed, an
       type: "tunnel",
       running: false,
       paired: 0,
-      reachable: null,
+      relay: null,
     });
     // The poll in flight may land; nothing after it.
     await new Promise((resolve) => setTimeout(resolve, 400));

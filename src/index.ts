@@ -163,14 +163,14 @@ try {
       tunnel = null;
       const credentials = tunnelCredentialsFrom(data);
       // What the desktop shows: whether the tunnel runs, how many devices
-      // it waits for, and whether the relay answers — each of which can
-      // change while it runs.
+      // it waits for, and what the relay says — each of which can change
+      // while it runs.
       const report = () =>
         parentPort.postMessage({
           type: "tunnel",
           running: tunnel !== null,
           paired: tunnel?.links.length ?? 0,
-          reachable: tunnel?.reachable ?? null,
+          relay: tunnel?.relayState ?? null,
         });
       if (credentials) {
         tunnel = startTunnelService({
@@ -178,7 +178,7 @@ try {
           localBaseUrl,
           onError: onTunnelError,
           onLinksChanged: report,
-          onReachabilityChanged: report,
+          onRelayStateChanged: report,
         });
         announceTunnel(tunnel);
       }

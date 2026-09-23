@@ -128,7 +128,11 @@ export function relayFetch(relayUrl: string | URL): typeof fetch {
       if (target.protocol !== "https:" && !(await isPrivateUrl(target))) {
         throw new RelayRefusedError(`${target.host} is outside the private network and not reached over HTTPS`);
       }
-      return fetch(input, init);
+      // Never followed: a redirect would send this request — account token
+      // in its headers — wherever the relay pointed, past the check above.
+      // The door is checked on the address asked for, so that has to be
+      // the only address reached.
+      return fetch(input, { ...init, redirect: "error" });
     }
     return outboundFetch(input, init);
   }) as typeof fetch;

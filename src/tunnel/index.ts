@@ -2,6 +2,7 @@ import { db, users } from "../db.js";
 import { relayFetch } from "../outbound.js";
 import { tunnelIdentity, tunnelPeersFor } from "./identity.js";
 import { startTunnelHostLink, type TunnelHostLink } from "./hostLink.js";
+import type { RelayState } from "./relayTransport.js";
 
 // Waiting at the relay for the devices this computer is paired with.
 //
@@ -31,10 +32,10 @@ export interface TunnelServiceOptions {
   /// Told how many devices it waits for, whenever that changes — a
   /// device paired or removed while it runs.
   onLinksChanged?(paired: number): void;
-  /// Told whether the relay answers, whenever that changes: null while no
-  /// device is paired (nothing waits there, so nothing is known), then
-  /// true once a wait comes back, false once they fail.
-  onReachabilityChanged?(reachable: boolean | null): void;
+  /// Told what the relay says, whenever that changes: null while no device
+  /// is paired (nothing waits there, so nothing is known), then whether it
+  /// answers, cannot be reached, or refuses the account's session.
+  onRelayStateChanged?(state: RelayState | null): void;
   /// For tests standing in for the relay. Left out — as it always is
   /// outside tests — the tunnel goes through `relayFetch` and nowhere
   /// else.
@@ -46,9 +47,9 @@ export interface TunnelService {
   readonly links: ReadonlyArray<{ rendezvous: string; connected: boolean }>;
   /// The relay this service waits at, as an origin.
   readonly relay: string;
-  /// Whether the relay answers: null until a paired device's wait has
-  /// come back or failed.
-  readonly reachable: boolean | null;
+  /// What the relay says: null until a paired device's wait has come back
+  /// or failed.
+  readonly relayState: RelayState | null;
   /// Opens a link for each device paired since the last look, and
   /// closes the link of each one that was removed.
   refresh(): void;
@@ -121,19 +122,22 @@ export function startTunnelService(options: TunnelServiceOptions): TunnelService
   const identity = tunnelIdentity();
   const fetchImpl = options.fetchImpl ?? relayFetch(options.backendUrl);
   const links = new Map<string, TunnelHostLink>();
-  // Each link's last word on the relay. They all wait at the same one, so
-  // any link it answers means it answers.
-  const answered = new Map<string, boolean>();
-  let reachable: boolean | null = null;
+  // Each link's last word from the relay. They all wait at the same one:
+  // any link it answers means it answers; failing that, a refused session
+  // is the more useful thing to say, since signing in again fixes it.
+  const answered = new Map<string, RelayState>();
+  let relayState: RelayState | null = null;
   // The first look is the starting state, reported by whoever started
   // the service; only what changes after it is news.
   let starting = true;
 
-  function noteReachability(): void {
-    const next = answered.size === 0 ? null : [...answered.values()].some(Boolean);
-    if (next === reachable) return;
-    reachable = next;
-    options.onReachabilityChanged?.(next);
+  function noteRelayState(): void {
+    const states = new Set(answered.values());
+    const next: RelayState | null =
+      answered.size === 0 ? null : states.has("answering") ? "answering" : states.has("refused") ? "refused" : "unreachable";
+    if (next === relayState) return;
+    relayState = next;
+    options.onRelayStateChanged?.(next);
   }
 
   function refresh(): void {
@@ -157,10 +161,10 @@ export function startTunnelService(options: TunnelServiceOptions): TunnelService
             peerStaticKey: peer.publicKey,
             localBaseUrl: options.localBaseUrl,
             onError: options.onError,
-            onReachable: (answers) => {
+            onRelayState: (state) => {
               if (!links.has(key)) return;
-              answered.set(key, answers);
-              noteReachability();
+              answered.set(key, state);
+              noteRelayState();
             },
             fetchImpl,
           }),
@@ -174,7 +178,7 @@ export function startTunnelService(options: TunnelServiceOptions): TunnelService
       answered.delete(key);
     }
     if (!starting && links.size !== before) options.onLinksChanged?.(links.size);
-    noteReachability();
+    noteRelayState();
   }
 
   const service: TunnelService = {
@@ -182,8 +186,8 @@ export function startTunnelService(options: TunnelServiceOptions): TunnelService
       return [...links.values()].map((link) => ({ rendezvous: link.rendezvous, connected: link.connected }));
     },
     relay: new URL(options.backendUrl).origin,
-    get reachable() {
-      return reachable;
+    get relayState() {
+      return relayState;
     },
     refresh,
     stop(): void {

@@ -28,6 +28,8 @@ const app = await buildApp();
 // `.invalid` never resolves, so nothing here can reach a real host even
 // if a check below were wrong: the worst a bug can do is fail a test.
 const RELAY = "https://relay.twoody.invalid";
+// The real one, for the test that needs real redirects.
+const realFetch = globalThis.fetch;
 
 interface Seen {
   line: string;
@@ -49,7 +51,7 @@ function recordTheNetwork(): void {
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
     seen.push({ line: `${method} ${url}`, token: headers.get("x-user-token") });
     await new Promise((resolve) => setTimeout(resolve, 20));
-    return new Response(JSON.stringify(relayStatus === 200 ? { frames: [], peer_listening: false } : { error: "not found" }), {
+    return new Response(JSON.stringify(relayStatus === 200 ? { frames: [], peer_listening: false } : { error: "no" }), {
       status: relayStatus,
       headers: { "content-type": "application/json" },
     });
@@ -208,29 +210,77 @@ test("a phone paired while the tunnel runs is waited for at once, and a removed 
 
 // "Waiting at the relay" is what the desktop shows, and it is only true
 // while the relay answers — a relay not deployed yet answers 404.
-test("a relay that does not answer is said not to, and one that starts to, is said to", async () => {
+test("a relay that does not answer, refuses the session, then answers, is described as each in turn", async () => {
   await pairAPhone("f6".repeat(32));
   recordTheNetwork();
   relayStatus = 404;
-  const told: Array<boolean | null> = [];
+  const told: Array<string | null> = [];
   const service = startTunnelService({
     backendUrl: RELAY,
     userToken: "jeton-du-compte",
     localBaseUrl: "http://127.0.0.1:1",
-    onReachabilityChanged: (reachable) => told.push(reachable),
+    onRelayStateChanged: (state) => told.push(state),
   });
   try {
-    assert.equal(service.reachable, null, "nothing known before the first wait comes back");
+    assert.equal(service.relayState, null, "nothing known before the first wait comes back");
     await until(() => told.length >= 1, "the relay's first answer");
-    assert.deepEqual(told, [false]);
-    assert.equal(service.reachable, false);
+    assert.deepEqual(told, ["unreachable"]);
+
+    // A signed-out or expired session: signing in again fixes it, which
+    // is not what "the relay does not answer" would tell anyone.
+    relayStatus = 401;
+    await until(() => told.length >= 2, "the refusal", 20_000);
+    assert.deepEqual(told, ["unreachable", "refused"]);
 
     relayStatus = 200;
-    await until(() => told.length >= 2, "the relay to start answering");
-    assert.deepEqual(told, [false, true]);
-    assert.equal(service.reachable, true);
+    await until(() => told.length >= 3, "the relay to start answering", 20_000);
+    assert.deepEqual(told, ["unreachable", "refused", "answering"]);
+    assert.equal(service.relayState, "answering");
   } finally {
     service.stop();
+  }
+});
+
+// The door is checked on the address asked for. Followed, a redirect
+// would take the request — the account token in its headers — wherever
+// the relay pointed, past that check: to another path of the relay's
+// backend, or another host altogether.
+test("the door never follows a redirect", async () => {
+  const { createServer } = await import("node:http");
+  const elsewhere: string[] = [];
+  const thief = createServer((req, res) => {
+    elsewhere.push(`${req.method} ${req.url} token=${req.headers["x-user-token"] ?? "-"}`);
+    res.end("merci");
+  });
+  await new Promise<void>((resolve) => thief.listen(0, "127.0.0.1", resolve));
+  const thiefUrl = `http://127.0.0.1:${(thief.address() as { port: number }).port}`;
+
+  let target = `${thiefUrl}/steal`;
+  const relayHits: string[] = [];
+  const relay = createServer((req, res) => {
+    relayHits.push(`${req.method} ${req.url}`);
+    res.writeHead(302, { location: target });
+    res.end();
+  });
+  await new Promise<void>((resolve) => relay.listen(0, "127.0.0.1", resolve));
+  const relayUrl = `http://127.0.0.1:${(relay.address() as { port: number }).port}`;
+
+  globalThis.fetch = realFetch;
+  try {
+    const through = relayFetch(relayUrl);
+    // To another host.
+    await assert.rejects(through(`${relayUrl}/api/v1/tunnel/frames`, { headers: { "x-user-token": "jeton-du-compte" } }));
+    // And to another path of the relay itself, as a sign-in page would.
+    target = `${relayUrl}/users/sign_in`;
+    await assert.rejects(through(`${relayUrl}/api/v1/tunnel/frames`, { headers: { "x-user-token": "jeton-du-compte" } }));
+
+    assert.deepEqual(elsewhere, [], "nothing reached the other host");
+    assert.deepEqual(relayHits, ["GET /api/v1/tunnel/frames", "GET /api/v1/tunnel/frames"], "nothing but the frames path, twice");
+  } finally {
+    thief.closeAllConnections();
+    relay.closeAllConnections();
+    await new Promise((resolve) => thief.close(resolve));
+    await new Promise((resolve) => relay.close(resolve));
   }
 });
 

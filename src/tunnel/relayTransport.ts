@@ -27,14 +27,21 @@ export interface RelayTransportOptions {
   onError?(err: unknown): void;
   /// Called when the relay says nobody is listening on the other side.
   onPeerChanged?(listening: boolean): void;
-  /// Called when the relay starts or stops answering: the first wait that
-  /// comes back, and the first that fails after one that did. What the
+  /// Called when what the relay says changes: it answers the waits, it
+  /// cannot be reached, or it refuses the account's session. What the
   /// person is shown depends on it — "waiting at the relay" is only true
-  /// while the relay answers.
-  onReachable?(reachable: boolean): void;
+  /// while it answers, and a refused session wants signing in again, not
+  /// patience.
+  onRelayState?(state: RelayState): void;
   fetchImpl?: typeof fetch;
   waitSeconds?: number;
 }
+
+export type RelayState = "answering" | "unreachable" | "refused";
+
+/// The relay answered, and said no to the account's session: not a relay
+/// that cannot be reached.
+class SessionRefused extends Error {}
 
 export interface RelayTransport {
   /// Leaves frames for the other device. Several calls close together
@@ -59,7 +66,7 @@ export function createRelayTransport(options: RelayTransportOptions): RelayTrans
   const base = options.backendUrl.replace(/\/+$/, "");
   let stopped = false;
   let peerListening = false;
-  let reachable: boolean | null = null;
+  let relayState: RelayState | null = null;
   let pending: Buffer[] = [];
   let flushing: Promise<void> | null = null;
   let flushTimer: NodeJS.Timeout | null = null;
@@ -67,6 +74,9 @@ export function createRelayTransport(options: RelayTransportOptions): RelayTrans
 
   function headers(): Record<string, string> {
     const out: Record<string, string> = {
+      // Asked for, so a refused session comes back as a 401 to read rather
+      // than as a redirect to a sign-in page.
+      accept: "application/json",
       "content-type": "application/json",
       "x-user-token": options.userToken,
     };
@@ -74,10 +84,10 @@ export function createRelayTransport(options: RelayTransportOptions): RelayTrans
     return out;
   }
 
-  function noteReachable(next: boolean): void {
-    if (next === reachable) return;
-    reachable = next;
-    options.onReachable?.(next);
+  function noteRelay(next: RelayState): void {
+    if (next === relayState) return;
+    relayState = next;
+    options.onRelayState?.(next);
   }
 
   function notePeer(listening: unknown): void {
@@ -100,9 +110,13 @@ export function createRelayTransport(options: RelayTransportOptions): RelayTrans
         url.searchParams.set("wait", String(wait));
         wait = waitSeconds;
         const response = await fetchImpl(url, { headers: headers(), signal: inFlight.signal });
+        if (response.status === 401 || response.status === 403) {
+          noteRelay("refused");
+          throw new SessionRefused(`relay refused the session (${response.status})`);
+        }
         if (!response.ok) throw new Error(`relay answered ${response.status}`);
         const body = (await response.json()) as { frames?: unknown; peer_listening?: unknown };
-        noteReachable(true);
+        noteRelay("answering");
         notePeer(body.peer_listening);
         backoff = BACKOFF_MIN_MS;
 
@@ -110,7 +124,7 @@ export function createRelayTransport(options: RelayTransportOptions): RelayTrans
         if (frames.length > 0 && !stopped) await options.onFrames(frames);
       } catch (err) {
         if (stopped || (err instanceof Error && err.name === "AbortError")) return;
-        noteReachable(false);
+        if (!(err instanceof SessionRefused)) noteRelay("unreachable");
         options.onError?.(err);
         // A relay that is down, a network that is gone, a token that was
         // refused: all of them want the same thing, which is to stop

@@ -1,7 +1,7 @@
 import { Channel, rendezvousId, startHandshake, type StaticIdentity } from "./channel.js";
 import { createTunnelHost, type TunnelHost } from "./host.js";
 import { helloFrame, readHello } from "./link.js";
-import { createRelayTransport, type RelayTransport } from "./relayTransport.js";
+import { createRelayTransport, type RelayState, type RelayTransport } from "./relayTransport.js";
 
 // This computer, waiting at the relay for its own phone.
 //
@@ -31,8 +31,8 @@ export interface TunnelHostLinkOptions {
   /// The Twoody server on this machine.
   localBaseUrl: string;
   onError?(err: unknown): void;
-  /// Whether the relay answers this link's waits (relayTransport.ts).
-  onReachable?(reachable: boolean): void;
+  /// What the relay says to this link's waits (relayTransport.ts).
+  onRelayState?(state: RelayState): void;
   fetchImpl?: typeof fetch;
   waitSeconds?: number;
 }
@@ -87,7 +87,7 @@ export function startTunnelHostLink(options: TunnelHostLinkOptions): TunnelHostL
     rendezvous,
     as: "host",
     onError: options.onError,
-    onReachable: options.onReachable,
+    onRelayState: options.onRelayState,
     fetchImpl: options.fetchImpl,
     waitSeconds: options.waitSeconds,
     onFrames: async (frames) => {
