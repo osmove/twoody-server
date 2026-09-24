@@ -1,14 +1,21 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
 import { hostname as osHostname } from "node:os";
-import { outboundFetch } from "../outbound.js";
+import { eq } from "drizzle-orm";
+import { db, providers } from "../db.js";
+import { offeredModels, probeRuntime } from "../localRuntime.js";
 
 // `/local_llm/status` mirrors the cloud's fleet-status endpoint so
 // the RN app's "Twoody Private" indicator can show "Mac connected ·
 // <hostname>" without changing client code. In self-hosted mode the
 // fleet is always size 1 (the Mac running this server), and presence
-// is whether the configured local-LLM endpoint (mlx-lm by default)
-// answers the OpenAI-compat `GET /v1/models` probe within ~1.5 s.
+// is whether its runtime answers the OpenAI-compat `GET /v1/models`.
+//
+// The runtime is the one its default local provider points at — what
+// Twoody Desktop sets up — or, on a server set up by hand, the endpoint
+// in BRIDGE_LOCAL_LLM_ENDPOINT. Only the latter was read, and the
+// desktop never sets it: a phone paired with a Mac was told the Mac had
+// no model and was offline.
 //
 // Output shape kept narrow but compatible with the RN hook
 // `useLocalLLM` (twoody-app/hooks/useLocalLLM.js): devices[] entries
@@ -23,7 +30,7 @@ export async function localLlmRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      reply.send(await buildStatus());
+      reply.send(await buildStatus(auth.userId));
     },
   });
 
@@ -36,22 +43,28 @@ export async function localLlmRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      reply.send(await buildStatus());
+      reply.send(await buildStatus(auth.userId));
     },
   });
 }
 
-type ModelsListResponse = {
-  data?: Array<{ id?: string }>;
-};
-
-async function buildStatus() {
-  const endpoint = process.env.BRIDGE_LOCAL_LLM_ENDPOINT?.trim();
+async function buildStatus(userId: string) {
+  const configured = db
+    .select()
+    .from(providers)
+    .where(eq(providers.userId, userId))
+    .all()
+    .filter((provider) => provider.enabled && provider.kind === "local_openai" && provider.baseUrl);
+  const chosen = configured.find((provider) => provider.isDefault) ?? configured[0];
+  const endpoint = chosen?.baseUrl ?? process.env.BRIDGE_LOCAL_LLM_ENDPOINT?.trim() ?? null;
   const nickname = osHostname()?.split(".")[0] ?? "this-mac";
-  const probe = endpoint ? await probeOpenAICompatible(endpoint) : null;
+  const probe = endpoint ? await probeRuntime(endpoint, { fresh: true }).catch(() => null) : null;
   const online = probe?.ok === true;
-  const loadedModel = probe?.loadedModel ?? null;
-  const downloadedModels = probe?.models ?? [];
+  // The model it answers with unless told otherwise. mlx-lm lists the
+  // models of its cache in no particular order, so the first of the list
+  // is not the loaded one; without a provider, it is all there is to go by.
+  const loadedModel = chosen?.model ?? probe?.models?.[0] ?? null;
+  const downloadedModels = probe ? offeredModels(chosen?.model ?? null, probe) : chosen?.model ? [chosen.model] : [];
 
   return {
     enabled: true,
@@ -78,41 +91,4 @@ async function buildStatus() {
       estimated_savings_usd_7d:   null,
     },
   };
-}
-
-/// Probe an OpenAI-compatible server (mlx-lm, Ollama, vLLM, …) for
-/// its model catalog. mlx-lm exposes `--port 8080` by default and
-/// answers `/v1/models` with the currently-loaded plus downloaded
-/// HF ids. Failures (timeout, connection refused, malformed JSON)
-/// flip `online: false` — the app's UI handles that gracefully.
-async function probeOpenAICompatible(endpoint: string): Promise<{
-  ok: boolean;
-  loadedModel: string | null;
-  models: string[];
-}> {
-  const base = endpoint.replace(/\/+$/, "");
-  const url = `${base}/models`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1500);
-  try {
-    const res = await outboundFetch(url, { signal: controller.signal });
-    clearTimeout(timer);
-    if (!res.ok) return { ok: false, loadedModel: null, models: [] };
-    const json = (await res.json()) as ModelsListResponse;
-    const ids = (json.data ?? [])
-      .map((row) => row.id)
-      .filter((id): id is string => typeof id === "string" && id.length > 0);
-    // mlx-lm only ever loads one at a time (memory ceiling), so the
-    // first id in the response is "the loaded one". Apps that read
-    // `loaded_model` get that; `downloaded_models` gets the full
-    // list so the picker can offer alternatives.
-    return {
-      ok: true,
-      loadedModel: ids[0] ?? null,
-      models: ids,
-    };
-  } catch {
-    clearTimeout(timer);
-    return { ok: false, loadedModel: null, models: [] };
-  }
 }

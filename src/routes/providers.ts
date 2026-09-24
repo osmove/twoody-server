@@ -2,8 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { db, providers } from "../db.js";
 import { generateId, requireAuth } from "../auth.js";
-import { outboundFetch } from "../outbound.js";
-import { runtimeAuthHeaders } from "../runtimeAuth.js";
+import { offeredModels, probeRuntime } from "../localRuntime.js";
 
 type ProviderPatchBody = {
   name?: string;
@@ -43,27 +42,6 @@ function nonEmpty(value: string | undefined): string | null {
   return trimmed ? trimmed : null;
 }
 
-async function pingOpenAICompatible(baseUrl: string): Promise<{
-  available: boolean;
-  latency_ms: number | null;
-  checked_at: string;
-}> {
-  const started = Date.now();
-  try {
-    const response = await outboundFetch(`${baseUrl.replace(/\/$/, "")}/models`, {
-      headers: runtimeAuthHeaders(baseUrl),
-      signal: AbortSignal.timeout(2500),
-    });
-    return {
-      available: response.ok,
-      latency_ms: Date.now() - started,
-      checked_at: new Date().toISOString(),
-    };
-  } catch {
-    return { available: false, latency_ms: null, checked_at: new Date().toISOString() };
-  }
-}
-
 export async function providerRoutes(app: FastifyInstance) {
   app.get("/providers", {
     schema: {
@@ -81,14 +59,22 @@ export async function providerRoutes(app: FastifyInstance) {
         .where(eq(providers.userId, auth.userId))
         .all();
 
+      // One question to each runtime gives both its status and every
+      // model it holds — which a paired phone offers in its picker.
       const serialized = await Promise.all(
         rows.map(async (provider) => {
-          const status =
-            provider.enabled && provider.kind === "local_openai" && provider.baseUrl
-              ? await pingOpenAICompatible(provider.baseUrl)
-              : { available: provider.enabled, latency_ms: null, checked_at: new Date().toISOString() };
-
-          return { ...serializeProvider(provider), status };
+          if (!(provider.enabled && provider.kind === "local_openai" && provider.baseUrl)) {
+            const status = { available: provider.enabled, latency_ms: null, checked_at: new Date().toISOString() };
+            return { ...serializeProvider(provider), status, models: provider.model ? [provider.model] : [] };
+          }
+          // Refused in local-only mode (a public address): unavailable.
+          const probe = await probeRuntime(provider.baseUrl, { fresh: true }).catch(() => null);
+          if (!probe) {
+            const status = { available: false, latency_ms: null, checked_at: new Date().toISOString() };
+            return { ...serializeProvider(provider), status, models: provider.model ? [provider.model] : [] };
+          }
+          const status = { available: probe.ok, latency_ms: probe.latency_ms, checked_at: probe.checked_at };
+          return { ...serializeProvider(provider), status, models: offeredModels(provider.model, probe) };
         })
       );
 

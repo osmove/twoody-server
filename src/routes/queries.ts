@@ -16,6 +16,7 @@ import { runtimeAuthHeaders } from "../runtimeAuth.js";
 import { createThinkFilter } from "../thinkFilter.js";
 import { hasIndexedDocuments, searchPassages } from "../documents/library.js";
 import { LOCAL_ONLY, LocalOnlyError, outboundFetch } from "../outbound.js";
+import { probeRuntime } from "../localRuntime.js";
 
 interface QueryBody {
   content?: string;
@@ -186,8 +187,13 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   let aggregated = "";
   let answeredBy: { kind: string; model: string | null } | null = null;
   try {
-    const provider = resolveProvider(auth.userId, model);
+    const provider = await resolveProvider(auth.userId, model);
     answeredBy = { kind: provider.kind, model: "model" in provider ? provider.model : null };
+    // A runtime that is not there is said now, as an HTTP error, before
+    // the reply is opened below.
+    if (provider.kind === "local_openai" && !(await probeRuntime(provider.baseUrl)).reachable) {
+      throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
+    }
     const userContext = loadUserContext(auth.userId);
     // Passages from the user's own documents that match this prompt.
     // The model sees them numbered; the client gets the same list to
@@ -217,6 +223,13 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       // on event-name boundaries.
       reply.raw.write(`event: message\ndata: ${escapeData(delta)}\n\n`);
     });
+    // The reply opens before the model's first word, which can be many
+    // seconds away: a model to load, a long prompt to read. A phone
+    // takes a reply that has not opened within 3 s for a computer out of
+    // reach on this network, and asks again through the relay
+    // (twoody-app/utils/chatStream.js) — the question then reached the
+    // computer twice. Opened, the keepalive also runs while it waits.
+    startSse();
     await streamFromProvider(
       provider,
       chatMessages,
@@ -286,16 +299,15 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       return;
     }
     const msg = err instanceof Error ? err.message : "Unknown error";
+    const [status, code] =
+      err instanceof LocalLlmUnavailableError ? [503, "local_llm_unavailable"]
+      : err instanceof LocalOnlyError ? [403, "local_only"]
+      : [502, "provider_error"];
     if (!sseStarted) {
-      if (err instanceof LocalLlmUnavailableError) {
-        return reply.code(503).send({ error: "local_llm_unavailable", message: msg });
-      }
-      if (err instanceof LocalOnlyError) {
-        return reply.code(403).send({ error: "local_only", message: msg });
-      }
-      return reply.code(502).send({ error: "provider_error", message: msg });
+      return reply.code(status).send({ error: code, message: msg });
     }
-    reply.raw.write(`event: error\ndata: ${JSON.stringify({ message: msg })}\n\n`);
+    // Once the reply is open, the same error, as its last event.
+    reply.raw.write(`event: error\ndata: ${JSON.stringify({ error: code, message: msg })}\n\n`);
   } finally {
     if (keepalive) clearInterval(keepalive);
     if (sseStarted) reply.raw.end();
@@ -382,7 +394,15 @@ type Provider =
 
 class LocalLlmUnavailableError extends Error {}
 
-function resolveProvider(userId: string, requestedModel?: string): Provider {
+/// Where a turn goes. With a local provider as the default, a model named
+/// by the client goes to the runtime that holds it: the provider naming
+/// it, or a runtime whose own list has it — a phone paired with this
+/// computer offers every model the runtimes hold (routes/providers.ts).
+/// A name no runtime here offers — one from the account's catalogue, a
+/// model since removed — gets the default model: sent on, a runtime could
+/// go and fetch it from the internet. "local" is what a client sends when
+/// it knows no model by name.
+async function resolveProvider(userId: string, requestedModel?: string): Promise<Provider> {
   const configuredProviders = db
     .select()
     .from(providers)
@@ -394,11 +414,25 @@ function resolveProvider(userId: string, requestedModel?: string): Provider {
     configuredProviders.find((provider) => provider.isDefault) ?? configuredProviders[0];
 
   if (defaultProvider?.kind === "local_openai" && defaultProvider.baseUrl) {
-    return {
+    const byDefault: Provider = {
       kind: "local_openai",
       baseUrl: defaultProvider.baseUrl,
-      model: requestedModel ?? defaultProvider.model ?? "local",
+      model: defaultProvider.model ?? "local",
     };
+    const wanted = requestedModel && requestedModel !== "local" ? requestedModel : null;
+    if (!wanted || wanted === defaultProvider.model) return byDefault;
+
+    const local = [
+      defaultProvider,
+      ...configuredProviders.filter((provider) => provider !== defaultProvider && provider.kind === "local_openai"),
+    ].filter((provider): provider is typeof provider & { baseUrl: string } => Boolean(provider.baseUrl));
+    const naming = local.find((provider) => provider.model === wanted);
+    if (naming) return { kind: "local_openai", baseUrl: naming.baseUrl, model: wanted };
+    for (const provider of local) {
+      const probe = await probeRuntime(provider.baseUrl).catch(() => null);
+      if (probe?.models?.includes(wanted)) return { kind: "local_openai", baseUrl: provider.baseUrl, model: wanted };
+    }
+    return byDefault;
   }
 
   if (process.env.BRIDGE_LOCAL_LLM_ENDPOINT) {
