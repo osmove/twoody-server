@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { requireAuth } from "../auth.js";
 import { db, discussions, messages } from "../db.js";
 import { publish as publishEvent } from "../events.js";
+import { discussionContext } from "./queries.js";
 
 // `/discussions` mirrors the cloud's chat-history surface. The RN app
 // hits this on chat boot to render the recent-conversations drawer
@@ -150,10 +151,16 @@ export async function discussionRoutes(app: FastifyInstance) {
         .all()
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
+      // A compaction: where its summary stops, and what the model is given
+      // of the conversation now (the gauge under the composer).
+      const context = discussionContext(auth.userId, discussion.id);
       reply.send({
         id:               discussion.id,
         title:            discussion.title ?? null,
         channel:          discussion.channel,
+        summary:          context.summary,
+        summary_through:  context.summaryThrough,
+        context_tokens_estimate: context.tokensEstimate,
         created_at:       discussion.createdAt.toISOString(),
         last_activity_at: discussion.lastActivityAt.toISOString(),
         messages: rows.map((row) => ({

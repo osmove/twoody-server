@@ -70,6 +70,119 @@ export async function queryRoutes(app: FastifyInstance) {
     },
     handler: handleQueriesRequest,
   });
+
+  // « Compacter la conversation »: the model writes a summary of the
+  // discussion, given to it from then on instead of those messages.
+  app.post<{ Params: { id: string }; Body: { model?: string } }>("/discussions/:id/compact", {
+    schema: {
+      tags: ["session"],
+      summary: "Replace a discussion's messages, for the model, with a summary it writes",
+      security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
+      params: { type: "object", required: ["id"], properties: { id: { type: "string" } } },
+    },
+    handler: handleCompact,
+  });
+}
+
+const COMPACT_REQUEST =
+  "[Twoody] This conversation is about to be replaced by a summary, to free the model's memory. Write that summary now, " +
+  "in the language the person uses: what they asked and wanted, the facts, figures and decisions that came up (from joined " +
+  "documents too, naming them), what was concluded, and what remains open. Be precise and brief, and invent nothing.";
+
+function discussionSummary(id: string): { summary: string | null; summaryThrough: string | null } {
+  const [row] = db
+    .select({ summary: discussions.summary, summaryThrough: discussions.summaryThrough })
+    .from(discussions)
+    .where(eq(discussions.id, id))
+    .limit(1)
+    .all();
+  return { summary: row?.summary ?? null, summaryThrough: row?.summaryThrough ?? null };
+}
+
+/// What the next turn of a discussion would give the model, counted:
+/// the gauge of a conversation opened again.
+export function discussionContext(
+  userId: string,
+  discussionId: string,
+): { summary: string | null; summaryThrough: string | null; tokensEstimate: number } {
+  const compacted = discussionSummary(discussionId);
+  const chatMessages = buildChatMessages({
+    ...loadUserContext(userId),
+    history: loadHistory(discussionId, compacted.summaryThrough),
+    summary: compacted.summary,
+    content: "",
+    hasDocuments: hasIndexedDocuments(userId),
+    local: true,
+  });
+  return { ...compacted, tokensEstimate: estimateTokens(messagesChars(chatMessages)) };
+}
+
+async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body: { model?: string } }>, reply: FastifyReply) {
+  const auth = await requireAuth(req, reply);
+  if (!auth) return;
+  const [discussion] = db
+    .select({ id: discussions.id })
+    .from(discussions)
+    .where(and(eq(discussions.id, req.params.id), eq(discussions.userId, auth.userId)))
+    .limit(1)
+    .all();
+  if (!discussion) return reply.code(404).send({ error: "not_found" });
+
+  const compacted = discussionSummary(discussion.id);
+  const history = loadHistory(discussion.id, compacted.summaryThrough);
+  if (history.filter((row) => row.content.trim()).length < 2) return reply.code(409).send({ error: "nothing_to_compact" });
+  const [last] = db
+    .select({ id: messages.id })
+    .from(messages)
+    .where(eq(messages.discussionId, discussion.id))
+    .orderBy(desc(messages.createdAt), sql`rowid DESC`)
+    .limit(1)
+    .all();
+
+  const upstream = new AbortController();
+  reply.raw.on("close", () => {
+    if (!reply.raw.writableFinished) upstream.abort();
+  });
+  try {
+    const provider = await resolveProvider(auth.userId, req.body?.model ?? undefined);
+    if (provider.kind === "local_openai" && !(await probeRuntime(provider.baseUrl)).reachable) {
+      throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
+    }
+    // The conversation as a turn gives it (the runtime reuses what it
+    // already read), then the demand for the summary.
+    const chatMessages = buildChatMessages({
+      ...loadUserContext(auth.userId),
+      history,
+      summary: compacted.summary,
+      content: COMPACT_REQUEST,
+      hasDocuments: hasIndexedDocuments(auth.userId),
+      local: provider.kind === "local_openai",
+    });
+    let written = "";
+    const thinkFilter = createThinkFilter((delta) => {
+      written += delta;
+    });
+    const reported = await streamFromProvider(provider, chatMessages, 0.2, thinkFilter.push, upstream.signal);
+    thinkFilter.flush();
+    const summary = written.trim();
+    if (!summary) return reply.code(502).send({ error: "provider_error", message: "the model wrote no summary" });
+
+    db.update(discussions).set({ summary, summaryThrough: last.id }).where(eq(discussions.id, discussion.id)).run();
+    return reply.send({
+      summary,
+      summary_through: last.id,
+      tokens_before: reported?.prompt_tokens ?? estimateTokens(messagesChars(chatMessages)),
+      tokens_after: discussionContext(auth.userId, discussion.id).tokensEstimate,
+    });
+  } catch (err) {
+    if (upstream.signal.aborted) return;
+    const message = err instanceof Error ? err.message : "Unknown error";
+    const [status, code] =
+      err instanceof LocalLlmUnavailableError ? [503, "local_llm_unavailable"]
+      : err instanceof LocalOnlyError ? [403, "local_only"]
+      : [502, "provider_error"];
+    return reply.code(status).send({ error: code, message });
+  }
 }
 
 async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
@@ -119,8 +232,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   );
 
   // Read the thread before the new prompt lands in it, so the history
-  // handed to the model never contains the current turn twice.
-  const history = loadHistory(discussion.id);
+  // handed to the model never contains the current turn twice. What a
+  // compaction summarised is given as its summary.
+  const compacted = discussionSummary(discussion.id);
+  const history = loadHistory(discussion.id, compacted.summaryThrough);
 
   // Persist the user prompt up front so a streaming failure doesn't
   // erase the question. Assistant message is inserted after the
@@ -214,6 +329,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       ...userContext,
       history,
       content,
+      summary: compacted.summary,
       hasDocuments: hasIndexedDocuments(auth.userId),
       excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text })),
       local: provider.kind === "local_openai",
@@ -233,7 +349,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // (twoody-app/utils/chatStream.js) — the question then reached the
     // computer twice. Opened, the keepalive also runs while it waits.
     startSse();
-    await streamFromProvider(
+    const reported = await streamFromProvider(
       provider,
       chatMessages,
       readTemperature(userContext.prefs),
@@ -241,6 +357,11 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       upstream.signal,
     );
     thinkFilter.flush();
+    // The context gauge under the composer: what the runtime counted, or
+    // a count from the characters when it did not say.
+    const usage = reported
+      ? { ...reported, estimated: false }
+      : { prompt_tokens: estimateTokens(messagesChars(chatMessages)), completion_tokens: estimateTokens(aggregated.length), estimated: true };
     startSse();
 
     // Persist the assistant reply now that we have the full body.
@@ -282,6 +403,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       transcription: parsed.text ? null : (audioBuffer ? content : null),
       language:      null,
       sources,
+      usage,
     };
     reply.raw.write(`event: final\ndata: ${JSON.stringify(finalPayload)}\n\n`);
   } catch (err) {
@@ -469,23 +591,40 @@ async function resolveProvider(userId: string, requestedModel?: string): Promise
   );
 }
 
+type Usage = { prompt_tokens: number; completion_tokens: number };
+
+/// Streams the answer; resolves with the tokens it took when the
+/// provider says (the local runtimes, asked with stream_options).
 async function streamFromProvider(
   provider: Provider,
   chatMessages: ChatMessage[],
   temperature: number | undefined,
   onDelta: (text: string) => void,
   signal: AbortSignal,
-) {
+): Promise<Usage | null> {
   switch (provider.kind) {
     case "openai":
-      return streamOpenAI(chatMessages, provider.model, temperature, onDelta, signal);
+      await streamOpenAI(chatMessages, provider.model, temperature, onDelta, signal);
+      return null;
     case "anthropic":
-      return streamAnthropic(chatMessages, provider.model, temperature, onDelta, signal);
+      await streamAnthropic(chatMessages, provider.model, temperature, onDelta, signal);
+      return null;
     case "gemini":
-      return streamGemini(chatMessages, provider.model, temperature, onDelta, signal);
+      await streamGemini(chatMessages, provider.model, temperature, onDelta, signal);
+      return null;
     case "local_openai":
       return streamLocal(provider.baseUrl, chatMessages, provider.model, temperature, onDelta, signal);
   }
+}
+
+/// A token count from characters: about 3.5 a token for prose under the
+/// Qwen, Llama and GLM tokenizers.
+function estimateTokens(chars: number): number {
+  return Math.ceil(chars / 3.5);
+}
+
+function messagesChars(chatMessages: ChatMessage[]): number {
+  return chatMessages.reduce((total, message) => total + message.content.length, 0);
 }
 
 /// `default_temperature` comes from the client-owned prefs blob, so it
@@ -684,7 +823,9 @@ async function streamLocal(
   // the first token. mlx-lm, vLLM and llama.cpp honour this switch and
   // Ollama ignores it; a strict OpenAI-compatible server may reject the
   // unknown field, hence the plain retry below.
-  const withoutThinking = { ...body, chat_template_kwargs: { enable_thinking: false } };
+  // The tokens used come last in the stream when asked (the context
+  // gauge); the same retry covers a server that refuses that field.
+  const withoutThinking = { ...body, chat_template_kwargs: { enable_thinking: false }, stream_options: { include_usage: true } };
 
   const post = async (payload: object): Promise<Response> => {
     try {
@@ -712,7 +853,7 @@ async function streamLocal(
     throw new LocalLlmUnavailableError(`Local LLM provider returned ${res.status}`);
   }
 
-  await consumeOpenAIStream(res, onDelta);
+  return consumeOpenAIStream(res, onDelta);
 }
 
 function systemText(chatMessages: ChatMessage[]): string {
@@ -725,10 +866,11 @@ function systemText(chatMessages: ChatMessage[]): string {
 async function consumeOpenAIStream(
   res: Response,
   onDelta: (t: string) => void
-) {
+): Promise<Usage | null> {
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
   let buf = "";
+  let usage: Usage | null = null;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -744,14 +886,22 @@ async function consumeOpenAIStream(
       try {
         const evt = JSON.parse(raw) as {
           choices?: Array<{ delta?: { content?: string } }>;
+          usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
         };
         const text = evt.choices?.[0]?.delta?.content ?? "";
         if (text) onDelta(text);
+        if (typeof evt.usage?.prompt_tokens === "number") {
+          usage = {
+            prompt_tokens: evt.usage.prompt_tokens,
+            completion_tokens: typeof evt.usage.completion_tokens === "number" ? evt.usage.completion_tokens : 0,
+          };
+        }
       } catch {
         // ignore
       }
     }
   }
+  return usage;
 }
 
 // ─── Discussion helpers ─────────────────────────────────────────────────────
@@ -795,13 +945,18 @@ function resolveDiscussion(
   return { id, title: null };
 }
 
-function loadHistory(discussionId: string): HistoryRow[] {
+function loadHistory(discussionId: string, after: string | null = null): HistoryRow[] {
   // `created_at` has one-second resolution, so a fast reply can share
-  // its timestamp with the prompt. `rowid` keeps insertion order.
+  // its timestamp with the prompt. `rowid` keeps insertion order. A
+  // compaction's summary stands for the messages up to `after`.
   const rows = db
     .select({ role: messages.role, content: messages.content })
     .from(messages)
-    .where(eq(messages.discussionId, discussionId))
+    .where(
+      after
+        ? and(eq(messages.discussionId, discussionId), sql`rowid > (SELECT rowid FROM messages WHERE id = ${after})`)
+        : eq(messages.discussionId, discussionId),
+    )
     .orderBy(desc(messages.createdAt), sql`rowid DESC`)
     // Twice the cap: the trimmer skips empty rows and folds unanswered
     // prompts together, so it needs some slack to fill its window.

@@ -395,11 +395,94 @@
         }
       }
     },
+    "/paired_devices": {
+      "get": {
+        "summary": "Devices paired with this computer",
+        "tags": [
+          "session"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/paired_devices/{id}": {
+      "delete": {
+        "summary": "Remove a paired device: its session and its tunnel key",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/queries": {
       "post": {
         "summary": "Stream a chat completion over SSE (text or multipart audio)",
         "tags": [
           "queries"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/discussions/{id}/compact": {
+      "post": {
+        "summary": "Replace a discussion's messages, for the model, with a summary it writes",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
         ],
         "security": [
           {
@@ -1876,6 +1959,66 @@
         }
       }
     },
+    "/discussions/{id}": {
+      "delete": {
+        "summary": "Delete a discussion and its messages",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "get": {
+        "summary": "Discussion + ordered messages",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/discussions": {
       "get": {
         "summary": "List the user's recent discussions (with optional search + pagination)",
@@ -1909,37 +2052,6 @@
             "name": "before",
             "required": false,
             "description": "ISO8601 cursor — return rows whose last_activity_at is strictly before this"
-          }
-        ],
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "userTokenAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Default Response"
-          }
-        }
-      }
-    },
-    "/discussions/{id}": {
-      "get": {
-        "summary": "Discussion + ordered messages",
-        "tags": [
-          "session"
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "in": "path",
-            "name": "id",
-            "required": true
           }
         ],
         "security": [
@@ -3267,11 +3379,94 @@
         }
       }
     },
+    "/api/v1/paired_devices": {
+      "get": {
+        "summary": "Devices paired with this computer",
+        "tags": [
+          "session"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/paired_devices/{id}": {
+      "delete": {
+        "summary": "Remove a paired device: its session and its tunnel key",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/api/v1/queries": {
       "post": {
         "summary": "Stream a chat completion over SSE (text or multipart audio)",
         "tags": [
           "queries"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/discussions/{id}/compact": {
+      "post": {
+        "summary": "Replace a discussion's messages, for the model, with a summary it writes",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
         ],
         "security": [
           {
@@ -4748,6 +4943,66 @@
         }
       }
     },
+    "/api/v1/discussions/{id}": {
+      "delete": {
+        "summary": "Delete a discussion and its messages",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "get": {
+        "summary": "Discussion + ordered messages",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/api/v1/discussions": {
       "get": {
         "summary": "List the user's recent discussions (with optional search + pagination)",
@@ -4781,37 +5036,6 @@
             "name": "before",
             "required": false,
             "description": "ISO8601 cursor — return rows whose last_activity_at is strictly before this"
-          }
-        ],
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "userTokenAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Default Response"
-          }
-        }
-      }
-    },
-    "/api/v1/discussions/{id}": {
-      "get": {
-        "summary": "Discussion + ordered messages",
-        "tags": [
-          "session"
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "in": "path",
-            "name": "id",
-            "required": true
           }
         ],
         "security": [

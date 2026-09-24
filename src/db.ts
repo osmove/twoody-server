@@ -115,6 +115,10 @@ export const discussions = sqliteTable("discussions", {
   // generate "real" titles in self-hosted mode (no LLM budget for
   // a separate naming call).
   title: text("title"),
+  // A compaction's summary of the conversation up to `summaryThrough` (a
+  // message id): the model is given it instead of those messages.
+  summary: text("summary"),
+  summaryThrough: text("summary_through"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   lastActivityAt: integer("last_activity_at", { mode: "timestamp" }).notNull(),
 });
@@ -400,6 +404,8 @@ sqlite.exec(`
     user_id TEXT NOT NULL REFERENCES users(id),
     channel TEXT NOT NULL DEFAULT 'cli',
     title TEXT,
+    summary TEXT,
+    summary_through TEXT,
     created_at INTEGER NOT NULL,
     last_activity_at INTEGER NOT NULL
   );
@@ -637,6 +643,12 @@ const discussionColumns = sqlite.prepare("PRAGMA table_info(discussions)").all()
 }>;
 if (!discussionColumns.some((column) => column.name === "title")) {
   sqlite.exec("ALTER TABLE discussions ADD COLUMN title TEXT");
+}
+if (!discussionColumns.some((column) => column.name === "summary")) {
+  sqlite.exec("ALTER TABLE discussions ADD COLUMN summary TEXT");
+}
+if (!discussionColumns.some((column) => column.name === "summary_through")) {
+  sqlite.exec("ALTER TABLE discussions ADD COLUMN summary_through TEXT");
 }
 
 const tunnelPeerColumns = sqlite.prepare("PRAGMA table_info(tunnel_peers)").all() as Array<{

@@ -47,6 +47,9 @@ export interface ChatContextInput {
   /// Passages matching the current prompt, best first. Numbered from 1
   /// in the prompt; the reply cites them as [1], [2]…
   excerpts?: DocumentExcerpt[];
+  /// What the conversation said before, compacted: the messages it covers
+  /// are no longer in `history`.
+  summary?: string | null;
   /// True when the turn is served by a model on the user's own machine.
   /// Drives the privacy wording of the base prompt — a cloud fallback
   /// turn must not tell the model that nothing leaves the computer.
@@ -139,6 +142,10 @@ function buildSystemPrompt(input: ChatContextInput, usable: MemoryRow[]): string
         "base your answer on those excerpts and cite the ones you used like [1] or [2]. " +
         "If the excerpts do not contain the answer, say so plainly instead of guessing.",
     );
+  }
+
+  if (input.summary?.trim()) {
+    sections.push(`Summary of the earlier part of this conversation (its messages are no longer shown to you):\n${input.summary.trim()}`);
   }
 
   const profile = formatMemoryList(
