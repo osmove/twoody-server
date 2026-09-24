@@ -59,6 +59,12 @@ function relay(): Promise<{ url: string; close(): Promise<void>; carried: Buffer
   const listening = new Map<string, number>();
   const carried: Buffer[] = [];
   const tokens = new Set<string>();
+  // The newest wait of an end is the one that reads (TunnelRelay.wait):
+  // an older one — left by a client that stopped, whose connection this
+  // side has not seen close — returns with nothing instead of taking the
+  // frames meant for the next session.
+  const waiters = new Map<string, number>();
+  let waits = 0;
 
   const take = (key: string) => (queues.get(key) ?? []).splice(0);
 
@@ -93,7 +99,14 @@ function relay(): Promise<{ url: string; close(): Promise<void>; carried: Buffer
     const key = `${rendezvous}:${as}`;
     const peer = `${rendezvous}:${as === "host" ? "phone" : "host"}`;
     const deadline = Date.now() + Number(url.searchParams.get("wait") ?? 25) * 1000;
+    const me = ++waits;
+    waiters.set(key, me);
     const answer = () => {
+      if (waiters.get(key) !== me) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ frames: [], peer_listening: Date.now() - (listening.get(peer) ?? 0) < 5_000 }));
+        return;
+      }
       listening.set(key, Date.now());
       const frames = take(key);
       if (frames.length === 0 && Date.now() < deadline) {
