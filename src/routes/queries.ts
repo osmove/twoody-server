@@ -36,6 +36,8 @@ interface QueryBody {
   /// How far the model reasons before answering: "fast" (not at all, the
   /// default), "think", "deep".
   effort?: string;
+  /// The client's id for this reply: « Répondre maintenant » names it.
+  request_id?: string;
   // The watch + iPhone voice path nests fields under `query`. We
   // accept both flat and nested shapes so a single client codebase
   // can target either backend without case-by-case wire reshaping.
@@ -75,6 +77,25 @@ export async function queryRoutes(app: FastifyInstance) {
       produces: ["text/event-stream"],
     },
     handler: handleQueriesRequest,
+  });
+
+  // « Répondre maintenant »: the reasoning of a reply being written is
+  // cut, and the model answers from what it reasoned so far.
+  app.post<{ Body: { request_id?: string } }>("/queries/answer_now", {
+    schema: {
+      tags: ["queries"],
+      summary: "Cut the reasoning of a reply being written: the model answers now",
+      security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
+      body: { type: "object", required: ["request_id"], properties: { request_id: { type: "string" } } },
+    },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      const cut = answerNow.get(`${auth.userId}:${req.body?.request_id ?? ""}`);
+      if (!cut) return reply.code(404).send({ error: "not_found" });
+      cut();
+      return reply.code(204).send();
+    },
   });
 
   // « Compacter la conversation »: the model writes a summary of the
@@ -314,6 +335,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
 
   let aggregated = "";
   let reasoningMs: number | null = null;
+  let answerNowKey: string | null = null;
   let answeredBy: { kind: string; model: string | null } | null = null;
   try {
     const provider = await resolveProvider(auth.userId, model);
@@ -348,6 +370,13 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text })),
       local: provider.kind === "local_openai",
     });
+    // « Répondre maintenant », for this reply.
+    const answerNowController = new AbortController();
+    const answerNowSignal = answerNowController.signal;
+    if (typeof parsed.request_id === "string" && /^[\w-]{8,64}$/.test(parsed.request_id)) {
+      answerNowKey = `${auth.userId}:${parsed.request_id}`;
+      answerNow.set(answerNowKey, () => answerNowController.abort());
+    }
     // What the model reasons, sent as it comes and kept with the answer.
     let reasoning = "";
     let reasoningStarted = 0;
@@ -379,7 +408,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       readTemperature(userContext.prefs),
       thinkFilter.push,
       upstream.signal,
-      { effort: readEffort(parsed.effort), onReasoning },
+      { effort: readEffort(parsed.effort), onReasoning, answerNow: answerNowSignal },
     );
     thinkFilter.flush();
     if (reasoningStarted && reasoningMs === null) reasoningMs = Date.now() - reasoningStarted;
@@ -463,6 +492,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // Once the reply is open, the same error, as its last event.
     reply.raw.write(`event: error\ndata: ${JSON.stringify({ error: code, message: msg })}\n\n`);
   } finally {
+    if (answerNowKey) answerNow.delete(answerNowKey);
     if (keepalive) clearInterval(keepalive);
     if (sseStarted) reply.raw.end();
   }
@@ -630,7 +660,7 @@ async function streamFromProvider(
   temperature: number | undefined,
   onDelta: (text: string) => void,
   signal: AbortSignal,
-  options: { effort?: Effort; onReasoning?: (text: string) => void } = {},
+  options: { effort?: Effort; onReasoning?: (text: string) => void; answerNow?: AbortSignal } = {},
 ): Promise<Usage | null> {
   switch (provider.kind) {
     case "openai":
@@ -834,13 +864,20 @@ const LOCAL_MAX_TOKENS = (() => {
 })();
 
 /// How far a model reasons before it answers, as the person chose: not
-/// at all, briefly, at length. A budget in tokens and one in time,
-/// whichever comes first: past it, the model is asked to answer from what
-/// it reasoned so far. The time is what the person waits for — Qwen3 14B
-/// writes some 10 tokens a second on a MacBook Air, 35 on a Max.
+/// at all, or until it is done — with a limit in tokens and one in time,
+/// whichever comes first, past which it is asked to answer from what it
+/// reasoned so far; and the person can say « Répondre maintenant » at
+/// any moment. The limits are wide on purpose: cut at 30 s on a MacBook
+/// Air (Qwen3 14B writes some 10 tokens a second there), a reasoning
+/// stopped mid-calculation gave a wrong answer that no reasoning at all
+/// got right.
 export type Effort = "fast" | "think" | "deep";
-const THINKING_BUDGET: Record<Effort, number> = { fast: 0, think: 1_000, deep: 4_000 };
-const THINKING_TIME_MS: Record<Effort, number> = { fast: 0, think: 30_000, deep: 120_000 };
+const THINKING_BUDGET: Record<Effort, number> = { fast: 0, think: 1_500, deep: 6_000 };
+const THINKING_TIME_MS: Record<Effort, number> = { fast: 0, think: 90_000, deep: 300_000 };
+
+/// The replies being written, by the id the client gave them: where
+/// « Répondre maintenant » finds the reasoning to cut.
+const answerNow = new Map<string, () => void>();
 
 function readEffort(value: unknown): Effort {
   return value === "think" || value === "deep" ? value : "fast";
@@ -853,7 +890,7 @@ async function streamLocal(
   temperature: number | undefined,
   onDelta: (t: string) => void,
   signal: AbortSignal,
-  options: { effort?: Effort; onReasoning?: (text: string) => void } = {},
+  options: { effort?: Effort; onReasoning?: (text: string) => void; answerNow?: AbortSignal } = {},
 ): Promise<Usage | null> {
   const endpoint = baseUrl.replace(/\/$/, "");
   const budget = THINKING_BUDGET[options.effort ?? "fast"];
@@ -931,6 +968,17 @@ async function streamLocal(
       answered = true;
       onDelta(text);
     }, reason);
+    // « Répondre maintenant »: the same cut, when the person says so.
+    options.answerNow?.addEventListener(
+      "abort",
+      () => {
+        if (!answered && !cut && reasoning) {
+          cut = true;
+          upstream.abort();
+        }
+      },
+      { once: true },
+    );
     try {
       const usage = await consumeOpenAIStream(res, filter.push, reason);
       filter.flush();

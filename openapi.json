@@ -468,6 +468,45 @@
         }
       }
     },
+    "/queries/answer_now": {
+      "post": {
+        "summary": "Cut the reasoning of a reply being written: the model answers now",
+        "tags": [
+          "queries"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "request_id"
+                ],
+                "properties": {
+                  "request_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/discussions/{id}/compact": {
       "post": {
         "summary": "Replace a discussion's messages, for the model, with a summary it writes",
@@ -3437,6 +3476,45 @@
         "tags": [
           "queries"
         ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/queries/answer_now": {
+      "post": {
+        "summary": "Cut the reasoning of a reply being written: the model answers now",
+        "tags": [
+          "queries"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "request_id"
+                ],
+                "properties": {
+                  "request_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
         "security": [
           {
             "bearerAuth": []

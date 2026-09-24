@@ -26,6 +26,7 @@ const asked: Chat[] = [];
 /// How the fake runtime reasons: in mlx-lm's field, between <think> tags,
 /// or on and on until it is cut.
 let style: "field" | "tags" | "endless" = "field";
+let endlessChunks = 200;
 
 const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   if (req.method === "GET") {
@@ -47,7 +48,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     }
     if (thinking && style === "tags") send({ content: "<think>Je relis l'article 7.</think>\n\n" });
     if (thinking && style === "endless") {
-      for (let i = 0; i < 200 && !res.destroyed; i += 1) {
+      for (let i = 0; i < (endlessChunks) && !res.destroyed; i += 1) {
         send({ reasoning: "Je réfléchis encore à la question posée, sous tous ses angles. " });
         await new Promise((resolve) => setTimeout(resolve, 2));
       }
@@ -94,7 +95,7 @@ test("Réfléchi: the reasoning is sent as it comes and kept with the answer", a
   style = "field";
   const { final, reasoning } = await ask("think");
   assert.equal(asked.at(-1)!.chat_template_kwargs?.enable_thinking, true);
-  assert.equal(asked.at(-1)!.thinking_budget_tokens, 1_000, "llama.cpp ends it there itself");
+  assert.equal(asked.at(-1)!.thinking_budget_tokens, 1_500, "llama.cpp ends it there itself");
   assert.equal(reasoning, "Le préavis est de trois mois selon l'article 7.");
   assert.equal(final.message, "Trois mois.");
   assert.equal(typeof final.reasoning_ms, "number");
@@ -103,7 +104,7 @@ test("Réfléchi: the reasoning is sent as it comes and kept with the answer", a
 
   style = "tags";
   const tagged = await ask("deep");
-  assert.equal(asked.at(-1)!.thinking_budget_tokens, 4_000);
+  assert.equal(asked.at(-1)!.thinking_budget_tokens, 6_000);
   assert.equal(tagged.reasoning, "Je relis l'article 7.");
   assert.equal(tagged.final.message, "Trois mois.");
 });
@@ -116,6 +117,28 @@ test("past its budget, the reasoning is cut and the model answers from it", asyn
   assert.equal(first.chat_template_kwargs?.enable_thinking, true);
   assert.equal(second.chat_template_kwargs?.enable_thinking, false, "asked again, to answer");
   assert.match(second.messages.at(-1)!.content, /^Quel préavis \?\n\n\[Your reasoning so far, cut to answer in time:\]\nJe réfléchis encore/);
-  assert.ok(reasoning.length > 3_500 && reasoning.length < 5_000, `${reasoning.length}`);
+  assert.ok(reasoning.length > 5_500 && reasoning.length < 7_000, `${reasoning.length}`);
   assert.equal(final.message, "Trois mois, sans détour.");
+});
+
+test("« Répondre maintenant »: the reasoning is cut when the person says so", async () => {
+  style = "endless";
+  endlessChunks = 2_000;
+  const before = asked.length;
+  forgetRuntimeProbes();
+  const pending = app.inject({
+    method: "POST",
+    url: "/queries",
+    headers,
+    payload: { text: "Quel préavis ?", channel: "desktop", force_new_discussion: true, effort: "deep", request_id: "reply-12345678" },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const cut = await app.inject({ method: "POST", url: "/queries/answer_now", headers, payload: { request_id: "reply-12345678" } });
+  assert.equal(cut.statusCode, 204);
+  const response = await pending;
+  assert.equal(asked.slice(before).length, 2, "asked again, to answer");
+  assert.equal(asked.at(-1)!.chat_template_kwargs?.enable_thinking, false);
+  assert.match(response.body, /event: final/);
+  assert.equal((await app.inject({ method: "POST", url: "/queries/answer_now", headers, payload: { request_id: "reply-12345678" } })).statusCode, 404, "gone once written");
+  endlessChunks = 200;
 });
