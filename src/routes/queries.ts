@@ -17,6 +17,7 @@ import { createThinkFilter } from "../thinkFilter.js";
 import { hasIndexedDocuments, searchPassages } from "../documents/library.js";
 import { LOCAL_ONLY, LocalOnlyError, outboundFetch } from "../outbound.js";
 import { probeRuntime } from "../localRuntime.js";
+import { discussionTitle, typedText } from "../documentBlocks.js";
 
 interface QueryBody {
   content?: string;
@@ -143,7 +144,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       kind:         "discussion.created",
       userId:       auth.userId,
       discussionId: discussion.id,
-      title:        content.trim().replace(/\s+/g, " ").slice(0, 60),
+      title:        discussionTitle(content),
     });
   }
   publishEvent({
@@ -198,7 +199,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // Passages from the user's own documents that match this prompt.
     // The model sees them numbered; the client gets the same list to
     // resolve the [1], [2]… the reply cites.
-    const passages = searchPassages(auth.userId, content);
+    // What was typed is the question; the documents joined to it are
+    // already in front of the model.
+    const passages = searchPassages(auth.userId, typedText(content));
     const sources = passages.map((passage, index) => ({
       n: index + 1,
       document_id: passage.document_id,
@@ -861,7 +864,7 @@ function setDiscussionTitle(id: string, prompt: string) {
   // Cap at ~60 chars so the index list reads cleanly. Don't try to
   // generate a "real" title via a separate LLM call — self-hosted
   // mode optimises for token cost over polish.
-  const trimmed = prompt.trim().replace(/\s+/g, " ").slice(0, 60);
+  const trimmed = discussionTitle(prompt);
   if (!trimmed) return;
   db.update(discussions)
     .set({ title: trimmed })

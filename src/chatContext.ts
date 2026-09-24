@@ -8,6 +8,8 @@
 // llama.cpp) can reuse their KV cache for the shared prefix. Anything
 // that depends on the current prompt rides on the last message only.
 
+import { hasDocuments, splitDocuments } from "./documentBlocks.js";
+
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
   content: string;
@@ -54,6 +56,9 @@ export interface ChatContextInput {
 
 export const HISTORY_MAX_MESSAGES = envInt("TWOODY_HISTORY_MAX_MESSAGES", 20);
 const HISTORY_MAX_CHARS = envInt("TWOODY_HISTORY_MAX_CHARS", 16_000);
+/// Documents joined to messages have their own share of the context: the
+/// current one first, then the newest ones of the history.
+const DOCUMENT_CHARS = envInt("TWOODY_DOCUMENT_CHARS", 24_000);
 const HISTORY_MESSAGE_CHARS = 4_000;
 const PROFILE_MEMORY_CHARS = 1_500;
 const MATCHED_MEMORY_CHARS = 1_500;
@@ -80,14 +85,16 @@ export function buildChatMessages(input: ChatContextInput): ChatMessage[] {
   const memoryEnabled = readBool(input.prefs, "memory_enabled", true);
   const usable = memoryEnabled ? input.memories : [];
 
+  const current = splitDocuments(input.content);
+  const currentDocumentChars = current.documents.reduce((sum, document) => sum + document.block.length, 0);
   const result: ChatMessage[] = [
     { role: "system", content: buildSystemPrompt(input, usable) },
-    ...trimHistory(input.history),
+    ...trimHistory(input.history, Math.max(0, DOCUMENT_CHARS - currentDocumentChars)),
   ];
 
   // Per-turn context rides on the last message, never on the system
   // prompt: excerpts first, then saved notes, then the question itself.
-  const context = [formatExcerpts(input.excerpts ?? []), formatMatchedMemories(usable, input.content)].filter(
+  const context = [formatExcerpts(input.excerpts ?? []), formatMatchedMemories(usable, current.text)].filter(
     (block): block is string => block !== null,
   );
   const prompt = [...context, input.content].join("\n\n");
@@ -118,6 +125,13 @@ function buildSystemPrompt(input: ChatContextInput, usable: MemoryRow[]): string
   const name = input.userName?.trim();
   if (name) facts.push(`The user's name is ${name}.`);
   sections.push(facts.join(" "));
+
+  if (hasDocuments(input.content) || input.history.some((row) => hasDocuments(row.content))) {
+    sections.push(
+      "Documents the user joined to a message are given between <<document name=\"…\">> and <</document>>, " +
+        "with the pages of a PDF marked [page N]. Answer from them, and say which page when it helps.",
+    );
+  }
 
   if (input.hasDocuments) {
     sections.push(
@@ -164,19 +178,31 @@ function formatDay(now: Date): string {
   return `${WEEKDAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]} ${now.getFullYear()}`;
 }
 
-function trimHistory(history: HistoryRow[]): ChatMessage[] {
+function trimHistory(history: HistoryRow[], documentBudget: number): ChatMessage[] {
   const kept: ChatMessage[] = [];
   let chars = 0;
+  let documentChars = 0;
 
   for (let i = history.length - 1; i >= 0; i -= 1) {
     const row = history[i];
     if (row.role !== "user" && row.role !== "assistant") continue;
-    const content = truncate(row.content.trim(), HISTORY_MESSAGE_CHARS);
-    if (!content) continue;
+    const { text, documents } = splitDocuments(row.content);
+    const typed = truncate(text, HISTORY_MESSAGE_CHARS);
+    if (!typed && documents.length === 0) continue;
     if (kept.length >= HISTORY_MAX_MESSAGES) break;
-    if (chars + content.length > HISTORY_MAX_CHARS) break;
-    chars += content.length;
-    kept.push({ role: row.role, content });
+    if (chars + typed.length > HISTORY_MAX_CHARS) break;
+    chars += typed.length;
+    // The documents joined to a message stay readable to the questions
+    // that follow, the newest first; one beyond their share is named
+    // rather than cut in the middle.
+    const blocks = documents.map((document) => {
+      if (documentChars + document.block.length > documentBudget) {
+        return `[${document.name}: a document sent earlier in this conversation, too long to be repeated here.]`;
+      }
+      documentChars += document.block.length;
+      return document.block;
+    });
+    kept.push({ role: row.role, content: [typed, ...blocks].filter(Boolean).join("\n\n") });
   }
   kept.reverse();
 
