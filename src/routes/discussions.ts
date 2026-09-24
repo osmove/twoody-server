@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { requireAuth } from "../auth.js";
 import { db, discussions, messages } from "../db.js";
+import { publish as publishEvent } from "../events.js";
 
 // `/discussions` mirrors the cloud's chat-history surface. The RN app
 // hits this on chat boot to render the recent-conversations drawer
@@ -11,6 +12,7 @@ import { db, discussions, messages } from "../db.js";
 // into the same discussion, same as cloud DiscussionResolver, so
 // the listing matches what the iPhone shows for cloud accounts.
 export async function discussionRoutes(app: FastifyInstance) {
+  await deleteDiscussion(app);
   app.get<{
     Querystring: { q?: string; limit?: string; before?: string };
   }>("/discussions", {
@@ -164,6 +166,36 @@ export async function discussionRoutes(app: FastifyInstance) {
           created_at: row.createdAt.toISOString(),
         })),
       });
+    },
+  });
+}
+
+/// Deletes a discussion and its messages — what "Supprimer" in the
+/// desktop's sidebar does, as in ChatGPT and Claude.
+async function deleteDiscussion(app: FastifyInstance) {
+  app.delete<{ Params: { id: string } }>("/discussions/:id", {
+    schema: {
+      tags: ["session"],
+      summary: "Delete a discussion and its messages",
+      security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
+      params: { type: "object", required: ["id"], properties: { id: { type: "string" } } },
+    },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      const owned = db
+        .select({ id: discussions.id })
+        .from(discussions)
+        .where(and(eq(discussions.id, req.params.id), eq(discussions.userId, auth.userId)))
+        .limit(1)
+        .all();
+      if (owned.length === 0) return reply.code(404).send({ error: "not_found" });
+      db.transaction((tx) => {
+        tx.delete(messages).where(eq(messages.discussionId, req.params.id)).run();
+        tx.delete(discussions).where(eq(discussions.id, req.params.id)).run();
+      });
+      publishEvent({ kind: "discussion.touched", userId: auth.userId, discussionId: req.params.id, lastActivityAt: new Date().toISOString() });
+      reply.code(204).send();
     },
   });
 }
