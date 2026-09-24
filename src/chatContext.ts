@@ -202,7 +202,9 @@ function trimHistory(history: HistoryRow[], documentBudget: number): ChatMessage
       documentChars += document.block.length;
       return document.block;
     });
-    kept.push({ role: row.role, content: [typed, ...blocks].filter(Boolean).join("\n\n") });
+    // Documents first, as the desktop sends them: a question reads best
+    // after the text it is about.
+    kept.push({ role: row.role, content: [...blocks, typed].filter(Boolean).join("\n\n") });
   }
   kept.reverse();
 

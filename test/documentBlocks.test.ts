@@ -7,7 +7,7 @@ const block = (name: string, text: string, pages?: number) =>
   `<<document name="${name}"${pages ? ` pages="${pages}"` : ""}>>\n${text}\n<</document>>`;
 
 test("a message is split into what was typed and its documents", () => {
-  const content = `Résume ce contrat\n\n${block("bail.pdf", "[page 1]\nLe preneur…", 3)}\n\n${block("notes.md", "# Notes")}`;
+  const content = `${block("bail.pdf", "[page 1]\nLe preneur…", 3)}\n\n${block("notes.md", "# Notes")}\n\nRésume ce contrat`;
   const { text, documents } = splitDocuments(content);
   assert.equal(text, "Résume ce contrat");
   assert.deepEqual(documents.map(({ name, pages }) => ({ name, pages })), [
@@ -20,7 +20,7 @@ test("a message is split into what was typed and its documents", () => {
 });
 
 test("a discussion is titled by its documents and the question, never by their text", () => {
-  assert.equal(discussionTitle(`Quelles clauses de résiliation ?\n\n${block("bail.pdf", "x".repeat(5000), 12)}`), "bail.pdf — Quelles clauses de résiliation ?");
+  assert.equal(discussionTitle(`${block("bail.pdf", "x".repeat(5000), 12)}\n\nQuelles clauses de résiliation ?`), "bail.pdf — Quelles clauses de résiliation ?");
   assert.equal(discussionTitle("  Une   question  "), "Une question");
   assert.ok(discussionTitle(`Résume\n\n${block("a-very-long-name-for-a-scanned-contract-2026.pdf", "x")}`).length <= 60);
 });
@@ -33,13 +33,13 @@ test("a document stays readable to the questions that follow", () => {
   const document = block("bail.pdf", "[page 1]\n" + "Le preneur s'engage… ".repeat(400), 1);
   const messages = buildChatMessages(input({
     history: [
-      { role: "user", content: `Résume ce bail\n\n${document}` },
+      { role: "user", content: `${document}\n\nRésume ce bail` },
       { role: "assistant", content: "C'est un bail d'habitation." },
     ],
     content: "Quelle est la durée du préavis ?",
   }));
   // Replayed whole, not cut at the 4 000 characters of an ordinary message.
-  assert.equal(messages[1].content, `Résume ce bail\n\n${document}`);
+  assert.equal(messages[1].content, `${document}\n\nRésume ce bail`);
   assert.match(messages[0].content, /<<document name=/);
 });
 
@@ -48,13 +48,13 @@ test("an older document beyond the share is named, not cut in the middle", () =>
   const fresh = block("nouveau.pdf", "b".repeat(20_000));
   const messages = buildChatMessages(input({
     history: [
-      { role: "user", content: `Lis\n\n${old}` },
+      { role: "user", content: `${old}\n\nLis` },
       { role: "assistant", content: "Lu." },
     ],
-    content: `Et celui-ci ?\n\n${fresh}`,
+    content: `${fresh}\n\nEt celui-ci ?`,
   }));
-  assert.equal(messages[1].content, "Lis\n\n[ancien.pdf: a document sent earlier in this conversation, too long to be repeated here.]");
-  assert.ok(messages[3].content.endsWith(fresh));
+  assert.equal(messages[1].content, "[ancien.pdf: a document sent earlier in this conversation, too long to be repeated here.]\n\nLis");
+  assert.ok(messages[3].content.endsWith(`${fresh}\n\nEt celui-ci ?`));
 });
 
 test("without documents, the system prompt says nothing about them", () => {

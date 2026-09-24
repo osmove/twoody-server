@@ -1,5 +1,6 @@
 // Documents joined to a message by the desktop app travel inside the
-// message itself, one block each, after what the person typed:
+// message itself, one block each, before what the person typed (the
+// question reads best after the text it is about):
 //
 //   <<document name="rapport.pdf" pages="12">>
 //   [page 1]
