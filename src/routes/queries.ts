@@ -33,6 +33,9 @@ interface QueryBody {
   /// How many tokens the model holds, when the client knows (the desktop
   /// asks the runtime): the history and documents given are sized to it.
   context_window?: number | string;
+  /// How far the model reasons before answering: "fast" (not at all, the
+  /// default), "think", "deep".
+  effort?: string;
   // The watch + iPhone voice path nests fields under `query`. We
   // accept both flat and nested shapes so a single client codebase
   // can target either backend without case-by-case wire reshaping.
@@ -310,6 +313,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   });
 
   let aggregated = "";
+  let reasoningMs: number | null = null;
   let answeredBy: { kind: string; model: string | null } | null = null;
   try {
     const provider = await resolveProvider(auth.userId, model);
@@ -344,8 +348,18 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text })),
       local: provider.kind === "local_openai",
     });
+    // What the model reasons, sent as it comes and kept with the answer.
+    let reasoning = "";
+    let reasoningStarted = 0;
+    const onReasoning = (delta: string) => {
+      startSse();
+      if (!reasoningStarted) reasoningStarted = Date.now();
+      reasoning += delta;
+      reply.raw.write(`event: reasoning\ndata: ${escapeData(delta)}\n\n`);
+    };
     const thinkFilter = createThinkFilter((delta) => {
       startSse();
+      if (reasoningStarted && reasoningMs === null) reasoningMs = Date.now() - reasoningStarted;
       aggregated += delta;
       // Cloud-compat shape: per-token `event: message` with the
       // raw delta as the data line. The watch/RN parser slices
@@ -365,8 +379,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       readTemperature(userContext.prefs),
       thinkFilter.push,
       upstream.signal,
+      { effort: readEffort(parsed.effort), onReasoning },
     );
     thinkFilter.flush();
+    if (reasoningStarted && reasoningMs === null) reasoningMs = Date.now() - reasoningStarted;
     // The context gauge under the composer: what the runtime counted, or
     // a count from the characters when it did not say.
     const usage = reported
@@ -386,6 +402,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       provider:     provider.kind,
       model:        providerModel,
       sources,
+      reasoning:    reasoning.trim() || null,
+      reasoningMs,
     });
     touchDiscussion(discussion.id);
     publishEvent({
@@ -414,6 +432,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       language:      null,
       sources,
       usage,
+      reasoning_ms: reasoningMs,
     };
     reply.raw.write(`event: final\ndata: ${JSON.stringify(finalPayload)}\n\n`);
   } catch (err) {
@@ -611,6 +630,7 @@ async function streamFromProvider(
   temperature: number | undefined,
   onDelta: (text: string) => void,
   signal: AbortSignal,
+  options: { effort?: Effort; onReasoning?: (text: string) => void } = {},
 ): Promise<Usage | null> {
   switch (provider.kind) {
     case "openai":
@@ -623,7 +643,7 @@ async function streamFromProvider(
       await streamGemini(chatMessages, provider.model, temperature, onDelta, signal);
       return null;
     case "local_openai":
-      return streamLocal(provider.baseUrl, chatMessages, provider.model, temperature, onDelta, signal);
+      return streamLocal(provider.baseUrl, chatMessages, provider.model, temperature, onDelta, signal, options);
   }
 }
 
@@ -813,6 +833,16 @@ const LOCAL_MAX_TOKENS = (() => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 2048;
 })();
 
+/// How far a model reasons before it answers, as the person chose: not
+/// at all, briefly, at length. A budget in tokens: past it, the model is
+/// asked to answer from what it reasoned so far.
+export type Effort = "fast" | "think" | "deep";
+const THINKING_BUDGET: Record<Effort, number> = { fast: 0, think: 700, deep: 2_800 };
+
+function readEffort(value: unknown): Effort {
+  return value === "think" || value === "deep" ? value : "fast";
+}
+
 async function streamLocal(
   baseUrl: string,
   chatMessages: ChatMessage[],
@@ -820,22 +850,35 @@ async function streamLocal(
   temperature: number | undefined,
   onDelta: (t: string) => void,
   signal: AbortSignal,
-) {
+  options: { effort?: Effort; onReasoning?: (text: string) => void } = {},
+): Promise<Usage | null> {
   const endpoint = baseUrl.replace(/\/$/, "");
+  const budget = THINKING_BUDGET[options.effort ?? "fast"];
+  const thinking = budget > 0;
   const body = {
     model,
     messages: chatMessages,
     stream: true,
-    max_tokens: LOCAL_MAX_TOKENS,
+    max_tokens: LOCAL_MAX_TOKENS + budget,
     ...(temperature !== undefined ? { temperature } : {}),
   };
-  // Qwen3-style models otherwise reason silently for 20-40 s before
-  // the first token. mlx-lm, vLLM and llama.cpp honour this switch and
-  // Ollama ignores it; a strict OpenAI-compatible server may reject the
-  // unknown field, hence the plain retry below.
+  // Qwen3-style models otherwise reason silently for 20-40 s before the
+  // first token: reasoning is on only when the person asked for it.
+  // mlx-lm, vLLM and llama.cpp honour this switch and Ollama ignores it.
   // The tokens used come last in the stream when asked (the context
-  // gauge); the same retry covers a server that refuses that field.
-  const withoutThinking = { ...body, chat_template_kwargs: { enable_thinking: false }, stream_options: { include_usage: true } };
+  // gauge); llama.cpp ends the reasoning itself at the budget. A strict
+  // OpenAI-compatible server may reject these fields: plain retry below.
+  const extras = {
+    chat_template_kwargs: { enable_thinking: thinking },
+    stream_options: { include_usage: true },
+    ...(thinking ? { thinking_budget_tokens: budget } : {}),
+  };
+
+  // Ours, so that the reasoning can be cut without the reader leaving;
+  // the answer asked for after a cut has its own.
+  let upstream = new AbortController();
+  const stop = () => upstream.abort();
+  signal.addEventListener("abort", stop, { once: true });
 
   const post = async (payload: object): Promise<Response> => {
     try {
@@ -843,7 +886,7 @@ async function streamLocal(
         method: "POST",
         headers: { "Content-Type": "application/json", ...runtimeAuthHeaders(endpoint) },
         body: JSON.stringify(payload),
-        signal,
+        signal: upstream.signal,
       });
     } catch (err) {
       // A provider URL outside the private network is a configuration
@@ -854,16 +897,65 @@ async function streamLocal(
     }
   };
 
-  let res = await post(withoutThinking);
-  if (res.status === 400 || res.status === 422) {
-    res = await post(body);
-  }
+  try {
+    let res = await post({ ...body, ...extras });
+    if (res.status === 400 || res.status === 422) {
+      res = await post(body);
+    }
+    if (!res.ok) {
+      throw new LocalLlmUnavailableError(`Local LLM provider returned ${res.status}`);
+    }
 
-  if (!res.ok) {
-    throw new LocalLlmUnavailableError(`Local LLM provider returned ${res.status}`);
-  }
+    // The reasoning comes in its own field (mlx-lm, llama.cpp, LM Studio)
+    // or between <think> tags; either way the person sees it as it comes.
+    let reasoning = "";
+    let answered = false;
+    let cut = false;
+    const limit = thinking ? Math.ceil(budget * 1.15 * 3.5) : Infinity;
+    const reason = (text: string) => {
+      if (!text) return;
+      reasoning += text;
+      options.onReasoning?.(text);
+      if (!answered && !cut && reasoning.length > limit) {
+        cut = true;
+        upstream.abort();
+      }
+    };
+    const filter = createThinkFilter((text) => {
+      answered = true;
+      onDelta(text);
+    }, reason);
+    try {
+      const usage = await consumeOpenAIStream(res, filter.push, reason);
+      filter.flush();
+      if (!cut) return usage;
+    } catch (err) {
+      if (!cut || signal.aborted) throw err;
+    }
 
-  return consumeOpenAIStream(res, onDelta);
+    // Past its budget: the model answers from what it reasoned so far.
+    upstream = new AbortController();
+    if (signal.aborted) throw new Error("aborted");
+    const last = chatMessages[chatMessages.length - 1];
+    const answer = await post({
+      ...body,
+      max_tokens: LOCAL_MAX_TOKENS,
+      messages: [
+        ...chatMessages.slice(0, -1),
+        { ...last, content: `${last.content}\n\n[Your reasoning so far, cut to answer in time:]\n${reasoning.trim()}\n[Now answer directly.]` },
+      ],
+      chat_template_kwargs: { enable_thinking: false },
+      stream_options: { include_usage: true },
+    });
+    if (!answer.ok) throw new LocalLlmUnavailableError(`Local LLM provider returned ${answer.status}`);
+    // A model that always reasons may start again: that part is dropped.
+    const answerFilter = createThinkFilter(onDelta);
+    const usage = await consumeOpenAIStream(answer, answerFilter.push, () => undefined);
+    answerFilter.flush();
+    return usage;
+  } finally {
+    signal.removeEventListener("abort", stop);
+  }
 }
 
 function systemText(chatMessages: ChatMessage[]): string {
@@ -875,7 +967,8 @@ function systemText(chatMessages: ChatMessage[]): string {
 
 async function consumeOpenAIStream(
   res: Response,
-  onDelta: (t: string) => void
+  onDelta: (t: string) => void,
+  onReasoning?: (t: string) => void,
 ): Promise<Usage | null> {
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
@@ -895,10 +988,13 @@ async function consumeOpenAIStream(
       if (!raw || raw === "[DONE]") continue;
       try {
         const evt = JSON.parse(raw) as {
-          choices?: Array<{ delta?: { content?: string } }>;
+          choices?: Array<{ delta?: { content?: string; reasoning?: string; reasoning_content?: string } }>;
           usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
         };
-        const text = evt.choices?.[0]?.delta?.content ?? "";
+        const delta = evt.choices?.[0]?.delta;
+        const thought = delta?.reasoning ?? delta?.reasoning_content ?? "";
+        if (thought) onReasoning?.(thought);
+        const text = delta?.content ?? "";
         if (text) onDelta(text);
         if (typeof evt.usage?.prompt_tokens === "number") {
           usage = {
@@ -1009,6 +1105,8 @@ function insertMessage(args: {
   provider: string | null;
   model: string | null;
   sources?: unknown[];
+  reasoning?: string | null;
+  reasoningMs?: number | null;
 }) {
   db.insert(messages)
     .values({
@@ -1020,6 +1118,8 @@ function insertMessage(args: {
       provider:     args.provider,
       model:        args.model,
       sourcesJson:  args.sources && args.sources.length > 0 ? JSON.stringify(args.sources) : null,
+      reasoning:    args.reasoning ?? null,
+      reasoningMs:  args.reasoningMs ?? null,
       createdAt:    new Date(),
     })
     .run();

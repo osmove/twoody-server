@@ -170,6 +170,8 @@ export async function discussionRoutes(app: FastifyInstance) {
           provider:   row.provider,
           model:      row.model,
           sources:    parseSources(row.sourcesJson),
+          reasoning:  row.reasoning ?? null,
+          reasoning_ms: row.reasoningMs ?? null,
           created_at: row.createdAt.toISOString(),
         })),
       });

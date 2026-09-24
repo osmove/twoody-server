@@ -1,7 +1,8 @@
 // Reasoning models (Qwen3, DeepSeek-R1 distills, …) open their reply
 // with a `<think>…</think>` block when the runtime doesn't separate
-// reasoning from content. The chat UI should only show the answer, so
-// this filter drops that leading block from a stream of deltas.
+// reasoning from content. The answer is only what follows it: this filter
+// takes that leading block out of a stream of deltas, and hands it to
+// `onReasoning` when there is one (the desktop shows it as it comes).
 //
 // Only a block at the very start of the reply is treated as reasoning:
 // once real text has been emitted, a literal `<think>` (say, in an
@@ -10,7 +11,7 @@
 const OPEN = "<think>";
 const CLOSE = "</think>";
 
-export function createThinkFilter(emit: (text: string) => void): {
+export function createThinkFilter(emit: (text: string) => void, onReasoning?: (text: string) => void): {
   push(delta: string): void;
   flush(): void;
 } {
@@ -56,9 +57,12 @@ export function createThinkFilter(emit: (text: string) => void): {
     const end = pending.indexOf(CLOSE);
     if (end === -1) {
       // Keep only what could be the start of a split closing tag.
-      pending = pending.slice(-(CLOSE.length - 1));
+      const keep = CLOSE.length - 1;
+      if (pending.length > keep) onReasoning?.(pending.slice(0, pending.length - keep));
+      pending = pending.slice(-keep);
       return;
     }
+    if (end > 0) onReasoning?.(pending.slice(0, end));
     const rest = pending.slice(end + CLOSE.length);
     pending = "";
     state = "answer";

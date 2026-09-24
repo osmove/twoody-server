@@ -140,6 +140,9 @@ export const messages = sqliteTable("messages", {
   // JSON array of the document excerpts an assistant reply was given,
   // so the citations [1], [2]… it contains stay resolvable in history.
   sourcesJson: text("sources_json"),
+  // What the model reasoned before answering, and for how long (ms).
+  reasoning: text("reasoning"),
+  reasoningMs: integer("reasoning_ms"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
@@ -636,6 +639,12 @@ const messageColumns = sqlite.prepare("PRAGMA table_info(messages)").all() as Ar
 }>;
 if (!messageColumns.some((column) => column.name === "sources_json")) {
   sqlite.exec("ALTER TABLE messages ADD COLUMN sources_json TEXT");
+}
+if (!messageColumns.some((column) => column.name === "reasoning")) {
+  sqlite.exec("ALTER TABLE messages ADD COLUMN reasoning TEXT");
+}
+if (!messageColumns.some((column) => column.name === "reasoning_ms")) {
+  sqlite.exec("ALTER TABLE messages ADD COLUMN reasoning_ms INTEGER");
 }
 
 const discussionColumns = sqlite.prepare("PRAGMA table_info(discussions)").all() as Array<{
