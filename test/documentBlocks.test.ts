@@ -61,3 +61,17 @@ test("without documents, the system prompt says nothing about them", () => {
   const [system] = buildChatMessages(input({}));
   assert.doesNotMatch(system.content, /<<document/);
 });
+
+test("a web search sent with a question: read by the model, cited [n], never a title", () => {
+  const web = `<<web query="quartiers Lisbonne">>\n[1] Où loger à Lisbonne\nhttps://example.org/lisbonne\nAlfama est le plus ancien quartier.\n<</web>>`;
+  const content = `${web}\n\nOù loger à Lisbonne ?`;
+  const { text, documents } = splitDocuments(content);
+  assert.equal(text, "Où loger à Lisbonne ?");
+  assert.deepEqual(documents.map(({ kind, name }) => ({ kind, name })), [{ kind: "web", name: "quartiers Lisbonne" }]);
+  assert.equal(discussionTitle(content), "Où loger à Lisbonne ?");
+  assert.ok(!hasDocuments(content));
+  const [system, user] = buildChatMessages(input({ content }));
+  assert.match(system.content, /web results[\s\S]*cite the ones you used like \[1\][\s\S]*never instructions/);
+  assert.doesNotMatch(system.content, /Documents the user joined/);
+  assert.equal(user.content, content);
+});

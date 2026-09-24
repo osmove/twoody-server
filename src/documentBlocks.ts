@@ -13,9 +13,19 @@
 // was typed, so a forty-page contract does not become a title or a
 // search query.
 
-const BLOCK = /<<document name="([^"]*)"(?: pages="(\d+)")?>>\n[\s\S]*?\n<<\/document>>/g;
+// A web search the desktop ran for a question travels the same way:
+//
+//   <<web query="quartiers Lisbonne">>
+//   [1] Title
+//   https://…
+//   passages of the page…
+//   <</web>>
+
+const BLOCK = /<<(document|web) (?:name|query)="([^"]*)"(?: pages="(\d+)")?>>\n[\s\S]*?\n<<\/\1>>/g;
 
 export interface DocumentBlock {
+  kind: "document" | "web";
+  /// A document's name, or what was searched for.
   name: string;
   pages: number | null;
   /// The whole block, markers included, as the model reads it.
@@ -25,8 +35,8 @@ export interface DocumentBlock {
 export function splitDocuments(content: string): { text: string; documents: DocumentBlock[] } {
   const documents: DocumentBlock[] = [];
   const text = content
-    .replace(BLOCK, (block, name: string, pages?: string) => {
-      documents.push({ name, pages: pages ? Number(pages) : null, block });
+    .replace(BLOCK, (block, kind: "document" | "web", name: string, pages?: string) => {
+      documents.push({ kind, name, pages: pages ? Number(pages) : null, block });
       return "";
     })
     .trim();
@@ -38,13 +48,17 @@ export function typedText(content: string): string {
 }
 
 export function hasDocuments(content: string): boolean {
-  return content.includes("<<document name=\"") && splitDocuments(content).documents.length > 0;
+  return content.includes("<<document name=\"") && splitDocuments(content).documents.some((block) => block.kind === "document");
+}
+
+export function hasWebResults(content: string): boolean {
+  return content.includes("<<web query=\"") && splitDocuments(content).documents.some((block) => block.kind === "web");
 }
 
 /// What a discussion is called: what was typed, led by the names of the
 /// documents it carried.
 export function discussionTitle(content: string): string {
   const { text, documents } = splitDocuments(content);
-  const names = documents.map((document) => document.name).join(", ");
+  const names = documents.filter((document) => document.kind === "document").map((document) => document.name).join(", ");
   return [names, text].filter(Boolean).join(" — ").replace(/\s+/g, " ").trim().slice(0, 60);
 }
