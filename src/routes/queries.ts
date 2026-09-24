@@ -30,6 +30,9 @@ interface QueryBody {
   /// "New conversation": never continue an earlier one, whatever the
   /// channel. Same name as the cloud backend's parameter.
   force_new_discussion?: boolean | string;
+  /// How many tokens the model holds, when the client knows (the desktop
+  /// asks the runtime): the history and documents given are sized to it.
+  context_window?: number | string;
   // The watch + iPhone voice path nests fields under `query`. We
   // accept both flat and nested shapes so a single client codebase
   // can target either backend without case-by-case wire reshaping.
@@ -73,7 +76,7 @@ export async function queryRoutes(app: FastifyInstance) {
 
   // « Compacter la conversation »: the model writes a summary of the
   // discussion, given to it from then on instead of those messages.
-  app.post<{ Params: { id: string }; Body: { model?: string } }>("/discussions/:id/compact", {
+  app.post<{ Params: { id: string }; Body: { model?: string; context_window?: number } }>("/discussions/:id/compact", {
     schema: {
       tags: ["session"],
       summary: "Replace a discussion's messages, for the model, with a summary it writes",
@@ -117,7 +120,12 @@ export function discussionContext(
   return { ...compacted, tokensEstimate: estimateTokens(messagesChars(chatMessages)) };
 }
 
-async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body: { model?: string } }>, reply: FastifyReply) {
+function readWindow(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? parseInt(value, 10) : NaN;
+  return Number.isInteger(parsed) && parsed >= 1_024 && parsed <= 1_048_576 ? parsed : null;
+}
+
+async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body: { model?: string; context_window?: number } }>, reply: FastifyReply) {
   const auth = await requireAuth(req, reply);
   if (!auth) return;
   const [discussion] = db
@@ -154,6 +162,7 @@ async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body:
       ...loadUserContext(auth.userId),
       history,
       summary: compacted.summary,
+      contextWindow: readWindow(req.body?.context_window),
       content: COMPACT_REQUEST,
       hasDocuments: hasIndexedDocuments(auth.userId),
       local: provider.kind === "local_openai",
@@ -330,6 +339,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       history,
       content,
       summary: compacted.summary,
+      contextWindow: readWindow(parsed.context_window),
       hasDocuments: hasIndexedDocuments(auth.userId),
       excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text })),
       local: provider.kind === "local_openai",

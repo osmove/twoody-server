@@ -164,3 +164,13 @@ test("the system prompt is identical across turns of the same day (prefix cache)
   }))[0].content;
   assert.equal(first, second);
 });
+
+test("a small window gets less history than the defaults, made for 32 000 tokens", () => {
+  const history = Array.from({ length: 12 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", content: `${i} ${"mot ".repeat(400)}` }));
+  const roomy = buildChatMessages(input({ history, content: "Et alors ?" }));
+  const small = buildChatMessages(input({ history, content: "Et alors ?", contextWindow: 8_192 }));
+  const size = (messages: Array<{ content: string }>) => messages.slice(1).reduce((total, message) => total + message.content.length, 0);
+  assert.ok(size(roomy) > 12_000);
+  assert.ok(size(small) <= 8_602 + "Et alors ?".length + 2, `${size(small)}`);
+  assert.equal(small.at(-1)?.content.endsWith("Et alors ?"), true);
+});

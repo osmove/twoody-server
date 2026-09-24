@@ -50,6 +50,10 @@ export interface ChatContextInput {
   /// What the conversation said before, compacted: the messages it covers
   /// are no longer in `history`.
   summary?: string | null;
+  /// How many tokens the model holds, when the client knows it: a small
+  /// window (the desktop's llama.cpp holds 8 192 on a Mac with 8 GB) gets
+  /// less history and fewer documents than the defaults, made for 32 000.
+  contextWindow?: number | null;
   /// True when the turn is served by a model on the user's own machine.
   /// Drives the privacy wording of the base prompt — a cloud fallback
   /// turn must not tell the model that nothing leaves the computer.
@@ -62,6 +66,13 @@ const HISTORY_MAX_CHARS = envInt("TWOODY_HISTORY_MAX_CHARS", 16_000);
 /// Documents joined to messages have their own share of the context: the
 /// current one first, then the newest ones of the history.
 const DOCUMENT_CHARS = envInt("TWOODY_DOCUMENT_CHARS", 24_000);
+const CHARS_PER_TOKEN = 3.5;
+
+/// A budget in characters, at most `max`, and at most `share` of a known
+/// window.
+function scaled(max: number, window: number | null | undefined, share: number): number {
+  return window && window > 0 ? Math.min(max, Math.floor(window * CHARS_PER_TOKEN * share)) : max;
+}
 const HISTORY_MESSAGE_CHARS = 4_000;
 const PROFILE_MEMORY_CHARS = 1_500;
 const MATCHED_MEMORY_CHARS = 1_500;
@@ -92,7 +103,11 @@ export function buildChatMessages(input: ChatContextInput): ChatMessage[] {
   const currentDocumentChars = current.documents.reduce((sum, document) => sum + document.block.length, 0);
   const result: ChatMessage[] = [
     { role: "system", content: buildSystemPrompt(input, usable) },
-    ...trimHistory(input.history, Math.max(0, DOCUMENT_CHARS - currentDocumentChars)),
+    ...trimHistory(
+      input.history,
+      Math.max(0, scaled(DOCUMENT_CHARS, input.contextWindow, 0.35) - currentDocumentChars),
+      scaled(HISTORY_MAX_CHARS, input.contextWindow, 0.3),
+    ),
   ];
 
   // Per-turn context rides on the last message, never on the system
@@ -185,7 +200,7 @@ function formatDay(now: Date): string {
   return `${WEEKDAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]} ${now.getFullYear()}`;
 }
 
-function trimHistory(history: HistoryRow[], documentBudget: number): ChatMessage[] {
+function trimHistory(history: HistoryRow[], documentBudget: number, historyBudget = HISTORY_MAX_CHARS): ChatMessage[] {
   const kept: ChatMessage[] = [];
   let chars = 0;
   let documentChars = 0;
@@ -197,7 +212,7 @@ function trimHistory(history: HistoryRow[], documentBudget: number): ChatMessage
     const typed = truncate(text, HISTORY_MESSAGE_CHARS);
     if (!typed && documents.length === 0) continue;
     if (kept.length >= HISTORY_MAX_MESSAGES) break;
-    if (chars + typed.length > HISTORY_MAX_CHARS) break;
+    if (chars + typed.length > historyBudget) break;
     chars += typed.length;
     // The documents joined to a message stay readable to the questions
     // that follow, the newest first; one beyond their share is named
