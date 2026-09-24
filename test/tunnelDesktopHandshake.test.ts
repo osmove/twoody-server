@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fork, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -163,5 +163,42 @@ test("the desktop's server waits at the relay with credentials it was handed, an
     child.kill();
     relay.server.closeAllConnections();
     await new Promise((resolve) => relay.server.close(resolve));
+  }
+});
+
+// The desktop used to call its server ready as soon as something answered
+// /health on the port it picked. Another Twoody on the same Mac, already
+// on that port on 0.0.0.0, answered first — before this one had even
+// written its setup token — and the desktop asked it for a session: 422,
+// "Could not open a session on the embedded server". The desktop now waits
+// for its own child to say it listens.
+test("started as the desktop starts it, the server says it listens — its setup token already written", async () => {
+  const port = await freePort();
+  const dataDir = mkdtempSync(join(tmpdir(), "twoody-desktop-listening-"));
+  const child = fork(join(root, "src/index.ts"), [], {
+    cwd: root,
+    execArgv: ["--import", "tsx", "--import", join(root, "test/fixtures/parentPort.mjs")],
+    env: {
+      ...process.env,
+      HOST: "127.0.0.1",
+      PORT: String(port),
+      TWOODY_DATA_DIR: dataDir,
+      TWOODY_LOCAL_ONLY: "1",
+      // No tunnel: the announcement does not depend on it.
+      TWOODY_TUNNEL: "",
+      TWOODY_BONJOUR_DISABLED: "1",
+      TWOODY_USER_TOKEN: "",
+      TWOODY_BACKEND_URL: "",
+      LOG_LEVEL: "warn",
+    },
+    stdio: ["ignore", "ignore", "pipe", "ipc"],
+  });
+  try {
+    assert.deepEqual(await nextMessage(child, (m) => m.type === "listening", "the server to say it listens"), { type: "listening", port });
+    assert.ok(readFileSync(join(dataDir, "setup-token"), "utf8").trim().length > 0);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 200);
+  } finally {
+    child.kill("SIGTERM");
+    rmSync(dataDir, { recursive: true, force: true });
   }
 });

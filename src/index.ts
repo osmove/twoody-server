@@ -190,6 +190,12 @@ try {
     parentPort.postMessage({ type: "tunnel-ready" });
   }
 
+  // Twoody Desktop waits for this, from its own child, before it opens a
+  // session. An answer on the port proves nothing: another Twoody on the
+  // same Mac, already there on 0.0.0.0, answered /health before this one
+  // had started, and the desktop asked it for a session (422).
+  parentPort?.postMessage({ type: "listening", port: PORT });
+
   // Catch up with files added or changed while the server was off. A
   // few seconds after boot, so first requests are not competing with it.
   setTimeout(() => {
