@@ -52,15 +52,28 @@ export function tunnelIdentity(): StaticIdentity {
 
 /// Remembers a device as paired with this computer. The key is what the
 /// tunnel recognises it by from then on.
-export function rememberTunnelPeer(args: { userId: string; publicKey: Buffer; name?: string }): void {
+export function rememberTunnelPeer(args: { userId: string; publicKey: Buffer; name?: string; sessionId?: string }): void {
   if (args.publicKey.length !== KEY_BYTES) throw new Error(`a tunnel key is ${KEY_BYTES} bytes`);
   const publicKey = args.publicKey.toString("hex");
   const existing = db.select().from(tunnelPeers).where(eq(tunnelPeers.publicKey, publicKey)).limit(1).all();
   if (existing.length > 0) {
-    db.update(tunnelPeers).set({ name: args.name ?? existing[0]!.name, lastSeenAt: new Date() }).where(eq(tunnelPeers.publicKey, publicKey)).run();
+    db.update(tunnelPeers)
+      .set({ name: args.name ?? existing[0]!.name, lastSeenAt: new Date(), sessionId: args.sessionId ?? existing[0]!.sessionId })
+      .where(eq(tunnelPeers.publicKey, publicKey))
+      .run();
     return;
   }
-  db.insert(tunnelPeers).values({ publicKey, userId: args.userId, name: args.name ?? null, pairedAt: new Date(), lastSeenAt: new Date() }).run();
+  db.insert(tunnelPeers)
+    .values({ publicKey, userId: args.userId, name: args.name ?? null, pairedAt: new Date(), lastSeenAt: new Date(), sessionId: args.sessionId ?? null })
+    .run();
+}
+
+/// Forgets the keys of the devices that paired with this session.
+/// Returns how many were forgotten.
+export function forgetTunnelPeersOfSession(sessionId: string): number {
+  const linked = db.select().from(tunnelPeers).where(eq(tunnelPeers.sessionId, sessionId)).all();
+  if (linked.length > 0) db.delete(tunnelPeers).where(eq(tunnelPeers.sessionId, sessionId)).run();
+  return linked.length;
 }
 
 /// The devices this computer will answer through the tunnel — one link

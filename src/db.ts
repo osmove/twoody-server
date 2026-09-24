@@ -88,6 +88,9 @@ export const tunnelPeers = sqliteTable("tunnel_peers", {
   name: text("name"),
   pairedAt: integer("paired_at", { mode: "timestamp" }).notNull(),
   lastSeenAt: integer("last_seen_at", { mode: "timestamp" }),
+  // The session the device was given when it paired: removing the device
+  // takes both, and a device that signs out forgets its key.
+  sessionId: text("session_id"),
 });
 
 export const providers = sqliteTable("providers", {
@@ -375,7 +378,8 @@ sqlite.exec(`
     user_id TEXT NOT NULL REFERENCES users(id),
     name TEXT,
     paired_at INTEGER NOT NULL,
-    last_seen_at INTEGER
+    last_seen_at INTEGER,
+    session_id TEXT
   );
 
   CREATE TABLE IF NOT EXISTS providers (
@@ -633,6 +637,13 @@ const discussionColumns = sqlite.prepare("PRAGMA table_info(discussions)").all()
 }>;
 if (!discussionColumns.some((column) => column.name === "title")) {
   sqlite.exec("ALTER TABLE discussions ADD COLUMN title TEXT");
+}
+
+const tunnelPeerColumns = sqlite.prepare("PRAGMA table_info(tunnel_peers)").all() as Array<{
+  name: string;
+}>;
+if (!tunnelPeerColumns.some((column) => column.name === "session_id")) {
+  sqlite.exec("ALTER TABLE tunnel_peers ADD COLUMN session_id TEXT");
 }
 
 export const db = drizzle(sqlite);

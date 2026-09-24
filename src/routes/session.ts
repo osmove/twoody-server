@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import { allowSecretAttempt } from "../rateLimit.js";
-import { rememberTunnelPeer, tunnelIdentity } from "../tunnel/identity.js";
+import { forgetTunnelPeersOfSession, rememberTunnelPeer, tunnelIdentity } from "../tunnel/identity.js";
 import { tunnelPeersChanged } from "../tunnel/index.js";
 import {
   db,
@@ -230,12 +230,15 @@ export async function sessionRoutes(app: FastifyInstance) {
         userRow = created!;
       }
 
+      const { token, sessionId } = createAuthSession(userId, `pair:${deviceName}`);
+
       // The key swap, when the device brought one. This computer's key
       // is handed over only after the setup token has been checked, so
-      // a device that is refused learns nothing about it.
+      // a device that is refused learns nothing about it. The key goes
+      // with the session: removing the device takes both.
       let tunnelPublicKey: string | undefined;
       if (offered) {
-        rememberTunnelPeer({ userId, publicKey: Buffer.from(offered, "hex"), name: deviceName });
+        rememberTunnelPeer({ userId, publicKey: Buffer.from(offered, "hex"), name: deviceName, sessionId });
         tunnelPublicKey = tunnelIdentity().publicKey.toString("hex");
         // A tunnel already waiting at the relay starts waiting for this
         // device too, without a restart: the phone paired at home is
@@ -243,7 +246,6 @@ export async function sessionRoutes(app: FastifyInstance) {
         tunnelPeersChanged();
       }
 
-      const { token, sessionId } = createAuthSession(userId, `pair:${deviceName}`);
       reply.code(201).send({
         token,
         user_id: userId,
@@ -387,6 +389,9 @@ export async function sessionRoutes(app: FastifyInstance) {
       db.delete(authSessions)
         .where(eq(authSessions.id, auth.sessionId))
         .run();
+      // A device that signs out forgets the key it paired with: this
+      // computer stops waiting for it at the relay.
+      if (forgetTunnelPeersOfSession(auth.sessionId) > 0) tunnelPeersChanged();
 
       reply.send({ ok: true });
     },

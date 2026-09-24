@@ -8,6 +8,7 @@ import { healthRoutes } from "./routes/health.js";
 import { capabilitiesRoutes } from "./routes/capabilities.js";
 import { deploymentRoutes } from "./routes/deployment.js";
 import { sessionRoutes } from "./routes/session.js";
+import { pairedDeviceRoutes } from "./routes/pairedDevices.js";
 import { queryRoutes } from "./routes/queries.js";
 import { deviceRoutes } from "./routes/devices.js";
 import { providerRoutes } from "./routes/providers.js";
@@ -125,6 +126,7 @@ export async function buildApp() {
   await app.register(capabilitiesRoutes);
   await app.register(deploymentRoutes);
   await app.register(sessionRoutes);
+  await app.register(pairedDeviceRoutes);
   await app.register(queryRoutes);
   await app.register(deviceRoutes);
   await app.register(providerRoutes);
@@ -155,6 +157,7 @@ export async function buildApp() {
   await app.register(capabilitiesRoutes, { prefix: "/api/v1" });
   await app.register(deploymentRoutes, { prefix: "/api/v1" });
   await app.register(sessionRoutes, { prefix: "/api/v1" });
+  await app.register(pairedDeviceRoutes, { prefix: "/api/v1" });
   await app.register(queryRoutes, { prefix: "/api/v1" });
   await app.register(deviceRoutes, { prefix: "/api/v1" });
   await app.register(providerRoutes, { prefix: "/api/v1" });
