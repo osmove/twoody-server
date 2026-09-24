@@ -834,10 +834,13 @@ const LOCAL_MAX_TOKENS = (() => {
 })();
 
 /// How far a model reasons before it answers, as the person chose: not
-/// at all, briefly, at length. A budget in tokens: past it, the model is
-/// asked to answer from what it reasoned so far.
+/// at all, briefly, at length. A budget in tokens and one in time,
+/// whichever comes first: past it, the model is asked to answer from what
+/// it reasoned so far. The time is what the person waits for — Qwen3 14B
+/// writes some 10 tokens a second on a MacBook Air, 35 on a Max.
 export type Effort = "fast" | "think" | "deep";
-const THINKING_BUDGET: Record<Effort, number> = { fast: 0, think: 700, deep: 2_800 };
+const THINKING_BUDGET: Record<Effort, number> = { fast: 0, think: 1_000, deep: 4_000 };
+const THINKING_TIME_MS: Record<Effort, number> = { fast: 0, think: 30_000, deep: 120_000 };
 
 function readEffort(value: unknown): Effort {
   return value === "think" || value === "deep" ? value : "fast";
@@ -854,6 +857,7 @@ async function streamLocal(
 ): Promise<Usage | null> {
   const endpoint = baseUrl.replace(/\/$/, "");
   const budget = THINKING_BUDGET[options.effort ?? "fast"];
+  const timeLimit = THINKING_TIME_MS[options.effort ?? "fast"];
   const thinking = budget > 0;
   const body = {
     model,
@@ -909,14 +913,16 @@ async function streamLocal(
     // The reasoning comes in its own field (mlx-lm, llama.cpp, LM Studio)
     // or between <think> tags; either way the person sees it as it comes.
     let reasoning = "";
+    let reasoningStarted = 0;
     let answered = false;
     let cut = false;
     const limit = thinking ? Math.ceil(budget * 1.15 * 3.5) : Infinity;
     const reason = (text: string) => {
       if (!text) return;
+      if (!reasoningStarted) reasoningStarted = Date.now();
       reasoning += text;
       options.onReasoning?.(text);
-      if (!answered && !cut && reasoning.length > limit) {
+      if (!answered && !cut && (reasoning.length > limit || Date.now() - reasoningStarted > timeLimit)) {
         cut = true;
         upstream.abort();
       }

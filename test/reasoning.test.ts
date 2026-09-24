@@ -94,7 +94,7 @@ test("Réfléchi: the reasoning is sent as it comes and kept with the answer", a
   style = "field";
   const { final, reasoning } = await ask("think");
   assert.equal(asked.at(-1)!.chat_template_kwargs?.enable_thinking, true);
-  assert.equal(asked.at(-1)!.thinking_budget_tokens, 700, "llama.cpp ends it there itself");
+  assert.equal(asked.at(-1)!.thinking_budget_tokens, 1_000, "llama.cpp ends it there itself");
   assert.equal(reasoning, "Le préavis est de trois mois selon l'article 7.");
   assert.equal(final.message, "Trois mois.");
   assert.equal(typeof final.reasoning_ms, "number");
@@ -103,7 +103,7 @@ test("Réfléchi: the reasoning is sent as it comes and kept with the answer", a
 
   style = "tags";
   const tagged = await ask("deep");
-  assert.equal(asked.at(-1)!.thinking_budget_tokens, 2_800);
+  assert.equal(asked.at(-1)!.thinking_budget_tokens, 4_000);
   assert.equal(tagged.reasoning, "Je relis l'article 7.");
   assert.equal(tagged.final.message, "Trois mois.");
 });
@@ -116,6 +116,6 @@ test("past its budget, the reasoning is cut and the model answers from it", asyn
   assert.equal(first.chat_template_kwargs?.enable_thinking, true);
   assert.equal(second.chat_template_kwargs?.enable_thinking, false, "asked again, to answer");
   assert.match(second.messages.at(-1)!.content, /^Quel préavis \?\n\n\[Your reasoning so far, cut to answer in time:\]\nJe réfléchis encore/);
-  assert.ok(reasoning.length > 2_000 && reasoning.length < 4_000, `${reasoning.length}`);
+  assert.ok(reasoning.length > 3_500 && reasoning.length < 5_000, `${reasoning.length}`);
   assert.equal(final.message, "Trois mois, sans détour.");
 });
