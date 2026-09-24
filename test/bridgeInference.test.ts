@@ -326,6 +326,7 @@ test("the worker relays a completion to the backend: heartbeat, ordered deltas, 
         token: req.headers["x-user-token"] as string,
         device: req.headers["x-bridge-device-id"] as string,
         nickname: req.headers["x-bridge-device-nickname"] as string,
+        os: req.headers["x-bridge-device-os"] as string,
         capabilities: req.headers["x-bridge-capabilities"] as string,
         heartbeat: req.headers["x-bridge-heartbeat"] as string,
       });
@@ -388,6 +389,8 @@ test("the worker relays a completion to the backend: heartbeat, ordered deltas, 
     assert.equal(polls[0].token, "token-abc");
     assert.equal(polls[0].device, client.deviceId);
     assert.equal(polls[0].nickname, "Jimmy's MacBook Pro");
+    // What it runs, which the account's device list shows (a Pi was a "Mac").
+    assert.equal(polls[0].os, { darwin: "macOS", linux: "Linux", win32: "Windows" }[process.platform as string] ?? process.platform);
     assert.equal(polls[0].capabilities, "local-llm-provider");
     const heartbeat = JSON.parse(polls[0].heartbeat!);
     assert.deepEqual(heartbeat.downloaded_models, ["mlx-community/Qwen3-14B-4bit", "glm4:9b"]);

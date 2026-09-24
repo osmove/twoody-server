@@ -192,6 +192,21 @@ function deriveCapabilities(): string[] {
   return caps;
 }
 
+/// The system this worker runs, as the account's device list shows it.
+/// Said nothing, a Raspberry Pi was listed there as a Mac.
+export function deviceOsName(platform: string = process.platform): string {
+  switch (platform) {
+    case "darwin":
+      return "macOS";
+    case "linux":
+      return "Linux";
+    case "win32":
+      return "Windows";
+    default:
+      return platform;
+  }
+}
+
 export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle {
   const deviceId = resolveDeviceId(opts.deviceIdPath);
   const nickname = asciiHeaderValue(opts.deviceNickname ?? "twoody-server") || "twoody-server";
@@ -326,6 +341,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
       const headers: Record<string, string> = {
         ...authHeaders,
         "X-Bridge-Device-Nickname": nickname,
+        "X-Bridge-Device-OS": deviceOsName(),
         Accept: "application/json",
       };
       if (opts.capabilities && opts.capabilities.length > 0) {
