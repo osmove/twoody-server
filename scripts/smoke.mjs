@@ -14,6 +14,7 @@ const dataDir = mkdtempSync(join(tmpdir(), "twoody-server-smoke-"));
 
 const child = spawn("npx", ["tsx", "src/index.ts"], {
   cwd: process.cwd(),
+  detached: true,
   env: {
     ...process.env,
     HOST,
@@ -614,9 +615,24 @@ try {
 
   console.log("Twoody server smoke test passed");
 } finally {
-  child.kill("SIGTERM");
+  stop(child);
   await sleep(250);
   rmSync(dataDir, { recursive: true, force: true });
+}
+// Nothing left to wait for: a handle a child left open must not keep the
+// run going (CI sat eight minutes after "passed").
+process.exit(0);
+
+/// npx starts tsx, which starts node: on Linux, killing npx alone left the
+/// server running with this script's pipes open, and the run waiting for
+/// ever. Each child has its own process group, and the group goes.
+function stop(proc) {
+  if (proc.exitCode !== null || proc.signalCode !== null) return;
+  try {
+    process.kill(-proc.pid, "SIGTERM");
+  } catch {
+    proc.kill("SIGTERM");
+  }
 }
 
 // Second instance with TWOODY_LOCAL_ONLY=1 and everything that would
@@ -627,6 +643,7 @@ async function smokeLocalOnly() {
   const dir = mkdtempSync(join(tmpdir(), "twoody-server-smoke-local-only-"));
   const server = spawn("npx", ["tsx", "src/index.ts"], {
     cwd: process.cwd(),
+    detached: true,
     env: {
       ...process.env,
       HOST,
@@ -727,7 +744,7 @@ async function smokeLocalOnly() {
       throw new Error("Smoke test failed (local-only): public provider URL was not refused");
     }
   } finally {
-    server.kill("SIGTERM");
+    stop(server);
     await sleep(250);
     rmSync(dir, { recursive: true, force: true });
   }
@@ -773,6 +790,7 @@ async function smokeBridgeWorker(token) {
   const home = mkdtempSync(join(tmpdir(), "twoody-worker-smoke-"));
   const worker = spawn("npx", ["tsx", "src/bridgeWorker.ts"], {
     cwd: process.cwd(),
+    detached: true,
     env: {
       ...process.env,
       HOME: home, // keeps the worker's device id out of the real home
@@ -832,7 +850,7 @@ async function smokeBridgeWorker(token) {
       throw new Error("Smoke test failed: the placeholder model was not replaced by the worker's default");
     }
   } finally {
-    worker.kill("SIGTERM");
+    stop(worker);
     await runtime.close();
     rmSync(home, { recursive: true, force: true });
   }
