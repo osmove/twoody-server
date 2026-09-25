@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 import { strFromU8, unzipSync } from "fflate";
 import { extractText, getDocumentProxy } from "unpdf";
+import { ocrPages } from "./ocr.js";
 
 // Text extraction for the document index. Pure JavaScript on purpose:
 // the server has to work on a stock Mac (no pdftotext, no ripgrep) and,
@@ -12,6 +13,8 @@ export interface Section {
   /// 1-based page number, or null for formats without pages.
   page: number | null;
   text: string;
+  /// Read by OCR from a scanned page (./ocr.ts), not from the file's text.
+  ocr?: boolean;
 }
 
 const PLAIN_TEXT = new Set([".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".log", ".srt", ".vtt", ".yml", ".yaml"]);
@@ -34,7 +37,7 @@ export async function extractSections(path: string): Promise<Section[]> {
   const bytes = await readFile(path);
 
   let sections: Section[];
-  if (ext === ".pdf") sections = await extractPdf(bytes);
+  if (ext === ".pdf") sections = await extractPdf(path, bytes);
   else if (ext === ".docx") sections = [{ page: null, text: extractDocx(bytes) }];
   else if (ext === ".odt") sections = [{ page: null, text: extractOdt(bytes) }];
   else if (ext === ".rtf") sections = [{ page: null, text: stripRtf(decodeText(bytes)) }];
@@ -46,16 +49,34 @@ export async function extractSections(path: string): Promise<Section[]> {
   for (const section of sections) {
     const text = tidy(section.text).slice(0, budget);
     budget -= text.length;
-    if (text) kept.push({ page: section.page, text });
+    if (text) kept.push({ page: section.page, text, ...(section.ocr ? { ocr: true } : {}) });
     if (budget <= 0) break;
   }
   return kept;
 }
 
-async function extractPdf(bytes: Buffer): Promise<Section[]> {
+/// Below this many letters and digits a page counts as without text: a
+/// scan, or at most a stamp or a page number over one.
+const SCANNED_PAGE_CHARS = 20;
+
+async function extractPdf(path: string, bytes: Buffer): Promise<Section[]> {
   const pdf = await getDocumentProxy(new Uint8Array(bytes));
   const { text } = await extractText(pdf, { mergePages: false });
-  return text.map((pageText, index) => ({ page: index + 1, text: pageText }));
+  const sections: Section[] = text.map((pageText, index) => ({ page: index + 1, text: pageText }));
+  // Pages without text of their own are read by OCR, when this computer
+  // can (./ocr.ts); a PDF that already carries text is never touched.
+  const scanned = sections.filter((section) => (section.text.match(/[\p{L}\p{N}]/gu)?.length ?? 0) < SCANNED_PAGE_CHARS).map((section) => section.page as number);
+  if (scanned.length > 0) {
+    const read = await ocrPages(path, scanned);
+    for (const section of sections) {
+      const ocrText = read?.get(section.page as number);
+      if (ocrText?.trim()) {
+        section.text = ocrText;
+        section.ocr = true;
+      }
+    }
+  }
+  return sections;
 }
 
 /// A .docx is a zip; the body is word/document.xml, where each <w:p> is
