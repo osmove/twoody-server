@@ -8,7 +8,7 @@ import { db, documentFolders, documents, sqlite } from "../db.js";
 import { chunkSections } from "./chunk.js";
 import { extractSections, isSupported, MAX_FILE_BYTES } from "./extract.js";
 import { folderRisk } from "./folderRisk.js";
-import { buildMatchQuery } from "./query.js";
+import { buildMatchQuery, queryTerms, selectPassages } from "./query.js";
 
 // The user's document library: the folders they granted, the index
 // built from them, and the search that feeds /queries.
@@ -281,9 +281,7 @@ export interface Passage {
 
 const MAX_PASSAGES_PER_DOCUMENT = 3;
 
-/// Best passages for a question, best first. bm25() is negative and
-/// lower is better; passages far behind the best one are noise that
-/// would only dilute the model's context, so they are dropped.
+/// Best passages for a question, best first (see selectPassages).
 export function searchPassages(userId: string, question: string, limit = 6): Passage[] {
   const match = buildMatchQuery(question);
   if (!match) return [];
@@ -305,21 +303,7 @@ export function searchPassages(userId: string, question: string, limit = 6): Pas
   } catch {
     return []; // a malformed MATCH expression must not break a chat turn
   }
-  if (rows.length === 0) return [];
-
-  const floor = rows[0].score * 0.35;
-  const perDocument = new Map<string, number>();
-  const kept: Passage[] = [];
-  for (const row of rows) {
-    if (row.score > floor) break;
-    const used = perDocument.get(row.document_id) ?? 0;
-    if (used >= MAX_PASSAGES_PER_DOCUMENT) continue;
-    perDocument.set(row.document_id, used + 1);
-    const { score: _score, ...passage } = row;
-    kept.push(passage);
-    if (kept.length >= limit) break;
-  }
-  return kept;
+  return selectPassages(rows, queryTerms(question), limit, MAX_PASSAGES_PER_DOCUMENT).map(({ score: _score, ...passage }) => passage);
 }
 
 export function hasIndexedDocuments(userId: string): boolean {

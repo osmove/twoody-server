@@ -32,8 +32,7 @@ const MAX_TERMS = 12;
 export function queryTerms(text: string): string[] {
   const seen = new Set<string>();
   const terms: string[] = [];
-  const normalized = text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
-  for (const word of normalized.split(/[^\p{L}\p{N}]+/u)) {
+  for (const word of words(text)) {
     // Two-character tokens matter when they are numbers or codes ("R2", "42").
     const keep = word.length >= 3 || /\d/.test(word);
     if (!keep || STOPWORDS.has(word) || seen.has(word)) continue;
@@ -54,8 +53,57 @@ export function buildMatchQuery(text: string): string | null {
 function matchTerm(term: string): string {
   // Tokens are letters and digits only, so quoting is enough to keep
   // FTS5 operators (AND, OR, NOT, NEAR) literal.
-  if (term.length < 6 || /\d/.test(term)) return `"${term}"`;
+  if (matchedWhole(term)) return `"${term}"`;
   return `"${stem(term)}"*`;
+}
+
+function matchedWhole(term: string): boolean {
+  return term.length < 6 || /\d/.test(term);
+}
+
+/// Words the way the tokenizer sees them: case and diacritics folded.
+function words(text: string): string[] {
+  return text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().split(/[^\p{L}\p{N}]+/u);
+}
+
+/// How many of the terms a text holds, matched as the MATCH expression
+/// matches them: a short word or a code whole, a longer word by its stem.
+export function termsFound(text: string, terms: string[]): number {
+  const present = new Set(words(text));
+  return terms.filter((term) => {
+    if (matchedWhole(term)) return present.has(term);
+    const prefix = stem(term);
+    return [...present].some((word) => word.startsWith(prefix));
+  }).length;
+}
+
+/// Which of the passages FTS5 found go to the model, best first. BM25
+/// ranks them, and those far behind the best one are dropped as noise —
+/// unless they hold several of the question's words. In a small folder,
+/// BM25 gives next to no weight to a word found in most passages (FTS5
+/// floors its IDF): a note that repeated the question outscored, by far,
+/// the contract and the amendment that answered it, and both were
+/// dropped.
+export function selectPassages<T extends { document_id: string; text: string; score: number }>(
+  rows: T[],
+  terms: string[],
+  limit: number,
+  perDocument: number,
+): T[] {
+  if (rows.length === 0) return [];
+  const floor = rows[0].score * 0.35; // bm25() is negative, lower is better
+  const enough = Math.max(2, Math.ceil(terms.length / 4));
+  const used = new Map<string, number>();
+  const kept: T[] = [];
+  for (const row of rows) {
+    if (row.score > floor && termsFound(row.text, terms) < enough) continue;
+    const count = used.get(row.document_id) ?? 0;
+    if (count >= perDocument) continue;
+    used.set(row.document_id, count + 1);
+    kept.push(row);
+    if (kept.length >= limit) break;
+  }
+  return kept;
 }
 
 /// Not linguistics — just enough to bridge singular / plural and the

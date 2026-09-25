@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chunkSections, CHUNK_TARGET_CHARS } from "../src/documents/chunk.js";
 import { extractSections, isSupported } from "../src/documents/extract.js";
-import { buildMatchQuery, queryTerms } from "../src/documents/query.js";
+import { buildMatchQuery, queryTerms, selectPassages, termsFound } from "../src/documents/query.js";
 import { buildChatMessages } from "../src/chatContext.js";
 
 const fixture = (name: string) => fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
@@ -88,6 +88,20 @@ test("FTS5 operators typed by the user stay literal", () => {
   const query = buildMatchQuery('contrat NEAR("x") AND NOT brevet OR *')!;
   assert.doesNotMatch(query, /NEAR\(|\bAND\b|\bNOT\b/);
   assert.match(query, /^("[a-z0-9]+"\*?)( OR "[a-z0-9]+"\*?)*$/);
+});
+
+test("a passage far behind the best one still goes to the model when it holds several of the question's words", () => {
+  // Scores as FTS5 gave them in a folder of three documents, where
+  // "contrat", "préavis" and "Dupont" are in nearly every passage.
+  const terms = queryTerms("Mme Dupont veut résilier le contrat de prestation avant la fin de l'année. Quel préavis doit-elle respecter ?");
+  const rows = [
+    { document_id: "note", text: "Rendez-vous avec Mme Dupont : elle souhaite résilier le contrat de prestation avant la fin de l'année. Vérifier le préavis.", score: -4.39 },
+    { document_id: "contrat", text: "Article 4 — Durée et préavis. Chaque partie peut le résilier par lettre recommandée avec un préavis de trois mois. Madame Claire Dupont.", score: -0.000002 },
+    { document_id: "avenant", text: "Au contrat de prestation de services : le préavis prévu à l'article 4 est ramené à un mois.", score: -0.000001 },
+    { document_id: "tarif", text: "Le prix de la maintenance est revu chaque année.", score: -0.0000005 },
+  ];
+  assert.deepEqual(selectPassages(rows, terms, 6, 3).map((row) => row.document_id), ["note", "contrat", "avenant"]);
+  assert.equal(termsFound("Le préavis de résiliation", ["preavis", "resilier", "contrat"]), 2);
 });
 
 test("excerpts are numbered on the last message and announced in the system prompt", () => {
