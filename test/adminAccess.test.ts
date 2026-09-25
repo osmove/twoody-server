@@ -4,7 +4,7 @@ import Fastify from "fastify";
 import { isLoopbackAddress, requireAdminAccess } from "../src/adminAccess.js";
 
 const LAN = "192.168.1.20";
-const TOKEN = "correct-horse-battery-staple-42";
+const TOKEN = "correct-horse-battery-staple-42"; // gitleaks:allow — a test value, not a secret
 
 function buildApp() {
   const app = Fastify();
