@@ -192,7 +192,10 @@ try {
       body: JSON.stringify({ memory: { kind: "user", title: "Job", content: "Patent attorney in Lyon." } }),
     });
 
-    const firstTurn = await sseQuery(token, { content: "My client is called Dupont." });
+    // « Réfléchi » asked for: in « Rapide » the server cuts at once a
+    // model that reasons anyway, and this fake one always does — how fast
+    // its chunks arrive would then decide the test (it did, on CI).
+    const firstTurn = await sseQuery(token, { content: "My client is called Dupont.", effort: "think" });
     if (firstTurn.final?.text !== "Hello from the fake model") {
       throw new Error(`Smoke test failed: reasoning block leaked into the reply: ${JSON.stringify(firstTurn.final)}`);
     }
@@ -200,7 +203,7 @@ try {
       throw new Error("Smoke test failed: /queries did not retry without chat_template_kwargs after a 400");
     }
 
-    await sseQuery(token, { content: "What is my client's name?", discussion_id: firstTurn.final.discussion_id });
+    await sseQuery(token, { content: "What is my client's name?", discussion_id: firstTurn.final.discussion_id, effort: "think" });
     const sent = fakeLlm.requests[fakeLlm.requests.length - 1].messages;
     const roles = sent.map((message) => message.role).join(",");
     if (roles !== "system,user,assistant,user") {
