@@ -212,7 +212,7 @@ try {
       throw new Error("Smoke test failed: previous turn missing from the chat history");
     }
     if (sent[3].content !== "What is my client's name?") {
-      throw new Error(`Smoke test failed: current prompt is not the last message: ${JSON.stringify(sent[3].content).slice(0, 600)}`);
+      throw new Error(`Smoke test failed: current prompt is not the last message: ${JSON.stringify(sent[3].content).slice(0, 600)}\n${logs.slice(-3000)}`);
     }
 
     // "New conversation": on a text surface, a message that names no
@@ -898,12 +898,21 @@ async function startFakeLlm() {
 }
 
 async function sseQuery(token, body) {
-  const response = await fetch(`${API_BASE_URL}/queries`, {
-    method: "POST",
-    headers: authHeaders(token),
-    body: JSON.stringify(body),
-  });
-  const text = await response.text();
+  // A turn that never ends is a failure, not a CI job left running for
+  // hours: two minutes, then the server's own logs say why.
+  let response;
+  let text;
+  try {
+    response = await fetch(`${API_BASE_URL}/queries`, {
+      method: "POST",
+      headers: authHeaders(token),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
+    });
+    text = await response.text();
+  } catch (err) {
+    throw new Error(`Smoke test failed: POST /queries ${JSON.stringify(body).slice(0, 200)} did not finish (${err.message})\n${logs.slice(-4000)}`);
+  }
   if (response.status !== 200) {
     throw new Error(`Smoke test failed: POST /queries -> expected 200, got ${response.status}\n${text}\n${logs}`);
   }

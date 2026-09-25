@@ -9,6 +9,8 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    # A hung step used to hold the job for hours.
+    timeout-minutes: 20
     strategy:
       matrix:
         node-version: [22, 24]
@@ -36,3 +38,4 @@ jobs:
 
       - name: Smoke test
         run: npm run smoke
+        timeout-minutes: 8
