@@ -2,11 +2,12 @@ import { and, eq } from "drizzle-orm";
 import { realpathSync, statSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, extname, join, sep } from "node:path";
+import { basename, extname, join } from "node:path";
 import { generateId } from "../auth.js";
 import { db, documentFolders, documents, sqlite } from "../db.js";
 import { chunkSections } from "./chunk.js";
 import { extractSections, isSupported, MAX_FILE_BYTES } from "./extract.js";
+import { folderRisk } from "./folderRisk.js";
 import { buildMatchQuery } from "./query.js";
 
 // The user's document library: the folders they granted, the index
@@ -25,12 +26,10 @@ export class FolderRejected extends Error {
   }
 }
 
-const SYSTEM_ROOTS = ["/System", "/Library", "/private", "/etc", "/usr", "/bin", "/sbin", "/var", "/dev", "/proc", "/sys", "/boot", "/root", "/opt", "/Applications"];
-
 /// Validates a folder the user picked and returns its canonical path.
-/// Refuses what should never be indexed wholesale: the filesystem root,
-/// system directories, a whole home directory, and anything hidden or
-/// under ~/Library (keychains, app data, mail stores).
+/// Refuses what should never be indexed wholesale (folderRisk.ts): a
+/// disk, a whole home directory or what holds it, system directories,
+/// and anything hidden or under ~/Library or AppData.
 export function canonicalFolder(input: string): string {
   let real: string;
   try {
@@ -40,12 +39,8 @@ export function canonicalFolder(input: string): string {
   }
   if (!statSync(real).isDirectory()) throw new FolderRejected("not_a_directory");
 
-  const home = realpathSync(homedir());
-  if (real === sep || real === home) throw new FolderRejected("too_broad");
-  if (SYSTEM_ROOTS.some((root) => real === root || real.startsWith(root + sep))) throw new FolderRejected("sensitive");
-  const underHome = real.startsWith(home + sep) ? real.slice(home.length + 1).split(sep) : null;
-  if (underHome?.[0] === "Library") throw new FolderRejected("sensitive");
-  if (real.split(sep).some((segment) => segment.startsWith("."))) throw new FolderRejected("sensitive");
+  const risk = folderRisk(real, realpathSync(homedir()));
+  if (risk) throw new FolderRejected(risk);
   return real;
 }
 
@@ -131,7 +126,7 @@ export function indexStatus(userId: string): IndexStatus {
   return jobs.get(userId) ?? { running: false, total: 0, done: 0, current: null, started_at: null, finished_at: null };
 }
 
-const SKIPPED_DIRECTORIES = new Set(["node_modules", "Library", "__MACOSX", "$RECYCLE.BIN"]);
+const SKIPPED_DIRECTORIES = new Set(["node_modules", "Library", "AppData", "__MACOSX", "$RECYCLE.BIN"]);
 const MAX_FILES_PER_FOLDER = 20_000;
 
 async function walk(root: string): Promise<string[]> {
