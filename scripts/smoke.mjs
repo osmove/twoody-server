@@ -212,7 +212,7 @@ try {
       throw new Error("Smoke test failed: previous turn missing from the chat history");
     }
     if (sent[3].content !== "What is my client's name?") {
-      throw new Error("Smoke test failed: current prompt is not the last message");
+      throw new Error(`Smoke test failed: current prompt is not the last message: ${JSON.stringify(sent[3].content).slice(0, 600)}`);
     }
 
     // "New conversation": on a text surface, a message that names no
