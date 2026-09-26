@@ -30,6 +30,14 @@ test("WAV goes as it is; ffmpeg converts anything; afconvert what it reads", asy
   assert.equal(converterFor("m4a", { ffmpeg: false, afconvert: false }), null);
 });
 
+test("what whisper.cpp writes for silence and noise is no message", async () => {
+  const { withoutNonSpeech } = await import("../src/whisper.js");
+  assert.equal(withoutNonSpeech("[BLANK_AUDIO]"), "");
+  assert.equal(withoutNonSpeech(" [Music] (silence) "), "");
+  assert.equal(withoutNonSpeech("Bonjour [BLANK_AUDIO] le préavis ?"), "Bonjour le préavis ?");
+  assert.equal(withoutNonSpeech("Le contrat (article 4) dit trois mois."), "Le contrat (article 4) dit trois mois.");
+});
+
 // A stand-in for whisper-cli: it checks it was handed a WAV and writes
 // the transcript where it was told to.
 test("an iPhone's m4a is converted on the Mac and transcribed by the whisper-cli it is given", { skip: process.platform !== "darwin" }, async () => {

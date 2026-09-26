@@ -129,6 +129,16 @@ async function ensureWavOrPassthrough(
   return wavPath;
 }
 
+/// What whisper.cpp writes for sounds that are not speech — [BLANK_AUDIO],
+/// [Music], (silence)… — taken out: a recording of nothing is no message.
+export function withoutNonSpeech(text: string): string {
+  return text
+    .replace(/\[(?:blank_audio|silence|music|noise|inaudible|sound|applause|laughter)[^\]]*\]/gi, " ")
+    .replace(/\((?:silence|music|noise|inaudible|bruit|musique)[^)]*\)/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /// macOS's own converter: it reads the iPhone's m4a (not WebM), and it is
 /// on every Mac, where ffmpeg is not. The desktop app sends WAV already.
 const AFCONVERT = "/usr/bin/afconvert";

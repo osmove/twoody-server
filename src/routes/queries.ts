@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { requireAuth, generateId, PLACEHOLDER_USER_NAME } from "../auth.js";
 import { db, providers, discussions, messages, memories, users } from "../db.js";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
-import { transcribeWavWithWhisperCpp, WhisperUnavailableError } from "../whisper.js";
+import { transcribeWavWithWhisperCpp, withoutNonSpeech, WhisperUnavailableError } from "../whisper.js";
 import { publish as publishEvent } from "../events.js";
 import {
   buildChatMessages,
@@ -235,9 +235,13 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // skipped). Empty result → 422 so the client gets a clean error
   // instead of an empty SSE stream.
   let content = (parsed.text ?? parsed.content ?? "").trim();
+  let transcribed = false;
   if (!content && audioBuffer && !skipTranscription) {
     try {
-      content = (await transcribeWavWithWhisperCpp(audioBuffer)).trim();
+      // Whisper writes [BLANK_AUDIO] and the like for what it did not
+      // hear as speech: that is no message.
+      content = withoutNonSpeech(await transcribeWavWithWhisperCpp(audioBuffer));
+      transcribed = true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const code = err instanceof WhisperUnavailableError ? 501 : 422;
@@ -246,7 +250,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   }
 
   if (!content) {
-    return reply.code(422).send({ error: "content_or_audio_required" });
+    return reply.code(422).send({ error: transcribed ? "no_speech" : "content_or_audio_required" });
   }
 
   const channel = parsed.channel ?? "cli";
@@ -320,6 +324,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     keepalive = setInterval(() => {
       reply.raw.write(": ping\n\n");
     }, 15_000);
+    // A voice message: what was heard, first, so the person reads their
+    // own words while the answer is being written — not at its end.
+    if (transcribed) reply.raw.write(`event: transcription\ndata: ${JSON.stringify({ text: content })}\n\n`);
   };
 
   // The reader left (closed the window, pressed Stop): stop the model
