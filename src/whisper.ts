@@ -1,13 +1,14 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile, readFile, readdir } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { existsSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
+import { constants, existsSync } from "node:fs";
 
-// whisper-cpp shell-out for the local audio path. We assume the user
-// has the `whisper-cpp` binary on PATH (brew install whisper-cpp) and
-// at least one ggml model under `~/.twoody/whisper-models/` or pointed
-// at by the `TWOODY_WHISPER_MODEL` env var. Failure modes are surfaced
+// whisper-cpp shell-out for the local audio path. Twoody Desktop ships the
+// binary and names it, with its model, in TWOODY_WHISPER_BINARY and
+// TWOODY_WHISPER_MODEL; elsewhere we assume `whisper-cli` on PATH (brew
+// install whisper-cpp) and at least one ggml model under
+// `~/.twoody/whisper-models/` or pointed at by `TWOODY_WHISPER_MODEL`. Failure modes are surfaced
 // as a dedicated `WhisperUnavailableError` so the route handler can
 // return a 501 (vs 422 for "ran but no speech") and the client UI
 // can guide the user toward the install step.
@@ -54,8 +55,10 @@ export async function transcribeWavWithWhisperCpp(audio: Buffer): Promise<string
   }
 
   const workDir = await mkdtemp(join(tmpdir(), "twoody-stt-"));
-  const rawPath = join(workDir, "input.raw");
-  const wavPath = join(workDir, "input.wav");
+  // The extension says what the bytes are: afconvert reads it.
+  const kind = audioKind(audio);
+  const rawPath = join(workDir, `input.${kind === "unknown" ? "raw" : kind}`);
+  const wavPath = join(workDir, "converted.wav");
   const outputPath = join(workDir, "out");
   try {
     await writeFile(rawPath, audio);
@@ -96,9 +99,17 @@ async function ensureWavOrPassthrough(
   rawPath: string,
   wavPath: string,
 ): Promise<string> {
-  if (looksLikeWav(audio)) return rawPath;
-
-  if (!(await binaryExists("ffmpeg"))) {
+  const kind = audioKind(audio);
+  const converter = converterFor(kind, {
+    ffmpeg: kind !== "wav" && (await binaryExists("ffmpeg")),
+    afconvert: kind !== "wav" && process.platform === "darwin" && existsSync(AFCONVERT),
+  });
+  if (converter === "passthrough") return rawPath;
+  if (converter === "afconvert") {
+    await run(AFCONVERT, ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", rawPath, wavPath], "afconvert");
+    return wavPath;
+  }
+  if (converter === null) {
     throw new WhisperUnavailableError(
       "Audio is not WAV and ffmpeg isn't on PATH. " +
         "Install with `brew install ffmpeg` so the server can convert " +
@@ -118,14 +129,48 @@ async function ensureWavOrPassthrough(
   return wavPath;
 }
 
-/// RIFF magic + WAVE format identifier. Cheap byte sniff — no need
-/// to parse the chunk table to decide whether to skip ffmpeg.
-function looksLikeWav(buffer: Buffer): boolean {
-  if (buffer.length < 12) return false;
-  return (
-    buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
-    buffer[8] === 0x57 && buffer[9] === 0x41 && buffer[10] === 0x56 && buffer[11] === 0x45
-  );
+/// macOS's own converter: it reads the iPhone's m4a (not WebM), and it is
+/// on every Mac, where ffmpeg is not. The desktop app sends WAV already.
+const AFCONVERT = "/usr/bin/afconvert";
+
+export type AudioKind = "wav" | "m4a" | "caf" | "mp3" | "ogg" | "webm" | "unknown";
+
+/// What the bytes are, from their first ones. Cheap sniff — no need to
+/// parse the container to decide how to convert it.
+export function audioKind(buffer: Buffer): AudioKind {
+  const ascii = (start: number, end: number) => buffer.subarray(start, end).toString("latin1");
+  if (buffer.length >= 12 && ascii(0, 4) === "RIFF" && ascii(8, 12) === "WAVE") return "wav";
+  if (buffer.length >= 12 && ascii(4, 8) === "ftyp") return "m4a";
+  if (buffer.length >= 4 && ascii(0, 4) === "caff") return "caf";
+  if (buffer.length >= 4 && ascii(0, 4) === "OggS") return "ogg";
+  if (buffer.length >= 4 && buffer[0] === 0x1a && buffer[1] === 0x45 && buffer[2] === 0xdf && buffer[3] === 0xa3) return "webm";
+  if (buffer.length >= 3 && (ascii(0, 3) === "ID3" || (buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0))) return "mp3";
+  return "unknown";
+}
+
+/// How audio of this kind reaches whisper.cpp: as it is when it is WAV,
+/// through ffmpeg when there is one, through afconvert for what it reads
+/// (not WebM, not Ogg). Null: nothing here can convert it.
+export function converterFor(kind: AudioKind, tools: { ffmpeg: boolean; afconvert: boolean }): "passthrough" | "ffmpeg" | "afconvert" | null {
+  if (kind === "wav") return "passthrough";
+  if (tools.ffmpeg) return "ffmpeg";
+  if (tools.afconvert && (kind === "m4a" || kind === "caf" || kind === "mp3")) return "afconvert";
+  return null;
+}
+
+function run(binary: string, args: string[], label: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(binary, args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${label} exited ${code}: ${stderr.trim().slice(0, 400)}`));
+    });
+  });
 }
 
 async function runFfmpeg(args: string[]): Promise<void> {
@@ -157,8 +202,13 @@ async function pickModelPath(): Promise<string | null> {
 }
 
 async function binaryExists(name: string): Promise<boolean> {
+  // A path (the tool Twoody Desktop ships) is looked at; a name is looked
+  // for on PATH — with `where` on Windows, which has no `which`.
+  if (isAbsolute(name)) {
+    return access(name, constants.X_OK).then(() => true, () => false);
+  }
   return new Promise((resolve) => {
-    const child = spawn("which", [name], { stdio: "ignore" });
+    const child = spawn(process.platform === "win32" ? "where" : "which", [name], { stdio: "ignore" });
     child.on("error", () => resolve(false));
     child.on("exit", (code) => resolve(code === 0));
   });
