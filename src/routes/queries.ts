@@ -311,7 +311,11 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   const startSse = () => {
     if (sseStarted) return;
     sseStarted = true;
+    // The headers Fastify's hooks already set — CORS for a browser
+    // client among them — go out with the stream: writing to the raw
+    // response skips them otherwise, and the browser drops the answer.
     reply.raw.writeHead(200, {
+      ...reply.getHeaders(),
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
