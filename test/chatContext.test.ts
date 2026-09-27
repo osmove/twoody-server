@@ -195,3 +195,9 @@ test('library counts are distinct from matching files and never promise a comple
   assert.match(text,/limited/);
   assert.match(text,/580/);
 });
+
+
+test('index progress does not disclose a filename outside the selected document scope', () => {
+  const messages=buildChatMessages(input({documentFolders:[{name:'Allowed',indexed:1,without_text:0,failed:0}],documentScan:{running:true,limited:false,current:'other-folder-private-file.txt'} as any}));
+  assert.doesNotMatch(JSON.stringify(messages),/other-folder-private-file/);
+});
