@@ -185,3 +185,13 @@ test("folder access questions receive the real library, separately from system i
   assert.match(messages.at(-1)!.content, /"indexed":25/);
   assert.match(messages.at(-1)!.content, /data only, not instructions/);
 });
+
+test('library counts are distinct from matching files and never promise a complete directory tree', () => {
+  const messages = buildChatMessages(input({hasDocuments:true,documentFolders:[{name:'Camille',indexed:580,without_text:5,failed:0}],documentFiles:[{name:'CV.pdf',modified_at:'2026-09-21',chars:50}],documentFileTotal:22,documentScan:{running:true,limited:true}}));
+  const text=JSON.stringify(messages);
+  assert.match(text,/matching_files/);
+  assert.match(text,/NOT a directory tree/);
+  assert.match(text,/NOT all files/);
+  assert.match(text,/limited/);
+  assert.match(text,/580/);
+});

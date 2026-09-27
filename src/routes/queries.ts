@@ -17,7 +17,7 @@ import {
 import { chooseDiscussion, reuseWindowMs } from "../discussionWindow.js";
 import { runtimeAuthHeaders } from "../runtimeAuth.js";
 import { createThinkFilter } from "../thinkFilter.js";
-import { hasIndexedDocuments, listFolders, searchPassages } from "../documents/library.js";
+import { hasIndexedDocuments, listFolders, searchPassages, indexStatus } from "../documents/library.js";
 import { LOCAL_ONLY, LocalOnlyError, outboundFetch } from "../outbound.js";
 import { probeRuntime } from "../localRuntime.js";
 import { discussionTitle, typedText } from "../documentBlocks.js";
@@ -195,6 +195,7 @@ async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body:
       content: COMPACT_REQUEST,
       hasDocuments: documentFolders.length > 0,
       documentFolders,
+      documentScan: indexStatus(auth.userId),
       local: provider.kind === "local_openai",
     });
     let written = "";
@@ -400,6 +401,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       contextWindow: readWindow(parsed.context_window),
       hasDocuments: documentFolders.length > 0,
       documentFolders,
+      documentScan: indexStatus(auth.userId),
       documentFiles: retrieved.files,
       documentFileTotal: retrieved.total,
       excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text })),

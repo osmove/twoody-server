@@ -63,7 +63,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       })));
       const found = await retrieveDocuments(auth.userId, req.body.question, req.body.history ?? [], folders.map(f => f.id));
       const messages = buildChatMessages({userName: null, content: "", history: [], memories: [], prefs: {}, local: true,
-        documentMode: access.mode, documentFolders: folders, documentFiles: found.files, documentFileTotal: found.total,
+        documentScan: indexStatus(auth.userId), documentMode: access.mode, documentFolders: folders, documentFiles: found.files, documentFileTotal: found.total,
         excerpts: found.passages.map(p => ({name:p.name,page:p.page,text:p.text})), contextWindow: 16384});
       // Only document data and grounding policy, never the user's profile/memories or paths.
       reply.send({context: messages.at(-1)?.content ?? "", sources: found.passages.map((p,i) => ({
