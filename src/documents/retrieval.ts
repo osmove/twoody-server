@@ -1,7 +1,7 @@
 import { semanticPassages } from "./semantic.js";
 import { fusePassages } from "./vectorMath.js";
 import { sqlite } from "../db.js";
-import { queryTerms, metadataScore } from "./query.js";
+import { queryTerms, metadataScore, termsFound } from "./query.js";
 import { searchPassages, type Passage } from "./library.js";
 
 interface Turn { role: string; content: string; sourcesJson?: string | null }
@@ -26,7 +26,12 @@ export async function retrieveDocuments(userId: string, question: string, histor
   const matching = all.filter(file => metadataScore(file.name, "", terms) > 0);
   let files = matching.length ? matching : all;
   const explicit = all.filter(file => question.toLocaleLowerCase().includes(file.name.toLocaleLowerCase()));
-  let referenced = explicit;
+  const currentTerms = queryTerms(normalized);
+  const scores = all.map(file => termsFound(file.name, currentTerms));
+  const best = Math.max(0, ...scores);
+  // A named variant (e.g. CV Product Owner) outranks generic CV matches.
+  const variant = best >= 2 ? all.filter((_, index) => scores[index] === best) : [];
+  let referenced = explicit.length ? explicit : variant;
   if (!referenced.length && followUp && priorAssistant) {
     // Only a file explicitly named in the previous answer becomes the referent.
     // Multiple cited sources do not license an arbitrary "first file" choice.
@@ -55,6 +60,18 @@ export async function retrieveDocuments(userId: string, question: string, histor
       substr(c.text,1,240) AS snippet FROM document_chunks c JOIN documents d ON d.id=c.document_id
       WHERE c.user_id=? AND d.id=? AND d.folder_id IN (${scope}) ORDER BY c.position,c.rowid LIMIT 6`)
       .all(userId,file.id,...folderIds) as Passage[];
+  }
+  if (referenced.length > 1) {
+    const ids = new Set(referenced.map(file => file.id));
+    passages = passages.filter(passage => ids.has(passage.document_id));
+    if (!passages.length) {
+      for (const file of referenced.slice(0, 6)) {
+        const first = sqlite.prepare(`SELECT c.document_id,d.name,d.path,c.page,c.text,
+          substr(c.text,1,240) AS snippet FROM document_chunks c JOIN documents d ON d.id=c.document_id
+          WHERE c.user_id=? AND d.id=? ORDER BY c.position,c.rowid LIMIT 1`).get(userId,file.id) as Passage | undefined;
+        if (first) passages.push(first);
+      }
+    }
   }
   return { passages, files: files.slice(0,40).map(file => ({id:file.id,name:file.name,modified_at:new Date(file.mtime_ms).toISOString(),chars:file.chars})), total: files.length };
 }

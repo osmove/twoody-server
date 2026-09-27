@@ -1,3 +1,8 @@
+import { sqlite } from "../db.js";
+import { buildChatMessages } from "../chatContext.js";
+import { documentAccess } from "../documents/access.js";
+import { retrieveDocuments } from "../documents/retrieval.js";
+import { relative, isAbsolute } from "node:path";
 import { indexSemantic, semanticPassages, semanticStatus, setSemantic, stopSemantic } from "../documents/semantic.js";
 import { fusePassages } from "../documents/vectorMath.js";
 import { homedir } from "node:os";
@@ -32,6 +37,55 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
       reply.send({ folders: listFolders(auth.userId), index: indexStatus(auth.userId) });
+    },
+  });
+
+  // A bounded context envelope for clients whose conversation is stored elsewhere.
+  // Nothing is sent upstream here. Clients must obtain consent before forwarding it.
+  app.post<{Body: {question: string; document_access: unknown; history?: Array<{role: string; content: string; sourcesJson?: string}>}}>("/local_documents/context", {
+    schema: {tags: ["documents"], summary: "Retrieve scoped context for an external conversation", security,
+      body: {type: "object", required: ["question", "document_access"], properties: {
+        question: {type: "string", maxLength: 24000}, document_access: {type: "object"},
+        history: {type: "array", maxItems: 20, items: {type: "object", required: ["role", "content"], properties: {
+          role: {type: "string", enum: ["user", "assistant"]}, content: {type: "string", maxLength: 16000}, sourcesJson: {type: "string", maxLength: 16000},
+        }}},
+      }}},
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply); if (!auth) return;
+      let access;
+      try { access = documentAccess(req.body.document_access); }
+      catch { return reply.code(422).send({error: "invalid_document_access"}); }
+      const granted = listFolders(auth.userId);
+      const selected = granted.filter(folder => access.folderIds?.includes(folder.id));
+      const folders = granted.filter(folder => access.mode !== "off" && (!access.folderIds || selected.some(parent => {
+        const path = relative(parent.path, folder.path);
+        return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+      })));
+      const found = await retrieveDocuments(auth.userId, req.body.question, req.body.history ?? [], folders.map(f => f.id));
+      const messages = buildChatMessages({userName: null, content: "", history: [], memories: [], prefs: {}, local: true,
+        documentMode: access.mode, documentFolders: folders, documentFiles: found.files, documentFileTotal: found.total,
+        excerpts: found.passages.map(p => ({name:p.name,page:p.page,text:p.text})), contextWindow: 16384});
+      // Only document data and grounding policy, never the user's profile/memories or paths.
+      reply.send({context: messages.at(-1)?.content ?? "", sources: found.passages.map((p,i) => ({
+        n:i+1, document_id:p.document_id, name:p.name, page:p.page, snippet:p.snippet,
+      }))});
+    },
+  });
+
+  app.get<{Params:{id:string}; Querystring:{offset?:number}}>("/local_documents/files/:id", {
+    schema: {tags:["documents"],summary:"Read indexed text by opaque ID, 20 passages per page",security,
+      params:{type:"object",required:["id"],properties:{id:{type:"string",maxLength:200}}},
+      querystring:{type:"object",properties:{offset:{type:"integer",minimum:0,maximum:1000000}}}},
+    handler:async(req,reply)=>{
+      const auth=await requireAuth(req,reply);if(!auth)return;
+      const file=sqlite.prepare(`SELECT d.id,d.name,d.mtime_ms,d.status FROM documents d
+        JOIN document_folders f ON f.id=d.folder_id AND f.user_id=d.user_id
+        WHERE d.id=? AND d.user_id=?`).get(req.params.id,auth.userId);
+      if(!file)return reply.code(404).send({error:"not_found"});
+      const offset=req.query.offset ?? 0;
+      const rows=sqlite.prepare(`SELECT page,text FROM document_chunks WHERE document_id=? AND user_id=?
+        ORDER BY position,rowid LIMIT 21 OFFSET ?`).all(req.params.id,auth.userId,offset);
+      reply.send({file,passages:rows.slice(0,20),next_offset:rows.length>20?offset+20:null});
     },
   });
 

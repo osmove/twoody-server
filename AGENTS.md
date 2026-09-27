@@ -136,6 +136,17 @@ history are revalidated against current grants and scope. Multiple variants
 are not arbitrarily reduced to one file. Modification dates do not establish
 the document's authored date. Summaries may use partial coverage (six chunks).
 
+### Shared library clients
+
+Authenticated `POST /local_documents/context` accepts `question`, explicit
+`document_access`, and at most 20 history turns. It returns bounded document
+context plus numbered source references, without local paths or memories.
+Forwarding this envelope into account history requires explicit client consent.
+`GET /local_documents/files/:id?offset=0` reads indexed text in pages of 20
+passages; `next_offset` is null at the end. IDs are rechecked against ownership
+and current folder grants on every request. It does not open arbitrary paths.
+Regression coverage: `test/documentLibraryApi.test.ts`.
+
 ## Outbound calls and local-only mode
 
 Never call `fetch` directly in `src/`. Every outbound HTTP call goes through
