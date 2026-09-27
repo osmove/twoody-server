@@ -7,6 +7,15 @@ import { sqlite } from "../db.js";
 import { outboundFetch } from "../outbound.js";
 import type { Passage } from "./library.js";
 
+// Electron's utility process can be terminated without running Fastify's close hook.
+// Tell its owning main process which worker to stop before it terminates us.
+const parentPort = (process as NodeJS.Process & {
+  parentPort?: {postMessage(message: unknown): void};
+}).parentPort;
+function reportWorker(pid: number | undefined, running: boolean) {
+  if (pid) parentPort?.postMessage({type: "document-semantic-worker", pid, running});
+}
+process.once("exit", () => stopSemantic());
 const MODEL = "qwen3-embedding-0.6b-q8-370f27d";
 const MAX_CHUNKS = 20000;
 let child: ChildProcess | null = null;
@@ -121,11 +130,13 @@ async function engine(): Promise<{ url: string; key: string }> {
       { stdio: "ignore", windowsHide: true },
     );
     child = proc;
+    reportWorker(proc.pid, true);
     let failed = false;
     proc.on("error", () => {
       failed = true;
     });
     proc.on("exit", () => {
+      reportWorker(proc.pid, false);
       if (child === proc) {
         child = null;
         address = null;
