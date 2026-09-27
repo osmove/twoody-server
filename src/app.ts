@@ -1,3 +1,4 @@
+import { mobileAgentRoutes } from "./routes/mobileAgent.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
@@ -180,6 +181,7 @@ export async function buildApp() {
   await app.register(voiceRoutes, { prefix: "/api/v1" });
   await app.register(transcriptionRoutes, { prefix: "/api/v1" });
   await app.register(localDocumentRoutes, { prefix: "/api/v1" });
+  await app.register(mobileAgentRoutes, { prefix: "/api/v1" });
 
   app.get("/admin", {
     schema: {

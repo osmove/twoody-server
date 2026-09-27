@@ -271,3 +271,14 @@ supplies pinned model/binary paths; standalone settings are documented in
 validation, and the normal smoke for auth, access scopes and referent continuity.
 The explicit personal-files grant excludes application data, hidden files and
 symlinks; it does not confer write access or unrestricted disk access.
+
+## Mobile desktop Agent
+
+`GET/POST /mobile_agent` is an authenticated IPC gateway to the parent Desktop,
+not a server-side shell. It requires a live auth session whose client kind starts
+with `pair:`; the principal is derived from user/session IDs, never request data.
+The Desktop grants folders separately from read-only Documents, scopes sessions
+by principal, and enforces one-shot approvals. `send` requires a stable requestId
+so a LAN request retried over the encrypted relay cannot run the turn twice.
+A standalone server reports `desktop_required`. No filesystem grant or runtime
+URL can be supplied through this API. Schemas and API tests cover the contract.
