@@ -1,3 +1,4 @@
+import { indexSemantic } from "./semantic.js";
 import { and, eq } from "drizzle-orm";
 import { realpathSync, statSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
@@ -30,7 +31,7 @@ export class FolderRejected extends Error {
 /// Refuses what should never be indexed wholesale (folderRisk.ts): a
 /// disk, a whole home directory or what holds it, system directories,
 /// and anything hidden or under ~/Library or AppData.
-export function canonicalFolder(input: string): string {
+export function canonicalFolder(input: string, personalRoot = false): string {
   let real: string;
   try {
     real = realpathSync(input);
@@ -39,7 +40,7 @@ export function canonicalFolder(input: string): string {
   }
   if (!statSync(real).isDirectory()) throw new FolderRejected("not_a_directory");
 
-  const risk = folderRisk(real, realpathSync(homedir()));
+  const risk = folderRisk(real, realpathSync(homedir()), process.platform, personalRoot);
   if (risk) throw new FolderRejected(risk);
   return real;
 }
@@ -77,8 +78,8 @@ export function listFolders(userId: string) {
     });
 }
 
-export function addFolder(userId: string, input: string) {
-  const path = canonicalFolder(input);
+export function addFolder(userId: string, input: string, personalRoot = false) {
+  const path = canonicalFolder(input, personalRoot);
   const existing = db
     .select()
     .from(documentFolders)
@@ -118,6 +119,7 @@ export interface IndexStatus {
   current: string | null;
   started_at: string | null;
   finished_at: string | null;
+  limited?: boolean;
 }
 
 const jobs = new Map<string, IndexStatus>();
@@ -126,10 +128,10 @@ export function indexStatus(userId: string): IndexStatus {
   return jobs.get(userId) ?? { running: false, total: 0, done: 0, current: null, started_at: null, finished_at: null };
 }
 
-const SKIPPED_DIRECTORIES = new Set(["node_modules", "Library", "AppData", "__MACOSX", "$RECYCLE.BIN"]);
+const SKIPPED_DIRECTORIES = new Set(["node_modules", "library", "appdata", "__macosx", "$recycle.bin", "applications", "windows", "program files", "programdata", "cache", "caches"]);
 const MAX_FILES_PER_FOLDER = 20_000;
 
-async function walk(root: string): Promise<string[]> {
+async function walk(root: string): Promise<{files: string[]; limited: boolean}> {
   const files: string[] = [];
   const pending = [root];
   while (pending.length > 0 && files.length < MAX_FILES_PER_FOLDER) {
@@ -145,13 +147,14 @@ async function walk(root: string): Promise<string[]> {
       const path = join(dir, entry.name);
       // Symlinks are not followed: a link must not widen the grant.
       if (entry.isDirectory()) {
-        if (!SKIPPED_DIRECTORIES.has(entry.name)) pending.push(path);
-      } else if (entry.isFile() && isSupported(path)) {
+        if (!SKIPPED_DIRECTORIES.has(entry.name.toLowerCase())) pending.push(path);
+      } else if (entry.isFile() && isSupported(path) && !/^(?:credentials|secrets?|tokens?|passwords?|service[-_]?account)(?:[.-]|$)/i.test(entry.name)) {
         files.push(path);
+        if (files.length >= MAX_FILES_PER_FOLDER) return {files, limited: true};
       }
     }
   }
-  return files;
+  return {files, limited: false};
 }
 
 /// Brings the index in line with the user's folders. Resolves once the
@@ -171,12 +174,15 @@ export async function reindex(userId: string): Promise<IndexStatus> {
   jobs.set(userId, status);
 
   try {
-    const folders = db.select().from(documentFolders).where(eq(documentFolders.userId, userId)).all();
+    const folders = db.select().from(documentFolders).where(eq(documentFolders.userId, userId)).all().sort((a,b)=>b.path.length-a.path.length);
     const work: Array<{ folderId: string; path: string }> = [];
     const seen = new Set<string>();
 
     for (const folder of folders) {
-      for (const path of await walk(folder.path)) {
+      const scan = await walk(folder.path);
+      if (scan.limited) status.limited = true;
+      for (const path of scan.files) {
+        if (seen.has(path)) continue;
         seen.add(path);
         work.push({ folderId: folder.id, path });
       }
@@ -200,6 +206,7 @@ export async function reindex(userId: string): Promise<IndexStatus> {
     status.current = null;
     status.finished_at = new Date().toISOString();
   }
+  void indexSemantic(userId);
   return status;
 }
 
@@ -241,6 +248,8 @@ async function indexFile(userId: string, folderId: string, path: string): Promis
     "INSERT INTO document_chunks (text, document_id, user_id, page, position) VALUES (?, ?, ?, ?, ?)",
   );
   sqlite.transaction(() => {
+    sqlite.prepare("DELETE FROM document_labels WHERE document_id = ?").run(id);
+    sqlite.prepare("DELETE FROM document_embeddings WHERE document_id = ?").run(id);
     sqlite.prepare("DELETE FROM document_chunks WHERE document_id = ?").run(id);
     for (const chunk of chunks) insertChunk.run(chunk.text, id, userId, chunk.page, chunk.position);
     const values = {
@@ -263,6 +272,8 @@ async function indexFile(userId: string, folderId: string, path: string): Promis
 
 function deleteDocument(id: string): void {
   sqlite.transaction(() => {
+    sqlite.prepare("DELETE FROM document_labels WHERE document_id = ?").run(id);
+    sqlite.prepare("DELETE FROM document_embeddings WHERE document_id = ?").run(id);
     sqlite.prepare("DELETE FROM document_chunks WHERE document_id = ?").run(id);
     sqlite.prepare("DELETE FROM documents WHERE id = ?").run(id);
   })();
@@ -277,7 +288,7 @@ export interface Passage {
   page: number | null;
   text: string;
   snippet: string;
-  match?: "content" | "name";
+  match?: "content" | "name" | "semantic";
 }
 
 const MAX_PASSAGES_PER_DOCUMENT = 3;
@@ -336,10 +347,12 @@ export function searchPassages(userId: string, question: string, limit = 6, fold
 }
 
 /** Paginated metadata only; every row is scoped to the caller and a current grant. */
-export function listDocuments(userId: string, folderId: string, offset = 0, limit = 100) {
-  const files = sqlite.prepare(`SELECT d.id, d.name, d.path, d.status, d.chars, d.indexed_at
+export function listDocuments(userId: string, folderId: string, offset = 0, limit = 100, sort: "name" | "modified" | "category" = "name") {
+  const order = sort === "modified" ? "d.mtime_ms DESC," : sort === "category" ? "COALESCE(l.category,'zzz')," : "";
+  const files = sqlite.prepare(`SELECT d.id, d.name, d.path, d.status, d.chars, d.indexed_at, d.mtime_ms AS modified_at, l.category
     FROM documents d JOIN document_folders f ON f.id = d.folder_id AND f.user_id = d.user_id
-    WHERE d.user_id = ? AND d.folder_id = ? ORDER BY d.name COLLATE NOCASE, d.id LIMIT ? OFFSET ?`)
+    LEFT JOIN document_labels l ON l.document_id=d.id AND EXISTS(SELECT 1 FROM document_semantic_settings s WHERE s.user_id=d.user_id AND s.enabled=1)
+    WHERE d.user_id = ? AND d.folder_id = ? ORDER BY ${order} d.name COLLATE NOCASE, d.id LIMIT ? OFFSET ?`)
     .all(userId, folderId, limit, offset);
   const count = sqlite.prepare("SELECT COUNT(*) AS total FROM documents WHERE user_id = ? AND folder_id = ?").get(userId, folderId) as { total: number };
   return { files, total: count.total, offset, limit };

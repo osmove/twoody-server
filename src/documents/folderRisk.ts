@@ -15,7 +15,7 @@ export type FolderRisk = "too_broad" | "sensitive";
 const POSIX_SYSTEM_ROOTS = ["/System", "/Library", "/private", "/etc", "/usr", "/bin", "/sbin", "/var", "/dev", "/proc", "/sys", "/boot", "/root", "/opt", "/Applications"];
 const WINDOWS_SYSTEM_FOLDERS = new Set(["windows", "program files", "program files (x86)", "programdata", "$recycle.bin", "system volume information", "recovery"]);
 
-export function folderRisk(real: string, home: string, platform: NodeJS.Platform = process.platform): FolderRisk | null {
+export function folderRisk(real: string, home: string, platform: NodeJS.Platform = process.platform, personalRoot = false): FolderRisk | null {
   const windows = platform === "win32";
   const path = windows ? win32 : posix;
   const canonical = (value: string) => (windows ? path.resolve(value).toLowerCase() : path.resolve(value));
@@ -24,6 +24,7 @@ export function folderRisk(real: string, home: string, platform: NodeJS.Platform
   const root = path.parse(target).root;
   const inside = (parent: string, child: string) => child.startsWith(parent.endsWith(path.sep) ? parent : parent + path.sep);
 
+  if (personalRoot && target === house && target !== root) return null;
   if (target === root || target === house || inside(target, house)) return "too_broad";
   const segments = target.slice(root.length).split(path.sep).filter(Boolean);
   if (windows ? WINDOWS_SYSTEM_FOLDERS.has(segments[0] ?? "") : POSIX_SYSTEM_ROOTS.some((system) => target === system || inside(system, target))) {

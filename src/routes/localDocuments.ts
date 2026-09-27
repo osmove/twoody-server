@@ -1,3 +1,6 @@
+import { indexSemantic, semanticPassages, semanticStatus, setSemantic, stopSemantic } from "../documents/semantic.js";
+import { fusePassages } from "../documents/vectorMath.js";
+import { homedir } from "node:os";
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
 import {
@@ -20,6 +23,7 @@ import {
 // backend that path is the Google Drive browser, and one client code
 // base talks to both.
 export async function localDocumentRoutes(app: FastifyInstance) {
+  app.addHook("onClose", async () => stopSemantic());
   const security: Array<Record<string, string[]>> = [{ bearerAuth: [] }, { userTokenAuth: [] }];
 
   app.get("/local_documents/folders", {
@@ -28,6 +32,43 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
       reply.send({ folders: listFolders(auth.userId), index: indexStatus(auth.userId) });
+    },
+  });
+
+  app.get("/local_documents/semantic", {
+    schema: {tags: ["documents"], summary: "Local semantic indexing status", security},
+    handler: async (req, reply) => {const auth=await requireAuth(req,reply);if(auth)reply.send(semanticStatus(auth.userId));},
+  });
+  app.post<{Body:{enabled:boolean}}>("/local_documents/semantic", {
+    schema:{tags:["documents"],summary:"Enable or pause local semantic indexing",security,
+      body:{type:"object",required:["enabled"],properties:{enabled:{type:"boolean"}}}},
+    handler:async(req,reply)=>{const auth=await requireAuth(req,reply);if(auth)reply.send(setSemantic(auth.userId,req.body.enabled));},
+  });
+  app.post("/local_documents/semantic/reindex", {
+    schema:{tags:["documents"],summary:"Resume local semantic indexing",security},
+    handler:async(req,reply)=>{const auth=await requireAuth(req,reply);if(!auth)return;void indexSemantic(auth.userId);reply.code(202).send(semanticStatus(auth.userId));},
+  });
+
+  app.get("/local_documents/personal", {
+    schema: {tags: ["documents"], summary: "Preview the personal-files grant", security},
+    handler: async (req, reply) => {
+      if (!await requireAuth(req, reply)) return;
+      reply.send({path: homedir(), excludes: ["hidden files", "system and application data", "caches", "symlinks", "known credential filenames"], file_limit: 20000});
+    },
+  });
+  app.post<{Body: {confirmed?: boolean}}>("/local_documents/personal", {
+    schema: {tags: ["documents"], summary: "Explicitly grant personal files under the home directory", security,
+      body: {type: "object", required: ["confirmed"], properties: {confirmed: {type: "boolean", const: true}}}},
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply); if (!auth) return;
+      try {
+        const folder = addFolder(auth.userId, homedir(), true);
+        void reindex(auth.userId).catch(err => app.log.error(err, "document indexing failed"));
+        reply.code(201).send({folder});
+      } catch (err) {
+        if (err instanceof FolderRejected) return reply.code(err.reason === "already_added" ? 409 : 422).send({error: err.reason});
+        throw err;
+      }
     },
   });
 
@@ -82,20 +123,21 @@ export async function localDocumentRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      const passages = searchPassages(auth.userId, req.query.q ?? "", 8);
+      const q=req.query.q ?? "";
+      const passages = fusePassages(searchPassages(auth.userId, q, 8), q.trim() ? await semanticPassages(auth.userId, q, listFolders(auth.userId).map(f=>f.id)) : [], 8);
       reply.send({
         passages: passages.map(({ text: _text, ...passage }) => passage),
       });
     },
   });
 
-  app.get<{ Querystring: { folder_id: string; offset?: number } }>("/local_documents/files", {
+  app.get<{ Querystring: { folder_id: string; offset?: number; sort?: "name" | "modified" | "category" } }>("/local_documents/files", {
     schema: { tags: ["documents"], summary: "Files indexed in a granted folder, 100 per page", security,
-      querystring: { type: "object", required: ["folder_id"], properties: { folder_id: { type: "string", minLength: 1, maxLength: 200 }, offset: { type: "integer", minimum: 0, maximum: 1000000 } } } },
+      querystring: { type: "object", required: ["folder_id"], properties: { sort: {type: "string", enum: ["name", "modified", "category"]}, folder_id: { type: "string", minLength: 1, maxLength: 200 }, offset: { type: "integer", minimum: 0, maximum: 1000000 } } } },
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      reply.send(listDocuments(auth.userId, req.query.folder_id, req.query.offset ?? 0));
+      reply.send(listDocuments(auth.userId, req.query.folder_id, req.query.offset ?? 0, 100, req.query.sort));
     },
   });
 

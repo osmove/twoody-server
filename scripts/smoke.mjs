@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -12,11 +12,19 @@ const API_BASE_URL = `${BASE_URL}/api/v1`;
 const PAIRING_CODE = process.env.TWOODY_PAIRING_CODE || "A7B9C2D4";
 const dataDir = mkdtempSync(join(tmpdir(), "twoody-server-smoke-"));
 
+const personalHome = join(dataDir, "personal-home");
+mkdirSync(join(personalHome, "Documents"), {recursive:true});
+mkdirSync(join(personalHome, "Library"), {recursive:true});
+writeFileSync(join(personalHome, "Documents", "personal-note.txt"), "Personal document fixture");
+writeFileSync(join(personalHome, "Library", "excluded.txt"), "Excluded fixture");
+writeFileSync(join(personalHome, "Documents", "credentials.json"), "Excluded credential fixture");
 const child = spawn("npx", ["tsx", "src/index.ts"], {
   cwd: process.cwd(),
   detached: true,
   env: {
     ...process.env,
+    HOME: personalHome,
+    USERPROFILE: personalHome,
     HOST,
     PORT,
     TWOODY_PAIRING_CODE: PAIRING_CODE,
@@ -324,6 +332,11 @@ try {
         throw new Error(`Smoke test failed: search did not return the PDF passage: ${JSON.stringify(found)}`);
       }
 
+      await jsonFetch("/local_documents/semantic", {expectedStatus:401});
+      await jsonFetch("/local_documents/semantic", {method:"POST",headers:jsonHeaders(),body:JSON.stringify({enabled:true}),expectedStatus:401});
+      const semantic = await jsonFetch("/local_documents/semantic", {headers:authHeaders(token)});
+      if (semantic.enabled || semantic.indexed !== 0) throw new Error("Smoke test failed: semantic indexing must be opt-in");
+      await jsonFetch("/local_documents/semantic", {method:"POST",headers:authHeaders(token),body:JSON.stringify({enabled:false})});
       const shortSearch = await jsonFetch("/local_documents/search?q=cv", { headers: authHeaders(token) });
       if (!shortSearch.passages.some(p => p.name === "CV_Jimmy.txt" && p.match === "name") ||
           !shortSearch.passages.some(p => p.name === "notes.txt" && p.match === "content") ||
@@ -382,6 +395,15 @@ try {
       const revokedNames = await jsonFetch("/local_documents/search?q=cv", { headers: authHeaders(token) });
       const revokedFiles = await jsonFetch(`/local_documents/files?folder_id=${folders.folders[0].id}`, { headers: authHeaders(token) });
       if (revokedNames.passages.length || revokedFiles.files.length) throw new Error("Smoke test failed: revoked metadata still accessible");
+      await jsonFetch("/local_documents/personal", {method:"POST",headers:authHeaders(token),body:JSON.stringify({confirmed:false}),expectedStatus:400});
+      const preview = await jsonFetch("/local_documents/personal", {headers:authHeaders(token)});
+      if (preview.path !== personalHome) throw new Error("Smoke test failed: isolated home preview");
+      const personal = await jsonFetch("/local_documents/personal", {method:"POST",headers:authHeaders(token),body:JSON.stringify({confirmed:true}),expectedStatus:201});
+      for (let i=0;i<60;i++) { const state=await jsonFetch("/local_documents/folders",{headers:authHeaders(token)}); if(!state.index.running)break; await sleep(50); }
+      const personalFiles = await jsonFetch(`/local_documents/files?folder_id=${personal.folder.id}`,{headers:authHeaders(token)});
+      if(personalFiles.total!==1 || personalFiles.files[0].name!=="personal-note.txt")throw new Error("Smoke test failed: personal-file exclusions");
+      await fetch(`${API_BASE_URL}/local_documents/folders/${personal.folder.id}`,{method:"DELETE",headers:authHeaders(token)});
+
     } finally {
       rmSync(library, { recursive: true, force: true });
     }

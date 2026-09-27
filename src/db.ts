@@ -559,6 +559,20 @@ sqlite.exec(`
     UNIQUE (user_id, path)
   );
 
+  CREATE TABLE IF NOT EXISTS document_semantic_settings (
+    user_id TEXT PRIMARY KEY REFERENCES users(id), enabled INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS document_labels (
+    document_id TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+    category TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS document_embeddings (
+    user_id TEXT NOT NULL REFERENCES users(id),
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL, model TEXT NOT NULL, hash TEXT NOT NULL, vector BLOB NOT NULL,
+    PRIMARY KEY(document_id,position)
+  );
+
   CREATE INDEX IF NOT EXISTS idx_documents_folder ON documents (folder_id);
 
   -- Full-text index of the extracted text. unicode61 with

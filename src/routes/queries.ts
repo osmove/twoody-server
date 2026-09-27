@@ -1,3 +1,4 @@
+import { relative, isAbsolute } from "node:path";
 import { retrieveDocuments } from "../documents/retrieval.js";
 import { documentAccess } from "../documents/access.js";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
@@ -372,8 +373,13 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // resolve the [1], [2]… the reply cites.
     // What was typed is the question; the documents joined to it are
     // already in front of the model.
-    const allowedFolders = listFolders(auth.userId).filter(folder => access.mode !== "off" && (!access.folderIds || access.folderIds.includes(folder.id)));
-    const retrieved = retrieveDocuments(auth.userId, typedText(content), history, allowedFolders.map(folder => folder.id));
+    const granted = listFolders(auth.userId);
+    const selected = granted.filter(folder => access.folderIds?.includes(folder.id));
+    const allowedFolders = granted.filter(folder => access.mode !== "off" && (!access.folderIds || selected.some(parent => {
+      const path = relative(parent.path, folder.path);
+      return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+    })));
+    const retrieved = await retrieveDocuments(auth.userId, typedText(content), history, allowedFolders.map(folder => folder.id));
     const passages = retrieved.passages;
     const sources = passages.map((passage, index) => ({
       n: index + 1,

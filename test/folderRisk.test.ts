@@ -39,3 +39,12 @@ test("on Windows: a drive, C:\\Users, the system folders and AppData are refused
   assert.equal(folderRisk("D:\\Archives\\Dossiers", home, "win32"), null);
   assert.equal(folderRisk("\\\\nas\\partage\\Contrats", home, "win32"), null);
 });
+
+test("personal-files opt-in permits only the exact home, never a disk or an ancestor", () => {
+ for (const [home,root,ancestor,platform] of [["/Users/alex","/","/Users","darwin"],["C:\\Users\\Alex","C:\\","C:\\Users","win32"]] as const) {
+  assert.equal(folderRisk(home,home,platform,true),null);
+  assert.equal(folderRisk(root,home,platform,true),"too_broad");
+  assert.equal(folderRisk(ancestor,home,platform,true),"too_broad");
+ }
+ assert.equal(folderRisk('/Users/alex/.ssh','/Users/alex','darwin',true),'sensitive');
+});

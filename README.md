@@ -349,3 +349,34 @@ Document Q&A accepts per-turn `document_access` on `/queries`: `off`, `all`,
 an object; multipart uses a JSON string. Invalid policy returns 422; revoked
 grants never supply new passages. File modification metadata and single-file
 follow-up retrieval support document selection and summaries.
+
+### Local semantic documents (optional)
+
+Documents can combine lexical matches with Qwen3 Embedding 0.6B Q8_0
+(Apache 2.0, 639 MB), downloaded explicitly by Desktop. Embeddings run in a
+separate loopback-only llama-server using two CPU threads; document text never
+leaves the machine. The worker unloads after two idle minutes. Keyword search
+remains available when semantic search is paused or fails.
+
+`GET/POST /local_documents/semantic` reads status or sets `{enabled: boolean}`;
+`POST /local_documents/semantic/reindex` resumes indexing. All require auth.
+Vectors are scoped to the user and current grants, cached by content hash and
+deleted when a document changes or access is revoked. Indexing is bounded at
+20,000 passages per user. Suggested categories do not move or alter files.
+`GET /local_documents/files` also accepts `sort=name|modified|category` and
+returns `modified_at` (filesystem milliseconds) and optional `category`.
+
+`GET /local_documents/personal` previews a broad personal-files grant;
+`POST` requires `{confirmed: true}`. This grants supported documents under
+the user's home, not unrestricted computer access. Hidden files, symlinks,
+application/system directories, caches and known credential filenames are
+excluded. The scan is bounded at 20,000 supported files per folder.
+These exclusions are not a content-based secret detector. Ordinary folder
+grants still reject whole homes and disk roots.
+
+Standalone deployments can set `TWOODY_EMBEDDING_BINARY` and
+`TWOODY_EMBEDDING_MODEL` (see the example environment file). Optional real-model
+validation: `npm run build`, then `node scripts/smoke-semantic.mjs` with these
+two variables and `TWOODY_SEMANTIC_TEST_PARENT` pointing to a disposable fixture
+parent outside system directories. The test retains its temporary database
+and moves fixture documents into `~/.Trash`.

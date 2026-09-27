@@ -1,3 +1,5 @@
+import { semanticPassages } from "./semantic.js";
+import { fusePassages } from "./vectorMath.js";
 import { sqlite } from "../db.js";
 import { queryTerms, metadataScore } from "./query.js";
 import { searchPassages, type Passage } from "./library.js";
@@ -8,7 +10,7 @@ export function followUpQuestion(question: string): boolean {
   return /\b(résum\w*|resum\w*|summari\w*|celui|celle|lequel|laquelle|celui-ci|celui-là|ce document|ce fichier|it|that document|this file|plus récent|latest|most recent)\b/i.test(question);
 }
 /** Revalidate grants on each turn, including any source carried from history. */
-export function retrieveDocuments(userId: string, question: string, history: Turn[], folderIds: string[]) {
+export async function retrieveDocuments(userId: string, question: string, history: Turn[], folderIds: string[]) {
   if (!folderIds.length) return { passages: [] as Passage[], files: [] as FileRow[], total: 0 };
   const scope = folderIds.map(() => "?").join(",");
   const all = sqlite.prepare(`SELECT d.id, d.name, d.mtime_ms, d.chars FROM documents d
@@ -44,6 +46,7 @@ export function retrieveDocuments(userId: string, question: string, history: Tur
   if (referenced.length) files = referenced;
   const folderInventory = /(?:dossiers?.*(?:accès|acces|access)|(?:accès|acces|access).*dossiers?)/i.test(question);
   let passages = folderInventory ? [] : searchPassages(userId, contextual, 6, folderIds);
+  if (!folderInventory && referenced.length !== 1) passages = fusePassages(passages, await semanticPassages(userId, contextual, folderIds));
   // A summary needs the actual document, not only the passages matching "résume".
   // Six chunks are bounded; disclose coverage instead of promising a full read.
   if (referenced.length === 1) {

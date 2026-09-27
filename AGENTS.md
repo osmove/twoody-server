@@ -248,3 +248,15 @@ the env var, filters out sensitive prefixes (`/etc`, `/root`, `/.ssh`,
 …), and caches the parsed result. `src/executors/idCache.ts` keeps a
 bounded LRU mapping opaque `doc_*` ids → absolute paths so real
 filesystem paths never appear in the wire payload.
+
+### Semantic document retrieval
+
+`src/documents/semantic.ts` manages an opt-in, local embedding worker and cached
+vectors. Never send document text to external embedding APIs. Revalidate current
+grants on every query and before persisting asynchronously computed vectors.
+Revocation and text changes invalidate vectors and suggested labels. The desktop
+supplies pinned model/binary paths; standalone settings are documented in
+`scripts/twoody-server.env.example`. Use `scripts/smoke-semantic.mjs` for real-model
+validation, and the normal smoke for auth, access scopes and referent continuity.
+The explicit personal-files grant excludes application data, hidden files and
+symlinks; it does not confer write access or unrestricted disk access.
