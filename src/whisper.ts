@@ -170,7 +170,7 @@ export function converterFor(kind: AudioKind, tools: { ffmpeg: boolean; afconver
 
 function run(binary: string, args: string[], label: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, { stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn(binary, args, { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     child.stderr?.on("data", (chunk) => {
       stderr += chunk.toString();
@@ -185,7 +185,7 @@ function run(binary: string, args: string[], label: string): Promise<void> {
 
 async function runFfmpeg(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn("ffmpeg", args, { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     child.stderr?.on("data", (chunk) => {
       stderr += chunk.toString();
@@ -218,7 +218,7 @@ async function binaryExists(name: string): Promise<boolean> {
     return access(name, constants.X_OK).then(() => true, () => false);
   }
   return new Promise((resolve) => {
-    const child = spawn(process.platform === "win32" ? "where" : "which", [name], { stdio: "ignore" });
+    const child = spawn(process.platform === "win32" ? "where" : "which", [name], { windowsHide: true, stdio: "ignore" });
     child.on("error", () => resolve(false));
     child.on("exit", (code) => resolve(code === 0));
   });
@@ -226,7 +226,7 @@ async function binaryExists(name: string): Promise<boolean> {
 
 async function runWhisper(binary: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(binary, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     child.stderr?.on("data", (chunk) => {
       stderr += chunk.toString();

@@ -61,7 +61,7 @@ function runWhisper(audioPath: string, outBase: string, language: string | undef
       "-t", String(whisperThreads()),
       "-l", normalizeWhisperLanguage(language),
     ];
-    const proc = spawn(whisperBin(), args, { stdio: ["ignore", "ignore", "pipe"] });
+    const proc = spawn(whisperBin(), args, { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     proc.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
     proc.on("error", reject);
@@ -111,7 +111,7 @@ function transcodeToWav(srcPath: string, dstPath: string): Promise<void> {
       "-c:a", "pcm_s16le",
       dstPath,
     ];
-    const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+    const proc = spawn("ffmpeg", args, { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     proc.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
     proc.on("error", reject);

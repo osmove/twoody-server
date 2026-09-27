@@ -53,7 +53,7 @@ function runWhisper(opts: { audioPath: string; outBase: string; language?: strin
     "-l", opts.language?.trim() || "auto",
   ];
   return new Promise((resolve, reject) => {
-    const proc = spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"] });
+    const proc = spawn(bin, args, { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     proc.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
     proc.on("error", reject);
