@@ -46,6 +46,13 @@ test('new variant overrides an earlier assistant filename and pronoun preserves 
  const follow=await retrieveDocuments('owner','résume-le',[{role:'assistant',content:'Voici [1]',sourcesJson:'[{"n":1,"document_id":"po"}]'}],['folder']);
  assert.deepEqual(follow.files.map(f=>f.id),['po']);
 });
+test('directory browsing requires authentication and owns its grant',async()=>{
+ assert.equal((await app.inject({url:'/local_documents/browse?folder_id=folder'})).statusCode,401);
+ assert.equal((await app.inject({url:'/local_documents/browse?folder_id=folder',headers:other})).statusCode,404);
+ assert.equal((await app.inject({url:'/local_documents/browse?folder_id=folder&directory=..',headers})).statusCode,400);
+ const result=await app.inject({url:'/local_documents/browse?folder_id=folder',headers});
+ assert.equal(result.statusCode,200);assert.deepEqual(result.json().entries,[]); // fixture paths are outside the grant
+});
 test('revoked grant makes saved IDs unreadable',async()=>{
  sqlite.prepare('DELETE FROM document_chunks WHERE document_id=?').run('po');
  sqlite.prepare('DELETE FROM documents WHERE folder_id=?').run('folder');

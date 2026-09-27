@@ -15,6 +15,7 @@ import {
   isIndexedPath,
   listFolders,
   listDocuments,
+  browseDocuments,
   reindex,
   removeFolder,
   searchPassages,
@@ -30,6 +31,22 @@ import {
 export async function localDocumentRoutes(app: FastifyInstance) {
   app.addHook("onClose", async () => stopSemantic());
   const security: Array<Record<string, string[]>> = [{ bearerAuth: [] }, { userTokenAuth: [] }];
+
+  app.get<{Querystring: {folder_id: string; directory?: string; offset?: number}}>("/local_documents/browse", {
+    schema: {tags: ["documents"], security, querystring: {type: "object", required: ["folder_id"], properties: {
+      folder_id: {type: "string"}, directory: {type: "string", maxLength: 4096}, offset: {type: "integer", minimum: 0, maximum: 1000000},
+    }}},
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply); if (!auth) return;
+      try {
+        const result = browseDocuments(auth.userId, req.query.folder_id, req.query.directory || "", req.query.offset || 0);
+        return result ? reply.send(result) : reply.code(404).send({error: "folder_unavailable"});
+      } catch (error) {
+        if (error instanceof Error && error.message === "invalid_directory") return reply.code(400).send({error: "invalid_directory"});
+        throw error;
+      }
+    },
+  });
 
   app.get("/local_documents/folders", {
     schema: { tags: ["documents"], summary: "Granted folders and index counts", security },

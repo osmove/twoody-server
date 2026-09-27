@@ -1,3 +1,4 @@
+import {indexedDirectory, type IndexedEntry} from "./tree.js";
 import { indexSemantic } from "./semantic.js";
 import { and, eq } from "drizzle-orm";
 import { realpathSync, statSync } from "node:fs";
@@ -369,4 +370,13 @@ export function hasIndexedDocuments(userId: string): boolean {
 export function isIndexedPath(userId: string, path: string): boolean {
   const row = sqlite.prepare("SELECT 1 FROM documents WHERE user_id = ? AND path = ? LIMIT 1").get(userId, path);
   return row !== undefined;
+}
+
+/** Current grants and caller ownership are checked before reading index metadata. */
+export function browseDocuments(userId: string, folderId: string, directory = "", offset = 0) {
+  const folder = sqlite.prepare("SELECT path FROM document_folders WHERE user_id = ? AND id = ?").get(userId, folderId) as {path: string} | undefined;
+  if (!folder) return null;
+  const files = sqlite.prepare("SELECT id, name, path, status, mtime_ms AS modified_at FROM documents WHERE user_id = ? AND folder_id = ?").all(userId, folderId) as IndexedEntry[];
+  const entries = indexedDirectory(folder.path, files, directory);
+  return {entries: entries.slice(offset, offset + 100), total: entries.length, next_offset: offset + 100 < entries.length ? offset + 100 : null, directory};
 }
