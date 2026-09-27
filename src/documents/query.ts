@@ -13,6 +13,9 @@
 // and the rarer ones, first.
 
 const STOPWORDS = new Set([
+  // Common short words; short subject terms such as CV, RH and AI remain searchable.
+  "de", "le", "la", "du", "un", "ce", "se", "ma", "ta", "sa", "il", "en", "et", "au", "ou", "si", "ne", "je", "tu", "on", "me", "te", "ca",
+  "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it", "my", "no", "of", "or", "so", "to", "up", "us", "we",
   // French
   "les", "des", "une", "aux", "est", "sont", "ont", "pour", "par", "sur", "dans", "avec", "sans", "sous", "que", "qui",
   "quoi", "quel", "quelle", "quels", "quelles", "dont", "mais", "donc", "car", "pas", "plus", "moins", "tres", "tout",
@@ -33,8 +36,8 @@ export function queryTerms(text: string): string[] {
   const seen = new Set<string>();
   const terms: string[] = [];
   for (const word of words(text)) {
-    // Two-character tokens matter when they are numbers or codes ("R2", "42").
-    const keep = word.length >= 3 || /\d/.test(word);
+    // Short subjects (CV, RH, AI) matter as much as numbers and codes.
+    const keep = word.length >= 2 || /\d/.test(word);
     if (!keep || STOPWORDS.has(word) || seen.has(word)) continue;
     seen.add(word);
     terms.push(word);
@@ -111,4 +114,9 @@ export function selectPassages<T extends { document_id: string; text: string; sc
 function stem(term: string): string {
   const stripped = term.replace(/(ements|ement|ations|ation|ions|ion|ees|ee|es|er|ez|ent|ing|ed|s|x|e)$/, "");
   return stripped.length >= 4 ? stripped : term.slice(0, Math.max(4, term.length - 1));
+}
+
+/** Names carry useful search terms even when the document body never says them. */
+export function metadataScore(name: string, location: string, terms: string[]): number {
+  return termsFound(name, terms) * 8 + termsFound(location, terms) * 2;
 }

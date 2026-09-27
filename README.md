@@ -110,7 +110,8 @@ TWOODY_PAIRING_CODE=A7B9C2D4 npm run dev
 | `GET/POST/PATCH/DELETE` | `/members*` | members + enrollment assets |
 | `GET/POST/DELETE` | `/local_documents/folders*` | grant or revoke a folder; index counts and progress |
 | `POST` | `/local_documents/reindex` | re-scan the granted folders |
-| `GET` | `/local_documents/search` | passages the index returns for a question |
+| `GET` | `/local_documents/search` | content and file/folder-name matches; short terms such as CV supported |
+| `GET` | `/local_documents/files?folder_id=…&offset=0` | 100 file metadata rows per page, scoped to the authenticated user |
 | `GET` | `/admin` | minimal admin page — this machine only, or `TWOODY_ADMIN_TOKEN` from elsewhere |
 
 ## Environment
@@ -331,3 +332,14 @@ missing, so a vanilla install without whisper.cpp keeps booting.
 Pi to `~/Library/Twoody/backups/<TIMESTAMP>/` on the Mac every 12 h
 and keep the last 14 snapshots. Pair with `latest` symlink for easy
 recovery.
+
+
+Document search also checks existing file and granted-folder names without
+requiring reindexing. A search passage's optional `match` is `content` or
+`name` (for file/folder metadata; its snippet is the first extracted passage).
+`/local_documents/files` returns `{files, total, offset, limit}`; each file has
+`id`, `name`, `path`, `status`, `chars`, `indexed_at`. Both endpoints require
+authentication and lose access when the folder grant is revoked. `/queries`
+receives a bounded list of the caller's granted folders and index counts so
+it can explain its actual document access. This is the local server's library;
+it is not the managed API's synced-chat document source.

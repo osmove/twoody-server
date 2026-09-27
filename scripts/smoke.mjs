@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -286,11 +286,14 @@ try {
     // sources coming back to the client.
     // Not under the OS temp dir: on macOS that resolves to /private/var,
     // which the server rightly refuses to index.
-    const library = mkdtempSync(join(process.cwd(), "smoke-docs-"));
+    const library = mkdtempSync(join(process.cwd(), "smoke-docs-CV-"));
     try {
       for (const name of ["contrat-dupont.pdf", "contrat-dupont.docx"]) {
         cpSync(join(process.cwd(), "test", "fixtures", name), join(library, name));
       }
+      writeFileSync(join(library, "CV_Jimmy.txt"), "Parcours professionnel : responsable commercial depuis 2020.");
+      writeFileSync(join(library, "lettre.txt"), "Lettre de motivation pour un nouvel emploi.");
+      writeFileSync(join(library, "notes.txt"), "Mon CV contient toutes mes expériences.");
       await jsonFetch("/local_documents/folders", {
         method: "POST",
         headers: authHeaders(token),
@@ -307,10 +310,10 @@ try {
       let folders;
       for (let attempt = 0; attempt < 60; attempt += 1) {
         folders = await jsonFetch("/local_documents/folders", { headers: authHeaders(token) });
-        if (!folders.index.running && folders.folders[0]?.indexed === 2) break;
+        if (!folders.index.running && folders.folders[0]?.indexed === 5) break;
         await sleep(250);
       }
-      if (folders.folders[0]?.indexed !== 2) {
+      if (folders.folders[0]?.indexed !== 5) {
         throw new Error(`Smoke test failed: documents were not indexed: ${JSON.stringify(folders)}`);
       }
 
@@ -320,6 +323,21 @@ try {
       if (!found.passages.some((passage) => passage.name === "contrat-dupont.pdf" && passage.page === 1)) {
         throw new Error(`Smoke test failed: search did not return the PDF passage: ${JSON.stringify(found)}`);
       }
+
+      const shortSearch = await jsonFetch("/local_documents/search?q=cv", { headers: authHeaders(token) });
+      if (!shortSearch.passages.some(p => p.name === "CV_Jimmy.txt" && p.match === "name") ||
+          !shortSearch.passages.some(p => p.name === "notes.txt" && p.match === "content") ||
+          !shortSearch.passages.some(p => p.name === "lettre.txt" && p.match === "name")) throw new Error("Smoke test failed: CV body/name/folder lookup");
+      const files = await jsonFetch(`/local_documents/files?folder_id=${folders.folders[0].id}`, { headers: authHeaders(token) });
+      if (files.total !== 5 || files.files.length !== 5 || !files.files.every(file => file.status === "indexed")) throw new Error("Smoke test failed: indexed file inventory");
+      const unknownFiles = await jsonFetch("/local_documents/files?folder_id=not-granted", { headers: authHeaders(token) });
+      if (unknownFiles.total !== 0 || unknownFiles.files.length) throw new Error("Smoke test failed: ungranted inventory");
+      await jsonFetch("/local_documents/files?folder_id=x&offset=-1", { headers: authHeaders(token), expectedStatus: 400 });
+      await jsonFetch(`/local_documents/files?folder_id=${folders.folders[0].id}`, { expectedStatus: 401 });
+      const filePage = await jsonFetch(`/local_documents/files?folder_id=${folders.folders[0].id}&offset=4`, { headers: authHeaders(token) });
+      if (filePage.files.length !== 1 || filePage.total !== 5 || filePage.offset !== 4) throw new Error("Smoke test failed: file pagination");
+      await sseQuery(token, { content: "À quels dossiers as-tu accès ?" });
+      if (!fakeLlm.requests.at(-1).messages.at(-1).content.includes("smoke-docs-CV-")) throw new Error("Smoke test failed: granted folder list missing from model context");
 
       const documentTurn = await sseQuery(token, { content: "Quel est le préavis de résiliation du contrat ?" });
       const lastMessage = fakeLlm.requests[fakeLlm.requests.length - 1].messages.at(-1).content;
@@ -346,6 +364,9 @@ try {
       }
       const afterRevoke = await jsonFetch(`/local_documents/search?q=preavis`, { headers: authHeaders(token) });
       if (afterRevoke.passages.length !== 0) throw new Error("Smoke test failed: revoking a folder left its passages searchable");
+      const revokedNames = await jsonFetch("/local_documents/search?q=cv", { headers: authHeaders(token) });
+      const revokedFiles = await jsonFetch(`/local_documents/files?folder_id=${folders.folders[0].id}`, { headers: authHeaders(token) });
+      if (revokedNames.passages.length || revokedFiles.files.length) throw new Error("Smoke test failed: revoked metadata still accessible");
     } finally {
       rmSync(library, { recursive: true, force: true });
     }

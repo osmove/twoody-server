@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chunkSections, CHUNK_TARGET_CHARS } from "../src/documents/chunk.js";
 import { extractSections, isSupported } from "../src/documents/extract.js";
-import { buildMatchQuery, queryTerms, selectPassages, termsFound } from "../src/documents/query.js";
+import { buildMatchQuery, metadataScore, queryTerms, selectPassages, termsFound } from "../src/documents/query.js";
 import { buildChatMessages } from "../src/chatContext.js";
 
 const fixture = (name: string) => fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
@@ -80,7 +80,7 @@ test("questions become OR-ed FTS5 terms without stopwords", () => {
 
 test("long words match as stems; numbers and codes match exactly", () => {
   assert.equal(buildMatchQuery("redevances"), '"redevanc"*');
-  assert.equal(buildMatchQuery("brevet EP 3456789"), '"brevet"* OR "3456789"');
+  assert.equal(buildMatchQuery("brevet EP 3456789"), '"brevet"* OR "ep" OR "3456789"');
   assert.equal(buildMatchQuery("article R2"), '"articl"* OR "r2"');
 });
 
@@ -126,4 +126,14 @@ test("excerpts are numbered on the last message and announced in the system prom
 test("without an index the system prompt says nothing about documents", () => {
   const [system] = buildChatMessages({ userName: null, prefs: {}, history: [], memories: [], content: "Bonjour", local: true });
   assert.doesNotMatch(system.content, /documents/);
+});
+
+
+test("short document subjects and file/folder names remain searchable", () => {
+  assert.deepEqual(queryTerms("mon CV RH AI"), ["cv", "rh", "ai"]);
+  assert.equal(buildMatchQuery("cv"), '\"cv\"');
+  const terms = queryTerms("cv");
+  assert.ok(metadataScore("CV_Jimmy.docx", "Dossier_CV", terms) > metadataScore("lettre.docx", "Dossier_CV", terms));
+  assert.equal(metadataScore("lettre.docx", "Dossier_CV_Jimmy_2026", terms), 2);
+  assert.equal(metadataScore("cvtheque.docx", "lettres", terms), 0, "short words are whole tokens, not broad prefixes");
 });

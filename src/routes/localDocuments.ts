@@ -6,6 +6,7 @@ import {
   indexStatus,
   isIndexedPath,
   listFolders,
+  listDocuments,
   reindex,
   removeFolder,
   searchPassages,
@@ -85,6 +86,16 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       reply.send({
         passages: passages.map(({ text: _text, ...passage }) => passage),
       });
+    },
+  });
+
+  app.get<{ Querystring: { folder_id: string; offset?: number } }>("/local_documents/files", {
+    schema: { tags: ["documents"], summary: "Files indexed in a granted folder, 100 per page", security,
+      querystring: { type: "object", required: ["folder_id"], properties: { folder_id: { type: "string", minLength: 1, maxLength: 200 }, offset: { type: "integer", minimum: 0, maximum: 1000000 } } } },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      reply.send(listDocuments(auth.userId, req.query.folder_id, req.query.offset ?? 0));
     },
   });
 

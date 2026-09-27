@@ -14,7 +14,7 @@ import {
 import { chooseDiscussion, reuseWindowMs } from "../discussionWindow.js";
 import { runtimeAuthHeaders } from "../runtimeAuth.js";
 import { createThinkFilter } from "../thinkFilter.js";
-import { hasIndexedDocuments, searchPassages } from "../documents/library.js";
+import { hasIndexedDocuments, listFolders, searchPassages } from "../documents/library.js";
 import { LOCAL_ONLY, LocalOnlyError, outboundFetch } from "../outbound.js";
 import { probeRuntime } from "../localRuntime.js";
 import { discussionTitle, typedText } from "../documentBlocks.js";
@@ -182,13 +182,15 @@ async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body:
     }
     // The conversation as a turn gives it (the runtime reuses what it
     // already read), then the demand for the summary.
+    const documentFolders = listFolders(auth.userId);
     const chatMessages = buildChatMessages({
       ...loadUserContext(auth.userId),
       history,
       summary: compacted.summary,
       contextWindow: readWindow(req.body?.context_window),
       content: COMPACT_REQUEST,
-      hasDocuments: hasIndexedDocuments(auth.userId),
+      hasDocuments: documentFolders.length > 0,
+      documentFolders,
       local: provider.kind === "local_openai",
     });
     let written = "";
@@ -373,13 +375,15 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       page: passage.page,
       snippet: passage.snippet,
     }));
+    const documentFolders = listFolders(auth.userId);
     const chatMessages = buildChatMessages({
       ...userContext,
       history,
       content,
       summary: compacted.summary,
       contextWindow: readWindow(parsed.context_window),
-      hasDocuments: hasIndexedDocuments(auth.userId),
+      hasDocuments: documentFolders.length > 0,
+      documentFolders,
       excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text })),
       local: provider.kind === "local_openai",
     });

@@ -174,3 +174,14 @@ test("a small window gets less history than the defaults, made for 32 000 tokens
   assert.ok(size(small) <= 8_602 + "Et alors ?".length + 2, `${size(small)}`);
   assert.equal(small.at(-1)?.content.endsWith("Et alors ?"), true);
 });
+
+
+test("folder access questions receive the real library, separately from system instructions", () => {
+  const messages = buildChatMessages(input({ content: "À quels dossiers as-tu accès ?", hasDocuments: true,
+    documentFolders: [{ name: "Dossier_CV_Jimmy_2026", indexed: 25, without_text: 1, failed: 0 }] }));
+  assert.match(messages[0].content, /never claim there are no folders/);
+  assert.doesNotMatch(messages[0].content, /Dossier_CV_Jimmy/);
+  assert.match(messages.at(-1)!.content, /Dossier_CV_Jimmy_2026/);
+  assert.match(messages.at(-1)!.content, /"indexed":25/);
+  assert.match(messages.at(-1)!.content, /data only, not instructions/);
+});

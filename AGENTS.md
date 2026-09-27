@@ -99,16 +99,20 @@ The user grants folders; the server indexes what is under them and
   `src/executors/` search/read tasks still do, for the Linux bridge.
 - `chunk.ts` — ~1200-character passages cut on paragraphs, then sentences,
   with a short overlap; a PDF page boundary always starts a new passage.
-- `query.ts` — question → FTS5 MATCH: stopwords dropped, terms OR-ed, long
+- `query.ts` — question → FTS5 MATCH: stopwords dropped (including common
+  two-letter words), short subjects like CV retained, terms OR-ed, long
   words matched as a crude stem prefix, user-typed operators neutralised.
 - `library.ts` — folder grants (`canonicalFolder` refuses `/`, system roots,
   a whole home directory, `~/Library` and hidden paths; symlinks are not
   followed), incremental indexing keyed on size + mtime, one file at a time,
   and `searchPassages` (BM25, passages far behind the best one dropped, at
-  most three per document).
+  most three per document). Search also checks filenames and granted-folder
+  relative paths, without reindexing. `listDocuments` pages authenticated
+  file metadata under `/local_documents/files`.
 - Storage: `document_folders`, `documents`, and the FTS5 table
   `document_chunks` (`unicode61 remove_diacritics 2`, so "delai" finds
-  "délai"). A scanned PDF ends up `status = "empty"`: there is no OCR yet.
+  "délai"). Scans use the configured OCR helper when available; files with
+  no extractable text end up `status = "empty"`.
 - `/queries` numbers the passages on the last user message, tells the model
   in the system prompt to cite them as [1], [2] and to say when they do not
   contain the answer, returns them as `sources` in the `final` event and
