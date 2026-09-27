@@ -121,6 +121,21 @@ The user grants folders; the server indexes what is under them and
   Google Drive browser on the managed backend. `/capabilities` reports
   `has_document_index`.
 
+### Per-turn document access
+
+`/queries` accepts `document_access` (object in JSON, JSON string in multipart):
+`{mode: "off"|"all"|"selected"|"only", folderIds?: string[]}`. Missing preserves
+legacy all-folder access; invalid values are 422. Empty/unknown/revoked scopes
+retrieve nothing. The Desktop remembers this per local conversation. `only`
+turns suppress memories and instruct document-grounded answers; Desktop also
+disables web research. Previously shared history is not erased.
+
+`documents/retrieval.ts` provides file modification metadata and rereads a
+single explicitly referenced file for follow-up summaries. Source IDs from
+history are revalidated against current grants and scope. Multiple variants
+are not arbitrarily reduced to one file. Modification dates do not establish
+the document's authored date. Summaries may use partial coverage (six chunks).
+
 ## Outbound calls and local-only mode
 
 Never call `fetch` directly in `src/`. Every outbound HTTP call goes through

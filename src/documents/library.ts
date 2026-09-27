@@ -283,7 +283,9 @@ export interface Passage {
 const MAX_PASSAGES_PER_DOCUMENT = 3;
 
 /// Best passages for a question, best first (see selectPassages).
-export function searchPassages(userId: string, question: string, limit = 6): Passage[] {
+export function searchPassages(userId: string, question: string, limit = 6, folderIds?: string[]): Passage[] {
+  if (folderIds?.length === 0) return [];
+  const scope = folderIds ? ` AND d.folder_id IN (${folderIds.map(() => "?").join(",")})` : "";
   const match = buildMatchQuery(question);
   if (!match) return [];
 
@@ -296,11 +298,11 @@ export function searchPassages(userId: string, question: string, limit = 6): Pas
                 bm25(document_chunks) AS score
            FROM document_chunks c
            JOIN documents d ON d.id = c.document_id
-          WHERE document_chunks MATCH ? AND c.user_id = ?
+          WHERE document_chunks MATCH ? AND c.user_id = ? ${scope}
           ORDER BY score
           LIMIT ?`,
       )
-      .all(match, userId, limit * 4) as Array<Passage & { score: number }>;
+      .all(match, userId, ...(folderIds ?? []), limit * 4) as Array<Passage & { score: number }>;
   } catch {
     return []; // a malformed MATCH expression must not break a chat turn
   }
@@ -310,7 +312,7 @@ export function searchPassages(userId: string, question: string, limit = 6): Pas
   // Only granted-folder-relative paths count, never the user's home path.
   const candidates = sqlite.prepare(`SELECT d.id, d.name, d.path, f.path AS folder_path
     FROM documents d JOIN document_folders f ON f.id = d.folder_id AND f.user_id = d.user_id
-    WHERE d.user_id = ? AND d.status = 'indexed'`).all(userId) as Array<{ id: string; name: string; path: string; folder_path: string }>;
+    WHERE d.user_id = ? AND d.status = 'indexed' ${scope}`).all(userId, ...(folderIds ?? [])) as Array<{ id: string; name: string; path: string; folder_path: string }>;
   const named = candidates.map((doc) => ({ ...doc, score: metadataScore(doc.name, join(basename(doc.folder_path), relative(doc.folder_path, doc.path)), terms) }))
     .filter((doc) => doc.score > 0).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)).slice(0, limit);
   const names: Passage[] = [];

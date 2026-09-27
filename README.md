@@ -343,3 +343,9 @@ authentication and lose access when the folder grant is revoked. `/queries`
 receives a bounded list of the caller's granted folders and index counts so
 it can explain its actual document access. This is the local server's library;
 it is not the managed API's synced-chat document source.
+
+Document Q&A accepts per-turn `document_access` on `/queries`: `off`, `all`,
+`selected` with `folderIds`, or `only` (optionally scoped). JSON requests use
+an object; multipart uses a JSON string. Invalid policy returns 422; revoked
+grants never supply new passages. File modification metadata and single-file
+follow-up retrieval support document selection and summaries.

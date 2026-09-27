@@ -339,6 +339,21 @@ try {
       await sseQuery(token, { content: "À quels dossiers as-tu accès ?" });
       if (!fakeLlm.requests.at(-1).messages.at(-1).content.includes("smoke-docs-CV-")) throw new Error("Smoke test failed: granted folder list missing from model context");
 
+      for (const access of [{mode:"off"}, {mode:"selected",folderIds:[]}, {mode:"selected",folderIds:["not-granted"]}]) {
+        const turn = await sseQuery(token, {content:"Résume CV_Jimmy.txt", document_access:access});
+        const prompt = fakeLlm.requests.at(-1).messages.at(-1).content;
+        if (turn.final.sources?.length || prompt.includes("Parcours professionnel") || prompt.includes("[Local document library")) throw new Error("Smoke test failed: document access scope leaked");
+      }
+      const cvTurn = await sseQuery(token, {content:"Lis CV_Jimmy.txt", document_access:{mode:"selected",folderIds:[folders.folders[0].id]}});
+      if (!cvTurn.final.sources?.some(s=>s.name==="CV_Jimmy.txt")) throw new Error("Smoke test failed: selected file read");
+      await sseQuery(token, {content:"Tu peux me le résumer ?",discussion_id:cvTurn.final.discussion_id});
+      const follow = fakeLlm.requests.at(-1).messages.at(-1).content;
+      if (!follow.includes("Parcours professionnel") || !follow.includes("modified_at")) throw new Error("Smoke test failed: referenced file or dates lost");
+      await sseQuery(token, {content:"Lequel est le plus récent parmi mes CVs ?"});
+      if (!fakeLlm.requests.at(-1).messages.at(-1).content.includes("CV_Jimmy.txt")) throw new Error("Smoke test failed: plural CV metadata retrieval");
+      await sseQuery(token, {content:"Résume CV_Jimmy.txt",document_access:{mode:"only"}});
+      if (!fakeLlm.requests.at(-1).messages.at(-1).content.includes("[Document-only mode]")) throw new Error("Smoke test failed: document-only policy missing");
+
       const documentTurn = await sseQuery(token, { content: "Quel est le préavis de résiliation du contrat ?" });
       const lastMessage = fakeLlm.requests[fakeLlm.requests.length - 1].messages.at(-1).content;
       if (!lastMessage.includes("[Excerpts from the user's documents]") || !lastMessage.includes("préavis de six mois")) {

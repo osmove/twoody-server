@@ -1,3 +1,5 @@
+import { retrieveDocuments } from "../documents/retrieval.js";
+import { documentAccess } from "../documents/access.js";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { requireAuth, generateId, PLACEHOLDER_USER_NAME } from "../auth.js";
 import { db, providers, discussions, messages, memories, users } from "../db.js";
@@ -20,6 +22,7 @@ import { probeRuntime } from "../localRuntime.js";
 import { discussionTitle, typedText } from "../documentBlocks.js";
 
 interface QueryBody {
+  document_access?: unknown;
   content?: string;
   text?: string;
   channel?: string;
@@ -229,6 +232,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     ? (await parseMultipartBody(req)) ?? {}
     : ((req.body as QueryBody) ?? {});
 
+  let access;
+  try { access = documentAccess(parsed.document_access); }
+  catch { return reply.code(422).send({ error: "invalid_document_access" }); }
   const audioBuffer = parsed.audioBuffer ?? null;
   const skipTranscription = readBool(parsed.skip_transcription, false);
 
@@ -366,7 +372,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // resolve the [1], [2]… the reply cites.
     // What was typed is the question; the documents joined to it are
     // already in front of the model.
-    const passages = searchPassages(auth.userId, typedText(content));
+    const allowedFolders = listFolders(auth.userId).filter(folder => access.mode !== "off" && (!access.folderIds || access.folderIds.includes(folder.id)));
+    const retrieved = retrieveDocuments(auth.userId, typedText(content), history, allowedFolders.map(folder => folder.id));
+    const passages = retrieved.passages;
     const sources = passages.map((passage, index) => ({
       n: index + 1,
       document_id: passage.document_id,
@@ -375,15 +383,19 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       page: passage.page,
       snippet: passage.snippet,
     }));
-    const documentFolders = listFolders(auth.userId);
+    const documentFolders = allowedFolders;
     const chatMessages = buildChatMessages({
       ...userContext,
+      documentMode: access.mode,
+      ...(access.mode === "only" ? { memories: [], prefs: {}, } : {}),
       history,
       content,
       summary: compacted.summary,
       contextWindow: readWindow(parsed.context_window),
       hasDocuments: documentFolders.length > 0,
       documentFolders,
+      documentFiles: retrieved.files,
+      documentFileTotal: retrieved.total,
       excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text })),
       local: provider.kind === "local_openai",
     });
@@ -560,6 +572,7 @@ async function parseMultipartBody(req: FastifyRequest): Promise<ParsedBody | nul
   // handler's flat reads work uniformly.
   const nested = (fields.query ?? {}) as Record<string, unknown>;
   return {
+    document_access: nested.document_access ?? fields.document_access,
     text:               (nested.text as string) ?? (fields.text as string),
     content:            (nested.content as string) ?? (fields.content as string),
     channel:            (nested.channel as string) ?? (fields.channel as string),
@@ -1127,7 +1140,7 @@ function loadHistory(discussionId: string, after: string | null = null): History
   // its timestamp with the prompt. `rowid` keeps insertion order. A
   // compaction's summary stands for the messages up to `after`.
   const rows = db
-    .select({ role: messages.role, content: messages.content })
+    .select({ role: messages.role, content: messages.content, sourcesJson: messages.sourcesJson })
     .from(messages)
     .where(
       after
