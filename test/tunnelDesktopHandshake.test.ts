@@ -134,9 +134,12 @@ test("the desktop's server waits at the relay with credentials it was handed, an
     // And from then on it waits at the relay — there only, with the
     // credentials it was handed.
     await until(() => relay.hits.length >= 1, "the first wait at the relay");
+    // First a ticket for the relay's socket (none here: this stand-in has
+    // no socket), then the waits.
+    await until(() => relay.hits.some((hit) => hit.method === "GET"), "the first wait at the relay");
     for (const hit of relay.hits) {
-      assert.equal(hit.method, "GET");
-      assert.match(hit.path, /^\/api\/v1\/tunnel\/frames\?rendezvous=[0-9a-f]{32}&as=host&wait=(1|25)$/);
+      if (hit.method === "POST") assert.equal(hit.path, "/api/v1/cable/tickets");
+      else assert.match(hit.path, /^\/api\/v1\/tunnel\/frames\?rendezvous=[0-9a-f]{32}&as=host&wait=(1|25)$/);
       assert.equal(hit.token, "jeton-du-compte");
       assert.equal(hit.device, "cet-ordinateur");
       // So a refused session comes back as a 401, not a sign-in page.

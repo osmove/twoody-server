@@ -160,21 +160,22 @@ test("the door never opens over cleartext to the internet", async () => {
   assert.deepEqual(lines(), ["GET http://192.168.1.50:3000/api/v1/tunnel/frames"]);
 });
 
-test("a tunnel started in local-only mode sends nothing but its frames endpoint, and the token only there", async () => {
+test("a tunnel started in local-only mode sends nothing but its relay endpoints, and the token only there", async () => {
   await pairAPhone("a1".repeat(32));
   recordTheNetwork();
   // No fetch handed in: this is the path the real server takes.
   const service = startTunnelService({ backendUrl: RELAY, userToken: "jeton-du-compte", localBaseUrl: "http://127.0.0.1:1" });
   try {
     assert.equal(service.links.length, 1);
-    await until(() => seen.length >= 2, "the tunnel to wait at the relay");
+    await until(() => seen.filter(({ line }) => line.startsWith("GET")).length >= 2, "the tunnel to wait at the relay");
   } finally {
     service.stop();
   }
   for (const { line, token } of seen) {
     // A first short wait to learn at once whether the relay answers, then
     // the long ones.
-    assert.match(line, /^GET https:\/\/relay\.twoody\.invalid\/api\/v1\/tunnel\/frames\?rendezvous=[0-9a-f]{32}&as=host&wait=(1|25)$/);
+    // Or the single-use ticket for the relay's socket (tunnel/cableLink.ts).
+    assert.match(line, /^(GET https:\/\/relay\.twoody\.invalid\/api\/v1\/tunnel\/frames\?rendezvous=[0-9a-f]{32}&as=host&wait=(1|25)|POST https:\/\/relay\.twoody\.invalid\/api\/v1\/cable\/tickets)$/);
     assert.equal(token, "jeton-du-compte");
   }
 });

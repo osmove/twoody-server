@@ -11,6 +11,7 @@
 // against, with the network in between.
 
 import { outboundFetch } from "../outbound.js";
+import { createCableLink, type CableLink } from "./cableLink.js";
 
 export interface RelayTransportOptions {
   /// Where the relay answers, e.g. https://api.twoody.com.
@@ -35,6 +36,10 @@ export interface RelayTransportOptions {
   onRelayState?(state: RelayState): void;
   fetchImpl?: typeof fetch;
   waitSeconds?: number;
+  /// The relay over a WebSocket first (cableLink.ts), the HTTP poll when
+  /// the socket cannot be had. Off in tests that drive the poll.
+  cable?: boolean;
+  WebSocketImpl?: typeof WebSocket;
 }
 
 export type RelayState = "answering" | "unreachable" | "refused";
@@ -57,6 +62,9 @@ const BACKOFF_MAX_MS = 15_000;
 /// Long enough to gather a burst of chunks into one POST, short enough
 /// not to be felt in a conversation.
 const SEND_BATCH_MS = 20;
+/// How long before trying the socket again once it closed; the poll
+/// carries the frames meanwhile.
+const CABLE_RETRY_MS = 5_000;
 
 export function createRelayTransport(options: RelayTransportOptions): RelayTransport {
   // Through the gate, so a server started in local-only mode refuses
@@ -97,12 +105,60 @@ export function createRelayTransport(options: RelayTransportOptions): RelayTrans
     options.onPeerChanged?.(next);
   }
 
+  // The socket when it is open, the poll otherwise — never both reading,
+  // or each would take the other's frames (the backend hands an end's
+  // frames to its newest reader).
+  let cable: CableLink | null = null;
+  let polling = false;
+
+  function openCable(): void {
+    if (stopped || options.cable === false) return;
+    const link = createCableLink({
+      base,
+      headers,
+      rendezvous: options.rendezvous,
+      as: options.as,
+      fetchImpl,
+      WebSocketImpl: options.WebSocketImpl,
+      onFrames: async (frames) => {
+        noteRelay("answering");
+        if (!stopped) await options.onFrames(frames.map((frame) => Buffer.from(frame, "base64")));
+      },
+      onPeer: notePeer,
+      onClosed: () => {
+        if (cable === link) cable = null;
+        if (stopped) return;
+        if (!polling) void poll();
+        setTimeout(openCable, CABLE_RETRY_MS).unref?.();
+      },
+    });
+    cable = link;
+    void link.ready.then((ok) => {
+      if (stopped) return;
+      if (ok) {
+        noteRelay("answering");
+        return;
+      }
+      if (cable === link) cable = null;
+      if (!polling) void poll();
+    });
+  }
+
   async function poll(): Promise<void> {
+    polling = true;
+    try {
+      await pollLoop();
+    } finally {
+      polling = false;
+    }
+  }
+
+  async function pollLoop(): Promise<void> {
     let backoff = BACKOFF_MIN_MS;
     // The first wait is short: whether the relay answers at all should be
     // known in a second, not after a whole long poll with nothing in it.
     let wait = Math.min(1, waitSeconds);
-    while (!stopped) {
+    while (!stopped && !cable?.open) {
       try {
         const url = new URL(`${base}/api/v1/tunnel/frames`);
         url.searchParams.set("rendezvous", options.rendezvous);
@@ -138,6 +194,7 @@ export function createRelayTransport(options: RelayTransportOptions): RelayTrans
   async function flush(): Promise<void> {
     while (pending.length > 0 && !stopped) {
       const batch = pending.splice(0, 64);
+      if (cable?.open && cable.push(batch.map((frame) => frame.toString("base64")))) continue;
       const response = await fetchImpl(`${base}/api/v1/tunnel/frames`, {
         method: "POST",
         headers: headers(),
@@ -160,7 +217,8 @@ export function createRelayTransport(options: RelayTransportOptions): RelayTrans
     }
   }
 
-  void poll();
+  if (options.cable === false || !(options.WebSocketImpl ?? globalThis.WebSocket)) void poll();
+  else openCable();
 
   return {
     get peerListening() {
@@ -188,6 +246,7 @@ export function createRelayTransport(options: RelayTransportOptions): RelayTrans
       if (stopped) return;
       stopped = true;
       if (flushTimer) clearTimeout(flushTimer);
+      cable?.close();
       inFlight.abort();
       pending = [];
     },
