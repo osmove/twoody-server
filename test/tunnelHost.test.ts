@@ -164,6 +164,39 @@ test("a request carries its method and its body", async (t) => {
   assert.equal(body, 'POST /echo?a=1 {"message":"bonjour"}');
 });
 
+test("a large body sent in pieces through the relay is served whole", async (t) => {
+  const server = await localServer();
+  t.after(() => server.close());
+  const side = phoneSide(server.url);
+  t.after(() => side.host.close());
+
+  // A voice message is often more than a relay frame holds (~96 KB).
+  const audio = Buffer.alloc(200 * 1024, "a");
+  await side.request({ t: "req", id: 9, method: "POST", path: "/echo", headers: { "content-type": "text/plain" }, streamed: true });
+  for (let at = 0; at < audio.length; at += 48 * 1024) await side.request({ t: "chunk", id: 9 }, audio.subarray(at, at + 48 * 1024));
+  assert.equal(side.frames(9).length, 0, "nothing is served before the end");
+  await side.request({ t: "end", id: 9 });
+
+  const frames = side.frames(9);
+  assert.equal((frames[0].message as { status: number }).status, 201);
+  const body = Buffer.concat(frames.filter((f) => f.message.t === "chunk").map((f) => f.body)).toString();
+  assert.equal(body, `POST /echo ${audio.toString()}`);
+  assert.equal(side.errors.length, 0);
+});
+
+test("pieces of no request in progress are refused, not served", async (t) => {
+  const server = await localServer();
+  t.after(() => server.close());
+  const side = phoneSide(server.url);
+  t.after(() => side.host.close());
+
+  await side.request({ t: "chunk", id: 4 }, Buffer.from("stray"));
+  await side.request({ t: "end", id: 4 });
+  assert.equal(side.frames(4).length, 0);
+  assert.equal(side.errors.length, 2);
+  assert.equal(server.seen.length, 0);
+});
+
 test("a streamed answer arrives in pieces, as it is written", async (t) => {
   const server = await localServer();
   t.after(() => server.close());

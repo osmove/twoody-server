@@ -75,6 +75,9 @@ export function createTunnelHost(options: TunnelHostOptions): TunnelHost {
   const timeoutMs = options.timeoutMs ?? 30_000;
   const base = new URL(options.localBaseUrl);
   const running = new Map<number, AbortController>();
+  /// Requests whose body is arriving in pieces (`streamed`), until their
+  /// `end`: then they are served like any other.
+  const assembling = new Map<number, { request: Extract<Message, { t: "req" }>; pieces: Buffer[]; size: number; timer: NodeJS.Timeout }>();
   let closed = false;
 
   async function seal(message: Message, body?: Buffer): Promise<void> {
@@ -202,8 +205,50 @@ export function createTunnelHost(options: TunnelHostOptions): TunnelHost {
 
       switch (message.t) {
         case "req":
+          if (message.streamed) {
+            if (running.has(message.id) || assembling.has(message.id)) {
+              await seal({ t: "err", id: message.id, message: "a request with this id is already running" });
+              return true;
+            }
+            // A body that stops arriving is given up on, like a request
+            // that takes too long.
+            const timer = setTimeout(() => {
+              assembling.delete(message.id);
+              void seal({ t: "err", id: message.id, message: "the rest of the request never came" }).catch(() => {});
+            }, timeoutMs);
+            timer.unref?.();
+            assembling.set(message.id, { request: message, pieces: [], size: 0, timer });
+            return true;
+          }
           await serve(message, body);
           return true;
+        case "chunk": {
+          const pending = assembling.get(message.id);
+          if (!pending) {
+            options.onError?.(new ProtocolError("the phone sent a chunk of no request in progress"));
+            return true;
+          }
+          pending.size += body.length;
+          if (pending.size > MAX_BODY_BYTES) {
+            clearTimeout(pending.timer);
+            assembling.delete(message.id);
+            await seal({ t: "err", id: message.id, message: "the request is too large" });
+            return true;
+          }
+          pending.pieces.push(Buffer.from(body));
+          return true;
+        }
+        case "end": {
+          const pending = assembling.get(message.id);
+          if (!pending) {
+            options.onError?.(new ProtocolError("the phone ended no request in progress"));
+            return true;
+          }
+          clearTimeout(pending.timer);
+          assembling.delete(message.id);
+          await serve(pending.request, Buffer.concat(pending.pieces));
+          return true;
+        }
         case "abort":
           running.get(message.id)?.abort();
           return true;
@@ -221,6 +266,8 @@ export function createTunnelHost(options: TunnelHostOptions): TunnelHost {
       closed = true;
       for (const controller of running.values()) controller.abort();
       running.clear();
+      for (const pending of assembling.values()) clearTimeout(pending.timer);
+      assembling.clear();
     },
   };
 }

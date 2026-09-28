@@ -99,6 +99,10 @@ export async function outboundFetch(url: string | URL | Request, init?: RequestI
 /// The only path the tunnel's transport asks of the relay
 /// (relayTransport.ts), under the relay's own base path.
 export const RELAY_FRAMES_PATH = "/api/v1/tunnel/frames";
+/// And, for the relay over a WebSocket (tunnel/cableLink.ts): the
+/// single-use ticket the socket is opened with, and the socket itself.
+export const RELAY_TICKETS_PATH = "/api/v1/cable/tickets";
+export const RELAY_SOCKET_PATH = "/cable";
 
 export class RelayRefusedError extends Error {
   constructor(reason: string) {
@@ -111,7 +115,8 @@ export class RelayRefusedError extends Error {
 /// door, everything else through `outboundFetch` as usual.
 export function relayFetch(relayUrl: string | URL): typeof fetch {
   const relay = new URL(relayUrl);
-  const framesPath = `${relay.pathname.replace(/\/+$/, "")}${RELAY_FRAMES_PATH}`;
+  const root = relay.pathname.replace(/\/+$/, "");
+  const doors = new Set([`${root}${RELAY_FRAMES_PATH}`, `${root}${RELAY_TICKETS_PATH}`]);
 
   return (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     let target: URL | null = null;
@@ -124,7 +129,7 @@ export function relayFetch(relayUrl: string | URL): typeof fetch {
     // The parser has already resolved "..", "%2e%2e" and the like, so
     // an exact comparison is a comparison of where the request really
     // goes, not of how it was spelled.
-    if (target && target.origin === relay.origin && target.pathname === framesPath) {
+    if (target && target.origin === relay.origin && doors.has(target.pathname)) {
       if (target.protocol !== "https:" && !(await isPrivateUrl(target))) {
         throw new RelayRefusedError(`${target.host} is outside the private network and not reached over HTTPS`);
       }
@@ -136,4 +141,16 @@ export function relayFetch(relayUrl: string | URL): typeof fetch {
     }
     return outboundFetch(input, init);
   }) as typeof fetch;
+}
+
+/// The relay's WebSocket for `ticket`, or null where the door stays shut:
+/// same origin as the relay, and over TLS unless the relay is on the
+/// private network — as for its frames.
+export async function relaySocketUrl(relayUrl: string | URL, ticket: string): Promise<URL | null> {
+  const relay = new URL(relayUrl);
+  if (relay.protocol !== "https:" && !(await isPrivateUrl(relay))) return null;
+  const socket = new URL(`${relay.pathname.replace(/\/+$/, "")}${RELAY_SOCKET_PATH}`, relay);
+  socket.protocol = relay.protocol === "https:" ? "wss:" : "ws:";
+  socket.searchParams.set("ticket", ticket);
+  return socket;
 }

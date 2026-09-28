@@ -27,6 +27,10 @@ export interface RequestMessage {
   /// decides which server it points at.
   path: string;
   headers: Record<string, string>;
+  /// The body follows in `chunk`s and an `end` of the same id, rather than
+  /// in this frame: through the relay, whose frames hold about 96 KB, a
+  /// voice message is often larger (the phone's STREAM_BODY_BYTES).
+  streamed?: boolean;
 }
 
 export interface ResponseMessage {
@@ -116,7 +120,7 @@ function asMessage(value: unknown): Message {
       const id = asId(record.id);
       if (typeof record.method !== "string" || !/^[A-Z]{3,7}$/.test(record.method)) throw new ProtocolError("request method is not a method");
       if (typeof record.path !== "string" || !record.path.startsWith("/")) throw new ProtocolError("request path must start with /");
-      return { t: "req", id, method: record.method, path: record.path, headers: asHeaders(record.headers) };
+      return { t: "req", id, method: record.method, path: record.path, headers: asHeaders(record.headers), ...(record.streamed === true ? { streamed: true } : {}) };
     }
     case "res": {
       const id = asId(record.id);
