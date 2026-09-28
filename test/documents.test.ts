@@ -146,3 +146,19 @@ test("small talk asks nothing of the documents: greetings, thanks and politeness
     assert.equal(smallTalk(text), false, text);
   }
 });
+
+test("a greeting is sent as it is: no note about documents or folders for a small model to answer instead", () => {
+  const folders = [{ name: "Documents de Jimmy", indexed: 3, without_text: 0, failed: 0 }];
+  for (const documentMode of ["off", "all"] as const) {
+    const messages = buildChatMessages({ userName: "Jimmy", prefs: {}, history: [], memories: [], content: "ca va?", local: true, documentMode, documentFolders: folders });
+    const last = messages.at(-1)!;
+    assert.equal(last.content, "ca va?", documentMode);
+  }
+  // A real question keeps what it needs; « off » is said only once excerpts were shared.
+  const asked = buildChatMessages({ userName: null, prefs: {}, history: [], memories: [], content: "quel est le loyer ?", local: true, documentMode: "all", documentFolders: folders });
+  assert.match(asked.at(-1)!.content, /Local document library/);
+  const offFresh = buildChatMessages({ userName: null, prefs: {}, history: [], memories: [], content: "quel est le loyer ?", local: true, documentMode: "off" });
+  assert.doesNotMatch(offFresh.at(-1)!.content, /Document access disabled/);
+  const offAfter = buildChatMessages({ userName: null, prefs: {}, history: [{ role: "user", content: "le loyer ?" }, { role: "assistant", content: "1234 euros [1]." }], memories: [], content: "et le préavis ?", local: true, documentMode: "off" });
+  assert.match(offAfter.at(-1)!.content, /Document access disabled/);
+});
