@@ -235,7 +235,7 @@ const VAULT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
 // again adds only what is new. Only for the signed-in owner of this
 // server — nothing here comes from or goes to the account.
 async function importDiscussion(app: FastifyInstance) {
-  app.post<{ Body: { vault_id: string; title?: string; turns: Array<{ ref: string; text: string; reply: string; model?: string | null; created_at?: string }> } }>("/discussions/import", {
+  app.post<{ Body: { vault_id: string; discussion_id?: string; title?: string; turns: Array<{ ref: string; text: string; reply: string; model?: string | null; created_at?: string }> } }>("/discussions/import", {
     schema: {
       tags: ["session"],
       summary: "Create or extend a conversation from its decrypted exchanges",
@@ -245,6 +245,9 @@ async function importDiscussion(app: FastifyInstance) {
         required: ["vault_id", "turns"],
         properties: {
           vault_id: { type: "string", maxLength: 36 },
+          // A conversation already here that starts being synchronised:
+          // it takes the vault id, so later imports extend it.
+          discussion_id: { type: "string", maxLength: 100 },
           title: { type: "string", maxLength: 200 },
           turns: {
             type: "array", maxItems: 500,
@@ -269,7 +272,15 @@ async function importDiscussion(app: FastifyInstance) {
       if (!VAULT_ID.test(vaultId)) return reply.code(422).send({ error: "invalid_vault_id" });
 
       const run = sqlite.transaction(() => {
-        const found = sqlite.prepare("SELECT id FROM discussions WHERE user_id = ? AND vault_id = ?").get(auth.userId, vaultId) as { id: string } | undefined;
+        let found = sqlite.prepare("SELECT id FROM discussions WHERE user_id = ? AND vault_id = ?").get(auth.userId, vaultId) as { id: string } | undefined;
+        if (found && req.body.discussion_id && found.id !== req.body.discussion_id) return { error: "already_synchronised" as const };
+        if (!found && req.body.discussion_id) {
+          const own = sqlite.prepare("SELECT id, vault_id FROM discussions WHERE user_id = ? AND id = ?").get(auth.userId, req.body.discussion_id) as { id: string; vault_id: string | null } | undefined;
+          if (!own) return { error: "unknown_discussion" as const };
+          if (own.vault_id && own.vault_id !== vaultId) return { error: "already_synchronised" as const };
+          sqlite.prepare("UPDATE discussions SET vault_id = ? WHERE id = ?").run(vaultId, own.id);
+          found = { id: own.id };
+        }
         const nowSeconds = Math.floor(Date.now() / 1000);
         const id = found?.id ?? generateId();
         if (!found) {
@@ -296,6 +307,7 @@ async function importDiscussion(app: FastifyInstance) {
         return { id, added, created: !found };
       });
       const result = run();
+      if ("error" in result) return reply.code(result.error === "unknown_discussion" ? 404 : 409).send({ error: result.error });
       if (result.created) publishEvent({ kind: "discussion.created", userId: auth.userId, discussionId: result.id, title: req.body.title ?? null });
       else if (result.added > 0) publishEvent({ kind: "discussion.touched", userId: auth.userId, discussionId: result.id, lastActivityAt: new Date().toISOString() });
       reply.send({ discussion_id: result.id, added: result.added, created: result.created });

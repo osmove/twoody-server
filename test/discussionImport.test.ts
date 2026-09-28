@@ -66,3 +66,16 @@ test("an exchange answered here and synced back is not added twice", async () =>
   assert.equal(back.json().added, 0);
   assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM messages WHERE discussion_id = ?").get(id) as { n: number }).n, 6);
 });
+
+test("a conversation already here takes a vault id once, and later imports extend it", async () => {
+  const local = sqlite.prepare("INSERT INTO discussions (id, user_id, channel, title, created_at, last_activity_at) VALUES ('local-1', ?, 'desktop', 'Ici', 1, 1)");
+  local.run(owner);
+  const otherVault = "7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+  const attach = await app.inject({ method: "POST", url: "/discussions/import", headers, payload: { vault_id: otherVault, discussion_id: "local-1", turns: [] } });
+  assert.deepEqual([attach.statusCode, attach.json().discussion_id, attach.json().created], [200, "local-1", false]);
+  const extend = await app.inject({ method: "POST", url: "/discussions/import", headers, payload: { vault_id: otherVault, turns: [turn("p1", "Depuis l'iPhone", "ok", "2026-09-28T12:00:00Z")] } });
+  assert.equal(extend.json().discussion_id, "local-1");
+  const again = await app.inject({ method: "POST", url: "/discussions/import", headers, payload: { vault_id: vaultId, discussion_id: "local-1", turns: [] } });
+  assert.equal(again.statusCode, 409, "a conversation mirrors one encrypted conversation only");
+  assert.equal((await app.inject({ method: "POST", url: "/discussions/import", headers, payload: { vault_id: "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", discussion_id: "nope", turns: [] } })).statusCode, 404);
+});
