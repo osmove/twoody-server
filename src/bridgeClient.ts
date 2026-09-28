@@ -428,10 +428,10 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
 
   async function runTask(task: Task): Promise<unknown> {
     // Another person's turn on this computer (a compute grant on the
-    // account): inference and nothing else, whatever the task says.
+    // account): a sealed completion and nothing else, whatever the task says.
     if (isSharedTask(task)) {
-      if (isSealedTurn(task.args)) return runSealedInference(task);
-      return runStreamedInference({ ...task, args: sharedInferenceArgs(task) });
+      assertSealedSharedTask(task);
+      return runSealedInference(task);
     }
     switch (task.kind) {
       case "smart_home_proxy":
@@ -644,20 +644,12 @@ export function isSharedTask(task: { args?: Record<string, unknown> }): boolean 
   return principal?.kind === "shared";
 }
 
-/// The only thing another person's turn may do here: a completion, without
-/// tools (a tool would act on this computer or its owner's data) and
-/// without the account's routing details. Anything else is refused.
-export function sharedInferenceArgs(task: { kind: string; args: Record<string, unknown> }): Record<string, unknown> {
-  if (task.kind !== "llm_infer") throw new Error("shared_task_refused");
-  let body: Record<string, unknown>;
-  try {
-    body = JSON.parse(String(task.args.openai_body_json ?? ""));
-  } catch {
-    throw new Error("shared_task_refused");
-  }
-  if (!body || typeof body !== "object" || !Array.isArray(body.messages)) throw new Error("shared_task_refused");
-  const { tools: _tools, tool_choice: _choice, functions: _functions, function_call: _call, ...rest } = body;
-  return { openai_body_json: JSON.stringify(rest) };
+/// The only thing another person's turn may do here: a completion sealed
+/// end to end on their device, run without tools (computeHost's
+/// bareCompletion). Anything else — another kind of task, or a question
+/// in clear from an app too old to seal it — is refused.
+export function assertSealedSharedTask(task: { kind: string; args: Record<string, unknown> }): void {
+  if (task.kind !== "llm_infer" || !isSealedTurn(task.args)) throw new Error("shared_task_refused");
 }
 
 function argsPreview(args: Record<string, unknown>): string {
