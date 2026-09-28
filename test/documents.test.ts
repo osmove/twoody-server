@@ -158,7 +158,7 @@ test("a greeting is sent as it is: no note about documents or folders for a smal
   const asked = buildChatMessages({ userName: null, prefs: {}, history: [], memories: [], content: "quel est le loyer ?", local: true, documentMode: "all", documentFolders: folders });
   assert.match(asked.at(-1)!.content, /Local document library/);
   const offFresh = buildChatMessages({ userName: null, prefs: {}, history: [], memories: [], content: "quel est le loyer ?", local: true, documentMode: "off" });
-  assert.doesNotMatch(offFresh.at(-1)!.content, /Document access disabled/);
+  assert.doesNotMatch(offFresh.at(-1)!.content, /switched off/);
   const offAfter = buildChatMessages({ userName: null, prefs: {}, history: [{ role: "user", content: "le loyer ?" }, { role: "assistant", content: "1234 euros [1]." }], memories: [], content: "et le préavis ?", local: true, documentMode: "off" });
-  assert.match(offAfter.at(-1)!.content, /Document access disabled/);
+  assert.match(offAfter.at(-1)!.content, /switched off/);
 });
