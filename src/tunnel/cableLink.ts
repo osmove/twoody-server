@@ -73,7 +73,10 @@ export function createCableLink(options: CableLinkOptions): CableLink {
     if (!ticket || closed) return end();
     const url = await relaySocketUrl(options.base, ticket);
     if (!url || closed) return end();
-    const current = new WebSocketImpl(url);
+    // The backend takes a socket only from its own origins (Action Cable's
+    // request forgery check); a browser says its page's, Node says none,
+    // so this end says the relay's own.
+    const current = new (WebSocketImpl as unknown as new (url: URL, init: { headers: Record<string, string> }) => WebSocket)(url, { headers: { origin: new URL(options.base).origin } });
     socket = current;
     const timer = setTimeout(end, SUBSCRIBE_TIMEOUT_MS);
     timer.unref?.();
