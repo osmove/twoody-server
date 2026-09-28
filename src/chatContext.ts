@@ -66,6 +66,9 @@ export interface ChatContextInput {
   /// turn must not tell the model that nothing leaves the computer.
   local: boolean;
   now?: Date;
+  /// What this message asked to be remembered, already kept in Memories:
+  /// the answer confirms it rather than saying it cannot remember.
+  remembered?: string | null;
 }
 
 export const HISTORY_MAX_MESSAGES = envInt("TWOODY_HISTORY_MAX_MESSAGES", 20);
@@ -230,6 +233,13 @@ function buildSystemPrompt(input: ChatContextInput, usable: MemoryRow[]): string
   );
   if (profile) {
     sections.push(`What the user asked you to remember about them:\n${profile}`);
+  }
+
+  if (input.remembered) {
+    sections.push(
+      `The user's message asks you to remember something; it has just been saved in their Memories on this computer: « ${input.remembered} ». ` +
+        "Confirm it briefly in their language. You do remember things they ask you to, across conversations.",
+    );
   }
 
   return sections.join("\n\n");

@@ -209,3 +209,8 @@ test("documents switched off: a question about them is told they are off and can
   const other = buildChatMessages(input({ documentMode: "off", content: "Quelle est la capitale de l'Italie ?" }));
   assert.doesNotMatch(other[other.length - 1].content, /switched off/);
 });
+
+test("a fact the user asked to remember is confirmed, not denied", () => {
+  const [system] = buildChatMessages(input({ content: "Retiens que je préfère le thé", remembered: "Je préfère le thé" }));
+  assert.match(system.content, /just been saved in their Memories on this computer: « Je préfère le thé »/);
+});

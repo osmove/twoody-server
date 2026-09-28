@@ -1,5 +1,6 @@
 import { relative, isAbsolute } from "node:path";
 import { clientOf } from "./usage.js";
+import { askedToRemember, learnFromMessage, rememberFacts } from "../memoryLearning.js";
 import { retrieveDocuments } from "../documents/retrieval.js";
 import { documentAccess } from "../documents/access.js";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
@@ -378,6 +379,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
     }
     const userContext = loadUserContext(auth.userId);
+    // « Retiens que… »: kept before the answer, so that it can say so.
+    const learning = userContext.prefs.memory_enabled !== false && access.mode !== "only";
+    const remembered = learning ? askedToRemember(typedText(content)) : null;
+    if (remembered) rememberFacts(auth.userId, [remembered], vaultRef ?? null);
     // Passages from the user's own documents that match this prompt.
     // The model sees them numbered; the client gets the same list to
     // resolve the [1], [2]… the reply cites.
@@ -415,6 +420,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       documentFileTotal: retrieved.total,
       excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text })),
       local: provider.kind === "local_openai",
+      remembered,
     });
     // « Répondre maintenant », for this reply.
     const answerNowController = new AbortController();
@@ -513,6 +519,21 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       reasoning_ms: reasoningMs,
     };
     reply.raw.write(`event: final\ndata: ${JSON.stringify(finalPayload)}\n\n`);
+    // What the message said in passing about the person, asked of the model
+    // that answered, now that its answer is written (src/memoryLearning.ts).
+    if (learning && !remembered) {
+      void learnFromMessage({
+        userId: auth.userId,
+        message: typedText(content),
+        sourceRef: discussion.id,
+        ask: async (extraction) => {
+          let text = "";
+          await streamFromProvider(provider, extraction, 0, (delta) => { text += delta; }, AbortSignal.timeout(60_000));
+          // A model that reasons first writes it before the facts.
+          return text.replace(/<think>[\s\S]*?(?:<\/think>|$)/g, "");
+        },
+      }).catch(() => 0);
+    }
   } catch (err) {
     if (upstream.signal.aborted) {
       // Keep what was written: the conversation would otherwise show a
