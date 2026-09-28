@@ -294,8 +294,21 @@ async function importDiscussion(app: FastifyInstance) {
         let added = 0;
         let latest = 0;
         const turns = [...req.body.turns].sort((a, b) => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")));
+        const adopt = sqlite.prepare("SELECT id, rowid AS position FROM messages WHERE discussion_id = ? AND id = ? AND role = 'user' AND vault_ref IS NULL");
+        const replyAfter = sqlite.prepare("SELECT id FROM messages WHERE discussion_id = ? AND role = 'assistant' AND vault_ref IS NULL AND rowid > ? ORDER BY rowid LIMIT 1");
+        const setRef = sqlite.prepare("UPDATE messages SET vault_ref = ? WHERE id = ?");
         for (const turn of turns) {
           if (known.has(turn.ref)) continue;
+          // An exchange already here, now being synchronised (its ref is the
+          // question's message id): it takes the ref instead of a copy.
+          const existing = adopt.get(id, turn.ref) as { id: string; position: number } | undefined;
+          if (existing) {
+            setRef.run(turn.ref, existing.id);
+            const answer = replyAfter.get(id, existing.position) as { id: string } | undefined;
+            if (answer) setRef.run(`${turn.ref}#reply`, answer.id);
+            known.add(turn.ref);
+            continue;
+          }
           const at = Math.floor((Date.parse(turn.created_at ?? "") || Date.now()) / 1000);
           insert.run(generateId(), id, auth.userId, "user", turn.text, null, null, turn.ref, at);
           insert.run(generateId(), id, auth.userId, "assistant", turn.reply, "vault", turn.model ?? null, `${turn.ref}#reply`, at);

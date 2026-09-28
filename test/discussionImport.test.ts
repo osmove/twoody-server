@@ -79,3 +79,16 @@ test("a conversation already here takes a vault id once, and later imports exten
   assert.equal(again.statusCode, 409, "a conversation mirrors one encrypted conversation only");
   assert.equal((await app.inject({ method: "POST", url: "/discussions/import", headers, payload: { vault_id: "8a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", discussion_id: "nope", turns: [] } })).statusCode, 404);
 });
+
+test("an exchange already here, synchronised later, takes its ref instead of a copy", async () => {
+  sqlite.prepare("INSERT INTO discussions (id, user_id, channel, title, created_at, last_activity_at) VALUES ('old-1', ?, 'desktop', 'Ancienne', 1, 1)").run(owner);
+  const insert = sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, created_at) VALUES (?, 'old-1', ?, ?, ?, 1)");
+  insert.run("q-1", owner, "user", "Vieille question"); insert.run("a-1", owner, "assistant", "Vieille réponse");
+  const migrated = "9b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e";
+  const first = await app.inject({ method: "POST", url: "/discussions/import", headers, payload: { vault_id: migrated, discussion_id: "old-1", turns: [turn("q-1", "Vieille question", "Vieille réponse", "2026-01-01T00:00:00Z")] } });
+  assert.deepEqual([first.json().discussion_id, first.json().added], ["old-1", 0]);
+  const again = await app.inject({ method: "POST", url: "/discussions/import", headers, payload: { vault_id: migrated, turns: [turn("q-1", "Vieille question", "Vieille réponse", "2026-01-01T00:00:00Z")] } });
+  assert.equal(again.json().added, 0);
+  assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM messages WHERE discussion_id = 'old-1'").get() as { n: number }).n, 2);
+  assert.deepEqual((sqlite.prepare("SELECT vault_ref FROM messages WHERE discussion_id = 'old-1' ORDER BY rowid").all() as Array<{ vault_ref: string }>).map((r) => r.vault_ref), ["q-1", "q-1#reply"]);
+});
