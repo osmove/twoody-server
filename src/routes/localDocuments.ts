@@ -28,6 +28,14 @@ import {
 // Lives under /local_documents rather than /documents: on the managed
 // backend that path is the Google Drive browser, and one client code
 // base talks to both.
+/// Characters of document context a model with this window can be given:
+/// a third of it, and room left under the 18 000 characters the account
+/// passes on for one turn for the wrapper and the source list.
+export const MAX_SYNCED_CONTEXT_CHARS = 15_000;
+export function contextBudget(window: number): number {
+  return Math.min(MAX_SYNCED_CONTEXT_CHARS, Math.floor(window * 3.5 * 0.35));
+}
+
 export async function localDocumentRoutes(app: FastifyInstance) {
   app.addHook("onClose", async () => stopSemantic());
   const security: Array<Record<string, string[]>> = [{ bearerAuth: [] }, { userTokenAuth: [] }];
@@ -59,10 +67,11 @@ export async function localDocumentRoutes(app: FastifyInstance) {
 
   // A bounded context envelope for clients whose conversation is stored elsewhere.
   // Nothing is sent upstream here. Clients must obtain consent before forwarding it.
-  app.post<{Body: {question: string; document_access: unknown; history?: Array<{role: string; content: string; sourcesJson?: string}>}}>("/local_documents/context", {
+  app.post<{Body: {question: string; document_access: unknown; context_window?: number; history?: Array<{role: string; content: string; sourcesJson?: string}>}}>("/local_documents/context", {
     schema: {tags: ["documents"], summary: "Retrieve scoped context for an external conversation", security,
       body: {type: "object", required: ["question", "document_access"], properties: {
         question: {type: "string", maxLength: 24000}, document_access: {type: "object"},
+        context_window: {type: "integer", minimum: 1024, maximum: 1048576},
         history: {type: "array", maxItems: 20, items: {type: "object", required: ["role", "content"], properties: {
           role: {type: "string", enum: ["user", "assistant"]}, content: {type: "string", maxLength: 16000}, sourcesJson: {type: "string", maxLength: 16000},
         }}},
@@ -79,11 +88,20 @@ export async function localDocumentRoutes(app: FastifyInstance) {
         return path === "" || (!path.startsWith("..") && !isAbsolute(path));
       })));
       const found = await retrieveDocuments(auth.userId, req.body.question, req.body.history ?? [], folders.map(f => f.id));
-      const messages = buildChatMessages({userName: null, content: "", history: [], memories: [], prefs: {}, local: true,
+      // Sized for the model that will read it: a third of its window, at most
+      // what the account gives a turn's documents. The best passages are
+      // kept whole; the sources list only those actually included.
+      const window = req.body.context_window ?? 16384;
+      const budget = contextBudget(window);
+      const build = (count: number) => buildChatMessages({userName: null, content: "", history: [], memories: [], prefs: {}, local: true,
         documentScan: indexStatus(auth.userId), documentMode: access.mode, documentFolders: folders, documentFiles: found.files, documentFileTotal: found.total,
-        excerpts: found.passages.map(p => ({name:p.name,page:p.page,text:p.text})), contextWindow: 16384});
+        excerpts: found.passages.slice(0, count).map(p => ({name:p.name,page:p.page,text:p.text})), contextWindow: window}).at(-1)?.content ?? "";
+      let count = found.passages.length;
+      let context = build(count);
+      while (count > 0 && context.length > budget) context = build(--count);
+      if (context.length > budget) return reply.code(413).send({error: "context_budget", budget});
       // Only document data and grounding policy, never the user's profile/memories or paths.
-      reply.send({context: messages.at(-1)?.content ?? "", sources: found.passages.map((p,i) => ({
+      reply.send({context, budget, omitted_passages: found.passages.length - count, sources: found.passages.slice(0, count).map((p,i) => ({
         n:i+1, document_id:p.document_id, name:p.name, page:p.page, snippet:p.snippet,
       }))});
     },

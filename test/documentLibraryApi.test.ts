@@ -40,6 +40,19 @@ test('context scopes fail closed and document context contains no filesystem pat
  assert.equal(r.statusCode,200);assert.ok(r.json().sources.length);assert.ok(r.json().sources.every((s:any)=>s.document_id==='po'));
  assert.doesNotMatch(r.body,/\/synthetic|Platform_Product_Manager/);assert.match(r.json().context,/NOT a creation date/);
 });
+test('context is sized for the model that reads it, sources match what is included',async()=>{
+ const full=(await app.inject({method:'POST',url:'/local_documents/context',headers,payload:{question:'résume mon CV Product Owner',document_access:{mode:'all'}}})).json();
+ assert.ok(full.context.length<=full.budget);assert.equal(full.budget,15000);
+ const small=await app.inject({method:'POST',url:'/local_documents/context',headers,payload:{question:'résume mon CV Product Owner',document_access:{mode:'all'},context_window:4096}});
+ if(small.statusCode===200){const b=small.json();assert.ok(b.context.length<=b.budget);assert.equal(b.budget,5017);
+  assert.equal(b.sources.length+b.omitted_passages,full.sources.length+full.omitted_passages);
+  for(const s of b.sources)assert.match(b.context,new RegExp(`\\[${s.n}\\]`));}
+ else assert.equal(small.json().error,'context_budget');
+ const tiny=await app.inject({method:'POST',url:'/local_documents/context',headers,payload:{question:'CV',document_access:{mode:'all'},context_window:1024}});
+ assert.ok([200,413].includes(tiny.statusCode));
+ if(tiny.statusCode===413)assert.equal(tiny.json().error,'context_budget');else assert.ok(tiny.json().context.length<=1254);
+ assert.equal((await app.inject({method:'POST',url:'/local_documents/context',headers,payload:{question:'CV',document_access:{mode:'all'},context_window:12}})).statusCode,400);
+});
 test('new variant overrides an earlier assistant filename and pronoun preserves one file',async()=>{
  const found=await retrieveDocuments('owner','résume mon CV Product Owner',[{role:'assistant',content:'CV_Platform_Product_Manager_FR.pdf'}],['folder']);
  assert.deepEqual(found.files.map(f=>f.id),['po']);assert.ok(found.passages.every(p=>p.document_id==='po'));
