@@ -34,6 +34,7 @@ import { taskRoutes } from "./routes/tasks.js";
 import { transcriptionRoutes } from "./routes/transcriptions.js";
 import { voiceRoutes } from "./routes/voices.js";
 import { wsRoutes } from "./routes/ws.js";
+import { tunnelDirectRoutes } from "./routes/tunnelDirect.js";
 import { localDocumentRoutes } from "./routes/localDocuments.js";
 import { requireAdminAccess } from "./adminAccess.js";
 import { requireAuth } from "./auth.js";
@@ -151,6 +152,7 @@ export async function buildApp() {
   await app.register(transcriptionRoutes);
   await app.register(localDocumentRoutes);
   await app.register(wsRoutes);
+  await app.register(tunnelDirectRoutes);
 
   // Versioned aliases for API clients migrating away from root-level
   // Rails-style paths. Health, docs, admin, MCP and WebSocket routes stay

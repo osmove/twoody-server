@@ -87,6 +87,16 @@ export function tunnelPeersFor(userId: string): Array<{ publicKey: Buffer; name:
     .map((row) => ({ publicKey: Buffer.from(row.publicKey, "hex"), name: row.name }));
 }
 
+/// Every device paired with this computer, whoever it belongs to: the
+/// direct tunnel finds a phone by its rendezvous before knowing whose it is.
+export function allTunnelPeers(): Array<{ publicKey: Buffer; userId: string }> {
+  return db
+    .select()
+    .from(tunnelPeers)
+    .all()
+    .map((row) => ({ publicKey: Buffer.from(row.publicKey, "hex"), userId: row.userId }));
+}
+
 /// Undoes a pairing: that device can no longer reach this computer from
 /// outside, whatever it still holds.
 export function forgetTunnelPeer(args: { userId: string; publicKey: Buffer }): void {
