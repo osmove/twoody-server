@@ -28,6 +28,7 @@ import { calendarEventRoutes } from "./routes/calendarEvents.js";
 import { contactRoutes } from "./routes/contacts.js";
 import { discussionRoutes } from "./routes/discussions.js";
 import { memoryRoutes } from "./routes/memories.js";
+import { usageRoutes } from "./routes/usage.js";
 import { noteRoutes } from "./routes/notes.js";
 import { reminderRoutes } from "./routes/reminders.js";
 import { taskRoutes } from "./routes/tasks.js";
@@ -144,6 +145,7 @@ export async function buildApp() {
   await app.register(contactRoutes);
   await app.register(discussionRoutes);
   await app.register(memoryRoutes);
+  await app.register(usageRoutes);
   await app.register(taskRoutes);
   await app.register(reminderRoutes);
   await app.register(noteRoutes);
@@ -176,6 +178,7 @@ export async function buildApp() {
   await app.register(contactRoutes, { prefix: "/api/v1" });
   await app.register(discussionRoutes, { prefix: "/api/v1" });
   await app.register(memoryRoutes, { prefix: "/api/v1" });
+  await app.register(usageRoutes, { prefix: "/api/v1" });
   await app.register(taskRoutes, { prefix: "/api/v1" });
   await app.register(reminderRoutes, { prefix: "/api/v1" });
   await app.register(noteRoutes, { prefix: "/api/v1" });

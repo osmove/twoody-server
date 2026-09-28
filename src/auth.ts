@@ -182,13 +182,14 @@ export async function authenticate(
 export async function requireAuth(
   req: FastifyRequest,
   reply: FastifyReply
-): Promise<{ userId: string } | null> {
+): Promise<{ userId: string; sessionId?: string; deviceId?: string } | null> {
   const auth = await authenticate(req);
   if (!auth) {
     reply.code(401).send({ error: "Unauthorized" });
     return null;
   }
-  return { userId: auth.userId };
+  // Which session or device asked, too: the answers' usage says who.
+  return { userId: auth.userId, sessionId: auth.sessionId, deviceId: auth.deviceId };
 }
 
 export function getActivePairingCode(): string | null {

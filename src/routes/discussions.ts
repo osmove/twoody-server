@@ -176,6 +176,9 @@ export async function discussionRoutes(app: FastifyInstance) {
           sources:    parseSources(row.sourcesJson),
           reasoning:  row.reasoning ?? null,
           reasoning_ms: row.reasoningMs ?? null,
+          prompt_tokens: row.promptTokens ?? null,
+          completion_tokens: row.completionTokens ?? null,
+          tokens_estimated: row.tokensEstimated ?? null,
           created_at: row.createdAt.toISOString(),
         })),
       });

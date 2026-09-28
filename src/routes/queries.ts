@@ -1,4 +1,5 @@
 import { relative, isAbsolute } from "node:path";
+import { clientOf } from "./usage.js";
 import { retrieveDocuments } from "../documents/retrieval.js";
 import { documentAccess } from "../documents/access.js";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
@@ -479,6 +480,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       reasoning:    reasoning.trim() || null,
       reasoningMs,
       vaultRef:     vaultRef ? `${vaultRef}#reply` : null,
+      usage,
+      client:       clientOf(auth),
     });
     touchDiscussion(discussion.id);
     publishEvent({
@@ -1210,6 +1213,8 @@ function insertMessage(args: {
   reasoning?: string | null;
   reasoningMs?: number | null;
   vaultRef?: string | null;
+  usage?: { prompt_tokens: number; completion_tokens: number; estimated?: boolean } | null;
+  client?: string | null;
 }) {
   db.insert(messages)
     .values({
@@ -1224,6 +1229,10 @@ function insertMessage(args: {
       reasoning:    args.reasoning ?? null,
       reasoningMs:  args.reasoningMs ?? null,
       vaultRef:     args.vaultRef ?? null,
+      promptTokens:     args.usage?.prompt_tokens ?? null,
+      completionTokens: args.usage?.completion_tokens ?? null,
+      tokensEstimated:  args.usage ? args.usage.estimated === true : null,
+      client:       args.client ?? null,
       createdAt:    new Date(),
     })
     .run();

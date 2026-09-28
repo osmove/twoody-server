@@ -149,6 +149,13 @@ export const messages = sqliteTable("messages", {
   // The exchange's ref in the encrypted history: an exchange brought from
   // another device is added once, whatever the number of imports.
   vaultRef: text("vault_ref"),
+  // What an answer cost, as the runtime counted it (estimated when it did
+  // not say), and who asked: « iPhone », a device's name, or
+  // « this-computer » — the Devices screen's usage (28/09/2026).
+  promptTokens: integer("prompt_tokens"),
+  completionTokens: integer("completion_tokens"),
+  tokensEstimated: integer("tokens_estimated", { mode: "boolean" }),
+  client: text("client"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
@@ -668,6 +675,9 @@ if (!messageColumns.some((column) => column.name === "reasoning_ms")) {
 }
 if (!messageColumns.some((column) => column.name === "vault_ref")) {
   sqlite.exec("ALTER TABLE messages ADD COLUMN vault_ref TEXT");
+}
+for (const [name, type] of [["prompt_tokens", "INTEGER"], ["completion_tokens", "INTEGER"], ["tokens_estimated", "INTEGER"], ["client", "TEXT"]] as const) {
+  if (!messageColumns.some((column) => column.name === name)) sqlite.exec(`ALTER TABLE messages ADD COLUMN ${name} ${type}`);
 }
 
 const discussionColumns = sqlite.prepare("PRAGMA table_info(discussions)").all() as Array<{
