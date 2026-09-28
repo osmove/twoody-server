@@ -120,3 +120,31 @@ function stem(term: string): string {
 export function metadataScore(name: string, location: string, terms: string[]): number {
   return termsFound(name, terms) * 8 + termsFound(location, terms) * 2;
 }
+
+// Small talk — « salut », « ça va ? », « merci Twoody ! » — asks nothing of
+// the documents: searching them anyway brought passages that matched a
+// stray word, and the answer showed them as sources (28/09/2026). A
+// message is small talk when, once greetings, thanks and politeness are
+// taken out, at most one short word (a name) is left.
+const SMALL_TALK = [
+  "comment ca va", "comment vas-tu", "comment vas tu", "comment allez-vous", "tu vas bien", "vous allez bien", "ca va",
+  "how are you", "how's it going", "good morning", "good evening", "good night", "au revoir", "a plus", "a bientot",
+  "bonne journee", "bonne soiree", "bonne nuit", "thank you", "de rien",
+  "salut", "coucou", "bonjour", "bonsoir", "hello", "hi", "hey", "yo", "merci", "thanks", "ok", "okay", "d'accord",
+  "daccord", "oui", "non", "yes", "no", "super", "cool", "top", "parfait", "genial", "bravo", "bye", "re",
+];
+
+export function smallTalk(text: string): boolean {
+  let rest = ` ${text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[!?.,;:…()"«»]+/g, " ").replace(/\s+/g, " ").trim()} `;
+  if (rest.trim().length === 0 || rest.length > 80) return false;
+  let found = false;
+  for (const phrase of SMALL_TALK) {
+    const pattern = new RegExp(` ${phrase.replace(/[-']/g, "[-' ]?")}(?= )`, "g");
+    if (pattern.test(rest)) {
+      found = true;
+      rest = rest.replace(pattern, " ");
+    }
+  }
+  const left = rest.trim().split(" ").filter(Boolean);
+  return found && (left.length === 0 || (left.length === 1 && left[0].length <= 12));
+}

@@ -1,7 +1,7 @@
 import { semanticPassages } from "./semantic.js";
 import { fusePassages } from "./vectorMath.js";
 import { sqlite } from "../db.js";
-import { queryTerms, metadataScore, termsFound } from "./query.js";
+import { queryTerms, metadataScore, smallTalk, termsFound } from "./query.js";
 import { searchPassages, type Passage } from "./library.js";
 
 interface Turn { role: string; content: string; sourcesJson?: string | null }
@@ -50,6 +50,8 @@ export async function retrieveDocuments(userId: string, question: string, histor
   }
   if (referenced.length) files = referenced;
   const folderInventory = /(?:dossiers?.*(?:accès|acces|access)|(?:accès|acces|access).*dossiers?)/i.test(question);
+  // « Salut », « ça va ? »: nothing to look for, so no passage and no source.
+  if (!followUp && !referenced.length && smallTalk(question)) return { passages: [] as Passage[], files: [] as FileRow[], total: 0 };
   let passages = folderInventory ? [] : searchPassages(userId, contextual, 6, folderIds);
   if (!folderInventory && referenced.length !== 1) passages = fusePassages(passages, await semanticPassages(userId, contextual, folderIds));
   // A summary needs the actual document, not only the passages matching "résume".

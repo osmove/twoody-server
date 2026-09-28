@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chunkSections, CHUNK_TARGET_CHARS } from "../src/documents/chunk.js";
 import { extractSections, isSupported } from "../src/documents/extract.js";
-import { buildMatchQuery, metadataScore, queryTerms, selectPassages, termsFound } from "../src/documents/query.js";
+import { buildMatchQuery, metadataScore, queryTerms, selectPassages, smallTalk, termsFound } from "../src/documents/query.js";
 import { buildChatMessages } from "../src/chatContext.js";
 
 const fixture = (name: string) => fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
@@ -136,4 +136,13 @@ test("short document subjects and file/folder names remain searchable", () => {
   assert.ok(metadataScore("CV_Jimmy.docx", "Dossier_CV", terms) > metadataScore("lettre.docx", "Dossier_CV", terms));
   assert.equal(metadataScore("lettre.docx", "Dossier_CV_Jimmy_2026", terms), 2);
   assert.equal(metadataScore("cvtheque.docx", "lettres", terms), 0, "short words are whole tokens, not broad prefixes");
+});
+
+test("small talk asks nothing of the documents: greetings, thanks and politeness, with a name at most", () => {
+  for (const text of ["salut", "Salut !", "salut, ça va ?", "Ça va ?", "Bonjour Twoody", "merci beaucoup", "Hello, how are you?", "ok merci", "Bonne soirée !"]) {
+    assert.equal(smallTalk(text), true, text);
+  }
+  for (const text of ["salut, résume mon contrat", "quel est le loyer ?", "bonjour, quel est le délai de préavis du bail", "merci de lister mes CV", "", "cv"]) {
+    assert.equal(smallTalk(text), false, text);
+  }
 });
