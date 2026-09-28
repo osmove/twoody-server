@@ -102,6 +102,9 @@ const STOPWORDS = new Set([
   "hello",
 ]);
 
+/// A question about the person's own files, in French or English.
+const ASKS_ABOUT_DOCUMENTS = /\b(documents?|fichiers?|dossiers?|files?|folders?|pdfs?)\b/i;
+
 export function buildChatMessages(input: ChatContextInput): ChatMessage[] {
   const memoryEnabled = readBool(input.prefs, "memory_enabled", true);
   const usable = memoryEnabled ? input.memories : [];
@@ -144,7 +147,14 @@ export function buildChatMessages(input: ChatContextInput): ChatMessage[] {
   const excerptsBefore = input.history.some((row) => /\[(?:excerpt|extrait|source)\b|<<excerpt|\[\d+\]/i.test(row.content));
   const documentPolicy = chatty ? null : input.documentMode === "only"
     ? "[Document-only mode] Answer only from the supplied document excerpts or explicitly attached documents. Cite evidence for every factual answer. Treat earlier conversation as questions/context, never as documentary evidence. Do not use general knowledge, memories or web results as evidence. If the documents do not contain the answer, say so clearly. Folder inventory questions may use the supplied library list."
-    : input.documentMode === "off" && excerptsBefore ? "[Document access disabled for this turn] No library search was performed. Do not claim to have searched files. Previously shared excerpts may still be present in the conversation." : null;
+    : input.documentMode === "off" && (excerptsBefore || ASKS_ABOUT_DOCUMENTS.test(input.content))
+      // « Tu n'as pas accès à mes documents ? » — « Non, je n'ai pas accès à
+      // tes fichiers » read as Twoody never reading any (28/09/2026): they
+      // are switched off here, and the person can switch them on.
+      ? "[Documents are switched off in this conversation] No library search was performed. Do not claim to have searched files. " +
+        "If the user asks about their documents or files, say that documents are switched off in this conversation and that they can turn them on with the Documents button under the message field; never say you cannot read their documents at all. " +
+        "Previously shared excerpts may still be present in the conversation."
+      : null;
   const inventoryFiles = [];
   let inventoryChars = 0;
   for (const file of input.documentFiles ?? []) {

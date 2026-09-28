@@ -201,3 +201,11 @@ test('index progress does not disclose a filename outside the selected document 
   const messages=buildChatMessages(input({documentFolders:[{name:'Allowed',indexed:1,without_text:0,failed:0}],documentScan:{running:true,limited:false,current:'other-folder-private-file.txt'} as any}));
   assert.doesNotMatch(JSON.stringify(messages),/other-folder-private-file/);
 });
+
+test("documents switched off: a question about them is told they are off and can be turned on", () => {
+  const asked = buildChatMessages(input({ documentMode: "off", content: "Tu n'as pas accès à mes documents ?" }));
+  assert.match(asked[asked.length - 1].content, /Documents are switched off in this conversation/);
+  assert.match(asked[asked.length - 1].content, /Documents button/);
+  const other = buildChatMessages(input({ documentMode: "off", content: "Quelle est la capitale de l'Italie ?" }));
+  assert.doesNotMatch(other[other.length - 1].content, /switched off/);
+});
