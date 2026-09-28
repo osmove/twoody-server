@@ -119,6 +119,9 @@ export const discussions = sqliteTable("discussions", {
   // message id): the model is given it instead of those messages.
   summary: text("summary"),
   summaryThrough: text("summary_through"),
+  // The encrypted conversation this one mirrors (the vault's conversation
+  // id), when its exchanges are synchronised between the person's devices.
+  vaultId: text("vault_id"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   lastActivityAt: integer("last_activity_at", { mode: "timestamp" }).notNull(),
 });
@@ -143,6 +146,9 @@ export const messages = sqliteTable("messages", {
   // What the model reasoned before answering, and for how long (ms).
   reasoning: text("reasoning"),
   reasoningMs: integer("reasoning_ms"),
+  // The exchange's ref in the encrypted history: an exchange brought from
+  // another device is added once, whatever the number of imports.
+  vaultRef: text("vault_ref"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
@@ -660,6 +666,9 @@ if (!messageColumns.some((column) => column.name === "reasoning")) {
 if (!messageColumns.some((column) => column.name === "reasoning_ms")) {
   sqlite.exec("ALTER TABLE messages ADD COLUMN reasoning_ms INTEGER");
 }
+if (!messageColumns.some((column) => column.name === "vault_ref")) {
+  sqlite.exec("ALTER TABLE messages ADD COLUMN vault_ref TEXT");
+}
 
 const discussionColumns = sqlite.prepare("PRAGMA table_info(discussions)").all() as Array<{
   name: string;
@@ -673,6 +682,11 @@ if (!discussionColumns.some((column) => column.name === "summary")) {
 if (!discussionColumns.some((column) => column.name === "summary_through")) {
   sqlite.exec("ALTER TABLE discussions ADD COLUMN summary_through TEXT");
 }
+if (!discussionColumns.some((column) => column.name === "vault_id")) {
+  sqlite.exec("ALTER TABLE discussions ADD COLUMN vault_id TEXT");
+}
+sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS discussions_user_vault ON discussions(user_id, vault_id) WHERE vault_id IS NOT NULL");
+sqlite.exec("CREATE INDEX IF NOT EXISTS messages_vault_ref ON messages(discussion_id, vault_ref) WHERE vault_ref IS NOT NULL");
 
 const tunnelPeerColumns = sqlite.prepare("PRAGMA table_info(tunnel_peers)").all() as Array<{
   name: string;

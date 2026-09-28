@@ -42,6 +42,10 @@ interface QueryBody {
   effort?: string;
   /// The client's id for this reply: « Répondre maintenant » names it.
   request_id?: string;
+  /// The exchange's ref in the person's encrypted history, when the client
+  /// syncs it (vaultSync): kept on both messages so that importing the
+  /// conversation again does not add this exchange a second time.
+  vault_ref?: string;
   // The watch + iPhone voice path nests fields under `query`. We
   // accept both flat and nested shapes so a single client codebase
   // can target either backend without case-by-case wire reshaping.
@@ -287,6 +291,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // Persist the user prompt up front so a streaming failure doesn't
   // erase the question. Assistant message is inserted after the
   // stream completes (or with a partial body on error).
+  const vaultRef = typeof parsed.vault_ref === "string" && /^[\w:.-]{1,200}$/.test(parsed.vault_ref) ? parsed.vault_ref : null;
   insertMessage({
     discussionId: discussion.id,
     userId:       auth.userId,
@@ -294,6 +299,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     content,
     provider:     null,
     model:        null,
+    vaultRef,
   });
   const wasNewDiscussion = !discussion.title;
   if (wasNewDiscussion) {
@@ -470,6 +476,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       sources,
       reasoning:    reasoning.trim() || null,
       reasoningMs,
+      vaultRef:     vaultRef ? `${vaultRef}#reply` : null,
     });
     touchDiscussion(discussion.id);
     publishEvent({
@@ -513,6 +520,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
           content:      `${aggregated.trimEnd()}…`,
           provider:     answeredBy?.kind ?? null,
           model:        answeredBy?.model ?? null,
+          vaultRef:     vaultRef ? `${vaultRef}#reply` : null,
         });
         touchDiscussion(discussion.id);
       }
@@ -1143,7 +1151,7 @@ function resolveDiscussion(
   return { id, title: null };
 }
 
-function loadHistory(discussionId: string, after: string | null = null): HistoryRow[] {
+export function loadHistory(discussionId: string, after: string | null = null): HistoryRow[] {
   // `created_at` has one-second resolution, so a fast reply can share
   // its timestamp with the prompt. `rowid` keeps insertion order. A
   // compaction's summary stands for the messages up to `after`.
@@ -1199,6 +1207,7 @@ function insertMessage(args: {
   sources?: unknown[];
   reasoning?: string | null;
   reasoningMs?: number | null;
+  vaultRef?: string | null;
 }) {
   db.insert(messages)
     .values({
@@ -1212,6 +1221,7 @@ function insertMessage(args: {
       sourcesJson:  args.sources && args.sources.length > 0 ? JSON.stringify(args.sources) : null,
       reasoning:    args.reasoning ?? null,
       reasoningMs:  args.reasoningMs ?? null,
+      vaultRef:     args.vaultRef ?? null,
       createdAt:    new Date(),
     })
     .run();
