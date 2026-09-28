@@ -32,6 +32,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { dirname, join } from "node:path";
+import { createComputeHost, isSealedTurn } from "./compute/computeHost.js";
 import { createDeltaRelay } from "./executors/completionStream.js";
 import { executeBridgeTask, isSelfBridgeKind, tesseractReady, whisperReady } from "./executors/index.js";
 import { configuredDefaultModel, downloadedModels } from "./executors/localModels.js";
@@ -107,6 +108,9 @@ export interface BridgeClientOptions {
   homeAssistantToken: string;
   deviceNickname?: string;
   deviceIdPath?: string;
+  /// Where the keys of sealed shared turns are kept (default: next to the
+  /// device id, compute-keys.json).
+  computeKeysPath?: string;
   capabilities?: string[];
   /// Called when the link to the backend changes state, so a host
   /// process can tell its user whether this machine is reachable.
@@ -218,6 +222,14 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
     "X-Bridge-Device-Id": deviceId,
     ...(opts.deviceToken ? { "X-Device-Token": opts.deviceToken } : {}),
   };
+  // The keys of sealed turns for the people this computer is shared with
+  // (compute/computeHost.ts), next to the device id; published to the
+  // account at start and when the daily prekey changes.
+  const computeHost = servesLlm
+    ? createComputeHost({ path: opts.computeKeysPath ?? join(dirname(opts.deviceIdPath ?? join(homedir(), ".twoody-server", "bridge-device-id")), "compute-keys.json") })
+    : null;
+  let computeKeysPublished = false;
+  let computeKeysCheckedAt = 0;
   // What the last completions looked like, for the heartbeat.
   let lastModel: string | null = null;
   let tokensPerSecond: number | null = null;
@@ -347,6 +359,10 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
       if (opts.capabilities && opts.capabilities.length > 0) {
         headers["X-Bridge-Capabilities"] = opts.capabilities.join(",");
       }
+      if (computeHost && (!computeKeysPublished || Date.now() - computeKeysCheckedAt > 60 * 60 * 1000)) {
+        computeKeysCheckedAt = Date.now();
+        if (computeHost.rotate() || !computeKeysPublished) void publishComputeKeys();
+      }
       if (servesLlm) {
         headers["X-Bridge-Heartbeat"] = heartbeatHeader({
           loadedModel: lastModel ?? configuredDefaultModel(),
@@ -413,7 +429,10 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   async function runTask(task: Task): Promise<unknown> {
     // Another person's turn on this computer (a compute grant on the
     // account): inference and nothing else, whatever the task says.
-    if (isSharedTask(task)) return runStreamedInference({ ...task, args: sharedInferenceArgs(task) });
+    if (isSharedTask(task)) {
+      if (isSealedTurn(task.args)) return runSealedInference(task);
+      return runStreamedInference({ ...task, args: sharedInferenceArgs(task) });
+    }
     switch (task.kind) {
       case "smart_home_proxy":
         return runSmartHomeProxy(task.args, opts);
@@ -457,6 +476,44 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
     } finally {
       // Every piece must be in before the task is reported as over.
       await relay.drain();
+    }
+  }
+
+  /// Another person's turn, sealed from their device to this computer: the
+  /// account relays blocks it cannot read (compute/computeHost.ts).
+  async function runSealedInference(task: Task): Promise<unknown> {
+    if (!computeHost) throw new Error("shared_task_refused");
+    return computeHost.runSealedTurn({
+      args: task.args,
+      send: (line) =>
+        patchTask(task.id, { status: "streaming", delta: line }).catch((err) => {
+          console.warn(`[bridge-client] sealed piece not delivered for task ${task.id}: ${err instanceof Error ? err.message : err}`);
+        }),
+      runModel: async (body, onPiece) => {
+        const result = (await executeBridgeTask("llm_infer", { openai_body_json: JSON.stringify(body) }, {
+          onDelta: onPiece,
+          onStats: ({ model }) => {
+            lastModel = model;
+            opts.onServed?.(model);
+          },
+        })) as { model_used?: string };
+        return { model: result?.model_used };
+      },
+    });
+  }
+
+  async function publishComputeKeys(): Promise<void> {
+    if (!computeHost) return;
+    try {
+      const res = await outboundFetch(`${opts.backendUrl}/bridge/compute_key`, {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(computeHost.publicKeys()),
+      });
+      computeKeysPublished = res.ok;
+      if (!res.ok) console.warn(`[bridge-client] compute keys not published: HTTP ${res.status}`);
+    } catch (err) {
+      console.warn(`[bridge-client] compute keys not published: ${err instanceof Error ? err.message : err}`);
     }
   }
 
