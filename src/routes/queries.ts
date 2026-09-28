@@ -291,7 +291,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // Persist the user prompt up front so a streaming failure doesn't
   // erase the question. Assistant message is inserted after the
   // stream completes (or with a partial body on error).
-  const vaultRef = typeof parsed.vault_ref === "string" && /^[\w:.-]{1,200}$/.test(parsed.vault_ref) ? parsed.vault_ref : null;
+  // Flat, or nested under `query[…]` as voice messages send it.
+  const rawVaultRef = parsed.vault_ref ?? (parsed.query as { vault_ref?: unknown } | undefined)?.vault_ref;
+  const vaultRef = typeof rawVaultRef === "string" && /^[\w:.-]{1,200}$/.test(rawVaultRef) ? rawVaultRef : null;
   insertMessage({
     discussionId: discussion.id,
     userId:       auth.userId,
