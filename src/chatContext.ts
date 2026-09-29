@@ -26,6 +26,9 @@ export interface MemoryRow {
   kind: string;
   title: string | null;
   content: string;
+  /// The whole answer of an import from another assistant, kept for the
+  /// person to read: never put in front of the model (its facts are).
+  archived?: boolean;
 }
 
 /// A passage retrieved from the user's own documents for this turn.
@@ -88,11 +91,11 @@ const PROFILE_MEMORY_CHARS = 1_500;
 const MATCHED_MEMORY_CHARS = 1_500;
 const MEMORY_ITEM_CHARS = 400;
 
-// Memory kinds that describe the user rather than a topic. They are
-// short, change rarely, and apply to every turn — so they live in the
-// system prompt. `project` / `reference` memories are only injected
-// when the current prompt matches them.
-const PROFILE_KINDS = new Set(["user", "feedback"]);
+// Memory kinds that describe the user rather than a topic (feedback, then
+// user) are short, change rarely, and apply to every turn — so they live in
+// the system prompt, as many as fit. `project` / `reference` memories, and
+// the profile ones that did not fit, are injected when the current prompt
+// matches them.
 
 const STOPWORDS = new Set([
   "avec", "dans", "pour", "plus", "mais", "comme", "cette", "sont", "vous",
@@ -110,12 +113,21 @@ const ASKS_ABOUT_DOCUMENTS = /\b(documents?|fichiers?|dossiers?|files?|folders?|
 
 export function buildChatMessages(input: ChatContextInput): ChatMessage[] {
   const memoryEnabled = readBool(input.prefs, "memory_enabled", true);
-  const usable = memoryEnabled ? input.memories : [];
+  const usable = memoryEnabled ? input.memories.filter((memory) => !memory.archived) : [];
+  // How to answer first, then who the person is, as much as fits; the facts
+  // that did not fit stay findable when a message is about them (an import
+  // brings dozens at once, 29/09/2026).
+  const profileUsed = new Set<MemoryRow>();
+  const profile = formatMemoryList(
+    [...usable.filter((memory) => memory.kind === "feedback"), ...usable.filter((memory) => memory.kind === "user")],
+    PROFILE_MEMORY_CHARS,
+    profileUsed,
+  );
 
   const current = splitDocuments(input.content);
   const currentDocumentChars = current.documents.reduce((sum, document) => sum + document.block.length, 0);
   const result: ChatMessage[] = [
-    { role: "system", content: buildSystemPrompt(input, usable) },
+    { role: "system", content: buildSystemPrompt(input, profile) },
     ...trimHistory(
       input.history,
       Math.max(0, scaled(DOCUMENT_CHARS, input.contextWindow, 0.35) - currentDocumentChars),
@@ -125,7 +137,7 @@ export function buildChatMessages(input: ChatContextInput): ChatMessage[] {
 
   // Per-turn context rides on the last message, never on the system
   // prompt: excerpts first, then saved notes, then the question itself.
-  const context = [formatExcerpts(input.excerpts ?? []), formatMatchedMemories(usable, current.text)].filter(
+  const context = [formatExcerpts(input.excerpts ?? []), formatMatchedMemories(usable.filter((memory) => !profileUsed.has(memory)), current.text)].filter(
     (block): block is string => block !== null,
   );
   const folderRows: string[] = [];
@@ -185,7 +197,7 @@ export function buildChatMessages(input: ChatContextInput): ChatMessage[] {
   return result;
 }
 
-function buildSystemPrompt(input: ChatContextInput, usable: MemoryRow[]): string {
+function buildSystemPrompt(input: ChatContextInput, profile: string | null): string {
   const custom = readString(input.prefs, "system_prompt", "").trim();
   const replaceBase = readBool(input.prefs, "system_prompt_replace_base", false);
 
@@ -227,10 +239,6 @@ function buildSystemPrompt(input: ChatContextInput, usable: MemoryRow[]): string
     sections.push(`Summary of the earlier part of this conversation (its messages are no longer shown to you):\n${input.summary.trim()}`);
   }
 
-  const profile = formatMemoryList(
-    usable.filter((memory) => PROFILE_KINDS.has(memory.kind)),
-    PROFILE_MEMORY_CHARS,
-  );
   if (profile) {
     sections.push(`What the user asked you to remember about them:\n${profile}`);
   }
@@ -322,8 +330,8 @@ function formatMatchedMemories(usable: MemoryRow[], content: string): string | n
   const tokens = keywords(content);
   if (tokens.size === 0) return null;
 
+  // Profile kinds that did not fit the system prompt are matched too.
   const scored = usable
-    .filter((memory) => !PROFILE_KINDS.has(memory.kind))
     .map((memory, index) => {
       const haystack = normalize(`${memory.title ?? ""} ${memory.content}`);
       let score = 0;
@@ -351,17 +359,19 @@ function formatExcerpts(excerpts: DocumentExcerpt[]): string | null {
   return `[Excerpts from the user's documents]\n${blocks.join("\n\n")}\n[End of excerpts]`;
 }
 
-function formatMemoryList(rows: MemoryRow[], budget: number): string | null {
+function formatMemoryList(rows: MemoryRow[], budget: number, used?: Set<MemoryRow>): string | null {
   const lines: string[] = [];
   let chars = 0;
   for (const row of rows) {
     const body = truncate(row.content.trim().replace(/\s+/g, " "), MEMORY_ITEM_CHARS);
     if (!body) continue;
-    const title = row.title?.trim();
-    const line = title ? `- ${title}: ${body}` : `- ${body}`;
+    // A title that is only the start of the content says it twice.
+    const title = row.title?.trim().replace(/…$/, "");
+    const line = title && !body.startsWith(title) ? `- ${title}: ${body}` : `- ${body}`;
     if (chars + line.length > budget) break;
     chars += line.length;
     lines.push(line);
+    used?.add(row);
   }
   return lines.length > 0 ? lines.join("\n") : null;
 }

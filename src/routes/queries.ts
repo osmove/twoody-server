@@ -1212,12 +1212,13 @@ function loadUserContext(userId: string): {
   }
 
   const rows = db
-    .select({ kind: memories.kind, title: memories.title, content: memories.content })
+    .select({ kind: memories.kind, title: memories.title, content: memories.content, tagsJson: memories.tagsJson })
     .from(memories)
     .where(and(eq(memories.userId, userId), isNull(memories.supersededById)))
     .orderBy(desc(memories.updatedAt), asc(memories.id))
-    .limit(200)
-    .all();
+    .limit(400)
+    .all()
+    .map(({ tagsJson, ...row }) => ({ ...row, archived: /"archive"/.test(tagsJson) }));
 
   const userName = user?.name && user.name !== PLACEHOLDER_USER_NAME ? user.name : null;
   return { userName, prefs, memories: rows };
