@@ -22,6 +22,7 @@ import {
 } from "../chatContext.js";
 import { chooseDiscussion, reuseWindowMs } from "../discussionWindow.js";
 import { runtimeAuthHeaders } from "../runtimeAuth.js";
+import { runtimeSlot } from "../runtimeSlots.js";
 import { createThinkFilter } from "../thinkFilter.js";
 import { hasIndexedDocuments, listFolders, searchPassages, indexStatus } from "../documents/library.js";
 import { LOCAL_ONLY, LocalOnlyError, outboundFetch } from "../outbound.js";
@@ -412,6 +413,14 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
     }
     const userContext = loadUserContext(auth.userId);
+    // A computer of the account that is not trusted with what this one
+    // knows of its person (account_peers.trusted, false until the Desktop
+    // says so) is given the conversation only: no memories, no contacts or
+    // calendar, no excerpts or list of the documents, no custom prompt, no
+    // name — and the earlier prompts as they were typed, not as they were
+    // given here with their context (conversationOnly, below).
+    const conversationOnlyFor = (candidate: Provider) => candidate.kind === "peer_openai" && !candidate.trusted;
+    const fullFor = plan.find((entry) => !conversationOnlyFor(entry.provider))?.provider ?? null;
     // « Retiens que… »: kept before the answer, so that it can say so.
     const learning = userContext.prefs.memory_enabled !== false && access.mode !== "only";
     const remembered = learning ? askedToRemember(typedText(content)) : null;
@@ -459,10 +468,31 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text })),
       local: provider.kind === "local_openai" || provider.kind === "peer_openai",
       remembered,
-      personal: onThisComputer(provider) && access.mode !== "only" ? loadPersonalData(auth.userId) : null,
+      personal: fullFor && onThisComputer(fullFor) && access.mode !== "only" ? loadPersonalData(auth.userId) : null,
       timeZone: validTimeZone(parsed.time_zone),
     });
     const chatMessages = turn.messages;
+    let conversationOnly: ChatMessage[] | null = null;
+    const messagesFor = (candidate: Provider): ChatMessage[] => {
+      if (!conversationOnlyFor(candidate)) return chatMessages;
+      conversationOnly ??= buildChatTurn({
+        userName: null,
+        prefs: { memory_enabled: false },
+        memories: [],
+        documentMode: access.mode === "only" ? "only" : "off",
+        history: history.map((row) => ({ ...row, sent: null, sourcesJson: null })),
+        content,
+        summary: compacted.summary,
+        summaryThrough: compacted.summaryThrough,
+        state: null,
+        currentId: promptId,
+        contextWindow: readWindow(parsed.context_window),
+        hasDocuments: false,
+        local: true,
+        timeZone: validTimeZone(parsed.time_zone),
+      }).messages;
+      return conversationOnly;
+    };
     // What the model is given of this prompt, for the next turns to give
     // it again as it is; and the window they grow from.
     db.update(messages).set({ sentContent: turn.sent }).where(eq(messages.id, promptId)).run();
@@ -520,7 +550,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         if (provider.kind === "local_openai") noteModelUsed(provider.model);
         reported = await streamFromProvider(
           provider,
-          chatMessages,
+          messagesFor(provider),
           readTemperature(userContext.prefs),
           (delta) => {
             timing.first ||= Date.now();
@@ -565,6 +595,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // Same `provider`/`model` we just dispatched against — gives the
     // history view a "answered by" chip per turn.
     const providerModel = "model" in provider ? provider.model : null;
+    // A computer given the conversation only saw no excerpt: nothing to cite.
+    const cited = conversationOnlyFor(provider) ? [] : sources;
     const messageId = insertMessage({
       discussionId: discussion.id,
       userId:       auth.userId,
@@ -572,7 +604,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       content:      aggregated,
       provider:     provider.kind,
       model:        providerModel,
-      sources,
+      sources:      cited,
       reasoning:    reasoning.trim() || null,
       reasoningMs,
       vaultRef:     vaultRef ? `${vaultRef}#reply` : null,
@@ -621,7 +653,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       status:        "responded",
       transcription: parsed.text ? null : (audioBuffer ? content : null),
       language:      null,
-      sources,
+      sources:       cited,
       usage,
       reasoning_ms: reasoningMs,
       answered_by:  answeredByComputer,
@@ -804,7 +836,7 @@ type Provider =
   /// Another computer of the account (a peer, peers/index.ts), reached
   /// through the sealed tunnel; its runtime is asked through
   /// /api/v1/peer/v1/chat/completions there.
-  | { kind: "peer_openai"; model: string; baseUrl: string; computerId: string; computerName: string; userId: string };
+  | { kind: "peer_openai"; model: string; baseUrl: string; computerId: string; computerName: string; userId: string; trusted: boolean };
 
 class LocalLlmUnavailableError extends Error {}
 
@@ -824,6 +856,10 @@ export interface AnsweredBy {
   model: string | null;
   routed: "auto" | "explicit" | "fallback";
   auto: boolean;
+  /// Another computer's answer only: whether it was given what this
+  /// computer knows of the person (account_peers.trusted), or the
+  /// conversation only — « sans vos mémoires ».
+  trusted?: boolean;
 }
 
 type Routing = { mode: "legacy" } | { mode: "auto" } | { mode: "explicit"; computerId: string };
@@ -844,7 +880,7 @@ function retriable(err: unknown): boolean {
 }
 
 function peerProvider(peer: PeerRow, model: string): Provider {
-  return { kind: "peer_openai", model, baseUrl: `peer:${peer.computerId}`, computerId: peer.computerId, computerName: peer.name, userId: peer.userId };
+  return { kind: "peer_openai", model, baseUrl: `peer:${peer.computerId}`, computerId: peer.computerId, computerName: peer.name, userId: peer.userId, trusted: peer.trusted };
 }
 
 /// The computer that answered the previous turn of this conversation.
@@ -875,6 +911,7 @@ function answeredByOf(provider: Provider, routed: AnsweredBy["routed"]): Answere
     model: "model" in provider ? provider.model : null,
     routed,
     auto: routed !== "explicit",
+    ...(provider.kind === "peer_openai" ? { trusted: provider.trusted } : {}),
   };
 }
 
@@ -1331,11 +1368,16 @@ async function streamLocal(
   // The tokens used come last in the stream when asked (the context
   // gauge); llama.cpp ends the reasoning itself at the budget. A strict
   // OpenAI-compatible server may reject these fields: plain retry below.
+  // The runtime Twoody ships with two slots or more: the chat on one, the
+  // background work on the other (runtimeSlots.ts). A peer decides for its
+  // own runtime (routes/peer.ts).
+  const slot = options.post ? null : await runtimeSlot(endpoint, model, options.purpose === "background" ? "background" : "chat");
   const extras = {
     chat_template_kwargs: { enable_thinking: thinking },
     reasoning_effort: thinking ? (options.effort === "deep" ? "high" : "medium") : "none",
     stream_options: { include_usage: true },
     ...(thinking ? { thinking_budget_tokens: budget } : {}),
+    ...(slot !== null ? { id_slot: slot } : {}),
   };
 
   // Ours, so that the reasoning can be cut without the reader leaving;
@@ -1426,6 +1468,7 @@ async function streamLocal(
       chat_template_kwargs: { enable_thinking: false },
       reasoning_effort: "none",
       stream_options: { include_usage: true },
+      ...(slot !== null ? { id_slot: slot } : {}),
     });
     if (!answer.ok) throw new LocalLlmUnavailableError(`Local LLM provider returned ${answer.status}`);
     // A model that always reasons may start again: that part is dropped.
@@ -1581,8 +1624,9 @@ export function loadHistory(discussionId: string, after: string | null = null): 
 /// A runtime on this very computer: the contacts and calendar may go to it,
 /// and to nothing else (a runtime elsewhere on the network is not this one).
 function onThisComputer(provider: Provider): boolean {
-  // Another computer of the same account is the person's own too.
-  if (provider.kind === "peer_openai") return true;
+  // Another computer of the same account, when the Desktop trusted it with
+  // this computer's person's data (account_peers.trusted).
+  if (provider.kind === "peer_openai") return provider.trusted;
   if (provider.kind !== "local_openai") return false;
   try {
     return ["127.0.0.1", "localhost", "[::1]", "::1"].includes(new URL(provider.baseUrl).hostname);

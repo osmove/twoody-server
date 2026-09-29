@@ -11,13 +11,16 @@ import { listPeers, peerById, peerStatus, PeerUnavailableError, removePeer, requ
 // (docs/multi-computer-design.md §3) — managed by Twoody Desktop, or by the
 // owner of a headless server with the admin token:
 //
-//   GET    /api/v1/peers                 [{computer_id, name, kind, state, enabled, url?, error?, status?, status_at?}]
+//   GET    /api/v1/peers                 [{computer_id, name, kind, state, enabled, trusted, url?, error?, status?, status_at?}]
 //   POST   /api/v1/peers {computer_id, name?}  → 202 {request_id, expires_at}
 //          request_access (role "peer") with this server's tunnel key; the
 //          Desktop then endorses request_id (POST /account_computers/:id/
 //          authorizations/:rid/endorse) and this server picks up the sealed
 //          answer by itself.
-//   PATCH  /api/v1/peers/:computer_id {enabled}
+//   PATCH  /api/v1/peers/:computer_id {enabled?, trusted?}  → 200 the peer
+//          trusted (false until set): whether the turns sent to it carry this
+//          computer's memories, personal data, document excerpts and
+//          instructions from files — without it, the conversation only.
 //   DELETE /api/v1/peers/:computer_id
 
 /// The Desktop's own session — made by /auth/signup, /auth/signin or the
@@ -41,6 +44,7 @@ function serialize(row: ReturnType<typeof listPeers>[number]) {
     platform: row.platform,
     state: row.state,
     enabled: row.enabled,
+    trusted: row.trusted,
     url: row.url,
     request_id: row.requestId,
     error: row.error,
@@ -84,16 +88,22 @@ export async function peersRoutes(app: FastifyInstance) {
     },
   });
 
-  app.patch<{ Params: { id: string }; Body: { enabled?: boolean } }>("/peers/:id", {
-    schema: { tags: ["providers"], summary: "Turn a peer on or off for the automatic choice (Desktop only)" },
+  app.patch<{ Params: { id: string }; Body: { enabled?: boolean; trusted?: boolean } }>("/peers/:id", {
+    schema: { tags: ["providers"], summary: "Turn a peer on or off for the automatic choice, or trust it with this computer's person's data (Desktop only)" },
     handler: async (req, reply) => {
       const auth = await requireDesktop(req, reply);
       if (!auth) return;
       const peer = peerById(auth.userId, req.params.id);
       if (!peer) return reply.code(404).send({ error: "not_found" });
-      if (typeof req.body?.enabled !== "boolean") return reply.code(422).send({ error: "enabled must be a boolean" });
-      db.update(accountPeers).set({ enabled: req.body.enabled, updatedAt: new Date() }).where(eq(accountPeers.computerId, peer.computerId)).run();
-      return reply.send(serialize(peerById(auth.userId, req.params.id)!));
+      const { enabled, trusted } = req.body ?? {};
+      if ((enabled !== undefined && typeof enabled !== "boolean") || (trusted !== undefined && typeof trusted !== "boolean") || (enabled === undefined && trusted === undefined)) {
+        return reply.code(422).send({ error: "enabled and trusted, when given, must be booleans; one of them is required" });
+      }
+      db.update(accountPeers)
+        .set({ ...(enabled !== undefined ? { enabled } : {}), ...(trusted !== undefined ? { trusted } : {}), updatedAt: new Date() })
+        .where(eq(accountPeers.computerId, peer.computerId))
+        .run();
+      return reply.code(200).send(serialize(peerById(auth.userId, req.params.id)!));
     },
   });
 

@@ -121,6 +121,10 @@ export const accountPeers = sqliteTable("account_peers", {
   token: text("token"),
   tunnelKey: text("tunnel_key"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  /// Whether turns sent to it carry what this computer knows of its person
+  /// (memories, personal data, document excerpts, instructions from files).
+  /// Off until the Desktop says otherwise: a peer gets the conversation only.
+  trusted: integer("trusted", { mode: "boolean" }).notNull().default(false),
   error: text("error"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
@@ -822,6 +826,7 @@ sqlite.exec(`
     token TEXT,
     tunnel_key TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
+    trusted INTEGER NOT NULL DEFAULT 0,
     error TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
@@ -883,6 +888,13 @@ const tunnelPeerColumns = sqlite.prepare("PRAGMA table_info(tunnel_peers)").all(
 }>;
 if (!tunnelPeerColumns.some((column) => column.name === "session_id")) {
   sqlite.exec("ALTER TABLE tunnel_peers ADD COLUMN session_id TEXT");
+}
+
+// A peer is not trusted with this computer's person's data until the
+// Desktop says so (29/09/2026).
+const peerColumns = sqlite.prepare("PRAGMA table_info(account_peers)").all() as Array<{ name: string }>;
+if (!peerColumns.some((column) => column.name === "trusted")) {
+  sqlite.exec("ALTER TABLE account_peers ADD COLUMN trusted INTEGER NOT NULL DEFAULT 0");
 }
 
 // How a session was given (29/09/2026). The sessions from before are

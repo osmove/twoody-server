@@ -26,6 +26,7 @@ const { accountPeers, db } = await import("../src/db.js");
 const { pairDevice } = await import("../src/pairing.js");
 const { setPeerStatus } = await import("../src/peers/index.js");
 const { readStatus } = await import("../src/account/status.js");
+const { eq } = await import("drizzle-orm");
 
 const app = await buildApp();
 test.after(async () => {
@@ -143,11 +144,13 @@ test("/providers without an account says nothing of computers; /me keeps « Tâc
   assert.equal((await app.inject({ method: "GET", url: "/me", headers: auth })).json().background_computer, "auto");
 });
 
-test("« Tâches de fond »: an idle peer set for it takes memory extraction; busy or hot, this computer does", async () => {
+test("« Tâches de fond »: an idle trusted peer set for it takes memory extraction; untrusted, busy or hot, this computer does", async () => {
   const { pickBackground } = await import("../src/router/index.js");
   const peerStatus = (inflight: number, cpu: number) =>
     setPeerStatus("77", readStatus({ app_version: "0.3.0", models: [{ id: "qwen3:8b", loaded: true }], load: { cpu_pct: cpu, gpu_pct: null, ram_used_pct: 30, at: null }, tps: { "qwen3:8b": 5 }, inflight, accepts: ["chat", "background"], tools: true })!);
   peerStatus(0, 10);
+  assert.equal(await pickBackground({ userId: desktop.user_id, preference: "computer:77", model: "qwen3:8b" }), null, "not trusted: the work reads what is kept of the person");
+  db.update(accountPeers).set({ trusted: true }).where(eq(accountPeers.computerId, "77")).run();
   assert.equal((await pickBackground({ userId: desktop.user_id, preference: "computer:77", model: "qwen3:8b" }))?.computerId, "77", "even slower, the chosen computer does it when idle");
   assert.equal(await pickBackground({ userId: desktop.user_id, preference: "self", model: "qwen3:8b" }), null);
   assert.equal(await pickBackground({ userId: desktop.user_id, preference: "computer:self", model: "qwen3:8b" }), null);
@@ -157,4 +160,5 @@ test("« Tâches de fond »: an idle peer set for it takes memory extraction; bu
   peerStatus(0, 70);
   assert.equal(await pickBackground({ userId: desktop.user_id, preference: "computer:77", model: "qwen3:8b" }), null, "CPU over 50 %");
   setPeerStatus("77", null);
+  db.update(accountPeers).set({ trusted: false }).where(eq(accountPeers.computerId, "77")).run();
 });

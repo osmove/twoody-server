@@ -86,12 +86,14 @@ export async function pick(args: { userId: string; model: string | null; purpose
 /// Where background work (memory extraction) runs: the computer set in
 /// « Tâches de fond » (`background_computer`: "auto" | "self" |
 /// "computer:<id>") when it is idle — nothing running, CPU under 50 % —
-/// else this computer. Null means this computer.
+/// else this computer. Null means this computer. Only a trusted peer may
+/// do it: the work reads what the person said and what is kept of them.
 export async function pickBackground(args: { userId: string; preference: unknown; model: string | null }): Promise<Choice | null> {
   const preference = typeof args.preference === "string" ? args.preference : "auto";
   if (preference === "self") return null;
   const idle = (view: ComputerView) => view.status.inflight === 0 && (view.loads.at(-1)?.cpu_pct ?? view.status.load.cpu_pct ?? 0) < 50;
-  const peers = (await computerViews(args.userId, { withSelf: false })).filter((v) => v.statusAgeMs < STATUS_MAX_AGE_MS && idle(v));
+  const trusted = new Set(linkedPeers(args.userId).filter((peer) => peer.trusted).map((peer) => peer.computerId));
+  const peers = (await computerViews(args.userId, { withSelf: false })).filter((v) => trusted.has(v.id) && v.statusAgeMs < STATUS_MAX_AGE_MS && idle(v));
   const wanted = preference.startsWith("computer:") ? preference.slice("computer:".length) : null;
   if (wanted && isSelf(wanted)) return null;
   const pool = wanted ? peers.filter((v) => v.id === wanted) : peers;
@@ -110,6 +112,10 @@ export interface ComputerEntry {
   online: boolean;
   /// Linked as a peer: this computer can send it questions.
   peer: boolean;
+  /// Whether the turns it answers carry this computer's person's data
+  /// (memories, personal data, documents). Always so for this computer;
+  /// for a peer, as the Desktop set it (false until then).
+  trusted: boolean;
   models: Array<{ id: string; loaded: boolean; tps: number | null }>;
 }
 
@@ -120,7 +126,7 @@ export async function listComputers(userId: string): Promise<ComputerEntry[] | n
   if (!accountCredentials()) return null;
   const me = await selfView(userId);
   const models = (view: ComputerView) => view.status.models.map((m) => ({ id: m.id, loaded: m.loaded, tps: view.status.tps[m.id] ?? null }));
-  const out: ComputerEntry[] = [{ id: me.id, name: me.name, kind: me.kind ?? null, self: true, online: true, peer: false, models: models(me) }];
+  const out: ComputerEntry[] = [{ id: me.id, name: me.name, kind: me.kind ?? null, self: true, online: true, peer: false, trusted: true, models: models(me) }];
   const peers = linkedPeers(userId);
   const listed = (await accountComputers()) ?? [];
   const seen = new Set<string>([me.id]);
@@ -135,6 +141,7 @@ export async function listComputers(userId: string): Promise<ComputerEntry[] | n
       self: false,
       online: view ? view.statusAgeMs < STATUS_MAX_AGE_MS : false,
       peer: true,
+      trusted: peer.trusted,
       models: view ? models(view) : [],
     });
   }
@@ -148,6 +155,7 @@ export async function listComputers(userId: string): Promise<ComputerEntry[] | n
       self: false,
       online: computer.online,
       peer: false,
+      trusted: false,
       models: computer.status ? computer.status.models.map((m) => ({ id: m.id, loaded: m.loaded, tps: computer.status!.tps[m.id] ?? null })) : [],
     });
   }

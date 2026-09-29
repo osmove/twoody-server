@@ -99,7 +99,7 @@ delete process.env.BRIDGE_LOCAL_LLM_ENDPOINT;
 
 const { buildApp } = await import("../src/app.js");
 const { ensureSetupToken } = await import("../src/auth.js");
-const { accountPeers, db } = await import("../src/db.js");
+const { accountPeers, db, memories } = await import("../src/db.js");
 const { endorse } = await import("../src/account/endorsement.js");
 const { readStatus } = await import("../src/account/status.js");
 const { closeAllPeerLinks, refreshPeerStatus, peerById, setPeerHandshakeTimeouts } = await import("../src/peers/index.js");
@@ -213,7 +213,7 @@ test("through the Pi's /tunnel: its status, and answers by name and by « Automa
 
   const named = final((await app.inject({ method: "POST", url: "/queries", headers: auth, payload: { content: "Bonjour le Pi", provider: `computer:${piComputerId}`, model: "qwen3:8b" } })).payload);
   assert.equal(named.text, "Le Pi répond avec qwen3:8b.");
-  assert.deepEqual(named.answered_by, { computer_id: piComputerId, computer_name: "Raspberry Pi", model: "qwen3:8b", routed: "explicit", auto: false });
+  assert.deepEqual(named.answered_by, { computer_id: piComputerId, computer_name: "Raspberry Pi", model: "qwen3:8b", routed: "explicit", auto: false, trusted: false });
   assert.equal(named.provider, "peer_openai");
 
   const automatic = final((await app.inject({ method: "POST", url: "/queries", headers: auth, payload: { content: "Qui a ce modèle ?", provider: "auto", model: "qwen3:8b" } })).payload);
@@ -232,6 +232,51 @@ test("through the Pi's /tunnel: its status, and answers by name and by « Automa
   // All of it on the LAN socket: nothing went to the relay.
   assert.ok(!backend.calls.some((c) => c.includes("tunnel/frames")), "the relay was not used");
   assert.ok(call.body.max_tokens <= 4096);
+});
+
+test("a peer not trusted gets the conversation only; trusted, what this computer knows of the person", async () => {
+  const now = new Date();
+  db.insert(memories).values([
+    { id: "m-profile", userId: desktop.user_id, kind: "user", title: "Santé", content: "Jimmy est allergique aux arachides.", createdAt: now, updatedAt: now },
+    { id: "m-project", userId: desktop.user_id, kind: "project", title: "Projet Tulipe", content: "Le code du coffre du projet Tulipe est 4512.", createdAt: now, updatedAt: now },
+  ]).run();
+  const final = (payload: string) => {
+    const block = payload.split("\n\n").find((b) => b.startsWith("event: final"));
+    assert.ok(block, payload.slice(-500));
+    return JSON.parse(block!.split("\n").find((l) => l.startsWith("data: "))!.slice(6));
+  };
+  const ask = async (content: string, provider: string, discussionId?: string) =>
+    final((await app.inject({ method: "POST", url: "/queries", headers: auth, payload: { content, provider, ...(discussionId ? { discussion_id: discussionId } : {}) } })).payload);
+  const lastPiCall = (marker: string) => JSON.stringify(piRuntime.calls.filter((c) => JSON.stringify(c.body.messages).includes(marker)).at(-1)?.body.messages ?? null);
+
+  const listed = (await app.inject({ method: "GET", url: "/api/v1/peers", headers: auth })).json().peers.find((p: { computer_id: string }) => p.computer_id === piComputerId);
+  assert.equal(listed.trusted, false, "not trusted until the Desktop says so");
+  const providers = (await app.inject({ method: "GET", url: "/providers", headers: auth })).json();
+  assert.equal(providers.computers.find((c: { id: string }) => c.id === piComputerId).trusted, false);
+  assert.equal(providers.computers[0].trusted, true, "this computer is");
+
+  // Here first, where the project's memory rides on the message; then the Pi, in the same conversation.
+  const here = await ask("Parle-moi du projet Tulipe", `computer:${macComputer.id}`);
+  assert.ok(JSON.stringify(macRuntime.calls.at(-1)!.body.messages).includes("4512"), "this computer is given it");
+  const there = await ask("Et le projet Tulipe, où en est-il ?", `computer:${piComputerId}`, here.discussion_id);
+  assert.equal(there.answered_by.trusted, false);
+  const sent = lastPiCall("où en est-il");
+  assert.ok(sent.includes("Parle-moi du projet Tulipe"), "the conversation goes");
+  for (const secret of ["4512", "arachides", "remember about them"]) assert.ok(!sent.includes(secret), `${secret} stayed here: ${sent}`);
+
+  const patched = await app.inject({ method: "PATCH", url: `/api/v1/peers/${piComputerId}`, headers: auth, payload: { trusted: true } });
+  assert.equal(patched.statusCode, 200);
+  assert.equal(patched.json().trusted, true);
+  assert.equal(patched.json().computer_id, piComputerId);
+  assert.equal((await app.inject({ method: "PATCH", url: `/api/v1/peers/${piComputerId}`, headers: auth, payload: { trusted: "yes" } })).statusCode, 422);
+  assert.equal((await app.inject({ method: "GET", url: "/providers", headers: auth })).json().computers.find((c: { id: string }) => c.id === piComputerId).trusted, true);
+
+  const trusted = await ask("Rappelle-moi le projet Tulipe", `computer:${piComputerId}`);
+  assert.equal(trusted.answered_by.trusted, true);
+  const given = lastPiCall("Rappelle-moi");
+  assert.ok(given.includes("4512") && given.includes("arachides"), given);
+
+  await app.inject({ method: "PATCH", url: `/api/v1/peers/${piComputerId}`, headers: auth, payload: { trusted: false } });
 });
 
 test("the Pi's peer session opens nothing but /api/v1/peer/*", async () => {
