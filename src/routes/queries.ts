@@ -12,7 +12,10 @@ import { transcribeWavWithWhisperCpp, withoutNonSpeech, WhisperUnavailableError 
 import { publish as publishEvent } from "../events.js";
 import {
   buildChatMessages,
+  buildChatTurn,
+  readContextState,
   HISTORY_MAX_MESSAGES,
+  type ContextState,
   type ChatMessage,
   type HistoryRow,
   type MemoryRow,
@@ -137,14 +140,14 @@ const COMPACT_REQUEST =
   "in the language the person uses: what they asked and wanted, the facts, figures and decisions that came up (from joined " +
   "documents too, naming them), what was concluded, and what remains open. Be precise and brief, and invent nothing.";
 
-function discussionSummary(id: string): { summary: string | null; summaryThrough: string | null } {
+function discussionSummary(id: string): { summary: string | null; summaryThrough: string | null; state: ContextState | null } {
   const [row] = db
-    .select({ summary: discussions.summary, summaryThrough: discussions.summaryThrough })
+    .select({ summary: discussions.summary, summaryThrough: discussions.summaryThrough, contextJson: discussions.contextJson })
     .from(discussions)
     .where(eq(discussions.id, id))
     .limit(1)
     .all();
-  return { summary: row?.summary ?? null, summaryThrough: row?.summaryThrough ?? null };
+  return { summary: row?.summary ?? null, summaryThrough: row?.summaryThrough ?? null, state: readContextState(row?.contextJson) };
 }
 
 /// What the next turn of a discussion would give the model, counted:
@@ -158,11 +161,13 @@ export function discussionContext(
     ...loadUserContext(userId),
     history: loadHistory(discussionId, compacted.summaryThrough),
     summary: compacted.summary,
+    summaryThrough: compacted.summaryThrough,
+    state: compacted.state,
     content: "",
     hasDocuments: hasIndexedDocuments(userId),
     local: true,
   });
-  return { ...compacted, tokensEstimate: estimateTokens(messagesChars(chatMessages)) };
+  return { summary: compacted.summary, summaryThrough: compacted.summaryThrough, tokensEstimate: estimateTokens(messagesChars(chatMessages)) };
 }
 
 function readWindow(value: unknown): number | null {
@@ -208,6 +213,8 @@ async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body:
       ...loadUserContext(auth.userId),
       history,
       summary: compacted.summary,
+      summaryThrough: compacted.summaryThrough,
+      state: compacted.state,
       contextWindow: readWindow(req.body?.context_window),
       content: COMPACT_REQUEST,
       hasDocuments: documentFolders.length > 0,
@@ -431,15 +438,19 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       snippet: passage.snippet,
     }));
     const documentFolders = allowedFolders;
-    const chatMessages = buildChatMessages({
+    const turn = buildChatTurn({
       ...userContext,
       documentMode: access.mode,
-      ...(access.mode === "only" ? { memories: [], prefs: {}, } : {}),
       history,
       content,
       summary: compacted.summary,
+      summaryThrough: compacted.summaryThrough,
+      state: compacted.state,
       contextWindow: readWindow(parsed.context_window),
-      hasDocuments: documentFolders.length > 0,
+      // Whether the person granted folders at all, not this message's
+      // selection: a sentence of the system prompt, which must not flip
+      // with the Documents button.
+      hasDocuments: granted.length > 0,
       documentFolders,
       documentScan: indexStatus(auth.userId),
       documentFiles: retrieved.files,
@@ -450,6 +461,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       personal: onThisComputer(provider) && access.mode !== "only" ? loadPersonalData(auth.userId) : null,
       timeZone: validTimeZone(parsed.time_zone),
     });
+    const chatMessages = turn.messages;
+    db.update(discussions).set({ contextJson: JSON.stringify(turn.state) }).where(eq(discussions.id, discussion.id)).run();
     // « Répondre maintenant », for this reply.
     const answerNowController = new AbortController();
     const answerNowSignal = answerNowController.signal;

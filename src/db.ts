@@ -146,6 +146,10 @@ export const discussions = sqliteTable("discussions", {
   // message id): the model is given it instead of those messages.
   summary: text("summary"),
   summaryThrough: text("summary_through"),
+  // What the model is given of this conversation, kept from one turn to the
+  // next so that each turn only adds to it (chatContext.ts, ContextState):
+  // JSON, rebuilt at a cut point.
+  contextJson: text("context_json"),
   // The encrypted conversation this one mirrors (the vault's conversation
   // id), when its exchanges are synchronised between the person's devices.
   vaultId: text("vault_id"),
@@ -852,6 +856,9 @@ if (!discussionColumns.some((column) => column.name === "summary")) {
 }
 if (!discussionColumns.some((column) => column.name === "summary_through")) {
   sqlite.exec("ALTER TABLE discussions ADD COLUMN summary_through TEXT");
+}
+if (!discussionColumns.some((column) => column.name === "context_json")) {
+  sqlite.exec("ALTER TABLE discussions ADD COLUMN context_json TEXT");
 }
 if (!discussionColumns.some((column) => column.name === "vault_id")) {
   sqlite.exec("ALTER TABLE discussions ADD COLUMN vault_id TEXT");

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildChatMessages, type ChatContextInput } from "../src/chatContext.js";
+import { buildChatMessages, buildChatTurn, type ChatContextInput } from "../src/chatContext.js";
 
 // Local-time constructor so the expected weekday holds in any timezone.
 const NOW = new Date(2026, 8, 21, 10, 0, 0);
@@ -210,9 +210,52 @@ test("documents switched off: a question about them is told they are off and can
   assert.doesNotMatch(other[other.length - 1].content, /switched off/);
 });
 
-test("a fact the user asked to remember is confirmed, not denied", () => {
-  const [system] = buildChatMessages(input({ content: "Retiens que je préfère le thé", remembered: "Je préfère le thé" }));
-  assert.match(system.content, /just been saved in their Memories on this computer: « Je préfère le thé »/);
+test("a fact the user asked to remember is confirmed, not denied, from its own message", () => {
+  const messages = buildChatMessages(input({ content: "Retiens que je préfère le thé", remembered: "Je préfère le thé" }));
+  assert.match(messages.at(-1)!.content, /Just saved in the user's Memories on this computer, as their message asks: « Je préfère le thé »/);
+  assert.ok(messages.at(-1)!.content.endsWith("Retiens que je préfère le thé"));
+  assert.doesNotMatch(messages[0].content, /thé/, "the system prompt does not move for it");
+});
+
+test("memories learned during a conversation leave the system prompt as it was (prefix cache)", () => {
+  const first = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], content: "Bonjour" }));
+  assert.match(first.messages[0].content, /- Architecte à Lyon\./);
+  const learned = [
+    { kind: "user", title: null, content: "Sa fille s'appelle Léa." },
+    { kind: "user", title: null, content: "Architecte à Lyon." },
+  ];
+  const second = buildChatTurn(input({
+    memories: learned,
+    state: first.state,
+    history: [{ role: "user", content: "Bonjour" }, { role: "assistant", content: "Bonjour !" }],
+    content: "Quel âge a ma fille ?",
+  }));
+  assert.equal(second.messages[0].content, first.messages[0].content);
+  // Still given, with the message it bears on.
+  assert.match(second.messages.at(-1)!.content, /\[Saved notes that may be relevant\]\n- Sa fille s'appelle Léa\./);
+  assert.doesNotMatch(second.messages.at(-1)!.content, /Architecte/, "a frozen memory is not given twice");
+});
+
+test("a memory removed or memory switched off refreshes the frozen ones; a compaction too", () => {
+  const first = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }] }));
+  const removed = buildChatTurn(input({ memories: [], state: first.state }));
+  assert.doesNotMatch(removed.messages[0].content, /Architecte/);
+  const off = buildChatTurn(input({ prefs: { memory_enabled: false }, memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], state: first.state }));
+  assert.doesNotMatch(off.messages[0].content, /Architecte/);
+  const compacted = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Vit à Lyon." }], state: first.state, summaryThrough: "m9" }));
+  assert.match(compacted.messages[0].content, /Vit à Lyon/);
+  assert.equal(compacted.state.basis, "m9");
+});
+
+test("the system prompt does not move for a document-only turn, and says how to read the first documents on their message", () => {
+  const first = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], content: "Bonjour" }));
+  const only = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], state: first.state, documentMode: "only", content: "Que dit le bail ?" }));
+  assert.doesNotMatch(only.messages[0].content, /Architecte/, "no memory in a document-only answer");
+  assert.equal(only.state.profile, first.state.profile, "kept for the turns after it");
+  const doc = '<<document name="bail.pdf">>\nDurée : trois ans.\n<</document>>\n\nRésume';
+  const withDocument = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], state: first.state, content: doc }));
+  assert.equal(withDocument.messages[0].content, first.messages[0].content);
+  assert.match(withDocument.messages.at(-1)!.content, /^Documents the user joined to a message/);
 });
 
 test("a document joined to the message is answered from itself, documents switched off or not", () => {
