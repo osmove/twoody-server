@@ -1,0 +1,15 @@
+# Only package.json, package-lock.json, tsconfig.json, src/, bin/ and
+# scripts/write-openapi.mjs are copied into the image; everything else
+# stays out of the build context.
+.git
+.github
+node_modules
+dist
+data
+test
+*.tgz
+.env
+.env.*
+npm-debug.log*
+smoke-docs-*
+.DS_Store

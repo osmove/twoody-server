@@ -1,14 +1,58 @@
+# Twoody Server and a model runtime (Ollama), nothing else — for a
+# Raspberry Pi 5 or any Linux server, no Mac needed.
+#
+#   docker compose up -d
+#   docker compose exec ollama ollama pull qwen3.5:4b   # or a model of your choice
+#   docker compose logs twoody-server                   # the setup token for the app
+#
+# The image is built from this checkout. To use a published image instead,
+# replace `build: .` with `image: ghcr.io/osmove/twoody-server:latest`.
+
 services:
-  local-server:
+  twoody-server:
     build: .
+    hostname: twoody
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      HOST: 0.0.0.0
-      PORT: 3000
-      TWOODY_DATA_DIR: /data
+      # Ollama's OpenAI-compatible API, on the compose network. The server
+      # lists the models Ollama holds and the apps offer them.
+      BRIDGE_LOCAL_LLM_ENDPOINT: http://ollama:11434/v1
+      # Optional: fix the setup token / pairing code instead of reading
+      # them from the logs; refuse anything outside the private network.
+      # TWOODY_SETUP_TOKEN: ...
+      # TWOODY_PAIRING_CODE: A7B9C2D4
+      # TWOODY_LOCAL_ONLY: "1"
     volumes:
       - twoody_local_data:/data
+      # Documents the server may index, read-only. Grant /documents from
+      # the app (Documents → Add a folder) once paired.
+      # - /home/pi/Documents:/documents:ro
+    depends_on:
+      - ollama
+    # Bonjour discovery (the app's « find on the network ») does not cross
+    # Docker's bridge network, so it is off in the image and the app is
+    # given the address by hand (http://<pi>.local:3000). On Linux, to be
+    # discovered: uncomment `network_mode: host`, remove `ports`, set
+    # TWOODY_BONJOUR_DISABLED: "0", and use http://127.0.0.1:11434/v1 with
+    # the ollama service published on 127.0.0.1:11434.
+    # network_mode: host
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    environment:
+      # Keep the last model loaded for 30 minutes between questions: on a
+      # Pi, loading a 4B model takes several seconds.
+      OLLAMA_KEEP_ALIVE: 30m
+    # Not published: only twoody-server talks to it. Uncomment to reach
+    # it from the host (for example to pull with a local `ollama` CLI).
+    # ports:
+    #   - "127.0.0.1:11434:11434"
 
 volumes:
   twoody_local_data:
+  ollama_models:
