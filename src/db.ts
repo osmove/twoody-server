@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
 import { join } from "path";
 import { homedir } from "os";
 import { chmodSync, existsSync, mkdirSync } from "fs";
@@ -352,6 +352,56 @@ export const faceEmbeddings = sqliteTable("face_embeddings", {
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 });
 
+/// One call to a model, whoever made it: a chat answer, a Twoody Code or
+/// Agent step (reported by the desktop app), a memory extraction. What
+/// the usage and performance screens add up (Jimmy, 29/09/2026). Times in
+/// ms; `cachedTokens`, `promptMs`, `generationMs` and `ttftMs` are null
+/// when the runtime did not say; `estimated` when the tokens were counted
+/// from the characters. `messageId`: the answer it came with, if any.
+export const usageEvents = sqliteTable("usage_events", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id),
+  at: integer("at", { mode: "timestamp_ms" }).notNull(),
+  source: text("source").notNull(),
+  model: text("model"),
+  client: text("client"),
+  promptTokens: integer("prompt_tokens").notNull().default(0),
+  completionTokens: integer("completion_tokens").notNull().default(0),
+  cachedTokens: integer("cached_tokens"),
+  promptMs: integer("prompt_ms"),
+  generationMs: integer("generation_ms"),
+  ttftMs: integer("ttft_ms"),
+  estimated: integer("estimated", { mode: "boolean" }).notNull().default(false),
+  messageId: text("message_id"),
+});
+
+/// What this computer's load was: 15-s samples (span 15) for 48 h, then
+/// 5-min averages (span 300) for 30 days (src/usageStore.ts). Null where
+/// the system does not say (a GPU's load off macOS, a runtime not running).
+export const usageSamples = sqliteTable("usage_samples", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: text("user_id").notNull().references(() => users.id),
+  at: integer("at", { mode: "timestamp_ms" }).notNull(),
+  spanS: integer("span_s").notNull().default(15),
+  cpuPct: real("cpu_pct"),
+  ramUsedBytes: integer("ram_used_bytes"),
+  ramTotalBytes: integer("ram_total_bytes"),
+  gpuPct: real("gpu_pct"),
+  runtimeRssBytes: integer("runtime_rss_bytes"),
+  appRssBytes: integer("app_rss_bytes"),
+});
+
+/// The computer the samples come from, as the desktop app last said.
+export const usageMachines = sqliteTable("usage_machines", {
+  userId: text("user_id").primaryKey().references(() => users.id),
+  cpuModel: text("cpu_model"),
+  cores: integer("cores"),
+  ramTotalBytes: integer("ram_total_bytes"),
+  gpuName: text("gpu_name"),
+  os: text("os"),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
 // ── migrations (run once at boot) ────────────────────────────────────────────
 
 sqlite.exec(`
@@ -648,6 +698,54 @@ sqlite.exec(`
     content_type TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS usage_events (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    at INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    model TEXT,
+    client TEXT,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_tokens INTEGER,
+    prompt_ms INTEGER,
+    generation_ms INTEGER,
+    ttft_ms INTEGER,
+    estimated INTEGER NOT NULL DEFAULT 0,
+    message_id TEXT
+  );
+  CREATE INDEX IF NOT EXISTS usage_events_user_at ON usage_events (user_id, at);
+  CREATE UNIQUE INDEX IF NOT EXISTS usage_events_message ON usage_events (message_id) WHERE message_id IS NOT NULL;
+
+  CREATE TABLE IF NOT EXISTS usage_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    at INTEGER NOT NULL,
+    span_s INTEGER NOT NULL DEFAULT 15,
+    cpu_pct REAL,
+    ram_used_bytes INTEGER,
+    ram_total_bytes INTEGER,
+    gpu_pct REAL,
+    runtime_rss_bytes INTEGER,
+    app_rss_bytes INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS usage_samples_user_at ON usage_samples (user_id, at);
+  CREATE INDEX IF NOT EXISTS usage_samples_span_at ON usage_samples (span_s, at);
+
+  CREATE TABLE IF NOT EXISTS usage_machines (
+    user_id TEXT PRIMARY KEY REFERENCES users(id),
+    cpu_model TEXT,
+    cores INTEGER,
+    ram_total_bytes INTEGER,
+    gpu_name TEXT,
+    os TEXT,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS usage_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
   );
 `);
 

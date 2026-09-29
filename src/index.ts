@@ -14,6 +14,7 @@ import {
 } from "./tunnel/index.js";
 import { adminToken } from "./adminAccess.js";
 import { reindex } from "./documents/library.js";
+import { startUsageMaintenance } from "./usageStore.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -45,6 +46,9 @@ enforceSingleUserGuard();
 
 const app = await buildApp();
 const setupToken = ensureSetupToken();
+// The answers kept before usage_events existed, copied once; the machine's
+// load samples thinned out now and every hour.
+startUsageMaintenance((message) => console.log(`  ${message}`));
 
 // Read the version off package.json so Bonjour TXT records stamp
 // the right release without us hand-bumping a string in two places.

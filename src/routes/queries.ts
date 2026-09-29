@@ -1,5 +1,6 @@
 import { relative, isAbsolute } from "node:path";
 import { clientOf } from "./usage.js";
+import { recordUsageEvent, type UsageEventInput } from "../usageStore.js";
 import { askedToRemember, learnFromMessage, rememberFacts } from "../memoryLearning.js";
 import { retrieveDocuments } from "../documents/retrieval.js";
 import { documentAccess } from "../documents/access.js";
@@ -208,8 +209,15 @@ async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body:
     const thinkFilter = createThinkFilter((delta) => {
       written += delta;
     });
-    const reported = await streamFromProvider(provider, chatMessages, 0.2, thinkFilter.push, upstream.signal);
+    const asked = Date.now();
+    let first = 0;
+    const reported = await streamFromProvider(provider, chatMessages, 0.2, (delta) => {
+      first ||= Date.now();
+      thinkFilter.push(delta);
+    }, upstream.signal);
     thinkFilter.flush();
+    // A compaction is the model working for the conversation: counted as chat.
+    recordModelCall(auth.userId, "chat", "model" in provider ? provider.model : null, clientOf(auth), reported, messagesChars(chatMessages), written.length, asked, first, Date.now());
     const summary = written.trim();
     if (!summary) return reply.code(502).send({ error: "provider_error", message: "the model wrote no summary" });
 
@@ -367,6 +375,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   });
 
   let aggregated = "";
+  const timing = { started: 0, first: 0, sentChars: 0 };
   let reasoningMs: number | null = null;
   let answerNowKey: string | null = null;
   let answeredBy: { kind: string; model: string | null } | null = null;
@@ -454,28 +463,43 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // (twoody-app/utils/chatStream.js) — the question then reached the
     // computer twice. Opened, the keepalive also runs while it waits.
     startSse();
+    // The usage screen's speed: from the call to the model to its first
+    // token (reasoning or answer), and from there to its last.
+    timing.sentChars = messagesChars(chatMessages);
+    timing.started = Date.now();
     const reported = await streamFromProvider(
       provider,
       chatMessages,
       readTemperature(userContext.prefs),
-      thinkFilter.push,
+      (delta) => {
+        timing.first ||= Date.now();
+        thinkFilter.push(delta);
+      },
       upstream.signal,
-      { effort: readEffort(parsed.effort), onReasoning, answerNow: answerNowSignal },
+      {
+        effort: readEffort(parsed.effort),
+        onReasoning: (delta) => {
+          timing.first ||= Date.now();
+          onReasoning(delta);
+        },
+        answerNow: answerNowSignal,
+      },
     );
+    const ended = Date.now();
     thinkFilter.flush();
     if (reasoningStarted && reasoningMs === null) reasoningMs = Date.now() - reasoningStarted;
     // The context gauge under the composer: what the runtime counted, or
     // a count from the characters when it did not say.
     const usage = reported
-      ? { ...reported, estimated: false }
-      : { prompt_tokens: estimateTokens(messagesChars(chatMessages)), completion_tokens: estimateTokens(aggregated.length), estimated: true };
+      ? { prompt_tokens: reported.prompt_tokens, completion_tokens: reported.completion_tokens, estimated: false }
+      : { prompt_tokens: estimateTokens(timing.sentChars), completion_tokens: estimateTokens(aggregated.length + reasoning.length), estimated: true };
     startSse();
 
     // Persist the assistant reply now that we have the full body.
     // Same `provider`/`model` we just dispatched against — gives the
     // history view a "answered by" chip per turn.
     const providerModel = "model" in provider ? provider.model : null;
-    insertMessage({
+    const messageId = insertMessage({
       discussionId: discussion.id,
       userId:       auth.userId,
       role:         "assistant",
@@ -488,6 +512,20 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       vaultRef:     vaultRef ? `${vaultRef}#reply` : null,
       usage,
       client:       clientOf(auth),
+    });
+    countCall({
+      userId:           auth.userId,
+      source:           "chat",
+      model:            providerModel,
+      client:           clientOf(auth),
+      promptTokens:     usage.prompt_tokens,
+      completionTokens: usage.completion_tokens,
+      cachedTokens:     reported?.cached_tokens ?? null,
+      promptMs:         reported?.prompt_ms ?? null,
+      generationMs:     reported?.generation_ms ?? (timing.first ? ended - timing.first : null),
+      ttftMs:           timing.first ? timing.first - timing.started : null,
+      estimated:        usage.estimated,
+      messageId,
     });
     touchDiscussion(discussion.id);
     publishEvent({
@@ -528,7 +566,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         sourceRef: discussion.id,
         ask: async (extraction) => {
           let text = "";
-          await streamFromProvider(provider, extraction, 0, (delta) => { text += delta; }, AbortSignal.timeout(60_000));
+          const asked = Date.now();
+          let first = 0;
+          const spent = await streamFromProvider(provider, extraction, 0, (delta) => { first ||= Date.now(); text += delta; }, AbortSignal.timeout(60_000));
+          recordModelCall(auth.userId, "memory", providerModel, clientOf(auth), spent, messagesChars(extraction), text.length, asked, first, Date.now());
           // A model that reasons first writes it before the facts.
           return text.replace(/<think>[\s\S]*?(?:<\/think>|$)/g, "");
         },
@@ -539,7 +580,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       // Keep what was written: the conversation would otherwise show a
       // question with no answer, and the next turn's history would lack it.
       if (aggregated.trim()) {
-        insertMessage({
+        const messageId = insertMessage({
           discussionId: discussion.id,
           userId:       auth.userId,
           role:         "assistant",
@@ -547,6 +588,20 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
           provider:     answeredBy?.kind ?? null,
           model:        answeredBy?.model ?? null,
           vaultRef:     vaultRef ? `${vaultRef}#reply` : null,
+        });
+        // Stopped, but the model worked: counted, from the characters.
+        const stopped = Date.now();
+        countCall({
+          userId:           auth.userId,
+          source:           "chat",
+          model:            answeredBy?.model ?? null,
+          client:           clientOf(auth),
+          promptTokens:     estimateTokens(timing.sentChars),
+          completionTokens: estimateTokens(aggregated.length),
+          generationMs:     timing.first ? stopped - timing.first : null,
+          ttftMs:           timing.first ? timing.first - timing.started : null,
+          estimated:        true,
+          messageId,
         });
         touchDiscussion(discussion.id);
       }
@@ -722,7 +777,16 @@ async function resolveProvider(userId: string, requestedModel?: string): Promise
   );
 }
 
-type Usage = { prompt_tokens: number; completion_tokens: number };
+/// What the runtime said the call took: its tokens, and — llama.cpp's
+/// `timings`, OpenAI's `prompt_tokens_details` — the prompt tokens it had
+/// in cache and the ms it spent reading the prompt and writing.
+type Usage = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_tokens?: number | null;
+  prompt_ms?: number | null;
+  generation_ms?: number | null;
+};
 
 /// Streams the answer; resolves with the tokens it took when the
 /// provider says (the local runtimes, asked with stream_options).
@@ -746,6 +810,45 @@ async function streamFromProvider(
       return null;
     case "local_openai":
       return streamLocal(provider.baseUrl, chatMessages, provider.model, temperature, onDelta, signal, options);
+  }
+}
+
+/// One call to a model other than the answer itself (a memory extraction,
+/// a compaction), for the usage screen: what the runtime said, or a count
+/// from the characters.
+function recordModelCall(
+  userId: string,
+  source: "chat" | "memory",
+  model: string | null,
+  client: string | null,
+  reported: Usage | null,
+  sentChars: number,
+  writtenChars: number,
+  asked: number,
+  first: number,
+  ended: number,
+) {
+  countCall({
+    userId,
+    source,
+    model,
+    client,
+    promptTokens: reported?.prompt_tokens ?? estimateTokens(sentChars),
+    completionTokens: reported?.completion_tokens ?? estimateTokens(writtenChars),
+    cachedTokens: reported?.cached_tokens ?? null,
+    promptMs: reported?.prompt_ms ?? null,
+    generationMs: reported?.generation_ms ?? (first ? ended - first : null),
+    ttftMs: first ? first - asked : null,
+    estimated: !reported,
+  });
+}
+
+/// The count is not worth failing what the model was asked for.
+function countCall(event: UsageEventInput) {
+  try {
+    recordUsageEvent(event);
+  } catch {
+    // counted next time
   }
 }
 
@@ -1100,6 +1203,7 @@ async function consumeOpenAIStream(
   const dec = new TextDecoder();
   let buf = "";
   let usage: Usage | null = null;
+  let timings: RuntimeTimings | null = null;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -1115,7 +1219,8 @@ async function consumeOpenAIStream(
       try {
         const evt = JSON.parse(raw) as {
           choices?: Array<{ delta?: { content?: string; reasoning?: string; reasoning_content?: string } }>;
-          usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
+          usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; prompt_tokens_details?: { cached_tokens?: unknown } };
+          timings?: RuntimeTimings;
         };
         const delta = evt.choices?.[0]?.delta;
         const thought = delta?.reasoning ?? delta?.reasoning_content ?? "";
@@ -1123,17 +1228,42 @@ async function consumeOpenAIStream(
         const text = delta?.content ?? "";
         if (text) onDelta(text);
         if (typeof evt.usage?.prompt_tokens === "number") {
+          const cached = evt.usage.prompt_tokens_details?.cached_tokens;
           usage = {
+            ...(usage ?? {}),
             prompt_tokens: evt.usage.prompt_tokens,
             completion_tokens: typeof evt.usage.completion_tokens === "number" ? evt.usage.completion_tokens : 0,
+            ...(typeof cached === "number" ? { cached_tokens: cached } : {}),
           };
         }
+        if (evt.timings && typeof evt.timings === "object") timings = evt.timings;
       } catch {
         // ignore
       }
     }
   }
-  return usage;
+  return withTimings(usage, timings);
+}
+
+/// llama.cpp's last chunk: prompt tokens read (past the cache) and the ms
+/// it took, tokens written and the ms it took, tokens found in cache.
+type RuntimeTimings = { prompt_n?: unknown; prompt_ms?: unknown; predicted_n?: unknown; predicted_ms?: unknown; cache_n?: unknown };
+
+export function withTimings(usage: Usage | null, timings: RuntimeTimings | null): Usage | null {
+  if (!timings) return usage;
+  const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null);
+  const promptN = num(timings.prompt_n);
+  const predictedN = num(timings.predicted_n);
+  const cacheN = num(timings.cache_n);
+  const base: Usage | null =
+    usage ?? (promptN !== null && predictedN !== null ? { prompt_tokens: promptN + (cacheN ?? 0), completion_tokens: predictedN } : null);
+  if (!base) return null;
+  return {
+    ...base,
+    cached_tokens: base.cached_tokens ?? cacheN,
+    prompt_ms: num(timings.prompt_ms) !== null ? Math.round(num(timings.prompt_ms)!) : null,
+    generation_ms: num(timings.predicted_ms) !== null ? Math.round(num(timings.predicted_ms)!) : null,
+  };
 }
 
 // ─── Discussion helpers ─────────────────────────────────────────────────────
@@ -1237,10 +1367,11 @@ function insertMessage(args: {
   vaultRef?: string | null;
   usage?: { prompt_tokens: number; completion_tokens: number; estimated?: boolean } | null;
   client?: string | null;
-}) {
+}): string {
+  const id = generateId();
   db.insert(messages)
     .values({
-      id:           generateId(),
+      id,
       discussionId: args.discussionId,
       userId:       args.userId,
       role:         args.role,
@@ -1258,6 +1389,7 @@ function insertMessage(args: {
       createdAt:    new Date(),
     })
     .run();
+  return id;
 }
 
 function setDiscussionTitle(id: string, prompt: string) {
