@@ -47,8 +47,8 @@ llama.cpp; standalone, run [Ollama](https://ollama.com), llama.cpp's
 | | Needs | Command |
 |---|---|---|
 | Docker (server + Ollama) | Docker with Compose | `docker compose up -d` — see [Docker](#docker) |
-| npm | Node.js 22+ | `npm install -g twoody-server` (or `npm install -g twoody`) |
-| pip | Python 3.9+ and Node.js 22+ | `pip install twoody` (runs the npm package through `npx`) |
+| npm | Node.js 22+ | `npm install -g twoody-server`, or `npm install -g twoody` (the Twoody CLI, whose `twoody serve` runs this server) |
+| pip | Python 3.9+ and Node.js 22+ | `pip install twoody` (runs the `twoody` npm package through `npx`: `twoody serve`) |
 
 The npm command:
 
@@ -57,6 +57,10 @@ npm install -g twoody-server
 twoody-server --llm http://127.0.0.1:11434/v1 --data-dir ~/.twoody/data
 twoody-server --help      # --port, --host, --data-dir, --llm, --pairing-code, --local-only
 ```
+
+With the CLI (`npm install -g twoody` or `pip install twoody`), `twoody serve`
+(alias `twoody server [options]`) takes the same options, and `twoody setup`
+then creates the account with the setup token.
 
 Every other setting is an environment variable ([Environment](#environment)).
 On first start the server prints a setup token: see
