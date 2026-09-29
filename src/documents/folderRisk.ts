@@ -9,6 +9,8 @@ import { posix, win32 } from "node:path";
 // and Linux, the system directories and ~/Library — keychains, mail
 // stores, application data. On Windows, its system folders and AppData,
 // which is what ~/Library is there; Windows compares paths without case.
+// One folder under ~/Library is the person's own: iCloud Drive
+// (~/Library/Mobile Documents/com~apple~CloudDocs), granted like any other.
 
 export type FolderRisk = "too_broad" | "sensitive";
 
@@ -31,7 +33,8 @@ export function folderRisk(real: string, home: string, platform: NodeJS.Platform
     return "sensitive";
   }
   const underHome = inside(house, target) ? target.slice(house.length).split(path.sep).filter(Boolean) : null;
-  if (underHome?.[0] === (windows ? "appdata" : "Library")) return "sensitive";
+  const iCloudDrive = !windows && underHome?.[1] === "Mobile Documents" && underHome[2] === "com~apple~CloudDocs";
+  if (underHome?.[0] === (windows ? "appdata" : "Library") && !iCloudDrive) return "sensitive";
   if (segments.some((segment) => segment.startsWith("."))) return "sensitive";
   return null;
 }

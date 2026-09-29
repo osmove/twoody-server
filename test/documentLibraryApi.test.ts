@@ -72,3 +72,11 @@ test('revoked grant makes saved IDs unreadable',async()=>{
  sqlite.prepare('DELETE FROM document_folders WHERE id=?').run('folder');
  assert.equal((await app.inject({url:'/local_documents/files/po',headers})).statusCode,404);
 });
+test('the home-folder preview lists what the walk leaves out',async()=>{
+ assert.equal((await app.inject({url:'/local_documents/personal'})).statusCode,401);
+ const preview=(await app.inject({url:'/local_documents/personal',headers})).json();
+ assert.equal(preview.path,homedir());
+ for(const name of ['Library','AppData','node_modules','Caches'])assert.ok(preview.skipped_directories.includes(name),name);
+ for(const ext of ['.app','.photoslibrary','.musiclibrary'])assert.ok(preview.skipped_bundles.includes(ext),ext);
+ assert.equal(preview.file_limit,20000);
+});

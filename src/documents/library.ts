@@ -2,14 +2,15 @@ import {indexedDirectory, type IndexedEntry} from "./tree.js";
 import { indexSemantic } from "./semantic.js";
 import { and, eq } from "drizzle-orm";
 import { realpathSync, statSync } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, extname, join, relative } from "node:path";
 import { generateId } from "../auth.js";
 import { db, documentFolders, documents, sqlite } from "../db.js";
 import { chunkSections } from "./chunk.js";
-import { extractSections, isSupported, MAX_FILE_BYTES } from "./extract.js";
+import { extractSections, MAX_FILE_BYTES } from "./extract.js";
 import { folderRisk } from "./folderRisk.js";
+import { folderReadable, walk } from "./walk.js";
 import { buildMatchQuery, metadataScore, queryTerms, selectPassages } from "./query.js";
 
 // The user's document library: the folders they granted, the index
@@ -23,7 +24,7 @@ import { buildMatchQuery, metadataScore, queryTerms, selectPassages } from "./qu
 // ─── Folders ────────────────────────────────────────────────────────────────
 
 export class FolderRejected extends Error {
-  constructor(public readonly reason: "not_found" | "not_a_directory" | "too_broad" | "sensitive" | "already_added") {
+  constructor(public readonly reason: "not_found" | "not_a_directory" | "too_broad" | "sensitive" | "already_added" | "not_permitted") {
     super(reason);
   }
 }
@@ -79,8 +80,13 @@ export function listFolders(userId: string) {
     });
 }
 
-export function addFolder(userId: string, input: string, personalRoot = false) {
+/// Grants a folder. Its first entry is read before it is kept, so that
+/// macOS asks the person now (Desktop, Documents, Downloads, iCloud
+/// Drive) rather than in the middle of an index pass, and a refusal is
+/// said at once ("not_permitted") instead of leaving an empty folder.
+export async function addFolder(userId: string, input: string, personalRoot = false) {
   const path = canonicalFolder(input, personalRoot);
+  if (!(await folderReadable(path))) throw new FolderRejected("not_permitted");
   const existing = db
     .select()
     .from(documentFolders)
@@ -121,41 +127,14 @@ export interface IndexStatus {
   started_at: string | null;
   finished_at: string | null;
   limited?: boolean;
+  /// Folders the system would not let Twoody read (see walk.ts).
+  denied?: string[];
 }
 
 const jobs = new Map<string, IndexStatus>();
 
 export function indexStatus(userId: string): IndexStatus {
   return jobs.get(userId) ?? { running: false, total: 0, done: 0, current: null, started_at: null, finished_at: null };
-}
-
-const SKIPPED_DIRECTORIES = new Set(["node_modules", "library", "appdata", "__macosx", "$recycle.bin", "applications", "windows", "program files", "programdata", "cache", "caches"]);
-const MAX_FILES_PER_FOLDER = 20_000;
-
-async function walk(root: string): Promise<{files: string[]; limited: boolean}> {
-  const files: string[] = [];
-  const pending = [root];
-  while (pending.length > 0 && files.length < MAX_FILES_PER_FOLDER) {
-    const dir = pending.pop()!;
-    let entries;
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      continue; // unreadable directory: skip it, keep going
-    }
-    for (const entry of entries) {
-      if (entry.name.startsWith(".") || entry.name.startsWith("~$")) continue;
-      const path = join(dir, entry.name);
-      // Symlinks are not followed: a link must not widen the grant.
-      if (entry.isDirectory()) {
-        if (!SKIPPED_DIRECTORIES.has(entry.name.toLowerCase())) pending.push(path);
-      } else if (entry.isFile() && isSupported(path) && !/^(?:credentials|secrets?|tokens?|passwords?|service[-_]?account)(?:[.-]|$)/i.test(entry.name)) {
-        files.push(path);
-        if (files.length >= MAX_FILES_PER_FOLDER) return {files, limited: true};
-      }
-    }
-  }
-  return {files, limited: false};
 }
 
 /// Brings the index in line with the user's folders. Resolves once the
@@ -182,6 +161,7 @@ export async function reindex(userId: string): Promise<IndexStatus> {
     for (const folder of folders) {
       const scan = await walk(folder.path);
       if (scan.limited) status.limited = true;
+      if (scan.denied.length > 0) status.denied = [...(status.denied ?? []), ...scan.denied].slice(0, 10);
       for (const path of scan.files) {
         if (seen.has(path)) continue;
         seen.add(path);

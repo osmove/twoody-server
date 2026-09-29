@@ -40,7 +40,7 @@ try {
     join(docs, "recette.txt"),
     "Pour préparer un gâteau au chocolat, mélanger les œufs, la farine et le beurre puis enfourner trente minutes.",
   );
-  const folder = lib.addFolder("test", docs);
+  const folder = await lib.addFolder("test", docs);
   await lib.reindex("test");
   const started = Date.now();
   sem.setSemantic("test", true);

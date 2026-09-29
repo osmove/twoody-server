@@ -20,6 +20,7 @@ import {
   removeFolder,
   searchPassages,
 } from "../documents/library.js";
+import { MAX_FILES_PER_FOLDER, SKIPPED_BUNDLES, SKIPPED_DIRECTORIES } from "../documents/walk.js";
 
 // Document library: the folders the user granted, the state of their
 // index, and a search endpoint (the same one /queries uses, exposed so a
@@ -34,6 +35,12 @@ import {
 export const MAX_SYNCED_CONTEXT_CHARS = 15_000;
 export function contextBudget(window: number): number {
   return Math.min(MAX_SYNCED_CONTEXT_CHARS, Math.floor(window * 3.5 * 0.35));
+}
+
+/// 409 for a folder already granted, 403 when the system refuses to let
+/// Twoody read it (macOS privacy settings), 422 for the rest.
+function rejectionStatus(err: FolderRejected): number {
+  return err.reason === "already_added" ? 409 : err.reason === "not_permitted" ? 403 : 422;
 }
 
 export async function localDocumentRoutes(app: FastifyInstance) {
@@ -142,7 +149,8 @@ export async function localDocumentRoutes(app: FastifyInstance) {
     schema: {tags: ["documents"], summary: "Preview the personal-files grant", security},
     handler: async (req, reply) => {
       if (!await requireAuth(req, reply)) return;
-      reply.send({path: homedir(), excludes: ["hidden files", "system and application data", "caches", "symlinks", "known credential filenames"], file_limit: 20000});
+      reply.send({path: homedir(), excludes: ["hidden files and folders", "system and application data", "caches", "developer folders", "photo and music libraries", "applications", "symlinks", "known credential filenames"],
+        skipped_directories: SKIPPED_DIRECTORIES, skipped_bundles: SKIPPED_BUNDLES, file_limit: MAX_FILES_PER_FOLDER});
     },
   });
   app.post<{Body: {confirmed?: boolean}}>("/local_documents/personal", {
@@ -151,11 +159,11 @@ export async function localDocumentRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply); if (!auth) return;
       try {
-        const folder = addFolder(auth.userId, homedir(), true);
+        const folder = await addFolder(auth.userId, homedir(), true);
         void reindex(auth.userId).catch(err => app.log.error(err, "document indexing failed"));
         reply.code(201).send({folder});
       } catch (err) {
-        if (err instanceof FolderRejected) return reply.code(err.reason === "already_added" ? 409 : 422).send({error: err.reason});
+        if (err instanceof FolderRejected) return reply.code(rejectionStatus(err)).send({error: err.reason});
         throw err;
       }
     },
@@ -175,12 +183,12 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       if (!path) return reply.code(422).send({ error: "path_required" });
 
       try {
-        const folder = addFolder(auth.userId, path);
+        const folder = await addFolder(auth.userId, path);
         void reindex(auth.userId).catch((err) => app.log.error(err, "document indexing failed"));
         reply.code(201).send({ folder });
       } catch (err) {
         if (err instanceof FolderRejected) {
-          return reply.code(err.reason === "already_added" ? 409 : 422).send({ error: err.reason });
+          return reply.code(rejectionStatus(err)).send({ error: err.reason });
         }
         throw err;
       }

@@ -48,3 +48,15 @@ test("personal-files opt-in permits only the exact home, never a disk or an ance
  }
  assert.equal(folderRisk('/Users/alex/.ssh','/Users/alex','darwin',true),'sensitive');
 });
+
+test("iCloud Drive, under ~/Library, is the one folder there that may be granted", () => {
+  const home = "/Users/claire";
+  const drive = "/Users/claire/Library/Mobile Documents/com~apple~CloudDocs";
+  assert.equal(folderRisk(drive, home, "darwin"), null);
+  assert.equal(folderRisk(`${drive}/Factures`, home, "darwin"), null);
+  assert.equal(folderRisk(`${drive}/.Trash`, home, "darwin"), "sensitive");
+  assert.equal(folderRisk("/Users/claire/Library/Mobile Documents", home, "darwin"), "sensitive");
+  assert.equal(folderRisk("/Users/claire/Library/Mobile Documents/com~apple~Preview", home, "darwin"), "sensitive");
+  assert.equal(folderRisk("C:\\Users\\Claire\\Library\\Mobile Documents\\com~apple~CloudDocs", "C:\\Users\\Claire", "win32"), null);
+  assert.equal(folderRisk("C:\\Users\\Claire\\AppData\\Mobile Documents\\com~apple~CloudDocs", "C:\\Users\\Claire", "win32"), "sensitive");
+});
