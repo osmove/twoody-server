@@ -1,4 +1,7 @@
 import { hostname } from "node:os";
+import { eq } from "drizzle-orm";
+import { authSessions, db } from "../db.js";
+import { unpairSession } from "../pairing.js";
 import { backendCall, BackendError } from "./backend.js";
 import {
   backendUrl,
@@ -304,20 +307,52 @@ function completeLink(file: AccountFile, answer: PollAnswer): void {
   });
 }
 
+/// The backend did not say it forgot this computer: account.json is kept.
+export class LeaveUnconfirmedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LeaveUnconfirmedError";
+  }
+}
+
+/// Undoes, on this computer, what the account gave: the sessions approved
+/// through it (devices and peers, account/approvals.ts) with their tunnel
+/// keys. Returns how many went.
+export function dropAccountSessions(): number {
+  const granted = db.select({ id: authSessions.id }).from(authSessions).where(eq(authSessions.origin, "account")).all();
+  for (const session of granted) unpairSession(session.id);
+  return granted.length;
+}
+
 /// Leaves the account: the backend forgets this computer (and the sessions
-/// it gave out through it), and account.json goes.
-export async function logout(): Promise<void> {
+/// it gave out through it), then account.json goes, with the sessions the
+/// account approved here. When the backend does not confirm (unreachable,
+/// or an error), nothing is dropped and LeaveUnconfirmedError is thrown —
+/// unless `force`, which leaves here anyway. A backend that no longer
+/// knows the computer or its session (401, 403, 404, 410) confirms it.
+export async function logout(options: { force?: boolean } = {}): Promise<{ confirmed: boolean; sessionsDropped: number }> {
+  const account = linkedAccount();
+  let confirmed = true;
+  if (account) {
+    try {
+      await backendCall({ backendUrl: account.backend_url, userToken: account.user_token, deviceToken: account.device_token }, `account_computers/${encodeURIComponent(account.computer.id)}`, {
+        method: "DELETE",
+      });
+    } catch (err) {
+      const gone = err instanceof BackendError && [401, 403, 404, 410].includes(err.status);
+      if (!gone) {
+        confirmed = false;
+        if (!options.force) throw new LeaveUnconfirmedError(err instanceof Error ? err.message : String(err));
+      }
+    }
+  }
   stopPolling();
   pending = null;
-  const account = linkedAccount();
-  if (account) {
-    await backendCall({ backendUrl: account.backend_url, userToken: account.user_token, deviceToken: account.device_token }, `account_computers/${encodeURIComponent(account.computer.id)}`, {
-      method: "DELETE",
-    }).catch(() => undefined);
-  }
+  const sessionsDropped = dropAccountSessions();
   removeAccountFile();
   lastError = null;
   emit();
+  return { confirmed, sessionsDropped };
 }
 
 /// Only for tests.

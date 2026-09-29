@@ -57,6 +57,12 @@ export const authSessions = sqliteTable("auth_sessions", {
   clientKind: text("client_kind").notNull().default("cli"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   expiresAt: integer("expires_at", { mode: "timestamp" }),
+  /// How the session was given, which the person asking cannot choose:
+  /// « owner » (signup, signin, or pairing with the setup token — the
+  /// Desktop that started this server, or its first owner), « code »
+  /// (pairing with the code on the screen), « account » (approved through
+  /// the Twoody account, account/approvals.ts). Null for older sessions.
+  origin: text("origin"),
 });
 
 export const pairingCodes = sqliteTable("pairing_codes", {
@@ -468,7 +474,8 @@ sqlite.exec(`
     token_digest TEXT NOT NULL,
     client_kind TEXT NOT NULL DEFAULT 'cli',
     created_at INTEGER NOT NULL,
-    expires_at INTEGER
+    expires_at INTEGER,
+    origin TEXT
   );
 
   CREATE TABLE IF NOT EXISTS pairing_codes (
@@ -871,6 +878,17 @@ const tunnelPeerColumns = sqlite.prepare("PRAGMA table_info(tunnel_peers)").all(
 }>;
 if (!tunnelPeerColumns.some((column) => column.name === "session_id")) {
   sqlite.exec("ALTER TABLE tunnel_peers ADD COLUMN session_id TEXT");
+}
+
+// How a session was given (29/09/2026). The sessions from before are
+// the Desktop's own when they were its signup or its pairing as « Twoody
+// Desktop » with no tunnel key (a phone always brings one).
+const sessionColumns = sqlite.prepare("PRAGMA table_info(auth_sessions)").all() as Array<{ name: string }>;
+if (!sessionColumns.some((column) => column.name === "origin")) {
+  sqlite.exec("ALTER TABLE auth_sessions ADD COLUMN origin TEXT");
+  sqlite.exec(
+    "UPDATE auth_sessions SET origin = 'owner' WHERE client_kind = 'desktop' OR (client_kind = 'pair:Twoody Desktop' AND id NOT IN (SELECT session_id FROM tunnel_peers WHERE session_id IS NOT NULL))",
+  );
 }
 
 // Contacts and events copied from the Mac's own apps (29/09/2026).

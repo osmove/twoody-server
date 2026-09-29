@@ -60,6 +60,8 @@ export interface FakeBackend {
   deviceTokens: string[];
   /// Added to an approved login's poll answer (e.g. {account: {email}}).
   pollExtras: Record<string, unknown>;
+  /// "METHOD /path" → the status to answer instead (until deleted).
+  forced: Map<string, number>;
   /// Adds a computer as if created by the Desktop (POST /account_computers).
   addComputer(args: { name: string; public_key: string; kind?: "desktop" | "server"; approver_keys?: string[] }): FakeComputer;
   approveLogin(userCode: string, approver?: { kind: "computer" | "phone"; public_key: string; name?: string } | null): void;
@@ -90,6 +92,7 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
   const calls: string[] = [];
   const deviceTokens: string[] = [];
   const pollExtras: Record<string, unknown> = {};
+  const forced = new Map<string, number>();
   let nextId = 40;
   let nextRid = 300;
 
@@ -116,6 +119,12 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
       res.writeHead(status, { "content-type": "application/json" });
       res.end(body === undefined ? "" : JSON.stringify(body));
     };
+    const forcedStatus = forced.get(`${req.method} ${path}`);
+    if (forcedStatus !== undefined) {
+      res.writeHead(forcedStatus, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: `forced_${forcedStatus}` }));
+      return;
+    }
     const user = req.headers["x-user-token"] === userToken;
     const credential = String(req.headers["x-computer-credential"] ?? "");
     const body = req.method === "POST" || req.method === "PATCH" ? await readBody(req) : {};
@@ -280,6 +289,7 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
     calls,
     deviceTokens,
     pollExtras,
+    forced,
     addComputer,
     approveLogin(code, approver) {
       const login = logins.find((l) => l.user_code === code);

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { and, eq, gte, isNotNull } from "drizzle-orm";
 import { authSessions, db, devices, messages, tunnelPeers } from "../db.js";
-import { requireAuth } from "../auth.js";
+import { isOwnerSession, requireAuth } from "../auth.js";
 import {
   eventsBetween,
   generationTps,
@@ -296,13 +296,12 @@ export function usageCsv(events: UsageEventRow[]): string {
 
 // ── what the desktop app reports ────────────────────────────────────────────
 
-/// This computer's own app, and nothing else: its session is « desktop »
-/// (the account made on first launch) or « pair:Twoody Desktop » (paired
-/// with the setup token), and never a phone's, which has a tunnel peer.
+/// This computer's own app, and nothing else: its session is the owner's
+/// (the account made on first launch, or the pairing with the setup token:
+/// auth_sessions.origin), and never a phone's, which has a tunnel peer.
 export function isThisComputersApp(auth: { sessionId?: string; deviceId?: string }): boolean {
   if (auth.deviceId || !auth.sessionId) return false;
-  const [session] = db.select({ kind: authSessions.clientKind }).from(authSessions).where(eq(authSessions.id, auth.sessionId)).limit(1).all();
-  if (!session || (session.kind !== "desktop" && session.kind !== "pair:Twoody Desktop")) return false;
+  if (!isOwnerSession(auth.sessionId)) return false;
   const [peer] = db.select({ key: tunnelPeers.publicKey }).from(tunnelPeers).where(eq(tunnelPeers.sessionId, auth.sessionId)).limit(1).all();
   return !peer;
 }

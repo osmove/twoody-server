@@ -191,20 +191,31 @@ async function approve(args: string[]): Promise<number> {
   return 0;
 }
 
-async function logout(): Promise<number> {
-  const done = await local("/account/link", { method: "DELETE" });
+async function logout(args: string[]): Promise<number> {
+  const force = args.includes("--force");
+  const done = await local(`/account/link${force ? "?force=1" : ""}`, { method: "DELETE" });
   if (done && done.status === 200) {
-    console.log("This server left the Twoody account.");
+    console.log(done.body?.confirmed === false ? "This server left the Twoody account here; the account did not confirm it, remove it there too." : "This server left the Twoody account.");
     return 0;
   }
-  if (done && done.status !== 200) {
+  if (done && done.status === 502) {
+    console.error(`${done.body?.message ?? "The account did not confirm."}\nTry again, or run twoody-server logout --force to leave here anyway.`);
+    return 1;
+  }
+  if (done) {
     console.error(`The server refused: ${done.body?.message ?? done.body?.error ?? done.status}`);
     return 1;
   }
-  const { logout: leave } = await import("../account/link.js");
-  await leave();
-  console.log("This server left the Twoody account.");
-  return 0;
+  const { logout: leave, LeaveUnconfirmedError } = await import("../account/link.js");
+  try {
+    const { confirmed } = await leave({ force });
+    console.log(confirmed ? "This server left the Twoody account." : "This server left the Twoody account here; the account did not confirm it, remove it there too.");
+    return 0;
+  } catch (err) {
+    if (!(err instanceof LeaveUnconfirmedError)) throw err;
+    console.error(`The account did not confirm (${err.message}); this server is still linked (account.json kept).\nTry again, or run twoody-server logout --force to leave here anyway.`);
+    return 1;
+  }
 }
 
 export async function runAccountCommand(command: string, args: string[]): Promise<number> {
@@ -214,7 +225,7 @@ export async function runAccountCommand(command: string, args: string[]): Promis
     case "approve":
       return approve(args);
     case "logout":
-      return logout();
+      return logout(args);
     default:
       console.error(`unknown command: ${command}`);
       return 2;

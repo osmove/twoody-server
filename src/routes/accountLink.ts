@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { approveRequest, denyRequest, fetchPending, judge } from "../account/approvals.js";
 import { BackendError } from "../account/backend.js";
-import { LinkThrottledError, linkState, linkView, logout, startLink } from "../account/link.js";
+import { LeaveUnconfirmedError, LinkThrottledError, linkState, linkView, logout, startLink } from "../account/link.js";
 import { ensureAccountFile, fingerprint, linkedAccount } from "../account/store.js";
 import { LocalOnlyError } from "../outbound.js";
 import { isFresh } from "../pairing.js";
@@ -20,7 +20,8 @@ import { ownerRequest, requireOwner } from "../localAccess.js";
 //   POST   /account/link       starts a code — or answers with the live one, never replacing it
 //                               (409 when already linked; from the network: only while fresh,
 //                               and 429 when a code was asked for too recently)
-//   DELETE /account/link       leaves the account
+//   DELETE /account/link       leaves the account ({…, confirmed}); 502 leave_unconfirmed when the
+//                               backend did not confirm (still linked); ?force=1 leaves here anyway
 //   GET    /account/approvals  requests waiting on this computer (console approval, rule 3)
 //   POST   /account/approvals/:id {decision:"approve"|"deny"}
 //
@@ -94,12 +95,20 @@ export async function accountLinkRoutes(app: FastifyInstance) {
     },
   });
 
-  app.delete("/account/link", {
-    schema: { tags: ["session"], summary: "Leave the Twoody account (this machine or the admin token)" },
+  app.delete<{ Querystring: { force?: string } }>("/account/link", {
+    schema: { tags: ["session"], summary: "Leave the Twoody account (this machine or the admin token); ?force=1 leaves here even when the backend does not confirm" },
     handler: async (req, reply) => {
       if (!requireOwner(req, reply)) return;
-      await logout();
-      return reply.send(view(true));
+      const force = req.query?.force === "1" || req.query?.force === "true";
+      try {
+        const { confirmed } = await logout({ force });
+        return reply.send({ ...view(true), confirmed });
+      } catch (err) {
+        if (err instanceof LeaveUnconfirmedError) {
+          return reply.code(502).send({ error: "leave_unconfirmed", message: `The account did not confirm (${err.message}); this server is still linked.`, ...view(true) });
+        }
+        throw err;
+      }
     },
   });
 

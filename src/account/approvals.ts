@@ -121,7 +121,10 @@ export async function fetchPending(account: LinkedAccount): Promise<PendingReque
 /// needs to reach it. A session made for a decision the backend then
 /// refuses is undone.
 export async function approveRequest(account: LinkedAccount, request: PendingRequest): Promise<void> {
-  const paired = pairDevice({ deviceName: request.name, tunnelPublicKey: request.public_key, role: request.role });
+  // « account »: undone if this computer leaves the account or is removed
+  // from it (service.ts), and never taken for the Desktop, whatever name
+  // the requester gave itself.
+  const paired = pairDevice({ deviceName: request.name, tunnelPublicKey: request.public_key, role: request.role, origin: "account" });
   const payload = {
     localServerUrl: lanUrl(),
     localServerToken: paired.token,

@@ -1,10 +1,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { eq } from "drizzle-orm";
-import { requireAuth } from "../auth.js";
+import { isOwnerSession, requireAuth } from "../auth.js";
 import { BackendError } from "../account/backend.js";
 import { accountPeers, db } from "../db.js";
 import { ownerRequest } from "../localAccess.js";
-import { sessionKindOf } from "../peerSessions.js";
 import { LocalOnlyError } from "../outbound.js";
 import { listPeers, peerById, peerStatus, PeerUnavailableError, removePeer, requestPeer } from "../peers/index.js";
 
@@ -21,17 +20,14 @@ import { listPeers, peerById, peerStatus, PeerUnavailableError, removePeer, requ
 //   PATCH  /api/v1/peers/:computer_id {enabled}
 //   DELETE /api/v1/peers/:computer_id
 
-/// The Desktop's own sessions: made by /auth/signup or /auth/signin
-/// ("desktop"), or its pairing as « Twoody Desktop ». A phone, even through
-/// the tunnel, is not the Desktop.
-export function isDesktopSession(kind: string | null): boolean {
-  return kind === "desktop" || kind === "pair:Twoody Desktop";
-}
-
+/// The Desktop's own session — made by /auth/signup, /auth/signin or the
+/// pairing with the setup token (auth_sessions.origin « owner ») — or this
+/// machine / the admin token. Never by the name a device gave itself: a
+/// phone approved through the account may call itself « Twoody Desktop ».
 async function requireDesktop(req: FastifyRequest, reply: FastifyReply): Promise<{ userId: string } | null> {
   const auth = await requireAuth(req, reply);
   if (!auth) return null;
-  if (isDesktopSession(sessionKindOf(req)) || ownerRequest(req)) return auth;
+  if (isOwnerSession(auth.sessionId) || ownerRequest(req)) return auth;
   reply.code(403).send({ error: "desktop_only", message: "The account's computers are managed from Twoody Desktop." });
   return null;
 }

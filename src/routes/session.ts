@@ -82,7 +82,7 @@ export async function sessionRoutes(app: FastifyInstance) {
         })
         .run();
 
-      const { token, sessionId } = createAuthSession(userId, "desktop");
+      const { token, sessionId } = createAuthSession(userId, "desktop", "owner");
       reply.code(201).send({
         token,
         user_id: userId,
@@ -127,9 +127,11 @@ export async function sessionRoutes(app: FastifyInstance) {
         return reply.code(401).send({ error: "invalid_credentials" });
       }
 
+      // The password is the owner's, whatever the client calls itself.
       const { token, sessionId } = createAuthSession(
         user.id,
-        req.body.client_kind ?? "desktop"
+        req.body.client_kind ?? "desktop",
+        "owner"
       );
       reply.send({
         token,
@@ -191,7 +193,10 @@ export async function sessionRoutes(app: FastifyInstance) {
       // on carrying that spent token, so every phone that scanned it was
       // refused here. The code is what it shows now, in the same field,
       // so a phone already in people's hands needs no update to use it.
-      if (!verifySetupToken(setupToken) && !(hasUsers() && matchesActivePairingCode(setupToken))) {
+      // The setup token makes the owner (the Desktop spends it on itself at
+      // first launch); the code on the screen, another device.
+      const bySetupToken = verifySetupToken(setupToken);
+      if (!bySetupToken && !(hasUsers() && matchesActivePairingCode(setupToken))) {
         return reply.code(403).send({ error: "invalid_setup_token" });
       }
 
@@ -208,7 +213,7 @@ export async function sessionRoutes(app: FastifyInstance) {
       // The key swap happens there too, when the device brought one: this
       // computer's key is handed over only after the setup token has been
       // checked, so a device that is refused learns nothing about it.
-      const { token, sessionId, user: userRow, tunnelPublicKey } = pairDevice({ deviceName, tunnelPublicKey: offered || null });
+      const { token, sessionId, user: userRow, tunnelPublicKey } = pairDevice({ deviceName, tunnelPublicKey: offered || null, origin: bySetupToken ? "owner" : "code" });
       const userId = userRow.id;
 
       reply.code(201).send({
@@ -308,7 +313,7 @@ export async function sessionRoutes(app: FastifyInstance) {
           .run();
       }
 
-      const { token, sessionId } = createAuthSession(userId, "cli");
+      const { token, sessionId } = createAuthSession(userId, "cli", "code");
 
       reply.send({ token, user_id: userId, session_id: sessionId });
     },

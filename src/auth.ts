@@ -120,9 +120,14 @@ export async function verifyPassword(
   return timingSafeEqual(derived, expectedBuffer);
 }
 
+/// How a session was given (db.ts, auth_sessions.origin): what the one
+/// asking cannot choose, unlike its name.
+export type SessionOrigin = "owner" | "code" | "account";
+
 export function createAuthSession(
   userId: string,
-  clientKind = "cli"
+  clientKind = "cli",
+  origin: SessionOrigin | null = null
 ): { token: string; sessionId: string } {
   const token = generateToken();
   const sessionId = generateId();
@@ -135,10 +140,20 @@ export function createAuthSession(
       clientKind,
       createdAt: new Date(),
       expiresAt: null,
+      origin,
     })
     .run();
 
   return { token, sessionId };
+}
+
+/// Whether a session is this server's owner's: made by signup or signin,
+/// or by pairing with the setup token (the Desktop that started this
+/// server does). Never a name the requester chose.
+export function isOwnerSession(sessionId: string | undefined | null): boolean {
+  if (!sessionId) return false;
+  const [session] = db.select({ origin: authSessions.origin }).from(authSessions).where(eq(authSessions.id, sessionId)).limit(1).all();
+  return session?.origin === "owner";
 }
 
 /// Where a session given to another computer of the account (`peer:<name>`,

@@ -49,7 +49,9 @@ export function requireAdminAccess(req: FastifyRequest, reply: FastifyReply): bo
 
   const token = adminToken();
   if (!token) {
-    if (isLoopbackAddress(req.ip)) return true;
+    // A reverse proxy on this host makes every client look local: a
+    // request it forwarded is not this machine's.
+    if (isLoopbackAddress(req.ip) && !forwardedByProxy(req)) return true;
     reply.code(403).send({
       error: "admin_local_only",
       message: "The admin page is only served to the machine running Twoody Server. " +
@@ -106,11 +108,18 @@ function cookieValue(token: string): string {
   return createHash("sha256").update(`twoody-admin:${token}`).digest("hex");
 }
 
-function safeEqual(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left);
-  const rightBuffer = Buffer.from(right);
-  if (leftBuffer.length !== rightBuffer.length) return false;
-  return timingSafeEqual(leftBuffer, rightBuffer);
+/// Compared in constant time: both sides are hashed first, so neither the
+/// content nor the length of the secret shows in how long it takes.
+export function safeEqual(left: string, right: string): boolean {
+  const leftDigest = createHash("sha256").update(left).digest();
+  const rightDigest = createHash("sha256").update(right).digest();
+  return timingSafeEqual(leftDigest, rightDigest) && left === right;
+}
+
+/// Whether a proxy says it forwarded the request (X-Forwarded-For,
+/// Forwarded, X-Real-IP): then 127.0.0.1 is the proxy, not the client.
+export function forwardedByProxy(req: FastifyRequest): boolean {
+  return ["x-forwarded-for", "forwarded", "x-real-ip"].some((name) => req.headers[name] !== undefined);
 }
 
 function headerValue(value: string | string[] | undefined): string | null {

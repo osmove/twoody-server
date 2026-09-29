@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { createAuthSession, generateId, PLACEHOLDER_USER_NAME } from "./auth.js";
+import { createAuthSession, generateId, PLACEHOLDER_USER_NAME, type SessionOrigin } from "./auth.js";
 import { authSessions, db, documentFolders, users } from "./db.js";
 import { forgetTunnelPeersOfSession, rememberTunnelPeer, tunnelIdentity } from "./tunnel/identity.js";
 import { tunnelPeersChanged } from "./tunnel/index.js";
@@ -38,14 +38,14 @@ export function ensureLocalUser(): typeof users.$inferSelect {
   return db.select().from(users).where(eq(users.id, userId)).limit(1).all()[0]!;
 }
 
-export function pairDevice(args: { deviceName: string; tunnelPublicKey?: string | null; role?: PairingRole }): {
+export function pairDevice(args: { deviceName: string; tunnelPublicKey?: string | null; role?: PairingRole; origin?: SessionOrigin | null }): {
   token: string;
   sessionId: string;
   user: typeof users.$inferSelect;
   tunnelPublicKey?: string;
 } {
   const user = ensureLocalUser();
-  const { token, sessionId } = createAuthSession(user.id, sessionKindFor(args.role ?? "device", args.deviceName));
+  const { token, sessionId } = createAuthSession(user.id, sessionKindFor(args.role ?? "device", args.deviceName), args.origin ?? null);
   // The key swap, when the device brought one. The key goes with the
   // session: removing the device takes both.
   if (args.tunnelPublicKey) {

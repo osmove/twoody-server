@@ -27,7 +27,9 @@ Usage: twoody-server [options]
                                to enter on a signed-in device)
        twoody-server approve [id] [--deny]
                                allow (or refuse) a device waiting for access
-       twoody-server logout    take this server out of the account
+       twoody-server logout [--force]
+                               take this server out of the account (--force:
+                               here too when the account does not confirm)
 
 Options:
   -p, --port <port>         port to listen on (default 3000, or $PORT)
