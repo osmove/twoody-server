@@ -29,12 +29,12 @@ process.env.TWOODY_BACKEND_URL = backend.url;
 const { buildApp } = await import("../src/app.js");
 const { approveRequest, readPending } = await import("../src/account/approvals.js");
 const { newPairingKey } = await import("../src/account/keys.js");
-const { linkState, resetLinkForTests } = await import("../src/account/link.js");
+const { linkState, logout, resetLinkForTests, startLink } = await import("../src/account/link.js");
 const { startAccountService } = await import("../src/account/service.js");
 const { accountPath, linkedAccount, readAccountFile, writeAccountFile } = await import("../src/account/store.js");
 const { accountPeers, authSessions, db } = await import("../src/db.js");
 const { ensureLocalUser, pairDevice } = await import("../src/pairing.js");
-const { linkedPeers, listPeers, syncPeersWithAccount } = await import("../src/peers/index.js");
+const { accountComputers, linkedPeers, listPeers, requestPeer, syncPeersWithAccount } = await import("../src/peers/index.js");
 
 const app = await buildApp();
 test.after(async () => {
@@ -135,4 +135,50 @@ test("the computer that sends turns sets aside the peers the account no longer l
 
   const listed = await app.inject({ method: "GET", url: "/api/v1/peers", remoteAddress: "127.0.0.1", headers: { authorization: `Bearer ${pairDevice({ deviceName: "Twoody Desktop", origin: "owner" }).token}` } });
   assert.equal(listed.json().peers.find((p: { computer_id: string }) => p.computer_id === "999").state, "removed");
+});
+
+test("every call with the account's session carries the device token given at link time, whatever TWOODY_DEVICE_TOKEN says", async () => {
+  resetLinkForTests();
+  writeAccountFile({ device_token: "device-token-of-the-pi", pairing_key: newPairingKey(), approvers: [] });
+  process.env.TWOODY_DEVICE_TOKEN = "another-device-token";
+  process.env.TWOODY_LINK_POLL_MS = "20";
+  const service = startAccountService({ localBaseUrl: "http://127.0.0.1:1" });
+  try {
+    const view = await startLink();
+    const login = backend.logins.at(-1)!;
+    assert.equal(login.device_token, "device-token-of-the-pi", "the login carries the file's device token");
+    backend.approveLogin(view.user_code!, null);
+    const deadline = Date.now() + 3_000;
+    while (linkState() !== "linked") {
+      if (Date.now() > deadline) throw new Error("not linked");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(linkedAccount()!.device_token, "device-token-of-the-pi");
+
+    const from = backend.calls.length;
+    await service.heartbeat();
+    await service.approvals!.tick();
+    await accountComputers({ fresh: true });
+    const other = backend.addComputer({ name: "Mac mini", public_key: "56".repeat(32) });
+    await requestPeer(ensureLocalUser().id, String(other.id));
+    await logout();
+    const withSession = backend.calls.slice(from).map((call, i) => [call, backend.deviceTokens[from + i]]);
+    assert.ok(withSession.length >= 5, JSON.stringify(withSession));
+    for (const [call, token] of withSession) assert.equal(token, "device-token-of-the-pi", call);
+    assert.ok(withSession.some(([call]) => call!.endsWith("/heartbeat")));
+    assert.ok(withSession.some(([call]) => call!.endsWith("/pending")));
+    assert.ok(withSession.some(([call]) => call === "GET /account_computers"));
+    assert.ok(withSession.some(([call]) => call!.endsWith("/request_access")));
+    assert.ok(withSession.some(([call]) => call!.startsWith("DELETE /account_computers/")));
+
+    // Beside TWOODY_USER_TOKEN, TWOODY_DEVICE_TOKEN is its pair.
+    link();
+    process.env.TWOODY_USER_TOKEN = backend.userToken;
+    assert.equal(linkedAccount()!.device_token, "another-device-token");
+  } finally {
+    service.stop();
+    delete process.env.TWOODY_DEVICE_TOKEN;
+    delete process.env.TWOODY_USER_TOKEN;
+    delete process.env.TWOODY_LINK_POLL_MS;
+  }
 });

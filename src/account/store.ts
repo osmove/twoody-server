@@ -124,15 +124,22 @@ export function backendUrl(file: AccountFile | null = readAccountFile()): string
 
 /// The account, when this server is linked to one — with the environment's
 /// user token and backend in front of the file's.
+///
+/// The device token goes with the session: the backend binds the session
+/// the login delivered to the device token this server gave at
+/// POST /computer_logins (the file's), and refuses it with any other. So
+/// TWOODY_DEVICE_TOKEN only counts beside TWOODY_USER_TOKEN, whose pair it
+/// is; with the file's session, the file's device token always.
 export function linkedAccount(file: AccountFile | null = readAccountFile()): LinkedAccount | null {
   if (!file?.computer) return null;
-  const userToken = process.env.TWOODY_USER_TOKEN?.trim() || file.user_token;
+  const envUserToken = process.env.TWOODY_USER_TOKEN?.trim();
+  const userToken = envUserToken || file.user_token;
   if (!userToken) return null;
   return {
     ...file,
     backend_url: backendUrl(file),
     user_token: userToken,
-    device_token: process.env.TWOODY_DEVICE_TOKEN?.trim() || file.device_token,
+    device_token: (envUserToken && process.env.TWOODY_DEVICE_TOKEN?.trim()) || file.device_token,
     computer: file.computer,
   };
 }
