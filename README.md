@@ -7,8 +7,9 @@ firmware over the same HTTP contract that Cloud (api.twoody.com) and
 the multi-user Self-hosted edition (Rails Docker) expose.
 
 For multi-user deployments (households, agencies, on-prem teams), run
-the Rails image distributed under `ghcr.io/osmove/twoody-server` with
-`TWOODY_DEPLOYMENT=team` instead. This TypeScript binary refuses to
+the multi-user Self-hosted edition (Rails) with `TWOODY_DEPLOYMENT=team`
+instead; `ghcr.io/osmove/twoody-server` is the image of this single-user
+server (see [Docker](#docker)). This TypeScript binary refuses to
 boot when more than one account exists on a publicly-bound port; see
 the boot guard in `src/index.ts`.
 
@@ -36,12 +37,30 @@ npm run typecheck
 npm run dev
 ```
 
-Install the package globally if you want the `twoody-server` executable in
-your shell:
+## Without the desktop app
+
+Twoody runs without a Mac: on a Raspberry Pi 5, a NAS or any Linux
+server. The server has no model of its own (Twoody Desktop ships
+llama.cpp; standalone, run [Ollama](https://ollama.com), llama.cpp's
+`llama-server` or LM Studio next to it). Three ways to install it:
+
+| | Needs | Command |
+|---|---|---|
+| Docker (server + Ollama) | Docker with Compose | `docker compose up -d` — see [Docker](#docker) |
+| npm | Node.js 22+ | `npm install -g twoody-server` (or `npm install -g twoody`) |
+| pip | Python 3.9+ and Node.js 22+ | `pip install twoody` (runs the npm package through `npx`) |
+
+The npm command:
 
 ```bash
-npm i -g twoody-server
+npm install -g twoody-server
+twoody-server --llm http://127.0.0.1:11434/v1 --data-dir ~/.twoody/data
+twoody-server --help      # --port, --host, --data-dir, --llm, --pairing-code, --local-only
 ```
+
+Every other setting is an environment variable ([Environment](#environment)).
+On first start the server prints a setup token: see
+[Pairing a phone](#pairing-a-phone-with-a-server-without-a-mac).
 
 Generate the committed OpenAPI contract:
 
@@ -117,6 +136,7 @@ TWOODY_PAIRING_CODE=A7B9C2D4 npm run dev
 ## Environment
 
 ```bash
+TWOODY_DATA_DIR=~/.twoody/data   # database, setup token, documents index
 PORT=3000
 HOST=0.0.0.0
 TWOODY_PAIRING_CODE=A7B9C2D4
@@ -134,14 +154,163 @@ HOME_ASSISTANT_TOKEN=...
 
 ## Docker
 
+`docker-compose.yml` runs two services: `twoody-server` (built from this
+checkout) and `ollama` (the official multi-architecture `ollama/ollama`
+image), wired together with `BRIDGE_LOCAL_LLM_ENDPOINT=http://ollama:11434/v1`.
+The same file works on a Raspberry Pi 5 (arm64) and on an amd64 server.
+
 ```bash
-docker compose up --build
+docker compose up -d --build
+# One model to start with — qwen3.5:4b (3.4 GB), or a model of your choice
+# from https://ollama.com/library
+docker compose exec ollama ollama pull qwen3.5:4b
+# The setup token, for the app (also in the data volume, /data/setup-token)
+docker compose logs twoody-server | grep "Setup token"
+curl http://localhost:3000/health
 ```
+
+The image (`Dockerfile`):
+
+- `linux/amd64` and `linux/arm64`, on `node:22-alpine`, about 70 MB
+  compressed; no compiler, no model.
+- runs as the unprivileged `node` user (uid 1000);
+- keeps everything in the `/data` volume: the SQLite database, the setup
+  token and the documents index (`TWOODY_DATA_DIR=/data`), and under
+  `/data/home` the bridge device id, compute keys and whisper models;
+- has a `HEALTHCHECK` on `GET /health`;
+- starts `twoody-server`, so its options work as the command:
+  `docker run ghcr.io/osmove/twoody-server --help`.
+
+To give the server documents, mount them read-only (for example
+`/home/pi/Documents:/documents:ro`, commented in the compose file) and
+grant `/documents` from the app. A bind mount instead of the named
+volume for `/data` must be writable by uid 1000
+(`sudo chown -R 1000:1000 ./data`). A volume created by an older image,
+which ran as root, needs the same once:
+`docker compose run --rm --user root --entrypoint chown twoody-server -R node:node /data`.
+
+Bonjour discovery is off in the image, because multicast does not cross
+Docker's bridge network: give the app the address by hand
+(`http://<host>.local:3000`), or use `network_mode: host` as explained
+in the compose file.
+
+Multi-architecture build (needs buildx; the GitHub workflow
+`.github/workflows/docker.yml` does the same and pushes to
+`ghcr.io/osmove/twoody-server` when run by hand or on a `v*` tag):
+
+```bash
+docker buildx build --platform linux/arm64,linux/amd64 -t twoody-server .
+```
+
+A published image replaces `build: .` with
+`image: ghcr.io/osmove/twoody-server:latest` in the compose file.
 
 ## Linux / Raspberry Pi
 
-For a headless install (Raspberry Pi 4/5, generic amd64/arm64 box), use
-the bundled bootstrap script. It installs Node 22, ripgrep, ffmpeg,
+### Raspberry Pi 5: what to expect
+
+- **Hardware**: a Raspberry Pi 5 with 16 GB (8 GB works with the small
+  models), the active cooler (generation holds the four cores at 100 %),
+  and preferably an NVMe SSD rather than a microSD card: a model is read
+  from disk every time it loads.
+- **System**: a 64-bit OS — Raspberry Pi OS (64-bit, Bookworm or later) or
+  Ubuntu Server 24.04 arm64. A 32-bit system cannot run Ollama.
+- **Then either** Docker with Compose (`curl -fsSL https://get.docker.com | sh`,
+  which also brings buildx) and the [Docker](#docker) setup, **or**
+  Node.js 22 with Ollama installed natively (below).
+
+Ollama supports arm64 natively: `curl -fsSL https://ollama.com/install.sh | sh`
+installs it as a systemd service listening on `127.0.0.1:11434`, and the
+`ollama/ollama` image is multi-architecture. The Pi has no GPU Ollama can
+use, so everything runs on the CPU, and speed is set by memory bandwidth.
+
+Models that fit in 16 GB, with rough generation speeds on a Pi 5 CPU (our
+estimates, order of magnitude only — measure on your own board):
+
+| Ollama tag | Download | Memory in use | Generation |
+|------------|----------|---------------|------------|
+| `qwen3.5:0.8b` | 1.0 GB | ~2 GB | 10–20 tokens/s |
+| `qwen3.5:2b` | 2.7 GB | ~4 GB | 5–10 tokens/s |
+| `qwen3.5:4b` | 3.4 GB | ~5 GB | 2–5 tokens/s |
+| `qwen3.5:9b` | 6.6 GB | ~9 GB | 1–2 tokens/s |
+
+(Qwen 3.5 downloads include a vision encoder, hence sizes above the
+usual Q4 figure.) Be honest with yourself about the numbers: a 4B model
+at Q4 writes **a few tokens per second**, a short answer takes 10–30
+seconds, and reading a long prompt (documents, a long conversation) adds
+more before the first word — tens of prompt tokens per second, not
+thousands. Qwen 3.5 thinks before it answers by default, and that
+thinking is generated at the same speed. For quick replies prefer 2B–4B; the
+9B is for when quality matters more than time. `/local_llm/catalog`
+(used by the apps' model picker) lists smaller Qwen 2.5 / Llama 3.2 tags
+as well.
+
+### Pairing a phone with a server without a Mac
+
+The pairing is the same as with Twoody Desktop, without the screen:
+
+1. Find the address: `http://<hostname>.local:3000` (or the Pi's IP). With
+   Bonjour on (npm/systemd installs, or Docker with `network_mode: host`)
+   the app can find the server on the network by itself.
+2. The first device creates the account with the **setup token** the
+   server prints at its first start (`journalctl -u twoody-server`,
+   `docker compose logs twoody-server`, or the `setup-token` file in the
+   data directory). Enter it in the app where it asks for the pairing
+   code of your computer.
+3. Once the account exists, other devices pair with the **pairing code**
+   the server was started with: 8 capital letters and digits, set with
+   `TWOODY_PAIRING_CODE` (or `twoody-server --pairing-code`) — the code
+   the desktop app would show on its screen. Change it and restart after
+   pairing if you like.
+
+From outside the home network, the phone reaches the server through the
+relay tunnel once it has been paired on the same network. The tunnel needs
+a Twoody account: `TWOODY_TUNNEL=1` with `TWOODY_BACKEND_URL` and
+`TWOODY_USER_TOKEN` (see `scripts/twoody-server.env.example`). Without it,
+the server answers on the home network only.
+
+### systemd unit (npm install)
+
+After `sudo npm install -g twoody-server` (Node 22 from NodeSource) and
+Ollama's installer, `/etc/systemd/system/twoody-server.service`:
+
+```ini
+[Unit]
+Description=Twoody Server
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+User=pi
+EnvironmentFile=-/etc/twoody-server.env
+ExecStart=/usr/bin/twoody-server --data-dir /home/pi/.twoody/data --llm http://127.0.0.1:11434/v1
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/.twoody /home/pi/.twoody-server
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now twoody-server
+journalctl -u twoody-server -f          # the setup token is printed here
+ollama pull qwen3.5:4b                  # or a model of your choice
+```
+
+(`which twoody-server` gives the path if npm's prefix is not `/usr`.
+`/etc/twoody-server.env` takes the variables of
+`scripts/twoody-server.env.example`; `TWOODY_PAIRING_CODE=…` goes there.)
+
+### Installer script (from a checkout)
+
+For a headless install from a checkout of this repository (Raspberry Pi
+4/5, generic amd64/arm64 box), use the bundled bootstrap script. It installs Node 22, ripgrep, ffmpeg,
 poppler-utils, avahi-daemon, Ollama, copies the repo to
 `/opt/twoody-server`, builds prod deps (compiles `better-sqlite3` for
 the target architecture), and registers a systemd unit.
