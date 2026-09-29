@@ -6,6 +6,7 @@ import type { Purpose } from "../account/status.js";
 import { LocalOnlyError, outboundFetch } from "../outbound.js";
 import { unpairSession } from "../pairing.js";
 import { runtimeAuthHeaders } from "../runtimeAuth.js";
+import { runtimeSlot } from "../runtimeSlots.js";
 import { recordUsageEvent } from "../usageStore.js";
 import { clientOf } from "./usage.js";
 import { withTimings } from "./queries.js";
@@ -90,6 +91,10 @@ export async function peerRoutes(app: FastifyInstance) {
       if (stream) payload.stream_options = { include_usage: true };
       const extras: Body = {};
       for (const field of EXTRAS) if (body[field] !== undefined) extras[field] = body[field];
+      // This computer's runtime, this computer's slots: the caller never
+      // names one (runtimeSlots.ts).
+      const slot = await runtimeSlot(holder.baseUrl, model, purpose);
+      if (slot !== null) extras.id_slot = slot;
 
       const end = beginGeneration(purpose);
       const upstream = new AbortController();
