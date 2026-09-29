@@ -36,6 +36,7 @@ test("an answer's lines become facts: bullets and numbering stripped, headings a
     "Jimmy préfère des réponses concises, en français.",
     "Jimmy travaille sur un projet d'assistant IA local, Twoody.",
   ]);
+  assert.deepEqual(factsFromImport("**Ville :** Lyon, depuis 2019\n**Métier** : boulangère"), ["Ville : Lyon, depuis 2019", "Métier : boulangère"]);
   assert.equal(kindOfFact("Jimmy préfère des réponses concises, en français."), "feedback");
   assert.equal(kindOfFact("Jimmy travaille sur un projet d'assistant IA local, Twoody."), "project");
   assert.equal(kindOfFact("Jimmy habite à Antony."), "user");

@@ -142,7 +142,7 @@ export function factsFromImport(text: string): string[] {
   const seen = new Set<string>();
   const facts: string[] = [];
   for (const raw of text.split(/\r?\n/)) {
-    let line = raw.trim().replace(/^(?:[-•*·–—]|\d{1,3}[.)])\s+/, "").replace(/^\*\*(.+?)\*\*\s*:?\s*/, "$1 : ").trim();
+    let line = raw.trim().replace(/^(?:[-•*·–—]|\d{1,3}[.)])\s+/, "").replace(/^\*\*(.+?)\s*:?\*\*\s*:?\s*/, "$1 : ").trim();
     line = line.replace(/\*\*/g, "").replace(/\s+/g, " ").trim();
     if (line.length < 8 || line.length > 600) continue;
     if (/^#{1,6}\s/.test(raw.trim()) || /:$/.test(line)) continue; // a heading
