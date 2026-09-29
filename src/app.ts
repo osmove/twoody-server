@@ -1,4 +1,5 @@
 import { mobileAgentRoutes } from "./routes/mobileAgent.js";
+import { remoteCodeRoutes } from "./routes/remoteCode.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
@@ -155,6 +156,7 @@ export async function buildApp() {
   await app.register(localDocumentRoutes);
   await app.register(wsRoutes);
   await app.register(tunnelDirectRoutes);
+  await app.register(remoteCodeRoutes);
 
   // Versioned aliases for API clients migrating away from root-level
   // Rails-style paths. Health, docs, admin, MCP and WebSocket routes stay
@@ -187,6 +189,7 @@ export async function buildApp() {
   await app.register(transcriptionRoutes, { prefix: "/api/v1" });
   await app.register(localDocumentRoutes, { prefix: "/api/v1" });
   await app.register(mobileAgentRoutes, { prefix: "/api/v1" });
+  await app.register(remoteCodeRoutes, { prefix: "/api/v1" });
 
   app.get("/admin", {
     schema: {
