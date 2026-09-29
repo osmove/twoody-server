@@ -46,6 +46,7 @@ import { requireAdminAccess } from "./adminAccess.js";
 import { requireAuth } from "./auth.js";
 import { outboundFetch } from "./outbound.js";
 import { enforcePeerScope } from "./peerSessions.js";
+import { corsOriginAllowed, hostGuard } from "./webOrigin.js";
 
 export async function buildApp() {
   const app = Fastify({
@@ -70,12 +71,23 @@ export async function buildApp() {
     }
   });
 
+  // Only the names this server goes by (webOrigin.ts): a web page that
+  // rebinds its own domain to this machine is refused before anything.
+  app.addHook("onRequest", hostGuard);
+  // A WebSocket upgrade refused by a hook (a wrong Host, a peer session)
+  // is answered on the raw socket, which nothing else would ever close.
+  app.addHook("onResponse", async (req, reply) => {
+    if (req.headers.upgrade && reply.statusCode >= 400) req.raw.socket?.destroy();
+  });
+
   // Another computer of the account, paired as a peer, reaches
   // /api/v1/peer/* and nothing else (peerSessions.ts).
   app.addHook("onRequest", enforcePeerScope);
 
+  // Answers readable by the Desktop's window and pages served from this
+  // machine, not by any site (webOrigin.ts).
   await app.register(cors, {
-    origin: true,
+    origin: (origin, callback) => callback(null, corsOriginAllowed(origin)),
     credentials: true,
   });
 

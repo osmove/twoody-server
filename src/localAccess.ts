@@ -1,6 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { adminToken, forwardedByProxy, isLoopbackAddress, requireAdminAccess, safeEqual } from "./adminAccess.js";
-import { VIA_TUNNEL_HEADER } from "./tunnel/host.js";
+import { adminToken, forwardedByProxy, isLoopbackAddress, requireAdminAccess, safeEqual, viaTunnel } from "./adminAccess.js";
+import { fromOtherPage } from "./webOrigin.js";
 
 // Routes for this machine's owner at its console (twoody-server login,
 // approve, logout) or with the admin token: /account/link, /account/approvals.
@@ -16,9 +16,14 @@ import { VIA_TUNNEL_HEADER } from "./tunnel/host.js";
 // TWOODY_ADMIN_TOKEN: then only the token counts, wherever the request
 // comes from (a proxy that strips these headers would otherwise open the
 // console's routes to the world).
+//
+// Nor is a request a browser sent from a web page (webOrigin.ts): any
+// site open in the person's browser can send one to 127.0.0.1. The
+// console, the CLI and the Desktop's main process send no Origin and no
+// Sec-Fetch-Site; a page other than this server's own always does.
 
 export function fromThisMachine(req: FastifyRequest): boolean {
-  return isLoopbackAddress(req.ip) && req.headers[VIA_TUNNEL_HEADER] === undefined && !forwardedByProxy(req);
+  return isLoopbackAddress(req.ip) && !viaTunnel(req) && !forwardedByProxy(req) && !fromOtherPage(req);
 }
 
 /// Whether the request may act as the owner. Without an admin token only

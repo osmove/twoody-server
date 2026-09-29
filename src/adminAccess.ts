@@ -2,6 +2,8 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { BlockList, isIP } from "node:net";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { allowSecretAttempt } from "./rateLimit.js";
+import { VIA_TUNNEL_HEADER } from "./tunnel/host.js";
+import { fromOtherPage } from "./webOrigin.js";
 
 // Who may open `/admin`.
 //
@@ -14,9 +16,12 @@ import { allowSecretAttempt } from "./rateLimit.js";
 //     cookie and a redirect, which keeps the token out of the address
 //     bar, the history and the page's 10-second auto-refresh.
 //
-// Cross-site requests are refused outright: CORS reflects any origin on
-// this server, so without that check a web page open in the user's
-// browser could read the admin page of a loopback-bound server.
+// Requests a browser sent from another page (another Origin, or
+// Sec-Fetch-Site other than none / same-origin) are refused outright,
+// token or not (webOrigin.ts). And what arrived through the tunnel — the
+// relay's or the LAN's /tunnel, a paired phone or another computer of the
+// account — comes from 127.0.0.1 but is not this machine: without the
+// token, it is refused like any other device.
 
 const COOKIE_NAME = "twoody_admin";
 const COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
@@ -41,8 +46,7 @@ export function adminToken(): string | null {
 /// Returns true when the request may see the admin page. Otherwise the
 /// reply (401 / 403 / 429, or the post-login redirect) has been sent.
 export function requireAdminAccess(req: FastifyRequest, reply: FastifyReply): boolean {
-  const fetchSite = headerValue(req.headers["sec-fetch-site"]);
-  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+  if (fromOtherPage(req)) {
     reply.code(403).send({ error: "cross_site_forbidden" });
     return false;
   }
@@ -50,8 +54,9 @@ export function requireAdminAccess(req: FastifyRequest, reply: FastifyReply): bo
   const token = adminToken();
   if (!token) {
     // A reverse proxy on this host makes every client look local: a
-    // request it forwarded is not this machine's.
-    if (isLoopbackAddress(req.ip) && !forwardedByProxy(req)) return true;
+    // request it forwarded is not this machine's. Nor is one the tunnel
+    // served.
+    if (isLoopbackAddress(req.ip) && !forwardedByProxy(req) && !viaTunnel(req)) return true;
     reply.code(403).send({
       error: "admin_local_only",
       message: "The admin page is only served to the machine running Twoody Server. " +
@@ -114,6 +119,12 @@ export function safeEqual(left: string, right: string): boolean {
   const leftDigest = createHash("sha256").update(left).digest();
   const rightDigest = createHash("sha256").update(right).digest();
   return timingSafeEqual(leftDigest, rightDigest) && left === right;
+}
+
+/// Whether the tunnel served this request (tunnel/host.ts marks every one,
+/// whatever the other end sent).
+export function viaTunnel(req: FastifyRequest): boolean {
+  return req.headers[VIA_TUNNEL_HEADER] !== undefined;
 }
 
 /// Whether a proxy says it forwarded the request (X-Forwarded-For,

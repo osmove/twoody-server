@@ -6,6 +6,7 @@ import { ensureAccountFile, fingerprint, linkedAccount } from "../account/store.
 import { LocalOnlyError } from "../outbound.js";
 import { isFresh } from "../pairing.js";
 import { ownerRequest, requireOwner } from "../localAccess.js";
+import { fromOtherPage } from "../webOrigin.js";
 
 // Linking this server to an account, from its own console (`twoody-server
 // login`, `twoody login`) or the admin token — and, while the server is
@@ -26,7 +27,9 @@ import { ownerRequest, requireOwner } from "../localAccess.js";
 //   POST   /account/approvals/:id {decision:"approve"|"deny"}
 //
 // POST from the network, DELETE and the approvals are otherwise this
-// machine's (or the admin token's).
+// machine's (or the admin token's). « This machine » is never a request
+// the tunnel served, one a proxy forwarded, or one a browser sent from a
+// web page (localAccess.ts); a POST from a web page is refused outright.
 
 function failure(err: unknown): [number, { error: string; message: string }] {
   if (err instanceof LocalOnlyError) return [403, { error: "local_only", message: err.message }];
@@ -71,6 +74,10 @@ export async function accountLinkRoutes(app: FastifyInstance) {
   app.post("/account/link", {
     schema: { tags: ["session"], summary: "Start linking this server to a Twoody account: a code, shown on its console, to type on a signed-in device" },
     handler: async (req, reply) => {
+      // Never on a web page's behalf: a site open in the person's browser
+      // could otherwise start (and, as this machine, read) a code. The
+      // console, the CLI and the Desktop send no Origin (webOrigin.ts).
+      if (fromOtherPage(req)) return reply.code(403).send({ error: "cross_site_forbidden" });
       const owner = ownerRequest(req);
       // A fresh server may be asked for a code from the network: the code
       // goes to its console, and the person types it on the Desktop.
