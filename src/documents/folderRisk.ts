@@ -34,7 +34,10 @@ export function folderRisk(real: string, home: string, platform: NodeJS.Platform
   }
   const underHome = inside(house, target) ? target.slice(house.length).split(path.sep).filter(Boolean) : null;
   const iCloudDrive = !windows && underHome?.[1] === "Mobile Documents" && underHome[2] === "com~apple~CloudDocs";
-  if (underHome?.[0] === (windows ? "appdata" : "Library") && !iCloudDrive) return "sensitive";
+  // Google Drive, Dropbox, OneDrive and Box on a Mac: the person's files,
+  // synced into ~/Library/CloudStorage/<Provider>-<account> (29/09/2026).
+  const cloudStorage = !windows && underHome?.[1] === "CloudStorage" && /^(GoogleDrive|Dropbox|OneDrive|Box)/.test(underHome[2] ?? "");
+  if (underHome?.[0] === (windows ? "appdata" : "Library") && !iCloudDrive && !cloudStorage) return "sensitive";
   if (segments.some((segment) => segment.startsWith("."))) return "sensitive";
   return null;
 }

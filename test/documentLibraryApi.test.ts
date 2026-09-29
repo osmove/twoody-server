@@ -84,5 +84,7 @@ test('iCloud Drive is listed by its name, not its directory',async()=>{
  const {folderName}=await import('../src/documents/library.js');
  assert.equal(folderName('/Users/claire/Library/Mobile Documents/com~apple~CloudDocs'),'iCloud Drive');
  assert.equal(folderName('/Users/claire/Library/Mobile Documents/com~apple~CloudDocs/Factures'),'Factures');
+ assert.equal(folderName('/Users/claire/Library/CloudStorage/GoogleDrive-claire@example.com'),'Google Drive (claire@example.com)');
+ assert.equal(folderName('/Users/claire/Library/CloudStorage/Dropbox'),'Dropbox');
  assert.equal(folderName('/Users/claire/Downloads'),'Downloads');
 });

@@ -50,7 +50,14 @@ export function canonicalFolder(input: string, personalRoot = false): string {
 /// A granted folder as the person knows it: iCloud Drive rather than its
 /// directory's name (com~apple~CloudDocs).
 export function folderName(path: string): string {
-  return /[\\/]Library[\\/]Mobile Documents[\\/]com~apple~CloudDocs$/.test(path) ? "iCloud Drive" : basename(path);
+  if (/[\\/]Library[\\/]Mobile Documents[\\/]com~apple~CloudDocs$/.test(path)) return "iCloud Drive";
+  // ~/Library/CloudStorage/GoogleDrive-claire@example.com → « Google Drive (claire@example.com) »
+  const cloud = /[\\/]Library[\\/]CloudStorage[\\/](GoogleDrive|Dropbox|OneDrive|Box)(?:-(.+))?$/.exec(path);
+  if (cloud) {
+    const name = { GoogleDrive: "Google Drive", Dropbox: "Dropbox", OneDrive: "OneDrive", Box: "Box" }[cloud[1] as "GoogleDrive" | "Dropbox" | "OneDrive" | "Box"];
+    return cloud[2] && cloud[2] !== "Box" ? `${name} (${cloud[2]})` : name;
+  }
+  return basename(path);
 }
 
 export function listFolders(userId: string) {

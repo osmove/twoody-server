@@ -60,3 +60,12 @@ test("iCloud Drive, under ~/Library, is the one folder there that may be granted
   assert.equal(folderRisk("C:\\Users\\Claire\\Library\\Mobile Documents\\com~apple~CloudDocs", "C:\\Users\\Claire", "win32"), null);
   assert.equal(folderRisk("C:\\Users\\Claire\\AppData\\Mobile Documents\\com~apple~CloudDocs", "C:\\Users\\Claire", "win32"), "sensitive");
 });
+
+test("the cloud folders synced under ~/Library/CloudStorage may be granted, nothing else there", () => {
+  const home = "/Users/claire";
+  assert.equal(folderRisk("/Users/claire/Library/CloudStorage/GoogleDrive-claire@example.com", home, "darwin"), null);
+  assert.equal(folderRisk("/Users/claire/Library/CloudStorage/Dropbox/Factures", home, "darwin"), null);
+  assert.equal(folderRisk("/Users/claire/Library/CloudStorage/OneDrive-Personnel", home, "darwin"), null);
+  assert.equal(folderRisk("/Users/claire/Library/CloudStorage", home, "darwin"), "sensitive");
+  assert.equal(folderRisk("/Users/claire/Library/CloudStorage/SomethingElse", home, "darwin"), "sensitive");
+});
