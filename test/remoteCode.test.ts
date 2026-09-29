@@ -82,7 +82,7 @@ test("commands carry the phone's input and map the Desktop's refusals", async ()
   assert.deepEqual(started.json(), { id: ID });
   assert.deepEqual(calls[0], { command: "send", input: { workspace: "/work/app", text: "fix it", mode: "plan", requestId: "request-123456789" } });
   assert.equal((await app.inject({ method: "POST", url: `/code/sessions/${ID}/messages`, headers, payload: { text: "go on" } })).statusCode, 202);
-  assert.equal((await app.inject({ method: "POST", url: `/code/sessions/${ID}/messages`, headers, payload: { text: "go", mode: "auto-edit" } })).statusCode, 400);
+  assert.equal((await app.inject({ method: "POST", url: `/code/sessions/${ID}/messages`, headers, payload: { text: "go", mode: "full-access" } })).statusCode, 400);
   assert.equal((await app.inject({ method: "POST", url: `/code/sessions/${ID}/approvals/c1`, headers, payload: { decision: "allow-session" } })).statusCode, 400);
   const decided = await app.inject({ method: "POST", url: `/code/sessions/${ID}/approvals/c1`, headers, payload: { decision: "deny", reason: "not now" } });
   assert.equal(decided.statusCode, 200);

@@ -38,7 +38,7 @@ const STREAMED = new Set(["item", "output", "todos", "state", "approval", "usage
 const SESSION_ID = { type: "string", pattern: "^[0-9a-f-]{36}$" };
 const REQUEST_ID = { type: "string", pattern: "^[a-zA-Z0-9_-]{16,80}$" };
 const TEXT = { type: "string", minLength: 1, maxLength: 16000 };
-const MODE = { type: "string", enum: ["ask", "plan"] };
+const MODE = { type: "string", enum: ["ask", "auto-edit", "plan"] };
 
 function withoutSeq(snapshot: unknown): unknown {
   if (!snapshot || typeof snapshot !== "object") return snapshot;
