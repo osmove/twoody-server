@@ -321,7 +321,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // Flat, or nested under `query[…]` as voice messages send it.
   const rawVaultRef = parsed.vault_ref ?? (parsed.query as { vault_ref?: unknown } | undefined)?.vault_ref;
   const vaultRef = typeof rawVaultRef === "string" && /^[\w:.-]{1,200}$/.test(rawVaultRef) ? rawVaultRef : null;
-  insertMessage({
+  const promptId = insertMessage({
     discussionId: discussion.id,
     userId:       auth.userId,
     role:         "user",
@@ -446,6 +446,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       summary: compacted.summary,
       summaryThrough: compacted.summaryThrough,
       state: compacted.state,
+      currentId: promptId,
       contextWindow: readWindow(parsed.context_window),
       // Whether the person granted folders at all, not this message's
       // selection: a sentence of the system prompt, which must not flip
@@ -1559,7 +1560,7 @@ export function loadHistory(discussionId: string, after: string | null = null): 
   // its timestamp with the prompt. `rowid` keeps insertion order. A
   // compaction's summary stands for the messages up to `after`.
   const rows = db
-    .select({ role: messages.role, content: messages.content, sourcesJson: messages.sourcesJson })
+    .select({ id: messages.id, role: messages.role, content: messages.content, sourcesJson: messages.sourcesJson })
     .from(messages)
     .where(
       after

@@ -218,7 +218,7 @@ test("a fact the user asked to remember is confirmed, not denied, from its own m
 });
 
 test("memories learned during a conversation leave the system prompt as it was (prefix cache)", () => {
-  const first = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], content: "Bonjour" }));
+  const first = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], content: "Bonjour", currentId: "m1" }));
   assert.match(first.messages[0].content, /- Architecte à Lyon\./);
   const learned = [
     { kind: "user", title: null, content: "Sa fille s'appelle Léa." },
@@ -227,8 +227,9 @@ test("memories learned during a conversation leave the system prompt as it was (
   const second = buildChatTurn(input({
     memories: learned,
     state: first.state,
-    history: [{ role: "user", content: "Bonjour" }, { role: "assistant", content: "Bonjour !" }],
+    history: [{ id: "m1", role: "user", content: "Bonjour" }, { id: "m2", role: "assistant", content: "Bonjour !" }],
     content: "Quel âge a ma fille ?",
+    currentId: "m3",
   }));
   assert.equal(second.messages[0].content, first.messages[0].content);
   // Still given, with the message it bears on.
@@ -248,12 +249,13 @@ test("a memory removed or memory switched off refreshes the frozen ones; a compa
 });
 
 test("the system prompt does not move for a document-only turn, and says how to read the first documents on their message", () => {
-  const first = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], content: "Bonjour" }));
-  const only = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], state: first.state, documentMode: "only", content: "Que dit le bail ?" }));
+  const first = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], content: "Bonjour", currentId: "m1" }));
+  const history = [{ id: "m1", role: "user", content: "Bonjour" }, { id: "m2", role: "assistant", content: "Bonjour !" }];
+  const only = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], state: first.state, history, documentMode: "only", content: "Que dit le bail ?" }));
   assert.doesNotMatch(only.messages[0].content, /Architecte/, "no memory in a document-only answer");
   assert.equal(only.state.profile, first.state.profile, "kept for the turns after it");
   const doc = '<<document name="bail.pdf">>\nDurée : trois ans.\n<</document>>\n\nRésume';
-  const withDocument = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], state: first.state, content: doc }));
+  const withDocument = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], state: first.state, history, content: doc }));
   assert.equal(withDocument.messages[0].content, first.messages[0].content);
   assert.match(withDocument.messages.at(-1)!.content, /^Documents the user joined to a message/);
 });
@@ -262,4 +264,30 @@ test("a document joined to the message is answered from itself, documents switch
   const content = 'Tu peux me donner les infos de ce RIB ?\n\n<<document name="rib.jpg">>\nIBAN FR76 3000 6000 0112 3456 7890 189\n<</document>>';
   const messages = buildChatMessages(input({ documentMode: "off", content }));
   assert.doesNotMatch(messages[messages.length - 1].content, /switched off/);
+});
+
+test("the history only grows between cuts, and a cut drops the oldest half at once (prefix cache)", () => {
+  const rows: Array<{ id: string; role: string; content: string }> = [];
+  let state = null as ReturnType<typeof buildChatTurn>["state"] | null;
+  let previous: Array<{ role: string; content: string }> | null = null;
+  const cuts: number[] = [];
+  for (let turn = 1; turn <= 60; turn += 1) {
+    const id = `u${turn}`;
+    const built = buildChatTurn(input({ history: [...rows], state, currentId: id, content: `question ${turn} ${"mot ".repeat(60)}`, contextWindow: 16_384 }));
+    if (previous) {
+      const kept = JSON.stringify(built.messages.slice(0, previous.length)) === JSON.stringify(previous);
+      if (!kept) cuts.push(turn);
+      else assert.equal(built.state.liveFrom, state!.liveFrom);
+    }
+    if (built.state.liveFrom !== state?.liveFrom && state) {
+      assert.ok(cuts.includes(turn), `turn ${turn}: a cut is declared by a new liveFrom`);
+      assert.ok(built.messages.length - 2 <= 20, "a cut keeps at most half the messages");
+    }
+    state = built.state;
+    rows.push({ id, role: "user", content: `question ${turn} ${"mot ".repeat(60)}` }, { id: `a${turn}`, role: "assistant", content: `réponse ${turn} ${"texte ".repeat(40)}` });
+    previous = [...built.messages, { role: "assistant", content: rows.at(-1)!.content }];
+  }
+  // Where the last 20 slid by one message each turn from the 11th on.
+  assert.ok(cuts.length >= 2 && cuts.length <= 6, `cuts at ${cuts.join(", ")}`);
+  for (let i = 1; i < cuts.length; i += 1) assert.ok(cuts[i] - cuts[i - 1] >= 5, `cuts at ${cuts.join(", ")}`);
 });

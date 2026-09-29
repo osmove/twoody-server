@@ -40,6 +40,8 @@ export type ChatMessage = {
 };
 
 export interface HistoryRow {
+  /// The message's id: where the part given as it is starts (ContextState.liveFrom).
+  id?: string;
   sourcesJson?: string | null;
   role: string;
   content: string;
@@ -102,6 +104,9 @@ export interface ChatContextInput {
   timeZone?: string | null;
   /// What the previous turns of this conversation froze (null: none yet).
   state?: ContextState | null;
+  /// The id of the message this turn answers, already stored: the history
+  /// given as it is starts there after a cut.
+  currentId?: string | null;
   /// The message a compaction's summary goes up to: a new summary is a
   /// refresh point.
   summaryThrough?: string | null;
@@ -118,6 +123,13 @@ export interface ContextState {
   /// Whether the system prompt explains joined documents / web results.
   documents: boolean;
   web: boolean;
+  /// The older part of the history, rendered once at the last cut (shortened
+  /// messages, documents past their share named) and given as it is until
+  /// the next one.
+  compact: ChatMessage[];
+  /// The first message of the history after that part: from it on, every
+  /// message is given in full, as it was sent. Null: none yet.
+  liveFrom: string | null;
 }
 
 export interface ChatTurn {
@@ -141,13 +153,20 @@ export function readContextState(json: string | null | undefined): ContextState 
       profile: typeof parsed.profile === "string" ? parsed.profile : null,
       documents: parsed.documents === true,
       web: parsed.web === true,
+      compact: Array.isArray(parsed.compact)
+        ? parsed.compact.filter((message): message is ChatMessage =>
+            Boolean(message) && (message.role === "user" || message.role === "assistant") && typeof message.content === "string")
+        : [],
+      liveFrom: typeof parsed.liveFrom === "string" ? parsed.liveFrom : null,
     };
   } catch {
     return null;
   }
 }
 
-export const HISTORY_MAX_MESSAGES = envInt("TWOODY_HISTORY_MAX_MESSAGES", 20);
+/// At most this many messages of history; a cut keeps half of them, so the
+/// window holds 20 to 40, where it held the last 20.
+export const HISTORY_MAX_MESSAGES = envInt("TWOODY_HISTORY_MAX_MESSAGES", 40);
 const HISTORY_MAX_CHARS = envInt("TWOODY_HISTORY_MAX_CHARS", 16_000);
 /// Documents joined to messages have their own share of the context: the
 /// current one first, then the newest ones of the history.
@@ -206,35 +225,58 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   // brings dozens at once, 29/09/2026).
   const profileRows = [...usable.filter((memory) => memory.kind === "feedback"), ...usable.filter((memory) => memory.kind === "user")];
   const current = splitDocuments(input.content);
-  const history = trimHistory(
-    input.history,
-    Math.max(0, scaled(DOCUMENT_CHARS, input.contextWindow, 0.35) - current.documents.reduce((sum, document) => sum + document.block.length, 0)),
-    scaled(HISTORY_MAX_CHARS, input.contextWindow, 0.3),
-  );
+  const documentBudget = Math.max(0, scaled(DOCUMENT_CHARS, input.contextWindow, 0.35) - current.documents.reduce((sum, document) => sum + document.block.length, 0));
+  const historyBudget = scaled(HISTORY_MAX_CHARS, input.contextWindow, 0.3);
+
+  // The history. Between two cuts it only grows: the part rendered at the
+  // last cut, then every message since, in full. When that no longer fits
+  // (in messages or in characters, for this window), the oldest half goes
+  // at once and what remains is rendered again — the runtime reads the
+  // conversation again then, and not at every turn as when one message
+  // slid out of a fixed window each time. A compaction's summary starts
+  // afresh.
+  const previous = input.state && input.state.basis === (input.summaryThrough ?? null) ? input.state : null;
+  const liveStart = previous?.liveFrom ? input.history.findIndex((row) => row.id === previous.liveFrom) : -1;
+  let history: ChatMessage[] | null = null;
+  if (previous && liveStart >= 0) {
+    const grown = joinTurns([...previous.compact.map((message) => ({ ...message })), ...liveHistory(input.history.slice(liveStart))]);
+    const chars = grown.reduce((sum, message) => sum + message.content.length, 0);
+    if (grown.length <= HISTORY_MAX_MESSAGES && chars <= historyBudget + documentBudget) history = grown;
+  }
+  const cut = history === null;
+  if (cut) {
+    // At a conversation's first turn, the history it may already have
+    // (from before these states, or brought from another device) is given
+    // as far as it fits; at a cut, half of it.
+    history = previous
+      ? trimHistory(input.history, Math.floor(documentBudget / 2), Math.floor(historyBudget / 2), Math.floor(HISTORY_MAX_MESSAGES / 2))
+      : trimHistory(input.history, documentBudget, historyBudget, HISTORY_MAX_MESSAGES);
+  }
 
   // A document-only answer uses no memory and no custom prompt: the frozen
   // ones are kept for the turns after it.
   const onlyDocuments = input.documentMode === "only";
-  const previous = input.state && input.state.basis === (input.summaryThrough ?? null) ? input.state : null;
   const lines = new Set(profileRows.map(memoryLine).filter((line): line is string => line !== null));
   const stale = previous?.profile?.split("\n").some((line) => !lines.has(line)) ?? false;
   let state: ContextState;
-  if (!previous || (stale && !onlyDocuments)) {
-    const withDocuments = hasDocuments(input.content) || input.history.some((row) => hasDocuments(row.content));
-    const withWeb = hasWebResults(input.content) || input.history.some((row) => hasWebResults(row.content));
+  if (cut || (stale && !onlyDocuments)) {
+    const kept = history!;
     state = {
       v: 1,
       basis: input.summaryThrough ?? null,
-      profile: formatMemoryList(profileRows, PROFILE_MEMORY_CHARS),
-      documents: previous?.documents ?? withDocuments,
-      web: previous?.web ?? withWeb,
+      // A cut refreshes the memories; a document-only turn keeps them.
+      profile: onlyDocuments && previous ? previous.profile : formatMemoryList(profileRows, PROFILE_MEMORY_CHARS),
+      documents: !cut && previous ? previous.documents : hasDocuments(input.content) || kept.some((message) => hasDocuments(message.content)),
+      web: !cut && previous ? previous.web : hasWebResults(input.content) || kept.some((message) => hasWebResults(message.content)),
+      compact: cut ? kept.map((message) => ({ ...message })) : previous!.compact,
+      liveFrom: cut ? input.currentId ?? null : previous!.liveFrom,
     };
   } else {
-    state = previous;
+    state = previous!;
   }
   const frozen = new Set(state.profile?.split("\n") ?? []);
 
-  const result: ChatMessage[] = [{ role: "system", content: buildSystemPrompt(input, onlyDocuments ? null : state.profile, state) }, ...history];
+  const result: ChatMessage[] = [{ role: "system", content: buildSystemPrompt(input, onlyDocuments ? null : state.profile, state) }, ...history!];
 
   // Per-turn context rides on the last message, never on the system
   // prompt: excerpts first, then saved notes, then the question itself.
@@ -388,7 +430,40 @@ function formatDay(now: Date): string {
   return `${WEEKDAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]} ${now.getFullYear()}`;
 }
 
-function trimHistory(history: HistoryRow[], documentBudget: number, historyBudget = HISTORY_MAX_CHARS): ChatMessage[] {
+/// The messages since the last cut, as they were given: whole, documents
+/// and all. The reasoning of an answer is not given again: the chat
+/// templates (Qwen3, Qwen3.5) drop it from the turns before the last
+/// question anyway, and llama.cpp goes back to the checkpoint it keeps
+/// just before the answer — only that answer is read again (measured on
+/// Qwen3.5 9B, 29/09/2026: prompt_n = the answer and the new message).
+function liveHistory(rows: HistoryRow[]): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  for (const row of rows) {
+    if (row.role !== "user" && row.role !== "assistant") continue;
+    if (!row.content.trim()) continue;
+    messages.push({ role: row.role, content: row.content });
+  }
+  return messages;
+}
+
+/// Messages of the same role in a row become one (an unanswered prompt and
+/// the next): several chat templates (Mistral, Gemma) reject
+/// non-alternating roles. The history never starts with an answer.
+function joinTurns(messages: ChatMessage[]): ChatMessage[] {
+  while (messages.length > 0 && messages[0].role !== "user") messages.shift();
+  const merged: ChatMessage[] = [];
+  for (const message of messages) {
+    const previous = merged[merged.length - 1];
+    if (previous && previous.role === message.role) {
+      previous.content = `${previous.content}\n\n${message.content}`;
+    } else {
+      merged.push(message);
+    }
+  }
+  return merged;
+}
+
+function trimHistory(history: HistoryRow[], documentBudget: number, historyBudget = HISTORY_MAX_CHARS, maxMessages = HISTORY_MAX_MESSAGES): ChatMessage[] {
   const kept: ChatMessage[] = [];
   let chars = 0;
   let documentChars = 0;
@@ -399,7 +474,7 @@ function trimHistory(history: HistoryRow[], documentBudget: number, historyBudge
     const { text, documents } = splitDocuments(row.content);
     const typed = truncate(text, HISTORY_MESSAGE_CHARS);
     if (!typed && documents.length === 0) continue;
-    if (kept.length >= HISTORY_MAX_MESSAGES) break;
+    if (kept.length >= maxMessages) break;
     if (chars + typed.length > historyBudget) break;
     chars += typed.length;
     // The documents joined to a message stay readable to the questions
@@ -419,20 +494,7 @@ function trimHistory(history: HistoryRow[], documentBudget: number, historyBudge
     kept.push({ role: row.role, content: [...blocks, typed].filter(Boolean).join("\n\n") });
   }
   kept.reverse();
-
-  // Chat templates expect the first turn to come from the user.
-  while (kept.length > 0 && kept[0].role !== "user") kept.shift();
-
-  const merged: ChatMessage[] = [];
-  for (const message of kept) {
-    const previous = merged[merged.length - 1];
-    if (previous && previous.role === message.role) {
-      previous.content = `${previous.content}\n\n${message.content}`;
-    } else {
-      merged.push(message);
-    }
-  }
-  return merged;
+  return joinTurns(kept);
 }
 
 function formatMatchedMemories(usable: MemoryRow[], content: string): string | null {
