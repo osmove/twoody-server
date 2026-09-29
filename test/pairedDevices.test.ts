@@ -15,7 +15,7 @@ process.env.TWOODY_PAIRING_CODE = "K7M2Q9XR";
 
 const { buildApp } = await import("../src/app.js");
 const { ensureSetupToken } = await import("../src/auth.js");
-const { db, tunnelPeers } = await import("../src/db.js");
+const { authSessions, db, tunnelPeers } = await import("../src/db.js");
 const { rememberTunnelPeer } = await import("../src/tunnel/identity.js");
 
 const app = await buildApp();
@@ -66,4 +66,28 @@ test("a key paired before sessions and keys were linked is listed, and removable
   assert.equal((await app.inject({ method: "DELETE", url: `/paired_devices/${legacy!.id}`, headers: asDesktop })).statusCode, 204);
   assert.equal((await list(asDesktop)).some((device) => device.name === "Ancien iPhone"), false);
   assert.equal((await app.inject({ method: "DELETE", url: `/paired_devices/key:${"d4".repeat(32)}`, headers: asDesktop })).statusCode, 404);
+});
+
+// Another computer of the account that the Desktop approves gets a `peer:`
+// session: /api/v1/peer/* only, given through the account, never listed
+// with the devices, and removed the same way when it leaves the account.
+test("role peer pairs a peer session, which the Desktop can remove", async () => {
+  const key = "e5".repeat(32);
+  const paired = await app.inject({ method: "POST", url: "/auth/pair", payload: { setup_token: "K7M2Q9XR", device_name: "Raspberry Pi", tunnel_public_key: key, role: "peer" } });
+  assert.equal(paired.statusCode, 201, paired.body);
+  const sessionId = paired.json().session_id as string;
+  const session = db.select().from(authSessions).all().find((s) => s.id === sessionId)!;
+  assert.equal(session.clientKind, "peer:Raspberry Pi");
+  assert.equal(session.origin, "account");
+  assert.equal(paired.json().role, "peer");
+  const asPeer = { authorization: `Bearer ${paired.json().token}` };
+  assert.notEqual((await app.inject({ method: "GET", url: "/api/v1/paired_devices", headers: asPeer })).statusCode, 200, "not a device's session");
+  assert.equal((await list(asDesktop)).some((device) => device.name === "Raspberry Pi"), false);
+
+  assert.equal((await app.inject({ method: "DELETE", url: `/paired_devices/${sessionId}`, headers: asDesktop })).statusCode, 204);
+  assert.equal(db.select().from(authSessions).all().some((s) => s.id === sessionId), false);
+  assert.equal(db.select().from(tunnelPeers).all().some((peer) => peer.publicKey === key), false);
+
+  const bad = await app.inject({ method: "POST", url: "/auth/pair", payload: { setup_token: "K7M2Q9XR", device_name: "x", role: "owner" } });
+  assert.equal(bad.statusCode, 400);
 });

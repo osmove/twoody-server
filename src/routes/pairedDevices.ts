@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
-import { authenticate } from "../auth.js";
+import { authenticate, isPeerSessionKind } from "../auth.js";
 import { authSessions, db, tunnelPeers } from "../db.js";
 import { forgetTunnelPeer, forgetTunnelPeersOfSession } from "../tunnel/identity.js";
 import { tunnelPeersChanged } from "../tunnel/index.js";
@@ -27,12 +27,11 @@ export async function pairedDeviceRoutes(app: FastifyInstance) {
       // The session too, to tell this device from the others.
       const auth = await authenticate(req);
       if (!auth) return reply.code(401).send({ error: "Unauthorized" });
-      const sessions = db
-        .select()
-        .from(authSessions)
-        .where(eq(authSessions.userId, auth.userId))
-        .all()
-        .filter((session) => session.clientKind.startsWith(PAIRED));
+      const all = db.select().from(authSessions).where(eq(authSessions.userId, auth.userId)).all();
+      const sessions = all.filter((session) => session.clientKind.startsWith(PAIRED));
+      // Another computer's key goes with its peer session: not a device,
+      // and not a key left from before sessions and keys were linked.
+      const peerSessionIds = new Set(all.filter((session) => isPeerSessionKind(session.clientKind)).map((session) => session.id));
       const peers = db.select().from(tunnelPeers).where(eq(tunnelPeers.userId, auth.userId)).all();
       const sessionIds = new Set(sessions.map((session) => session.id));
 
@@ -50,7 +49,7 @@ export async function pairedDeviceRoutes(app: FastifyInstance) {
       // Keys paired before sessions and keys were linked: listed so they
       // can be removed too.
       for (const peer of peers) {
-        if (peer.sessionId && sessionIds.has(peer.sessionId)) continue;
+        if (peer.sessionId && (sessionIds.has(peer.sessionId) || peerSessionIds.has(peer.sessionId))) continue;
         devices.push({
           id: `key:${peer.publicKey}`,
           name: peer.name,
@@ -98,7 +97,10 @@ export async function pairedDeviceRoutes(app: FastifyInstance) {
         .from(authSessions)
         .where(and(eq(authSessions.id, req.params.id), eq(authSessions.userId, auth.userId)))
         .all();
-      if (!session || !session.clientKind.startsWith(PAIRED)) return reply.code(404).send({ error: "not_found" });
+      // A peer session (`peer:`, given to another computer of the account)
+      // is not listed here but can be removed the same way: Twoody Desktop
+      // does when that computer leaves the account.
+      if (!session || !(session.clientKind.startsWith(PAIRED) || isPeerSessionKind(session.clientKind))) return reply.code(404).send({ error: "not_found" });
       db.delete(authSessions).where(eq(authSessions.id, session.id)).run();
       if (forgetTunnelPeersOfSession(session.id) > 0) tunnelPeersChanged();
       reply.code(204).send();

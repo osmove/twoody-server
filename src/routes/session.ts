@@ -159,8 +159,14 @@ export async function sessionRoutes(app: FastifyInstance) {
   // the relay can carry their traffic without being able to read it or
   // to stand in the middle of it. Sending no key pairs as before, and
   // the tunnel simply is not available to that device.
+  //
+  // `role: "peer"` asks for less: a session limited to /api/v1/peer/*
+  // (peerSessions.ts), what Twoody Desktop gives another computer of the
+  // account it approved (a `peer:` session, never a full `pair:` one). It
+  // is given through the account, so it goes when the account's sessions
+  // are dropped, and is never the owner's whatever token paired it.
   app.post<{
-    Body: { setup_token?: string; device_name?: string; tunnel_public_key?: string };
+    Body: { setup_token?: string; device_name?: string; tunnel_public_key?: string; role?: "device" | "peer" };
   }>("/auth/pair", {
     schema: {
       tags: ["session"],
@@ -172,6 +178,7 @@ export async function sessionRoutes(app: FastifyInstance) {
           setup_token: { type: "string" },
           device_name: { type: "string" },
           tunnel_public_key: { type: "string" },
+          role: { type: "string", enum: ["device", "peer"] },
         },
       },
     },
@@ -213,7 +220,13 @@ export async function sessionRoutes(app: FastifyInstance) {
       // The key swap happens there too, when the device brought one: this
       // computer's key is handed over only after the setup token has been
       // checked, so a device that is refused learns nothing about it.
-      const { token, sessionId, user: userRow, tunnelPublicKey } = pairDevice({ deviceName, tunnelPublicKey: offered || null, origin: bySetupToken ? "owner" : "code" });
+      const peer = req.body.role === "peer";
+      const { token, sessionId, user: userRow, tunnelPublicKey } = pairDevice({
+        deviceName,
+        tunnelPublicKey: offered || null,
+        role: peer ? "peer" : "device",
+        origin: peer ? "account" : bySetupToken ? "owner" : "code",
+      });
       const userId = userRow.id;
 
       reply.code(201).send({
@@ -222,6 +235,9 @@ export async function sessionRoutes(app: FastifyInstance) {
         session_id: sessionId,
         user: { id: userRow.id, email: userRow.email, name: userRow.name },
         ...(tunnelPublicKey ? { tunnel_public_key: tunnelPublicKey } : {}),
+        // Said back so that a caller asking for a peer session can tell it
+        // got one, and not a full session from a server that ignored it.
+        role: peer ? "peer" : "device",
       });
     },
   });
