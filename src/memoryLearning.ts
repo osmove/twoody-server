@@ -122,3 +122,77 @@ function normalize(text: string): string {
 function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
+
+// ── Imported from another assistant ────────────────────────────────────
+// ChatGPT, Claude, Gemini, Copilot… asked, with the prompt the Memories
+// screens give, to list what they know of the person, one fact per line.
+// The answer is pasted back here (Jimmy, 29/09/2026: « importer la
+// mémoire, et sauvegarder tous les éléments utiles »): each line becomes a
+// memory, and the whole answer is kept too, so that nothing is lost to the
+// splitting.
+
+export const IMPORT_SOURCES = ["chatgpt", "claude", "gemini", "copilot", "other"] as const;
+export type ImportSource = (typeof IMPORT_SOURCES)[number];
+
+const SOURCE_NAMES: Record<ImportSource, string> = { chatgpt: "ChatGPT", claude: "Claude", gemini: "Gemini", copilot: "Copilot", other: "un autre assistant" };
+
+/// The facts of a pasted answer: one per line, bullets and numbering
+/// stripped, headings and blank or very short lines left out, never twice.
+export function factsFromImport(text: string): string[] {
+  const seen = new Set<string>();
+  const facts: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    let line = raw.trim().replace(/^(?:[-•*·–—]|\d{1,3}[.)])\s+/, "").replace(/^\*\*(.+?)\*\*\s*:?\s*/, "$1 : ").trim();
+    line = line.replace(/\*\*/g, "").replace(/\s+/g, " ").trim();
+    if (line.length < 8 || line.length > 600) continue;
+    if (/^#{1,6}\s/.test(raw.trim()) || /:$/.test(line)) continue; // a heading
+    const key = normalize(line);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    facts.push(capitalize(line));
+    if (facts.length >= 200) break;
+  }
+  return facts;
+}
+
+/// user / feedback (how to answer) / project, as the Memories screens sort them.
+export function kindOfFact(fact: string): "user" | "feedback" | "project" {
+  if (/\b(pr[ée]f[èe]re|r[ée]ponds?|r[ée]pondre|tutoie|vouvoie|ton |format|langue|concis|d[ée]taill|prefers?|respond|reply|replies|tone|concise|language|format)\b/i.test(fact)) return "feedback";
+  if (/\b(projets?|travaille sur|d[ée]veloppe|construit|startup|lance|project|working on|building|launch)/i.test(fact)) return "project";
+  return "user";
+}
+
+/// Keeps a pasted answer: its facts as memories (the known ones left out)
+/// and the whole answer as one « reference » memory.
+export function importMemories(userId: string, text: string, source: ImportSource, now = new Date()) {
+  const facts = factsFromImport(text);
+  const known = new Set(
+    db.select({ content: memories.content }).from(memories)
+      .where(and(eq(memories.userId, userId), isNull(memories.supersededById)))
+      .all().map((row) => normalize(row.content)),
+  );
+  const ids: string[] = [];
+  let skipped = 0;
+  for (const fact of facts) {
+    const key = normalize(fact);
+    if (known.has(key)) { skipped += 1; continue; }
+    known.add(key);
+    const id = generateId();
+    db.insert(memories).values({
+      id, userId, kind: kindOfFact(fact),
+      title: fact.length > 60 ? `${fact.slice(0, 57).trimEnd()}…` : fact,
+      content: fact, tagsJson: JSON.stringify(["import", source]),
+      source: "import", sourceRef: source, createdAt: now, updatedAt: now,
+    }).run();
+    ids.push(id);
+  }
+  const archiveId = generateId();
+  const day = now.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
+  db.insert(memories).values({
+    id: archiveId, userId, kind: "reference",
+    title: `Import ${SOURCE_NAMES[source] === "un autre assistant" ? "d’un autre assistant" : SOURCE_NAMES[source]} du ${day}`,
+    content: text.trim().slice(0, 50_000), tagsJson: JSON.stringify(["import", source, "archive"]),
+    source: "import", sourceRef: source, createdAt: now, updatedAt: now,
+  }).run();
+  return { ids, skipped, archiveId };
+}

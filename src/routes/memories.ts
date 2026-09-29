@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import { and, desc, eq, isNull, like, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, like, or } from "drizzle-orm";
 import { db, memories } from "../db.js";
 import { requireAuth, generateId } from "../auth.js";
+import { factsFromImport, importMemories, IMPORT_SOURCES, type ImportSource } from "../memoryLearning.js";
 
 // Cloud-shape /memories CRUD against the local SQLite store. Wire
 // shape mirrors `app/views/memories/_memory.json.jbuilder` on Rails:
@@ -188,6 +189,23 @@ export async function memoryRoutes(app: FastifyInstance) {
         .run();
       const [row] = db.select().from(memories).where(eq(memories.id, id)).limit(1).all();
       reply.code(201).send(serialize(row!));
+    },
+  });
+
+  /// What another assistant knows of the person, pasted back after the
+  /// prompt the Memories screens give (src/memoryLearning.ts): each fact
+  /// becomes a memory, the known ones left out, and the whole answer is kept.
+  app.post<{ Body: { text?: unknown; source?: unknown } }>("/memories/import", {
+    schema: { tags: ["memories"], summary: "Import what another assistant knows of the user", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      const text = typeof req.body?.text === "string" ? req.body.text : "";
+      if (factsFromImport(text).length === 0) return reply.code(400).send({ error: "empty" });
+      const source = (IMPORT_SOURCES as readonly string[]).includes(String(req.body?.source)) ? (req.body!.source as ImportSource) : "other";
+      const { ids, skipped, archiveId } = importMemories(auth.userId, text, source);
+      const rows = ids.length ? db.select().from(memories).where(inArray(memories.id, ids)).all() : [];
+      reply.code(201).send({ imported: ids.length, skipped, memories: rows.map(serialize), archive_id: archiveId });
     },
   });
 
