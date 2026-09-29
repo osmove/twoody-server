@@ -214,3 +214,9 @@ test("a fact the user asked to remember is confirmed, not denied", () => {
   const [system] = buildChatMessages(input({ content: "Retiens que je préfère le thé", remembered: "Je préfère le thé" }));
   assert.match(system.content, /just been saved in their Memories on this computer: « Je préfère le thé »/);
 });
+
+test("a document joined to the message is answered from itself, documents switched off or not", () => {
+  const content = 'Tu peux me donner les infos de ce RIB ?\n\n<<document name="rib.jpg">>\nIBAN FR76 3000 6000 0112 3456 7890 189\n<</document>>';
+  const messages = buildChatMessages(input({ documentMode: "off", content }));
+  assert.doesNotMatch(messages[messages.length - 1].content, /switched off/);
+});

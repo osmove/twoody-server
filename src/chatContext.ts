@@ -162,7 +162,7 @@ export function buildChatMessages(input: ChatContextInput): ChatMessage[] {
   const excerptsBefore = input.history.some((row) => /\[(?:excerpt|extrait|source)\b|<<excerpt|\[\d+\]/i.test(row.content));
   const documentPolicy = chatty ? null : input.documentMode === "only"
     ? "[Document-only mode] Answer only from the supplied document excerpts or explicitly attached documents. Cite evidence for every factual answer. Treat earlier conversation as questions/context, never as documentary evidence. Do not use general knowledge, memories or web results as evidence. If the documents do not contain the answer, say so clearly. Folder inventory questions may use the supplied library list."
-    : input.documentMode === "off" && (excerptsBefore || ASKS_ABOUT_DOCUMENTS.test(input.content))
+    : input.documentMode === "off" && current.documents.length === 0 && (excerptsBefore || ASKS_ABOUT_DOCUMENTS.test(current.text))
       // « Tu n'as pas accès à mes documents ? » — « Non, je n'ai pas accès à
       // tes fichiers » read as Twoody never reading any (28/09/2026): they
       // are switched off here, and the person can switch them on.
