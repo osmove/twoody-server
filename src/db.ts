@@ -186,6 +186,11 @@ export const messages = sqliteTable("messages", {
   // The exchange's ref in the encrypted history: an exchange brought from
   // another device is added once, whatever the number of imports.
   vaultRef: text("vault_ref"),
+  // A prompt as the model was given it — with the excerpts, notes and
+  // context of its turn — so that the next turns give it again byte for
+  // byte and the runtime reuses its cache (chatContext.ts). Never sent to
+  // a client.
+  sentContent: text("sent_content"),
   // What an answer cost, as the runtime counted it (estimated when it did
   // not say), and who asked: « iPhone », a device's name, or
   // « this-computer » — the Devices screen's usage (28/09/2026).
@@ -848,7 +853,7 @@ if (!messageColumns.some((column) => column.name === "reasoning_ms")) {
 if (!messageColumns.some((column) => column.name === "vault_ref")) {
   sqlite.exec("ALTER TABLE messages ADD COLUMN vault_ref TEXT");
 }
-for (const [name, type] of [["prompt_tokens", "INTEGER"], ["completion_tokens", "INTEGER"], ["tokens_estimated", "INTEGER"], ["client", "TEXT"], ["answered_by_json", "TEXT"]] as const) {
+for (const [name, type] of [["prompt_tokens", "INTEGER"], ["completion_tokens", "INTEGER"], ["tokens_estimated", "INTEGER"], ["client", "TEXT"], ["answered_by_json", "TEXT"], ["sent_content", "TEXT"]] as const) {
   if (!messageColumns.some((column) => column.name === name)) sqlite.exec(`ALTER TABLE messages ADD COLUMN ${name} ${type}`);
 }
 

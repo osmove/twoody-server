@@ -463,6 +463,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       timeZone: validTimeZone(parsed.time_zone),
     });
     const chatMessages = turn.messages;
+    // What the model is given of this prompt, for the next turns to give
+    // it again as it is; and the window they grow from.
+    db.update(messages).set({ sentContent: turn.sent }).where(eq(messages.id, promptId)).run();
     db.update(discussions).set({ contextJson: JSON.stringify(turn.state) }).where(eq(discussions.id, discussion.id)).run();
     // « Répondre maintenant », for this reply.
     const answerNowController = new AbortController();
@@ -1560,7 +1563,7 @@ export function loadHistory(discussionId: string, after: string | null = null): 
   // its timestamp with the prompt. `rowid` keeps insertion order. A
   // compaction's summary stands for the messages up to `after`.
   const rows = db
-    .select({ id: messages.id, role: messages.role, content: messages.content, sourcesJson: messages.sourcesJson })
+    .select({ id: messages.id, role: messages.role, content: messages.content, sourcesJson: messages.sourcesJson, sent: messages.sentContent })
     .from(messages)
     .where(
       after

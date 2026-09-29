@@ -45,6 +45,10 @@ export interface HistoryRow {
   sourcesJson?: string | null;
   role: string;
   content: string;
+  /// A prompt as the model was given it, with its turn's context
+  /// (messages.sent_content); null for one from before, or brought from
+  /// another device.
+  sent?: string | null;
 }
 
 export interface MemoryRow {
@@ -431,7 +435,9 @@ function formatDay(now: Date): string {
 }
 
 /// The messages since the last cut, as they were given: whole, documents
-/// and all. The reasoning of an answer is not given again: the chat
+/// and all, and a prompt with what its turn added to it (excerpts, notes,
+/// contacts, the library…) — byte for byte what the runtime has in cache.
+/// The reasoning of an answer is not given again: the chat
 /// templates (Qwen3, Qwen3.5) drop it from the turns before the last
 /// question anyway, and llama.cpp goes back to the checkpoint it keeps
 /// just before the answer — only that answer is read again (measured on
@@ -440,8 +446,8 @@ function liveHistory(rows: HistoryRow[]): ChatMessage[] {
   const messages: ChatMessage[] = [];
   for (const row of rows) {
     if (row.role !== "user" && row.role !== "assistant") continue;
-    if (!row.content.trim()) continue;
-    messages.push({ role: row.role, content: row.content });
+    if (!row.content.trim() && !row.sent) continue;
+    messages.push({ role: row.role, content: row.role === "user" && row.sent ? row.sent : row.content });
   }
   return messages;
 }

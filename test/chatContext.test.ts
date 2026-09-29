@@ -291,3 +291,29 @@ test("the history only grows between cuts, and a cut drops the oldest half at on
   assert.ok(cuts.length >= 2 && cuts.length <= 6, `cuts at ${cuts.join(", ")}`);
   for (let i = 1; i < cuts.length; i += 1) assert.ok(cuts[i] - cuts[i - 1] >= 5, `cuts at ${cuts.join(", ")}`);
 });
+
+test("a prompt is given again as it was sent, with its excerpts and notes, so the next turn only adds to it", () => {
+  const memories = [{ kind: "project", title: "Dossier Dupont", content: "Audience le 3 octobre." }];
+  const first = buildChatTurn(input({
+    memories,
+    currentId: "u1",
+    content: "Où en est le dossier Dupont ?",
+    excerpts: [{ name: "dupont.pdf", page: 2, text: "Le tribunal fixe l'audience." }],
+    remembered: null,
+  }));
+  assert.match(first.sent, /^\[Excerpts from the user's documents\][\s\S]*\[Saved notes that may be relevant\][\s\S]*Où en est le dossier Dupont \?$/);
+  const history = [
+    { id: "u1", role: "user", content: "Où en est le dossier Dupont ?", sent: first.sent },
+    { id: "a1", role: "assistant", content: "L'audience est le 3 octobre [1]." },
+  ];
+  const second = buildChatTurn(input({ memories, state: first.state, history, currentId: "u2", content: "Merci" }));
+  assert.deepEqual(second.messages.slice(0, first.messages.length), first.messages);
+  assert.deepEqual(second.messages.slice(first.messages.length), [
+    { role: "assistant", content: "L'audience est le 3 octobre [1]." },
+    { role: "user", content: "Merci" },
+  ]);
+  // Without what was sent (a message from before, or from another device):
+  // what was typed.
+  const older = buildChatTurn(input({ memories, state: first.state, history: history.map(({ sent: _sent, ...row }) => row), currentId: "u2", content: "Merci" }));
+  assert.equal(older.messages[1].content, "Où en est le dossier Dupont ?");
+});
