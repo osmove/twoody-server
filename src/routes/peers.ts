@@ -1,15 +1,16 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { eq } from "drizzle-orm";
-import { isOwnerSession, requireAuth } from "../auth.js";
+import { isOwnerSession, isPeerSessionKind, requireAuth } from "../auth.js";
 import { BackendError } from "../account/backend.js";
-import { accountPeers, db } from "../db.js";
+import { accountPeers, authSessions, db } from "../db.js";
 import { ownerRequest } from "../localAccess.js";
 import { LocalOnlyError } from "../outbound.js";
 import { listPeers, peerById, peerStatus, PeerUnavailableError, removePeer, requestPeer } from "../peers/index.js";
 
 // The account's other computers this one sends questions to
 // (docs/multi-computer-design.md §3) — managed by Twoody Desktop, or by the
-// owner of a headless server with the admin token:
+// owner of a headless server with the admin token; seen and switched on,
+// off or trusted (GET, PATCH) by a device paired with it too:
 //
 //   GET    /api/v1/peers                 [{computer_id, name, kind, state, enabled, trusted, url?, error?, status?, status_at?}]
 //   POST   /api/v1/peers {computer_id, name?}  → 202 {request_id, expires_at}
@@ -32,6 +33,29 @@ async function requireDesktop(req: FastifyRequest, reply: FastifyReply): Promise
   if (!auth) return null;
   if (isOwnerSession(auth.sessionId) || ownerRequest(req)) return auth;
   reply.code(403).send({ error: "desktop_only", message: "The account's computers are managed from Twoody Desktop." });
+  return null;
+}
+
+/// Seeing the peers and choosing which to use or trust (GET, PATCH): the
+/// Desktop as above, or a device paired with this computer — the iPhone,
+/// by code or approved through the account — whose « Appareils » shows
+/// them. Never a peer session (authenticate() refuses those here anyway),
+/// never a session given to another computer of the account, and never a
+/// firmware device's token.
+async function requirePairedPerson(req: FastifyRequest, reply: FastifyReply): Promise<{ userId: string } | null> {
+  const auth = await requireAuth(req, reply);
+  if (!auth) return null;
+  if (isOwnerSession(auth.sessionId) || ownerRequest(req)) return auth;
+  if (auth.sessionId) {
+    const [session] = db
+      .select({ kind: authSessions.clientKind, requesterComputerId: authSessions.requesterComputerId })
+      .from(authSessions)
+      .where(eq(authSessions.id, auth.sessionId))
+      .limit(1)
+      .all();
+    if (session && !isPeerSessionKind(session.kind) && !session.requesterComputerId) return auth;
+  }
+  reply.code(403).send({ error: "desktop_only", message: "The account's computers are managed from Twoody Desktop or a device paired with it." });
   return null;
 }
 
@@ -62,9 +86,9 @@ function failure(reply: FastifyReply, err: unknown) {
 
 export async function peersRoutes(app: FastifyInstance) {
   app.get("/peers", {
-    schema: { tags: ["providers"], summary: "The account's computers this one sends questions to (Desktop only)" },
+    schema: { tags: ["providers"], summary: "The account's computers this one sends questions to (Desktop or a device paired with it)" },
     handler: async (req, reply) => {
-      const auth = await requireDesktop(req, reply);
+      const auth = await requirePairedPerson(req, reply);
       if (!auth) return;
       return reply.send({ peers: listPeers(auth.userId).map(serialize) });
     },
@@ -89,9 +113,9 @@ export async function peersRoutes(app: FastifyInstance) {
   });
 
   app.patch<{ Params: { id: string }; Body: { enabled?: boolean; trusted?: boolean } }>("/peers/:id", {
-    schema: { tags: ["providers"], summary: "Turn a peer on or off for the automatic choice, or trust it with this computer's person's data (Desktop only)" },
+    schema: { tags: ["providers"], summary: "Turn a peer on or off for the automatic choice, or trust it with this computer's person's data (Desktop or a device paired with it)" },
     handler: async (req, reply) => {
-      const auth = await requireDesktop(req, reply);
+      const auth = await requirePairedPerson(req, reply);
       if (!auth) return;
       const peer = peerById(auth.userId, req.params.id);
       if (!peer) return reply.code(404).send({ error: "not_found" });

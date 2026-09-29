@@ -127,7 +127,8 @@ export type SessionOrigin = "owner" | "code" | "account";
 export function createAuthSession(
   userId: string,
   clientKind = "cli",
-  origin: SessionOrigin | null = null
+  origin: SessionOrigin | null = null,
+  requesterComputerId: string | null = null
 ): { token: string; sessionId: string } {
   const token = generateToken();
   const sessionId = generateId();
@@ -141,6 +142,7 @@ export function createAuthSession(
       createdAt: new Date(),
       expiresAt: null,
       origin,
+      requesterComputerId,
     })
     .run();
 

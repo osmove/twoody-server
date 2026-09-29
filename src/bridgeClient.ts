@@ -49,6 +49,36 @@ const BACKOFF_MAX_MS = 30_000;
 // A refused token does not fix itself in seconds: asking again that often
 // only fills the backend's logs with 401s.
 const AUTH_FAILED_BACKOFF_MS = 5 * 60_000;
+/// The backend refuses this bridge device for this computer (400
+/// bridge_device_required, 409 bridge_device_mismatch / bridge_device_taken,
+/// twoody-backend 08c052d8): asking again soon changes nothing, so the loop
+/// waits as long as for a refused session, and a compute key is not offered
+/// again for an hour.
+const DEVICE_REFUSED_BACKOFF_MS = 5 * 60_000;
+const COMPUTE_KEY_REFUSED_MS = 60 * 60_000;
+const DEVICE_REFUSALS = new Set(["bridge_device_required", "bridge_device_mismatch", "bridge_device_taken"]);
+
+/// The backend's reason for refusing this bridge device, from its answer.
+export function bridgeDeviceRefusal(status: number, body: string): string | null {
+  if (status !== 400 && status !== 409) return null;
+  try {
+    const code = (JSON.parse(body) as { error?: unknown }).error;
+    return typeof code === "string" && DEVICE_REFUSALS.has(code) ? code : null;
+  } catch {
+    return null;
+  }
+}
+
+function explainDeviceRefusal(code: string, deviceId: string): string {
+  switch (code) {
+    case "bridge_device_mismatch":
+      return `the account has another bridge device on record for this computer (this one is ${deviceId.slice(0, 8)}…). Reset it from Twoody's « Appareils » (reset_bridge_device), or restore the old ~/.twoody-server/bridge-device-id.`;
+    case "bridge_device_taken":
+      return `bridge device ${deviceId.slice(0, 8)}… is already held by another computer or another account. Remove the other computer from the account, or give this one a new bridge-device-id.`;
+    default:
+      return "the request carried no X-Bridge-Device-Id.";
+  }
+}
 
 // Catalog prewarm cadence. Backend caches with a 5-min TTL; we
 // refresh every 4 min so there's no measurable window where the LLM
@@ -230,6 +260,8 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
     : null;
   let computeKeysPublished = false;
   let computeKeysCheckedAt = 0;
+  let computeKeysRefusedUntil = 0;
+  let deviceRefusalSaid: string | null = null;
   // What the last completions looked like, for the heartbeat.
   let lastModel: string | null = null;
   let tokensPerSecond: number | null = null;
@@ -313,6 +345,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
       try {
         const task = await pollOnce(state === "online" ? POLL_WAIT_SECONDS : PROBE_WAIT_SECONDS);
         consecutiveFailures = 0;
+        deviceRefusalSaid = null;
         report("online");
         if (task) {
           console.log(
@@ -334,13 +367,24 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
         consecutiveFailures += 1;
         const message = error instanceof Error ? error.message : String(error);
         const authFailed = message.startsWith("auth_failed");
-        const backoff = authFailed
-          ? AUTH_FAILED_BACKOFF_MS
-          : Math.min(BACKOFF_MIN_MS * 2 ** Math.min(consecutiveFailures - 1, 5), BACKOFF_MAX_MS);
-        report(authFailed ? "auth_failed" : "unreachable");
-        console.warn(
-          `[bridge-client] poll failed (attempt ${consecutiveFailures}, backoff ${backoff}ms): ${message}`,
-        );
+        const deviceRefused = message.startsWith("device_refused ") ? message.slice("device_refused ".length) : null;
+        const backoff = deviceRefused
+          ? DEVICE_REFUSED_BACKOFF_MS
+          : authFailed
+            ? AUTH_FAILED_BACKOFF_MS
+            : Math.min(BACKOFF_MIN_MS * 2 ** Math.min(consecutiveFailures - 1, 5), BACKOFF_MAX_MS);
+        report(authFailed || deviceRefused ? "auth_failed" : "unreachable");
+        if (deviceRefused) {
+          // Said once, plainly: the same refusal every five minutes is noise.
+          if (deviceRefusalSaid !== deviceRefused) {
+            deviceRefusalSaid = deviceRefused;
+            console.warn(`[bridge-client] the account refuses this bridge device (${deviceRefused}): ${explainDeviceRefusal(deviceRefused, deviceId)} Trying again every ${DEVICE_REFUSED_BACKOFF_MS / 60_000} min.`);
+          }
+        } else {
+          console.warn(
+            `[bridge-client] poll failed (attempt ${consecutiveFailures}, backoff ${backoff}ms): ${message}`,
+          );
+        }
         await sleep(backoff, () => stopped);
       }
     }
@@ -359,7 +403,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
       if (opts.capabilities && opts.capabilities.length > 0) {
         headers["X-Bridge-Capabilities"] = opts.capabilities.join(",");
       }
-      if (computeHost && (!computeKeysPublished || Date.now() - computeKeysCheckedAt > 60 * 60 * 1000)) {
+      if (computeHost && Date.now() >= computeKeysRefusedUntil && (!computeKeysPublished || Date.now() - computeKeysCheckedAt > 60 * 60 * 1000)) {
         computeKeysCheckedAt = Date.now();
         if (computeHost.rotate() || !computeKeysPublished) void publishComputeKeys();
       }
@@ -376,6 +420,12 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
       );
 
       if (res.status === 204) return null;
+      if (res.status === 400 || res.status === 409) {
+        const body = await res.text().catch(() => "");
+        const refusal = bridgeDeviceRefusal(res.status, body);
+        if (refusal) throw new Error(`device_refused ${refusal}`);
+        throw new Error(`status=${res.status} body=${body.slice(0, 200)}`);
+      }
       if (res.status === 401 || res.status === 403) {
         const reason = await res.text().catch(() => "");
         throw new Error(`auth_failed status=${res.status} ${reason.slice(0, 120)}`.trim());
@@ -511,7 +561,16 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
         body: JSON.stringify(computeHost.publicKeys()),
       });
       computeKeysPublished = res.ok;
-      if (!res.ok) console.warn(`[bridge-client] compute keys not published: HTTP ${res.status}`);
+      if (!res.ok) {
+        const refusal = bridgeDeviceRefusal(res.status, await res.text().catch(() => ""));
+        if (refusal) {
+          // Not offered again at every poll: in an hour, or after a restart.
+          computeKeysRefusedUntil = Date.now() + COMPUTE_KEY_REFUSED_MS;
+          console.warn(`[bridge-client] compute keys not published: the account refuses this bridge device (${refusal}): ${explainDeviceRefusal(refusal, deviceId)}`);
+        } else {
+          console.warn(`[bridge-client] compute keys not published: HTTP ${res.status}`);
+        }
+      }
     } catch (err) {
       console.warn(`[bridge-client] compute keys not published: ${err instanceof Error ? err.message : err}`);
     }
@@ -531,6 +590,8 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
+      const refusal = bridgeDeviceRefusal(res.status, text);
+      if (refusal) throw new Error(`patch_failed: the account refuses this bridge device (${refusal}): ${explainDeviceRefusal(refusal, deviceId)}`);
       throw new Error(`patch_failed status=${res.status} body=${text.slice(0, 200)}`);
     }
   }

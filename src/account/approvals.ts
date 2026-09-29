@@ -28,11 +28,23 @@ import { linkedAccount, type LinkedAccount } from "./store.js";
 
 export interface PendingRequest {
   id: string;
+  /// The name shown and logged: the account's name for the requesting
+  /// computer when the backend gives it (`requester_name`), else the one the
+  /// requester chose.
   name: string;
   public_key: string;
   expires_at: string;
+  /// "peer" whenever another computer of the account asked — said by the
+  /// request's role or by `requester_kind: "computer"` — so that it only
+  /// ever gets a session limited to /api/v1/peer/*.
   role: PairingRole;
   endorsements: Array<{ approver_key: string; endorsement: string }>;
+  /// "computer" when the backend says the request came from a session of
+  /// one of the account's computers; null when it does not say.
+  requester_kind: "computer" | "device" | null;
+  /// That computer's id in the account: its session here goes when the
+  /// account stops listing it (peers/index.ts).
+  requester_computer_id: string | null;
 }
 
 export type Verdict = { approve: true; rule: "approver" | "endorsed" } | { approve: false; reason: "expired" | "needs_console" | "invalid" };
@@ -50,14 +62,26 @@ export function readPending(raw: unknown): PendingRequest[] {
           return x && typeof x.approver_key === "string" && typeof x.endorsement === "string" ? [{ approver_key: x.approver_key, endorsement: x.endorsement }] : [];
         })
       : [];
+    // twoody-backend 08c052d8: requester_kind, requester_computer_id,
+    // requester_name and requester_computer {id, name, public_key}.
+    const computerEntry = r.requester_computer && typeof r.requester_computer === "object" ? (r.requester_computer as Record<string, unknown>) : null;
+    const idOf = (value: unknown) => ((typeof value === "string" && value.trim()) || typeof value === "number" ? String(value).trim().slice(0, 64) : null);
+    const nameOf = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim().slice(0, 100) : null);
+    const requesterKind = r.requester_kind === "computer" ? "computer" : r.requester_kind === "device" ? "device" : null;
+    const requesterComputerId = idOf(r.requester_computer_id) ?? idOf(computerEntry?.id);
+    const chosen = nameOf(r.name);
+    const known = nameOf(computerEntry?.name) ?? nameOf(r.requester_name);
+    const computer = r.role === "peer" || requesterKind === "computer" || requesterComputerId !== null;
     return [
       {
         id: String(r.id),
-        name: typeof r.name === "string" && r.name.trim() ? r.name.trim().slice(0, 100) : "Appareil",
+        name: known ?? chosen ?? "Appareil",
         public_key: r.public_key.toLowerCase(),
         expires_at: r.expires_at,
-        role: r.role === "peer" ? "peer" : "device",
+        role: computer ? "peer" : "device",
         endorsements: endorsements.slice(0, 5),
+        requester_kind: requesterKind ?? (computer ? "computer" : null),
+        requester_computer_id: requesterComputerId,
       },
     ];
   });
@@ -124,7 +148,13 @@ export async function approveRequest(account: LinkedAccount, request: PendingReq
   // « account »: undone if this computer leaves the account or is removed
   // from it (service.ts), and never taken for the Desktop, whatever name
   // the requester gave itself.
-  const paired = pairDevice({ deviceName: request.name, tunnelPublicKey: request.public_key, role: request.role, origin: "account" });
+  const paired = pairDevice({
+    deviceName: request.name,
+    tunnelPublicKey: request.public_key,
+    role: request.role,
+    origin: "account",
+    requesterComputerId: request.requester_computer_id,
+  });
   const payload = {
     localServerUrl: lanUrl(),
     localServerToken: paired.token,

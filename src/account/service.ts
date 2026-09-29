@@ -65,6 +65,15 @@ export function accountCredentials(): AccountCredentials | null {
   return null;
 }
 
+/// Whether the backend said, in its own words, that this computer or its
+/// session is no longer in the account: 403 {error:"computer_revoked"}, or
+/// 401 {error:"session_revoked"|"session_expired"}. The status and the code
+/// must go together (twoody-backend 08c052d8).
+export function revokedByAccount(err: unknown): err is BackendError {
+  if (!(err instanceof BackendError)) return false;
+  return (err.status === 403 && err.code === "computer_revoked") || (err.status === 401 && (err.code === "session_revoked" || err.code === "session_expired"));
+}
+
 export interface AccountService {
   stop(): void;
   /// One heartbeat now (tests).
@@ -84,11 +93,13 @@ export function startAccountService(options: {
   let bridgeDeviceUuid: string | null = null;
   let stopped = false;
 
-  // Two refusals in a row (401/403: the computer was removed from the
-  // account, its credential or its session revoked) and this server leaves
-  // the account on its side too: a single one could be a backend's bad
-  // second, and linking again means typing a code.
+  // Two refusals in a row and this server leaves the account on its side
+  // too: a single one could be a backend's bad second, and linking again
+  // means typing a code. Only the backend's own words count (revokedByAccount):
+  // a bare 401/403, or a proxy's HTML page, never unlinks.
   let refusals = 0;
+  let credentialRefusalSaid = false;
+  let bridgeRefusalSaid: string | null = null;
   const heartbeat = async () => {
     const account = linkedAccount();
     if (!account) return;
@@ -99,8 +110,28 @@ export function startAccountService(options: {
         { body: { status: await buildStatus(), platform: process.platform === "darwin" ? "macos" : process.platform, ...(bridgeDeviceUuid ? { bridge_device_uuid: bridgeDeviceUuid } : {}) } },
       );
       refusals = 0;
+      credentialRefusalSaid = false;
+      bridgeRefusalSaid = null;
     } catch (err) {
-      if (!(err instanceof BackendError) || (err.status !== 401 && err.status !== 403)) return; // next beat
+      if (!revokedByAccount(err)) {
+        // Anything else — the backend down, a proxy in the way, an error
+        // it did not name — says nothing of this computer: next beat, and
+        // the count starts again. A wrong computer credential is worth
+        // saying (once), not worth leaving the account for.
+        refusals = 0;
+        if (err instanceof BackendError && err.status === 403 && err.code === "invalid_computer_credential" && !credentialRefusalSaid) {
+          credentialRefusalSaid = true;
+          options.log?.("The Twoody account does not recognise this server's computer credential (403 invalid_computer_credential). It stays linked; if this goes on: twoody-server logout, then twoody-server login.");
+        }
+        // Its bridge device refused (bound to another, or held elsewhere):
+        // the heartbeat itself was refused, said once.
+        if (err instanceof BackendError && err.status === 409 && err.code?.startsWith("bridge_device_") && bridgeRefusalSaid !== err.code) {
+          bridgeRefusalSaid = err.code;
+          options.log?.(`The Twoody account refuses this server's bridge device (409 ${err.code}): reset it from Twoody's « Appareils », or remove the computer that holds it.`);
+        }
+        return;
+      }
+      credentialRefusalSaid = false;
       refusals += 1;
       if (refusals < 2 || stopped) return;
       refusals = 0;

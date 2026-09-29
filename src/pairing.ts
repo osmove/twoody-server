@@ -38,14 +38,23 @@ export function ensureLocalUser(): typeof users.$inferSelect {
   return db.select().from(users).where(eq(users.id, userId)).limit(1).all()[0]!;
 }
 
-export function pairDevice(args: { deviceName: string; tunnelPublicKey?: string | null; role?: PairingRole; origin?: SessionOrigin | null }): {
+export function pairDevice(args: {
+  deviceName: string;
+  tunnelPublicKey?: string | null;
+  role?: PairingRole;
+  origin?: SessionOrigin | null;
+  /// The requester's id among the account's computers, when another
+  /// computer of the account asked: its session goes when the account stops
+  /// listing it.
+  requesterComputerId?: string | null;
+}): {
   token: string;
   sessionId: string;
   user: typeof users.$inferSelect;
   tunnelPublicKey?: string;
 } {
   const user = ensureLocalUser();
-  const { token, sessionId } = createAuthSession(user.id, sessionKindFor(args.role ?? "device", args.deviceName), args.origin ?? null);
+  const { token, sessionId } = createAuthSession(user.id, sessionKindFor(args.role ?? "device", args.deviceName), args.origin ?? null, args.requesterComputerId ?? null);
   // The key swap, when the device brought one. The key goes with the
   // session: removing the device takes both.
   if (args.tunnelPublicKey) {

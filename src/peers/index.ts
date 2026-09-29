@@ -1,10 +1,11 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull } from "drizzle-orm";
 import { accountCredentials, type AccountCredentials } from "../account/service.js";
 import { backendCall, BackendError } from "../account/backend.js";
 import { openPairing } from "../account/pairingSeal.js";
 import { readStatus, type ComputerStatus } from "../account/status.js";
 import { computerName } from "../account/link.js";
-import { accountPeers, db } from "../db.js";
+import { accountPeers, authSessions, db } from "../db.js";
+import { unpairSession } from "../pairing.js";
 import { KEY_BYTES, rendezvousId } from "../tunnel/channel.js";
 import { startTunnelClient, type TunnelClient } from "../tunnel/client.js";
 import { createDirectTransport } from "../tunnel/directTransport.js";
@@ -253,7 +254,7 @@ export function startPeerStatusPoller(userIds: () => string[], everyMs = 20_000)
   const listingEveryMs = Number.isFinite(override) && override > 0 ? override : 5 * 60_000;
   const sync = async () => {
     for (const userId of userIds()) {
-      if (listPeers(userId).length > 0) await syncPeersWithAccount(userId).catch(() => undefined);
+      if (listPeers(userId).length > 0 || sessionsGivenToComputers().length > 0) await syncPeersWithAccount(userId).catch(() => undefined);
     }
   };
   if (poller) clearInterval(poller);
@@ -274,11 +275,14 @@ export function startPeerStatusPoller(userIds: () => string[], everyMs = 20_000)
 
 /// The peers the account no longer lists are set aside (state « removed »):
 /// the router stops sending them turns, on the LAN as through the relay.
-/// Nothing changes when the list cannot be had. Returns the ids set aside.
+/// And the sessions this computer gave to computers the account no longer
+/// lists go (revokeSessionsOfRemovedComputers). Nothing changes when the
+/// list cannot be had. Returns the ids of the peers set aside.
 export async function syncPeersWithAccount(userId: string): Promise<string[]> {
   const computers = await accountComputers({ fresh: true, strict: true });
   if (!computers) return [];
   const listed = new Set(computers.map((c) => c.id));
+  revokeSessionsOfRemovedComputers(listed);
   const removed: string[] = [];
   for (const peer of listPeers(userId)) {
     if (listed.has(peer.computerId) || peer.state === "removed") continue;
@@ -286,6 +290,38 @@ export async function syncPeersWithAccount(userId: string): Promise<string[]> {
     removed.push(peer.computerId);
   }
   return removed;
+}
+
+/// The sessions this computer gave to another computer of the account
+/// (a peer, approved here or by the Desktop), with that computer's id.
+export function sessionsGivenToComputers(): Array<{ id: string; requesterComputerId: string }> {
+  return db
+    .select({ id: authSessions.id, requesterComputerId: authSessions.requesterComputerId })
+    .from(authSessions)
+    .where(isNotNull(authSessions.requesterComputerId))
+    .all()
+    .flatMap((s) => (s.requesterComputerId ? [{ id: s.id, requesterComputerId: s.requesterComputerId }] : []));
+}
+
+/// A computer removed from the account keeps nothing here: the sessions
+/// given to it (and the tunnel keys that came with them) go, so that it
+/// reaches this computer neither through the relay (the backend refuses
+/// it already) nor on the LAN's /tunnel, where only this computer can
+/// refuse it. `listed` is the account's list as the backend just gave it.
+///
+/// A list that does not name this computer itself is not trusted for that:
+/// another account's list, or this computer removed — which the heartbeat
+/// or the Desktop deal with. Returns how many sessions went.
+export function revokeSessionsOfRemovedComputers(listed: Set<string>): number {
+  const self = accountCredentials()?.computerId ?? null;
+  if (self && !listed.has(self)) return 0;
+  let revoked = 0;
+  for (const session of sessionsGivenToComputers()) {
+    if (listed.has(session.requesterComputerId)) continue;
+    unpairSession(session.id);
+    revoked += 1;
+  }
+  return revoked;
 }
 
 const syncRequested = new Map<string, number>();

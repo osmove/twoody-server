@@ -31,6 +31,12 @@ export interface FakeAuthorization {
   sealed_response: string | null;
   expires_at: string;
   endorsements: Array<{ approver_key: string; endorsement: string }>;
+  /// Who asked, as the backend knows it from the session that asked
+  /// (listed in `pending` when set): "computer" for another computer of the
+  /// account, with its id and its name in the account.
+  requester_kind?: "computer" | "device";
+  requester_computer_id?: number;
+  requester_name?: string;
 }
 
 export interface FakeLogin {
@@ -60,8 +66,9 @@ export interface FakeBackend {
   deviceTokens: string[];
   /// Added to an approved login's poll answer (e.g. {account: {email}}).
   pollExtras: Record<string, unknown>;
-  /// "METHOD /path" → the status to answer instead (until deleted).
-  forced: Map<string, number>;
+  /// "METHOD /path" → the status to answer instead (until deleted), or the
+  /// whole answer: {status, body} (JSON) or {status, html} (a proxy's page).
+  forced: Map<string, number | { status: number; body?: unknown; html?: string }>;
   /// Adds a computer as if created by the Desktop (POST /account_computers).
   addComputer(args: { name: string; public_key: string; kind?: "desktop" | "server"; approver_keys?: string[] }): FakeComputer;
   approveLogin(userCode: string, approver?: { kind: "computer" | "phone"; public_key: string; name?: string } | null): void;
@@ -92,7 +99,7 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
   const calls: string[] = [];
   const deviceTokens: string[] = [];
   const pollExtras: Record<string, unknown> = {};
-  const forced = new Map<string, number>();
+  const forced = new Map<string, number | { status: number; body?: unknown; html?: string }>();
   let nextId = 40;
   let nextRid = 300;
 
@@ -119,10 +126,16 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
       res.writeHead(status, { "content-type": "application/json" });
       res.end(body === undefined ? "" : JSON.stringify(body));
     };
-    const forcedStatus = forced.get(`${req.method} ${path}`);
-    if (forcedStatus !== undefined) {
-      res.writeHead(forcedStatus, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: `forced_${forcedStatus}` }));
+    const forcedAnswer = forced.get(`${req.method} ${path}`);
+    if (forcedAnswer !== undefined) {
+      const answer = typeof forcedAnswer === "number" ? { status: forcedAnswer, body: { error: `forced_${forcedAnswer}` } } : forcedAnswer;
+      if (answer.html !== undefined) {
+        res.writeHead(answer.status, { "content-type": "text/html" });
+        res.end(answer.html);
+        return;
+      }
+      res.writeHead(answer.status, { "content-type": "application/json" });
+      res.end(answer.body === undefined ? "" : JSON.stringify(answer.body));
       return;
     }
     const user = req.headers["x-user-token"] === userToken;
@@ -205,7 +218,17 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
       if (!host) return json(403);
       const live = authorizations.filter((a) => a.computer_id === computer.id && a.state === "pending" && Date.parse(a.expires_at) > Date.now());
       return json(200, {
-        requests: live.map((a) => ({ id: a.id, name: a.name, public_key: a.public_key, expires_at: a.expires_at, role: a.role, endorsements: a.endorsements })),
+        requests: live.map((a) => ({
+          id: a.id,
+          name: a.name,
+          public_key: a.public_key,
+          expires_at: a.expires_at,
+          role: a.role,
+          endorsements: a.endorsements,
+          ...(a.requester_kind ? { requester_kind: a.requester_kind } : {}),
+          ...(a.requester_computer_id !== undefined ? { requester_computer_id: a.requester_computer_id } : {}),
+          ...(a.requester_name ? { requester_name: a.requester_name } : {}),
+        })),
       });
     }
     if (req.method === "POST" && sub === "/request_access") {

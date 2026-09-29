@@ -122,9 +122,10 @@ test("a peer session reaches /api/v1/peer/* and nothing else", async () => {
   assert.ok(status.models.some((m: { id: string }) => m.id === "qwen3:8b"));
 });
 
-test("/api/v1/peers is the Desktop's; a phone is refused", async () => {
+test("/api/v1/peers is managed by the Desktop; a phone sees them but does not ask for one", async () => {
   const phone = pairDevice({ deviceName: "iPhone" });
-  assert.equal((await app.inject({ method: "GET", url: "/api/v1/peers", headers: { "x-user-token": phone.token }, remoteAddress: "192.168.1.9" })).statusCode, 403);
+  assert.equal((await app.inject({ method: "GET", url: "/api/v1/peers", headers: { "x-user-token": phone.token }, remoteAddress: "192.168.1.9" })).statusCode, 200);
+  assert.equal((await app.inject({ method: "POST", url: "/api/v1/peers", headers: { "x-user-token": phone.token }, remoteAddress: "192.168.1.9", payload: { computer_id: "78" } })).statusCode, 403);
   const listed = await app.inject({ method: "GET", url: "/api/v1/peers", headers: auth });
   assert.equal(listed.statusCode, 200);
   assert.equal(listed.json().peers[0].computer_id, "77");

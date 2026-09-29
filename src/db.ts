@@ -63,6 +63,11 @@ export const authSessions = sqliteTable("auth_sessions", {
   /// (pairing with the code on the screen), « account » (approved through
   /// the Twoody account, account/approvals.ts). Null for older sessions.
   origin: text("origin"),
+  /// For a session given through the account to another of its computers:
+  /// that computer's id in the account (the backend's `requester_computer_id`).
+  /// When the account stops listing it, the session goes (peers/index.ts,
+  /// revokeSessionsOfRemovedComputers). Null otherwise.
+  requesterComputerId: text("requester_computer_id"),
 });
 
 export const pairingCodes = sqliteTable("pairing_codes", {
@@ -484,7 +489,8 @@ sqlite.exec(`
     client_kind TEXT NOT NULL DEFAULT 'cli',
     created_at INTEGER NOT NULL,
     expires_at INTEGER,
-    origin TEXT
+    origin TEXT,
+    requester_computer_id TEXT
   );
 
   CREATE TABLE IF NOT EXISTS pairing_codes (
@@ -906,6 +912,10 @@ if (!sessionColumns.some((column) => column.name === "origin")) {
   sqlite.exec(
     "UPDATE auth_sessions SET origin = 'owner' WHERE client_kind = 'desktop' OR (client_kind = 'pair:Twoody Desktop' AND id NOT IN (SELECT session_id FROM tunnel_peers WHERE session_id IS NOT NULL))",
   );
+}
+
+if (!sessionColumns.some((column) => column.name === "requester_computer_id")) {
+  sqlite.exec("ALTER TABLE auth_sessions ADD COLUMN requester_computer_id TEXT");
 }
 
 // Contacts and events copied from the Mac's own apps (29/09/2026).

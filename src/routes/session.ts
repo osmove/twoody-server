@@ -165,8 +165,13 @@ export async function sessionRoutes(app: FastifyInstance) {
   // account it approved (a `peer:` session, never a full `pair:` one). It
   // is given through the account, so it goes when the account's sessions
   // are dropped, and is never the owner's whatever token paired it.
+  //
+  // `requester_computer_id`: the requesting computer's id in the account
+  // (the backend's pending listing gives it). It makes the session a peer
+  // one whatever `role` says, and the session goes when the account stops
+  // listing that computer (peers/index.ts, revokeSessionsOfRemovedComputers).
   app.post<{
-    Body: { setup_token?: string; device_name?: string; tunnel_public_key?: string; role?: "device" | "peer" };
+    Body: { setup_token?: string; device_name?: string; tunnel_public_key?: string; role?: "device" | "peer"; requester_computer_id?: string | number };
   }>("/auth/pair", {
     schema: {
       tags: ["session"],
@@ -179,6 +184,7 @@ export async function sessionRoutes(app: FastifyInstance) {
           device_name: { type: "string" },
           tunnel_public_key: { type: "string" },
           role: { type: "string", enum: ["device", "peer"] },
+          requester_computer_id: { anyOf: [{ type: "string", minLength: 1, maxLength: 64 }, { type: "integer" }] },
         },
       },
     },
@@ -220,12 +226,14 @@ export async function sessionRoutes(app: FastifyInstance) {
       // The key swap happens there too, when the device brought one: this
       // computer's key is handed over only after the setup token has been
       // checked, so a device that is refused learns nothing about it.
-      const peer = req.body.role === "peer";
+      const requesterComputerId = req.body.requester_computer_id !== undefined ? String(req.body.requester_computer_id).trim() || null : null;
+      const peer = req.body.role === "peer" || requesterComputerId !== null;
       const { token, sessionId, user: userRow, tunnelPublicKey } = pairDevice({
         deviceName,
         tunnelPublicKey: offered || null,
         role: peer ? "peer" : "device",
         origin: peer ? "account" : bySetupToken ? "owner" : "code",
+        requesterComputerId,
       });
       const userId = userRow.id;
 

@@ -8,8 +8,9 @@ import { startFakeBackend } from "./helpers/fakeBackend.js";
 // A computer removed from the account (docs/multi-computer-design.md,
 // review of 29/09/2026):
 //
-//   - the removed server learns it from its heartbeat (401/403, twice in a
-//     row): its loops stop, account.json keeps only its own key and device
+//   - the removed server learns it from its heartbeat (403 computer_revoked
+//     or 401 session_revoked / session_expired, twice in a row; nothing
+//     else counts): its loops stop, account.json keeps only its own key and device
 //     token (0600), and what the account approved on it goes;
 //   - the computer that sent it turns stops listing it among its peers once
 //     the account no longer does, so the router stops using it, on the LAN
@@ -73,9 +74,25 @@ test("a heartbeat refused twice unlinks the server: loops stopped, account.json 
     assert.ok(service.approvals, "the approval loop runs");
 
     const path = `POST /account_computers/${computer.id}/heartbeat`;
-    backend.forced.set(path, 401);
+    // Refusals the backend did not name never count: a bare 401 / 403, a
+    // proxy's page, another error code — however many.
+    for (const answer of [401, 403, { status: 403, html: "<html>Forbidden by the proxy</html>" }, { status: 403, body: { error: "forbidden" } }, { status: 401, body: { error: "computer_revoked" } }, { status: 403, body: { error: "session_revoked" } }, { status: 403, body: { error: "invalid_computer_credential" } }]) {
+      backend.forced.set(path, answer);
+      await service.heartbeat();
+      await service.heartbeat();
+      await service.heartbeat();
+      assert.equal(linkState(), "linked", `not unlinked by ${JSON.stringify(answer)}`);
+    }
+    // Two in a row, not two in all: something else in between starts again.
+    backend.forced.set(path, { status: 401, body: { error: "session_revoked" } });
+    await service.heartbeat();
+    backend.forced.set(path, 502);
+    await service.heartbeat();
+    backend.forced.set(path, { status: 403, body: { error: "computer_revoked" } });
     await service.heartbeat();
     assert.equal(linkState(), "linked", "one refusal is not enough");
+    assert.equal(logs.filter((l) => l.includes("invalid_computer_credential")).length, 1, "a wrong credential is said, once, and does not unlink");
+    backend.forced.set(path, { status: 401, body: { error: "session_expired" } });
     await service.heartbeat();
     backend.forced.delete(path);
 

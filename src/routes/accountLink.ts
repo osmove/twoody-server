@@ -121,7 +121,16 @@ export async function accountLinkRoutes(app: FastifyInstance) {
       try {
         const requests = await fetchPending(account);
         return reply.send({
-          requests: requests.map((r) => ({ id: r.id, name: r.name, role: r.role, public_key: r.public_key, expires_at: r.expires_at, verdict: judge(r, account) })),
+          requests: requests.map((r) => ({
+            id: r.id,
+            name: r.name,
+            role: r.role,
+            requester_kind: r.requester_kind,
+            requester_computer_id: r.requester_computer_id,
+            public_key: r.public_key,
+            expires_at: r.expires_at,
+            verdict: judge(r, account),
+          })),
         });
       } catch (err) {
         const [status, body] = failure(err);

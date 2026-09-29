@@ -79,7 +79,7 @@ async function approveThroughAccount(name: string, publicKey: string): Promise<{
   return { token: "", sessionId: session!.id };
 }
 
-test("the Desktop is its setup-token session, not a name: « Twoody Desktop » approved through the account or paired by code is refused /peers", async () => {
+test("the Desktop is its setup-token session, not a name: « Twoody Desktop » approved through the account or paired by code may see and switch the peers, never ask for or forget one", async () => {
   link();
   assert.ok(isOwnerSession(desktop.session_id));
   assert.equal((await app.inject({ method: "GET", url: "/api/v1/peers", headers: { authorization: `Bearer ${desktop.token}` }, ...lan })).statusCode, 200);
@@ -93,8 +93,13 @@ test("the Desktop is its setup-token session, not a name: « Twoody Desktop » a
   const byCode = (await app.inject({ method: "POST", url: "/auth/pair", payload: { setup_token: "K7M2Q9XR", device_name: "Twoody Desktop" }, ...lan })).json();
   assert.equal(isOwnerSession(byCode.session_id), false);
   for (const token of [byCode.token]) {
-    assert.equal((await app.inject({ method: "GET", url: "/api/v1/peers", headers: { authorization: `Bearer ${token}` }, ...lan })).statusCode, 403);
-    assert.equal((await app.inject({ method: "PATCH", url: "/api/v1/peers/1", headers: { authorization: `Bearer ${token}` }, payload: { enabled: false }, ...lan })).statusCode, 403);
+    // A device paired with this computer sees the peers and switches them
+    // (the iPhone's « Appareils »)…
+    assert.equal((await app.inject({ method: "GET", url: "/api/v1/peers", headers: { authorization: `Bearer ${token}` }, ...lan })).statusCode, 200);
+    assert.equal((await app.inject({ method: "PATCH", url: "/api/v1/peers/1", headers: { authorization: `Bearer ${token}` }, payload: { enabled: false }, ...lan })).statusCode, 404, "past the check: no such peer");
+    // …but asking another computer for access, or forgetting one, stays the Desktop's.
+    assert.equal((await app.inject({ method: "POST", url: "/api/v1/peers", headers: { authorization: `Bearer ${token}` }, payload: { computer_id: "1" }, ...lan })).statusCode, 403);
+    assert.equal((await app.inject({ method: "DELETE", url: "/api/v1/peers/1", headers: { authorization: `Bearer ${token}` }, ...lan })).statusCode, 403);
   }
 });
 
