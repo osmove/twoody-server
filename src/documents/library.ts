@@ -47,6 +47,12 @@ export function canonicalFolder(input: string, personalRoot = false): string {
   return real;
 }
 
+/// A granted folder as the person knows it: iCloud Drive rather than its
+/// directory's name (com~apple~CloudDocs).
+export function folderName(path: string): string {
+  return /[\\/]Library[\\/]Mobile Documents[\\/]com~apple~CloudDocs$/.test(path) ? "iCloud Drive" : basename(path);
+}
+
 export function listFolders(userId: string) {
   const counts = sqlite
     .prepare(
@@ -71,7 +77,7 @@ export function listFolders(userId: string) {
       return {
         id: folder.id,
         path: folder.path,
-        name: basename(folder.path),
+        name: folderName(folder.path),
         documents: count?.total ?? 0,
         indexed: count?.indexed ?? 0,
         without_text: count?.empty ?? 0,

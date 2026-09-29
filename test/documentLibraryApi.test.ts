@@ -80,3 +80,9 @@ test('the home-folder preview lists what the walk leaves out',async()=>{
  for(const ext of ['.app','.photoslibrary','.musiclibrary'])assert.ok(preview.skipped_bundles.includes(ext),ext);
  assert.equal(preview.file_limit,20000);
 });
+test('iCloud Drive is listed by its name, not its directory',async()=>{
+ const {folderName}=await import('../src/documents/library.js');
+ assert.equal(folderName('/Users/claire/Library/Mobile Documents/com~apple~CloudDocs'),'iCloud Drive');
+ assert.equal(folderName('/Users/claire/Library/Mobile Documents/com~apple~CloudDocs/Factures'),'Factures');
+ assert.equal(folderName('/Users/claire/Downloads'),'Downloads');
+});
