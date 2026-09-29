@@ -1,6 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { adminToken, forwardedByProxy, isLoopbackAddress, requireAdminAccess, safeEqual, viaTunnel } from "./adminAccess.js";
-import { fromOtherPage } from "./webOrigin.js";
+import { addressedToLoopback, fromOtherPage } from "./webOrigin.js";
 
 // Routes for this machine's owner at its console (twoody-server login,
 // approve, logout) or with the admin token: /account/link, /account/approvals.
@@ -21,9 +21,15 @@ import { fromOtherPage } from "./webOrigin.js";
 // site open in the person's browser can send one to 127.0.0.1. The
 // console, the CLI and the Desktop's main process send no Origin and no
 // Sec-Fetch-Site; a page other than this server's own always does.
+//
+// And it must be addressed as 127.0.0.1, [::1] or localhost: a page served
+// from evil.local, a name anyone on the Wi-Fi can point at this machine,
+// is its own origin, sends no Sec-Fetch-Site over plain http and, once the
+// name resolves here, arrives from 127.0.0.1 (webOrigin.ts). The console,
+// the CLI and the Desktop all call http://127.0.0.1:<port>.
 
 export function fromThisMachine(req: FastifyRequest): boolean {
-  return isLoopbackAddress(req.ip) && !viaTunnel(req) && !forwardedByProxy(req) && !fromOtherPage(req);
+  return isLoopbackAddress(req.ip) && addressedToLoopback(req) && !viaTunnel(req) && !forwardedByProxy(req) && !fromOtherPage(req);
 }
 
 /// Whether the request may act as the owner. Without an admin token only

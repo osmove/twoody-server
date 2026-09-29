@@ -78,7 +78,7 @@ try {
   }
   const admin = adminToken();
   if (!admin) {
-    console.log("  Admin page: this machine only. Set TWOODY_ADMIN_TOKEN to open it from another device.\n");
+    console.log(`  Admin page: this machine only, at http://127.0.0.1:${PORT}/admin. Set TWOODY_ADMIN_TOKEN to open it from another device.\n`);
   } else if (admin.length < 16) {
     console.log("  Admin page: TWOODY_ADMIN_TOKEN is shorter than 16 characters — pick a longer one.\n");
   }

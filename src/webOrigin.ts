@@ -23,7 +23,15 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 //   3. the routes that trust this machine's own requests
 //      (localAccess.ts, /admin) never trust one a browser sent from another
 //      page (fromOtherPage): the owner's console, curl and the Desktop's
-//      main process send no Origin and no Sec-Fetch-Site.
+//      main process send no Origin and no Sec-Fetch-Site;
+//   4. nor one addressed by any name but 127.0.0.1, [::1] or localhost
+//      (loopbackHost). The names of the local network are accepted by (1)
+//      for the phone and the other computers, which bring a token, but
+//      anyone on the Wi-Fi can make evil.local (mDNS), evil.lan or a
+//      single-label name resolve to this machine and serve a page from it:
+//      same-origin, no Sec-Fetch-Site on plain http, and from 127.0.0.1 once
+//      rebound. 0.0.0.0 reaches this machine too, and is not one of the
+//      three either.
 
 /// Hostnames of the local network that no one on the internet can make a
 /// browser resolve (they are not in public DNS).
@@ -95,6 +103,25 @@ export function isAllowedHost(hostHeader: string | undefined): boolean {
     if (allowed.startsWith(".") && name.endsWith(allowed)) return true;
   }
   return false;
+}
+
+/// The only names under which a request may count as this machine's own
+/// (the console, the CLI, the Desktop's main process, /admin without a
+/// token): no one else can make them resolve anywhere, unlike the local
+/// network's names, and a page served under one of them is this machine's.
+const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
+
+/// Whether the Host header names this machine by its loopback: exactly
+/// 127.0.0.1, [::1] or localhost, with or without a port. A request with
+/// no Host (HTTP/1.0) does not.
+export function loopbackHost(hostHeader: string | null | undefined): boolean {
+  if (!hostHeader || hostHeader.trim() === "") return false;
+  return LOOPBACK_HOSTNAMES.has(hostnameOf(hostHeader));
+}
+
+/// loopbackHost of a request.
+export function addressedToLoopback(req: FastifyRequest): boolean {
+  return loopbackHost(headerValue(req.headers.host));
 }
 
 const warned = new Set<string>();

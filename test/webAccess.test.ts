@@ -339,3 +339,65 @@ test("the phone on the LAN: /tunnel with the Mac's address as Host", async () =>
     socket.terminate();
   }
 });
+
+// Third review (29/09/2026): rebinding through the local network's names.
+// Anyone on the Wi-Fi can make evil.local (an mDNS answer), evil.lan or a
+// single-label name resolve to this machine and serve a page from it: the
+// Host is one the server goes by, the page is its own origin, plain http
+// sends no Sec-Fetch-Site, and once rebound the requests come from
+// 127.0.0.1. POST /account/link answered 201 with the code, and
+// /account/approvals and PATCH /api/v1/peers let it act as the owner. And
+// http://0.0.0.0:<port> reached the console's routes the same way.
+const notLoopback = ["evil.local", "evil.lan", "evil.home", "evil", "evil.internal", "0.0.0.0", "[::]", "192.168.1.20", `${hostname().split(".")[0]}.local`];
+
+test("rebinding through a local-network name, 0.0.0.0 or the LAN address: never this machine", async () => {
+  for (const name of notLoopback) {
+    const host = `${name}:${port}`;
+    const sameOrigin = { host, origin: `http://${host}` };
+    for (const headers of [{ host }, sameOrigin]) {
+      const label = `${name} ${headers === sameOrigin ? "same-origin" : "no Origin"}`;
+      const read = await app.inject({ method: "GET", url: "/account/link", remoteAddress: "127.0.0.1", headers });
+      assert.equal(read.statusCode, 200, label);
+      assert.deepEqual(Object.keys(read.json()).sort(), ["fp", "state"], `${label}: the network's view`);
+      const started = await app.inject({ method: "POST", url: "/account/link", remoteAddress: "127.0.0.1", headers });
+      assert.equal(started.statusCode, 403, `${label}: not fresh, not the owner`);
+      assert.equal(started.json().user_code, undefined, label);
+      assert.equal((await app.inject({ method: "DELETE", url: "/account/link", remoteAddress: "127.0.0.1", headers })).statusCode, 403, label);
+      assert.equal((await app.inject({ method: "GET", url: "/account/approvals", remoteAddress: "127.0.0.1", headers })).statusCode, 403, label);
+      assert.equal((await app.inject({ method: "POST", url: "/account/approvals/1", remoteAddress: "127.0.0.1", headers, payload: { decision: "approve" } })).statusCode, 403, label);
+      assert.equal((await app.inject({ method: "GET", url: "/admin", remoteAddress: "127.0.0.1", headers })).statusCode, 403, label);
+      // A device's token does not become the owner's either.
+      const withToken = { ...headers, authorization: `Bearer ${phoneToken}`, "content-type": "application/json" };
+      assert.equal((await app.inject({ method: "POST", url: "/api/v1/peers", remoteAddress: "127.0.0.1", headers: withToken, payload: { computer_id: "78" } })).statusCode, 403, label);
+      assert.equal(fromThisMachine({ ip: "127.0.0.1", headers } as never), false, label);
+    }
+  }
+  assert.equal(linkState(), "unlinked", "nothing was started");
+});
+
+test("the console: 127.0.0.1, [::1] and localhost, with or without a port, are this machine", async () => {
+  for (const host of [self, "127.0.0.1", `localhost:${port}`, "localhost", `[::1]:${port}`, "[::1]", "LOCALHOST:3000"]) {
+    const view = await app.inject({ method: "GET", url: "/account/link", remoteAddress: "127.0.0.1", headers: { host } });
+    assert.equal(view.json().fresh, false, `${host}: the owner's view`);
+    assert.equal((await app.inject({ method: "GET", url: "/admin", remoteAddress: "127.0.0.1", headers: { host } })).statusCode, 200, host);
+    const asked = await app.inject({ method: "POST", url: "/api/v1/peers", remoteAddress: "127.0.0.1", headers: { host, authorization: `Bearer ${phoneToken}` }, payload: { computer_id: "78" } });
+    assert.equal(asked.statusCode, 409, `${host}: past the check (no account)`);
+  }
+  // Its own page, same-origin, under a loopback name.
+  const own = await app.inject({ method: "GET", url: "/account/link", remoteAddress: "127.0.0.1", headers: { host: `localhost:${port}`, origin: `http://localhost:${port}`, "sec-fetch-site": "same-origin" } });
+  assert.equal(own.json().fresh, false);
+  // No Host at all (HTTP/1.0): no browser, but not this machine either.
+  assert.equal(fromThisMachine({ ip: "127.0.0.1", headers: {} } as never), false);
+  // Loopback names from another address are still not this machine.
+  assert.equal(fromThisMachine({ ip: "192.168.1.30", headers: { host: self } } as never), false);
+});
+
+test("the phone on the LAN, with its token, by the Mac's address or .local name: served", async () => {
+  for (const host of [`192.168.1.20:${port}`, `${hostname().split(".")[0]}.local:${port}`]) {
+    for (const url of ["/api/v1/me", "/api/v1/peers", "/api/v1/discussions"]) {
+      const answer = await app.inject({ method: "GET", url, remoteAddress: "192.168.1.30", headers: { host, "x-user-token": phoneToken } });
+      assert.equal(answer.statusCode, 200, `${host} ${url}`);
+    }
+    assert.equal((await app.inject({ method: "GET", url: "/health", remoteAddress: "192.168.1.30", headers: { host } })).statusCode, 200);
+  }
+});

@@ -3,7 +3,7 @@ import { BlockList, isIP } from "node:net";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { allowSecretAttempt } from "./rateLimit.js";
 import { VIA_TUNNEL_HEADER } from "./tunnel/host.js";
-import { fromOtherPage } from "./webOrigin.js";
+import { addressedToLoopback, fromOtherPage } from "./webOrigin.js";
 
 // Who may open `/admin`.
 //
@@ -15,6 +15,9 @@ import { fromOtherPage } from "./webOrigin.js";
 //     once as `/admin?token=…`; the server answers with an HttpOnly
 //     cookie and a redirect, which keeps the token out of the address
 //     bar, the history and the page's 10-second auto-refresh.
+//
+// Without the token, "this machine" also means addressed as 127.0.0.1,
+// [::1] or localhost (webOrigin.ts): open it at http://127.0.0.1:<port>/admin.
 //
 // Requests a browser sent from another page (another Origin, or
 // Sec-Fetch-Site other than none / same-origin) are refused outright,
@@ -55,8 +58,9 @@ export function requireAdminAccess(req: FastifyRequest, reply: FastifyReply): bo
   if (!token) {
     // A reverse proxy on this host makes every client look local: a
     // request it forwarded is not this machine's. Nor is one the tunnel
-    // served.
-    if (isLoopbackAddress(req.ip) && !forwardedByProxy(req) && !viaTunnel(req)) return true;
+    // served, nor one addressed by another name than 127.0.0.1, [::1] or
+    // localhost (a local-network name rebound to this machine, 0.0.0.0).
+    if (isLoopbackAddress(req.ip) && addressedToLoopback(req) && !forwardedByProxy(req) && !viaTunnel(req)) return true;
     reply.code(403).send({
       error: "admin_local_only",
       message: "The admin page is only served to the machine running Twoody Server. " +

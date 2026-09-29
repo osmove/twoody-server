@@ -156,6 +156,22 @@ HOME_ASSISTANT_URL=http://homeassistant.local:8123
 HOME_ASSISTANT_TOKEN=...
 ```
 
+### Accès par un autre nom
+
+The server answers only to the names it goes by: IP addresses, `localhost`,
+local-network names (`.local`, `.lan`, single-label Docker service names…)
+and this machine's hostname; any other `Host` gets 421 `host_not_allowed`.
+Behind a reverse proxy or on a Tailscale name, list those names:
+`TWOODY_ALLOWED_HOSTS=twoody.example.com,pi.tailnet-1234.ts.net` (a leading
+dot allows a whole suffix, e.g. `.ts.net`), or set `TWOODY_PUBLIC_URL`. Devices
+reaching it that way still need their token.
+
+The console's routes (`/account/link`'s code, `/account/approvals`, `/admin`
+without `TWOODY_ADMIN_TOKEN`) are this machine's only when addressed as
+`127.0.0.1`, `[::1]` or `localhost`: never under a `.local`/`.lan` name, the
+LAN address or `0.0.0.0`, which anyone on the network can point at it. Use
+`http://127.0.0.1:<port>/admin`, or the admin token from elsewhere.
+
 ## Docker
 
 `docker-compose.yml` runs two services: `twoody-server` (built from this
