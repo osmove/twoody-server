@@ -15,7 +15,12 @@ function headers(): Record<string, string> {
   return { Accept: "application/json", "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
 }
 
-type LinkBody = { state: string; user_code?: string; verification_uri?: string; verification_uri_complete?: string | null; expires_at?: string; account_computer_id?: string; last_error?: string | null; fp?: string };
+type LinkBody = { state: string; user_code?: string; verification_uri?: string; verification_uri_complete?: string | null; expires_at?: string; account_computer_id?: string; account?: string; last_error?: string | null; fp?: string };
+
+/// "the Twoody account j***@gmail.com" — or "a Twoody account" when the server did not say which.
+function which(account: string | null | undefined): string {
+  return account ? `the Twoody account ${account}` : "a Twoody account";
+}
 
 async function local(path: string, init: { method?: string; body?: unknown } = {}): Promise<{ status: number; body: any } | null> {
   try {
@@ -60,7 +65,7 @@ async function login(): Promise<number> {
   if (current && current.status === 200) {
     let link = current.body as LinkBody;
     if (link.state === "linked") {
-      console.log(`Already linked to a Twoody account (computer ${link.account_computer_id}).`);
+      console.log(`Already linked to ${which(link.account)} (computer ${link.account_computer_id}).`);
       return 0;
     }
     if (link.state !== "pending" || !link.user_code) {
@@ -78,7 +83,7 @@ async function login(): Promise<number> {
       if (!next) continue;
       link = next.body as LinkBody;
       if (link.state === "linked") {
-        console.log(`\nLinked. This server is now computer ${link.account_computer_id} of your account.`);
+        console.log(`\nLinked to ${which(link.account)}. This server is now computer ${link.account_computer_id} of that account.`);
         return 0;
       }
       if (link.state === "unlinked") {
@@ -96,7 +101,7 @@ async function login(): Promise<number> {
   const { startLink, linkState, linkView } = await import("../account/link.js");
   const { linkedAccount, fingerprint, ensureAccountFile } = await import("../account/store.js");
   if (linkedAccount()) {
-    console.log(`Already linked to a Twoody account (computer ${linkedAccount()!.computer.id}).`);
+    console.log(`Already linked to ${which(linkView().account)} (computer ${linkedAccount()!.computer.id}).`);
     return 0;
   }
   try {
@@ -109,7 +114,7 @@ async function login(): Promise<number> {
     await sleep(1_000);
     const state = linkState();
     if (state === "linked") {
-      console.log(`\nLinked. This server is computer ${linkedAccount()!.computer.id} of your account; start it (or restart it) to use it.`);
+      console.log(`\nLinked to ${which(linkView().account)}. This server is computer ${linkedAccount()!.computer.id} of that account; start it (or restart it) to use it.`);
       return 0;
     }
     if (state === "unlinked") {

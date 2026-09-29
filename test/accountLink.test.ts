@@ -75,6 +75,7 @@ test("a code is asked for, polled while pending, slowed down, then linked once; 
   assert.equal(statSync(dataDir).mode & 0o777, 0o700);
   assert.ok(states.includes("pending") && states.at(-1) === "linked");
   assert.equal(linkView().account_computer_id, String(computer.id));
+  assert.equal(linkView().account, "account 7", "without more from the backend, the account's id");
 
   // Delivered once: a later poll of the same code would be 410.
   const again = await backend.fetch(`${backend.url}/api/v1/computer_logins/poll`, {
@@ -119,40 +120,103 @@ test("an expired code ends unlinked, saying so", async () => {
   assert.equal(await pollOnce(), "unlinked");
 });
 
-test("/account/link: this machine sees the code; the network only while the server is fresh", async () => {
+test("/account/link: the code is the console's only; the network starts one while fresh, never replaces it, and sees {state, fp}", async () => {
+  resetLinkForTests();
   const lan = { remoteAddress: "192.168.1.30" };
+  const fp = readAccountFile()!.pairing_key.pub.slice(0, 8);
   let fromLan = await app.inject({ method: "GET", url: "/account/link", ...lan });
   assert.equal(fromLan.statusCode, 200);
-  assert.equal(fromLan.json().state, "unlinked");
-  assert.equal(fromLan.json().fresh, true);
-  const fp = readAccountFile()!.pairing_key.pub.slice(0, 8);
-  assert.equal(fromLan.json().fp, fp);
+  assert.deepEqual(fromLan.json(), { state: "unlinked", fp });
 
-  // Fresh: the Desktop on the network may start a code and read it.
+  // Fresh: the Desktop on the network may start a code, not read it.
+  const logins = backend.logins.length;
   const started = await app.inject({ method: "POST", url: "/account/link", payload: {}, ...lan });
   assert.equal(started.statusCode, 201);
-  assert.match(started.json().user_code, /^[A-Z]{4}-[A-Z]{4}$/);
-  fromLan = await app.inject({ method: "GET", url: "/api/v1/account/link", ...lan });
-  assert.equal(fromLan.json().user_code, started.json().user_code);
+  assert.deepEqual(started.json(), { state: "pending", fp });
+  assert.equal(backend.logins.length, logins + 1);
+  const code = backend.logins.at(-1)!.user_code;
 
-  // No longer fresh: the network sees the state, not the code.
+  // Asked again, from the network or the console: the live code stays, and the backend is not asked.
+  const again = await app.inject({ method: "POST", url: "/account/link", payload: {}, ...lan });
+  assert.equal(again.statusCode, 200);
+  assert.deepEqual(again.json(), { state: "pending", fp });
+  const fromConsole = await app.inject({ method: "POST", url: "/account/link", payload: {}, remoteAddress: "127.0.0.1" });
+  assert.equal(fromConsole.statusCode, 200);
+  assert.equal(fromConsole.json().user_code, code);
+  assert.equal(backend.logins.length, logins + 1, "one live code at a time");
+  fromLan = await app.inject({ method: "GET", url: "/api/v1/account/link", ...lan });
+  assert.deepEqual(fromLan.json(), { state: "pending", fp });
+  const local = await app.inject({ method: "GET", url: "/account/link", remoteAddress: "127.0.0.1" });
+  assert.equal(local.json().user_code, code);
+  const tunnelled = await app.inject({ method: "GET", url: "/account/link", remoteAddress: "127.0.0.1", headers: { "x-twoody-via-tunnel": "1" } });
+  assert.deepEqual(tunnelled.json(), { state: "pending", fp }, "a request through the tunnel is not this machine");
+
+  // Refused: the network gets no new code before the old one would have expired; the console does.
+  backend.denyLogin(code);
+  await until(() => linkState() === "unlinked");
+  const throttled = await app.inject({ method: "POST", url: "/account/link", payload: {}, ...lan });
+  assert.equal(throttled.statusCode, 429);
+  assert.equal(throttled.json().user_code, undefined);
+  assert.ok(Number(throttled.headers["retry-after"]) > 0);
+  assert.equal(backend.logins.length, logins + 1);
+  const fresh = await app.inject({ method: "POST", url: "/account/link", payload: {}, remoteAddress: "127.0.0.1" });
+  assert.equal(fresh.statusCode, 201);
+  assert.match(fresh.json().user_code, /^[A-Z]{4}-[A-Z]{4}$/);
+
+  // No longer fresh: the network may not start a code any more.
   ensureLocalUser();
   fromLan = await app.inject({ method: "GET", url: "/account/link", ...lan });
-  assert.equal(fromLan.json().state, "pending");
-  assert.equal(fromLan.json().fresh, false);
-  assert.equal(fromLan.json().user_code, undefined);
+  assert.deepEqual(fromLan.json(), { state: "pending", fp });
   const refused = await app.inject({ method: "POST", url: "/account/link", payload: {}, ...lan });
   assert.equal(refused.statusCode, 403);
   assert.equal((await app.inject({ method: "DELETE", url: "/account/link", ...lan })).statusCode, 403);
   assert.equal((await app.inject({ method: "GET", url: "/account/approvals", ...lan })).statusCode, 403);
-
-  // This machine still sees it; a request through the tunnel is not this machine.
-  const local = await app.inject({ method: "GET", url: "/account/link", remoteAddress: "127.0.0.1" });
-  assert.equal(local.json().user_code, started.json().user_code);
-  const tunnelled = await app.inject({ method: "GET", url: "/account/link", remoteAddress: "127.0.0.1", headers: { "x-twoody-via-tunnel": "1" } });
-  assert.equal(tunnelled.json().user_code, undefined);
   assert.equal((await app.inject({ method: "DELETE", url: "/account/link", remoteAddress: "127.0.0.1", headers: { "x-twoody-via-tunnel": "1" } })).statusCode, 403);
   resetLinkForTests();
+});
+
+test("a code asked for from the network waits three minutes before another attempt, even when the backend failed", async () => {
+  resetLinkForTests();
+  const { startLink: start, LinkThrottledError } = await import("../src/account/link.js");
+  const saved = process.env.TWOODY_BACKEND_URL;
+  process.env.TWOODY_BACKEND_URL = "http://127.0.0.1:1";
+  try {
+    await assert.rejects(start({ fromNetwork: true }), (err: Error) => !(err instanceof LinkThrottledError));
+    await assert.rejects(start({ fromNetwork: true }), LinkThrottledError);
+  } finally {
+    process.env.TWOODY_BACKEND_URL = saved;
+    resetLinkForTests();
+  }
+});
+
+test("once linked, the console says which account (masked), and the network still only {state, fp}", async () => {
+  backend.pollExtras.account = { email: "jimmy.douieb@gmail.com", name: "Jimmy" };
+  try {
+    const started = await app.inject({ method: "POST", url: "/account/link", payload: {}, remoteAddress: "127.0.0.1" });
+    assert.equal(started.statusCode, 201);
+    backend.approveLogin(started.json().user_code, null);
+    await until(() => linkState() === "linked");
+    const fp = readAccountFile()!.pairing_key.pub.slice(0, 8);
+    assert.deepEqual((await app.inject({ method: "GET", url: "/account/link", remoteAddress: "192.168.1.30" })).json(), { state: "linked", fp });
+    const local = (await app.inject({ method: "GET", url: "/account/link", remoteAddress: "127.0.0.1" })).json();
+    assert.equal(local.account, "j***@gmail.com");
+    assert.equal(local.user_code, undefined);
+    assert.equal(readAccountFile()!.account_label, "j***@gmail.com");
+    assert.ok(!JSON.stringify(readAccountFile()).includes("jimmy.douieb"), "only the masked form is kept");
+  } finally {
+    delete backend.pollExtras.account;
+    await logout().catch(() => undefined);
+  }
+});
+
+test("the account's label: e-mail masked, else the name masked, else its id", async () => {
+  const { accountLabel, maskEmail } = await import("../src/account/link.js");
+  assert.equal(maskEmail("jimmy@gmail.com"), "j***@gmail.com");
+  assert.equal(maskEmail("@gmail.com"), null);
+  assert.equal(accountLabel({ account_id: 7, user: { email: "claire@exemple.fr" } }), "c***@exemple.fr");
+  assert.equal(accountLabel({ account_id: 7, account: { name: "Élodie" } }), "É***");
+  assert.equal(accountLabel({ account_id: 7 }), "account 7");
+  assert.equal(accountLabel({}), null);
 });
 
 test("the Bonjour TXT record says whether the server is in an account, and its fingerprint", () => {

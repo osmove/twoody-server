@@ -56,6 +56,10 @@ export interface FakeBackend {
   authorizations: FakeAuthorization[];
   logins: FakeLogin[];
   calls: string[];
+  /// The X-Device-Token each call carried ("" when none), in step with `calls`.
+  deviceTokens: string[];
+  /// Added to an approved login's poll answer (e.g. {account: {email}}).
+  pollExtras: Record<string, unknown>;
   /// Adds a computer as if created by the Desktop (POST /account_computers).
   addComputer(args: { name: string; public_key: string; kind?: "desktop" | "server"; approver_keys?: string[] }): FakeComputer;
   approveLogin(userCode: string, approver?: { kind: "computer" | "phone"; public_key: string; name?: string } | null): void;
@@ -84,6 +88,8 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
   const authorizations: FakeAuthorization[] = [];
   const logins: FakeLogin[] = [];
   const calls: string[] = [];
+  const deviceTokens: string[] = [];
+  const pollExtras: Record<string, unknown> = {};
   let nextId = 40;
   let nextRid = 300;
 
@@ -105,6 +111,7 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
     const url = new URL(req.url ?? "/", "http://fake.invalid");
     const path = url.pathname.replace(/^\/api\/v1/, "");
     calls.push(`${req.method} ${path}`);
+    deviceTokens.push(String(req.headers["x-device-token"] ?? ""));
     const json = (status: number, body?: unknown) => {
       res.writeHead(status, { "content-type": "application/json" });
       res.end(body === undefined ? "" : JSON.stringify(body));
@@ -159,6 +166,7 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
         computer: { id: computer.id, name: computer.name, public_key: computer.public_key },
         credential: computer.credential,
         approver: login.approver ?? { kind: null, public_key: null, name: "twoody.com" },
+        ...pollExtras,
       });
     }
     if (!user) return json(401, { error: "unauthorized" });
@@ -270,6 +278,8 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
     authorizations,
     logins,
     calls,
+    deviceTokens,
+    pollExtras,
     addComputer,
     approveLogin(code, approver) {
       const login = logins.find((l) => l.user_code === code);

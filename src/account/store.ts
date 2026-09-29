@@ -7,7 +7,7 @@ import { HEX_KEY, newPairingKey } from "./keys.js";
 // DATA_DIR/account.json: what makes this server one of the account's
 // computers (docs/multi-computer-design.md §2, Server).
 //
-//   {backend_url, account_id, user_token, device_token,
+//   {backend_url, account_id, account_label, user_token, device_token,
 //    computer:{id, credential}, pairing_key:{priv, pub}, approvers:[…]}
 //
 // Written with mode 0600, like the tunnel identity: the user token and the
@@ -32,6 +32,8 @@ export interface Approver {
 export interface AccountFile {
   backend_url?: string;
   account_id?: string | number;
+  /// The account, masked (j***@gmail.com), for the console.
+  account_label?: string;
   user_token?: string;
   device_token: string;
   computer?: { id: string; credential: string; name?: string };
@@ -68,6 +70,7 @@ function valid(raw: unknown): AccountFile | null {
   return {
     ...(typeof file.backend_url === "string" ? { backend_url: file.backend_url } : {}),
     ...(typeof file.account_id === "string" || typeof file.account_id === "number" ? { account_id: file.account_id } : {}),
+    ...(typeof file.account_label === "string" && file.account_label ? { account_label: file.account_label.slice(0, 120) } : {}),
     ...(typeof file.user_token === "string" && file.user_token ? { user_token: file.user_token } : {}),
     device_token: file.device_token,
     ...(computer && (typeof computer.id === "string" || typeof computer.id === "number") && typeof computer.credential === "string"

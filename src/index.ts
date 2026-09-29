@@ -17,7 +17,7 @@ import { reindex } from "./documents/library.js";
 import { startUsageMaintenance } from "./usageStore.js";
 import { readFileSync } from "node:fs";
 import { setLocalPort } from "./account/approvals.js";
-import { linkState, onLinkChanged } from "./account/link.js";
+import { linkState, linkView, onLinkChanged } from "./account/link.js";
 import { setDesktopAccount, startAccountService } from "./account/service.js";
 import { ensureAccountFile, fingerprint } from "./account/store.js";
 import { startMachineSampler } from "./machineSampler.js";
@@ -169,12 +169,23 @@ try {
     log: (message) => console.log(`  ${message}`),
     onTunnelError: (err) => app.log.debug({ err }, "tunnel"),
   });
+  // The code is shown here, on this computer's console, and nowhere on the
+  // network: the person reads it here and types it on the Desktop, the
+  // app or twoody.com/appareil.
+  const linkedTo = () => {
+    const view = linkView();
+    return `${view.account ? `the Twoody account ${view.account}` : "a Twoody account"}${view.account_computer_id ? ` (computer ${view.account_computer_id})` : ""}`;
+  };
   onLinkChanged((state) => {
-    if (state === "linked") console.log("  Linked to a Twoody account.\n");
+    if (state === "linked") console.log(`  Linked to ${linkedTo()}.\n`);
     else if (state === "unlinked") console.log("  Not linked to a Twoody account.\n");
+    else if (state === "pending") {
+      const view = linkView();
+      if (view.user_code) console.log(`  To add this server to your Twoody account, enter the code ${view.user_code} at ${view.verification_uri ?? "https://twoody.com/appareil"} (or in Twoody Desktop), until ${new Date(view.expires_at!).toLocaleTimeString()}.\n`);
+    }
   });
   if (linkState() === "linked") {
-    console.log("  Linked to a Twoody account: heartbeat, approvals, bridge and tunnel on.\n");
+    console.log(`  Linked to ${linkedTo()}: heartbeat, approvals, bridge and tunnel on.\n`);
   } else if (isFresh()) {
     console.log("  To add this server to your Twoody account: twoody-server login\n");
   }

@@ -40,6 +40,9 @@ export interface PendingLogin {
 
 export interface LinkView {
   state: LinkState;
+  /// Which account this server is linked to, masked (j***@gmail.com), or
+  /// « account 7 » when the backend said no more.
+  account?: string;
   user_code?: string;
   verification_uri?: string;
   verification_uri_complete?: string | null;
@@ -54,6 +57,21 @@ type Listener = (state: LinkState) => void;
 let pending: PendingLogin | null = null;
 let pollTimer: NodeJS.Timeout | null = null;
 let lastError: LinkView["last_error"] = null;
+/// When the last code asked for runs out (denied or not), and when a code
+/// was last asked for from the network: the network gets a new code only
+/// once the last one would have expired, and asks at most every few
+/// minutes, so that nobody on the LAN spends the backend's five codes per
+/// quarter of an hour (per address) that the console may need.
+let lastCodeExpiresAt = 0;
+let lastNetworkAttemptAt = 0;
+const NETWORK_ATTEMPT_GAP_MS = 3 * 60_000;
+
+export class LinkThrottledError extends Error {
+  constructor(readonly retryAt: Date) {
+    super("a code was asked for a moment ago; the next one can be asked for later");
+    this.name = "LinkThrottledError";
+  }
+}
 const listeners = new Set<Listener>();
 
 export function onLinkChanged(listener: Listener): () => void {
@@ -80,7 +98,10 @@ export function linkState(): LinkState {
 
 export function linkView(): LinkView {
   const state = linkState();
-  if (state === "linked") return { state, account_computer_id: linkedAccount()!.computer.id };
+  if (state === "linked") {
+    const account = linkedAccount()!;
+    return { state, account_computer_id: account.computer.id, account: account.account_label ?? (account.account_id !== undefined ? `account ${account.account_id}` : undefined) };
+  }
   if (state === "pending") {
     return {
       state,
@@ -112,9 +133,20 @@ function platformName(): string {
   }
 }
 
-/// Asks the backend for a new code. The previous one, if any, is dropped.
-export async function startLink(options: { name?: string } = {}): Promise<LinkView> {
+/// Asks the backend for a code, unless one is live: at most one at a time,
+/// and a live one is never replaced (the person may be typing it). From
+/// the network (`fromNetwork`), a new code only once the last one would
+/// have expired, and one attempt every three minutes at most
+/// (LinkThrottledError).
+export async function startLink(options: { name?: string; fromNetwork?: boolean } = {}): Promise<LinkView> {
   if (linkedAccount()) return linkView();
+  if (linkState() === "pending") return linkView();
+  if (options.fromNetwork) {
+    const now = Date.now();
+    const retryAt = Math.max(lastCodeExpiresAt, lastNetworkAttemptAt + NETWORK_ATTEMPT_GAP_MS);
+    if (retryAt > now) throw new LinkThrottledError(new Date(retryAt));
+    lastNetworkAttemptAt = now;
+  }
   stopPolling();
   const file = ensureAccountFile();
   const creds = { backendUrl: backendUrl(file) };
@@ -139,6 +171,7 @@ export async function startLink(options: { name?: string } = {}): Promise<LinkVi
     expiresAt: new Date(Date.now() + Math.max(1, Number(body.expires_in) || 600) * 1000),
     intervalMs: Math.max(1, Number(body.interval) || 5) * 1000,
   };
+  lastCodeExpiresAt = pending.expiresAt.getTime();
   lastError = null;
   schedulePoll();
   emit();
@@ -162,9 +195,17 @@ function schedulePoll(delay = nextDelay()): void {
   pollTimer.unref?.();
 }
 
+type AccountHint = { email?: unknown; name?: unknown } | null | undefined;
+
 type PollAnswer = {
   state?: string;
   account_id?: string | number;
+  /// Who the account is, when the backend says (it may, as `account` or
+  /// `user`): only its masked form is kept.
+  account?: AccountHint;
+  user?: AccountHint;
+  email?: unknown;
+  name?: unknown;
   user_token?: string;
   computer?: { id?: string | number; name?: string; public_key?: string };
   credential?: string;
@@ -217,6 +258,29 @@ export async function pollOnce(): Promise<LinkState> {
   }
 }
 
+/// "jimmy@gmail.com" → "j***@gmail.com".
+export function maskEmail(email: string): string | null {
+  const at = email.lastIndexOf("@");
+  if (at < 1 || at === email.length - 1) return null;
+  return `${email[0]}***${email.slice(at)}`.slice(0, 120);
+}
+
+/// What the console says of the account: its e-mail or its name, masked,
+/// else its id.
+export function accountLabel(answer: PollAnswer): string | null {
+  const hints = [answer.account, answer.user, { email: answer.email, name: answer.name }];
+  for (const hint of hints) {
+    if (hint && typeof hint.email === "string" && hint.email.includes("@")) {
+      const masked = maskEmail(hint.email.trim());
+      if (masked) return masked;
+    }
+  }
+  for (const hint of hints) {
+    if (hint && typeof hint.name === "string" && hint.name.trim()) return `${Array.from(hint.name.trim())[0]}***`;
+  }
+  return answer.account_id !== undefined && answer.account_id !== null ? `account ${answer.account_id}` : null;
+}
+
 function completeLink(file: AccountFile, answer: PollAnswer): void {
   const computerId = answer.computer?.id;
   if (!answer.user_token || !answer.credential || (typeof computerId !== "string" && typeof computerId !== "number")) {
@@ -232,6 +296,7 @@ function completeLink(file: AccountFile, answer: PollAnswer): void {
     ...file,
     backend_url: backendUrl(file),
     ...(answer.account_id !== undefined ? { account_id: answer.account_id } : {}),
+    ...(accountLabel(answer) ? { account_label: accountLabel(answer)! } : {}),
     user_token: answer.user_token,
     computer: { id: String(computerId), credential: answer.credential, ...(answer.computer?.name ? { name: answer.computer.name } : {}) },
     approvers,
@@ -260,6 +325,8 @@ export function resetLinkForTests(): void {
   stopPolling();
   pending = null;
   lastError = null;
+  lastCodeExpiresAt = 0;
+  lastNetworkAttemptAt = 0;
   listeners.clear();
 }
 

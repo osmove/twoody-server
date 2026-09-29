@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { approveRequest, denyRequest, fetchPending, judge } from "../account/approvals.js";
 import { BackendError } from "../account/backend.js";
-import { linkState, linkView, logout, startLink } from "../account/link.js";
+import { LinkThrottledError, linkState, linkView, logout, startLink } from "../account/link.js";
 import { ensureAccountFile, fingerprint, linkedAccount } from "../account/store.js";
 import { LocalOnlyError } from "../outbound.js";
 import { isFresh } from "../pairing.js";
@@ -9,20 +9,23 @@ import { ownerRequest, requireOwner } from "../localAccess.js";
 
 // Linking this server to an account, from its own console (`twoody-server
 // login`, `twoody login`) or the admin token — and, while the server is
-// fresh (no local account, no folder granted), from the network, so that
-// Twoody Desktop can add a new Raspberry Pi to the account in one click
-// (docs/multi-computer-design.md §2).
+// fresh (no local account, no folder granted), started from the network,
+// so that Twoody Desktop can add a new Raspberry Pi to the account
+// (docs/multi-computer-design.md §2). The code itself is only ever shown
+// on the computer's own console: the person types it on the Desktop.
 //
-//   GET    /account/link       {state, user_code?, verification_uri?, verification_uri_complete?,
-//                               expires_at?, account_computer_id?, fresh, fp, fingerprint, last_error?}
-//   POST   /account/link       starts a new code (409 when already linked)
+//   GET    /account/link       console: {state, user_code?, verification_uri?, verification_uri_complete?,
+//                               expires_at?, account_computer_id?, account?, fresh, fp, fingerprint, last_error?}
+//                               network: {state, fp} and nothing else
+//   POST   /account/link       starts a code — or answers with the live one, never replacing it
+//                               (409 when already linked; from the network: only while fresh,
+//                               and 429 when a code was asked for too recently)
 //   DELETE /account/link       leaves the account
 //   GET    /account/approvals  requests waiting on this computer (console approval, rule 3)
 //   POST   /account/approvals/:id {decision:"approve"|"deny"}
 //
-// On the network, and not fresh, GET says the state and nothing of the
-// code; POST, DELETE and the approvals are this machine's (or the admin
-// token's).
+// POST from the network, DELETE and the approvals are otherwise this
+// machine's (or the admin token's).
 
 function failure(err: unknown): [number, { error: string; message: string }] {
   if (err instanceof LocalOnlyError) return [403, { error: "local_only", message: err.message }];
@@ -34,12 +37,15 @@ function failure(err: unknown): [number, { error: string; message: string }] {
 
 export async function accountLinkRoutes(app: FastifyInstance) {
   const view = (owner: boolean) => {
-    const fresh = isFresh();
     const current = linkView();
-    const showCode = owner || fresh;
+    const fp = fingerprint(ensureAccountFile());
+    // Eight hex characters of the pairing key, as Bonjour's `fp` says and
+    // the backend's login shows: the approving screen compares them. That
+    // and the state are all the network learns.
+    if (!owner) return { state: current.state, fp };
     return {
       state: current.state,
-      ...(showCode && current.user_code
+      ...(current.user_code
         ? {
             user_code: current.user_code,
             verification_uri: current.verification_uri,
@@ -48,33 +54,39 @@ export async function accountLinkRoutes(app: FastifyInstance) {
           }
         : {}),
       ...(current.account_computer_id ? { account_computer_id: current.account_computer_id } : {}),
-      ...(owner && current.last_error ? { last_error: current.last_error } : {}),
-      fresh,
-      // Eight hex characters of the pairing key, as Bonjour's `fp` says
-      // and the backend's login shows: the approving screen compares them.
-      fp: fingerprint(ensureAccountFile()),
-      fingerprint: fingerprint(ensureAccountFile()),
+      ...(current.account ? { account: current.account } : {}),
+      ...(current.last_error ? { last_error: current.last_error } : {}),
+      fresh: isFresh(),
+      fp,
+      fingerprint: fp,
     };
   };
 
   app.get("/account/link", {
-    schema: { tags: ["session"], summary: "Whether this server is linked to a Twoody account (the code while it waits, to its console)" },
+    schema: { tags: ["session"], summary: "Whether this server is linked to a Twoody account (the code while it waits, to its console only)" },
     handler: async (req, reply) => reply.send(view(ownerRequest(req))),
   });
 
   app.post("/account/link", {
-    schema: { tags: ["session"], summary: "Start linking this server to a Twoody account: a code to type on a signed-in device" },
+    schema: { tags: ["session"], summary: "Start linking this server to a Twoody account: a code, shown on its console, to type on a signed-in device" },
     handler: async (req, reply) => {
       const owner = ownerRequest(req);
-      // A fresh server shows its code to the network anyway: starting one
-      // from there adds nothing a neighbour could not already do.
+      // A fresh server may be asked for a code from the network: the code
+      // goes to its console, and the person types it on the Desktop.
       if (!owner && !isFresh()) {
         if (!requireOwner(req, reply)) return;
       }
       if (linkState() === "linked") return reply.code(409).send({ error: "already_linked", ...view(owner) });
+      if (linkState() === "pending") return reply.code(200).send(view(owner));
       try {
-        await startLink();
+        await startLink({ fromNetwork: !owner });
       } catch (err) {
+        if (err instanceof LinkThrottledError) {
+          return reply
+            .code(429)
+            .header("retry-after", String(Math.max(1, Math.ceil((err.retryAt.getTime() - Date.now()) / 1000))))
+            .send({ error: "code_recently_asked", message: "A code was asked for a moment ago; ask again later, or run twoody-server login on this computer.", ...view(owner) });
+        }
         const [status, body] = failure(err);
         return reply.code(status).send(body);
       }
