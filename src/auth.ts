@@ -141,6 +141,24 @@ export function createAuthSession(
   return { token, sessionId };
 }
 
+/// Where a session given to another computer of the account (`peer:<name>`,
+/// pairing.ts) may be used: /api/v1/peer/* and nothing else.
+export const PEER_PREFIX = "/api/v1/peer/";
+
+export function isPeerSessionKind(kind: string | null | undefined): boolean {
+  return typeof kind === "string" && kind.startsWith("peer:");
+}
+
+export function peerMayReach(url: string | undefined): boolean {
+  const path = (url ?? "").split("?")[0] ?? "";
+  return path.startsWith(PEER_PREFIX) && !path.includes("/../") && !path.includes("%2e") && !path.includes("%2E");
+}
+
+/// Who a request is, by its token (headers only — see ws.ts for the
+/// socket's `?token=`). A peer session is refused here, for every route and
+/// every way of carrying the token, unless the request is for
+/// /api/v1/peer/*: the scope is kept by the one function every route asks,
+/// not only by a hook that reads the headers (peerSessions.ts).
 export async function authenticate(
   req: FastifyRequest
 ): Promise<{ userId: string; sessionId?: string; deviceId?: string } | null> {
@@ -157,6 +175,7 @@ export async function authenticate(
     .all();
 
   if (session) {
+    if (isPeerSessionKind(session.clientKind) && !peerMayReach(req.url)) return null;
     if (!session.expiresAt || session.expiresAt > now) {
       return { userId: session.userId, sessionId: session.id };
     }

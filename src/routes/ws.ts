@@ -102,13 +102,15 @@ function serializeEvent(event: Parameters<Parameters<typeof subscribe>[0]>[0]): 
 /// we don't get on a WebSocket upgrade in the browser. Instead the
 /// client sends `?token=…` in the URL — we synthesise a request-like
 /// object with the token in the standard header so the same auth
-/// path runs without duplication.
+/// path runs without duplication — the request's own url with it, so a
+/// session limited to some routes (a peer's, auth.ts) is refused here too.
 async function authenticateFromToken(
   req: FastifyRequest,
   token: string | undefined,
 ): Promise<{ userId: string } | null> {
   if (!token) return null;
   const synthetic = {
+    url: req.url,
     headers: {
       authorization: `Bearer ${token}`,
     },

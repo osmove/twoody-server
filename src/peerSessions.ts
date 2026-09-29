@@ -1,6 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { eq } from "drizzle-orm";
-import { extractAuthToken, sha256 } from "./auth.js";
+import { extractAuthToken, isPeerSessionKind, peerMayReach, sha256 } from "./auth.js";
 import { authSessions, db } from "./db.js";
 
 // A session given to another of the account's computers (`peer:<name>`,
@@ -9,16 +9,11 @@ import { authSessions, db } from "./db.js";
 // memories, documents and settings of this computer stay its own person's
 // business, even from the same account's other machine.
 
-export const PEER_PREFIX = "/api/v1/peer/";
+// authenticate() (auth.ts) refuses a peer session outside /api/v1/peer/*
+// whatever carries its token; this hook answers 403 rather than 401 to the
+// ones that carry it in a header, which says why.
 
-export function isPeerSessionKind(kind: string | null | undefined): boolean {
-  return typeof kind === "string" && kind.startsWith("peer:");
-}
-
-export function peerMayReach(url: string): boolean {
-  const path = url.split("?")[0] ?? "";
-  return path.startsWith(PEER_PREFIX) && !path.includes("/../");
-}
+export { isPeerSessionKind, PEER_PREFIX, peerMayReach } from "./auth.js";
 
 /// The kind of the session a request carries, when it carries one.
 export function sessionKindOf(req: FastifyRequest): string | null {
