@@ -10,6 +10,7 @@
 
 import { hasDocuments, hasWebResults, splitDocuments } from "./documentBlocks.js";
 import { smallTalk } from "./documents/query.js";
+import { personalContextBlock, type PersonalContact, type PersonalEvent } from "./personalContext.js";
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -72,6 +73,11 @@ export interface ChatContextInput {
   /// What this message asked to be remembered, already kept in Memories:
   /// the answer confirms it rather than saying it cannot remember.
   remembered?: string | null;
+  /// The person's contacts and calendar on this computer: the few that the
+  /// message is about ride on it, when a model of this computer answers.
+  personal?: { contacts: PersonalContact[]; events: PersonalEvent[] } | null;
+  /// The person's time zone (IANA), for « demain » and the times of events.
+  timeZone?: string | null;
 }
 
 export const HISTORY_MAX_MESSAGES = envInt("TWOODY_HISTORY_MAX_MESSAGES", 20);
@@ -90,6 +96,8 @@ const HISTORY_MESSAGE_CHARS = 4_000;
 const PROFILE_MEMORY_CHARS = 1_500;
 const MATCHED_MEMORY_CHARS = 1_500;
 const MEMORY_ITEM_CHARS = 400;
+/// The contacts and events a message is about.
+const PERSONAL_CHARS = 2_000;
 
 // Memory kinds that describe the user rather than a topic (feedback, then
 // user) are short, change rarely, and apply to every turn — so they live in
@@ -137,7 +145,20 @@ export function buildChatMessages(input: ChatContextInput): ChatMessage[] {
 
   // Per-turn context rides on the last message, never on the system
   // prompt: excerpts first, then saved notes, then the question itself.
-  const context = [formatExcerpts(input.excerpts ?? []), formatMatchedMemories(usable.filter((memory) => !profileUsed.has(memory)), current.text)].filter(
+  const chatty = smallTalk(input.content);
+  // Contacts and calendar never go to a model outside this computer, nor
+  // into a document-only answer.
+  const personal = input.personal && input.local && !chatty && input.documentMode !== "only"
+    ? personalContextBlock({
+        message: current.text,
+        contacts: input.personal.contacts,
+        events: input.personal.events,
+        now: input.now ?? new Date(),
+        timeZone: input.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+        budget: scaled(PERSONAL_CHARS, input.contextWindow, 0.05),
+      })
+    : null;
+  const context = [formatExcerpts(input.excerpts ?? []), formatMatchedMemories(usable.filter((memory) => !profileUsed.has(memory)), current.text), personal].filter(
     (block): block is string => block !== null,
   );
   const folderRows: string[] = [];
@@ -158,7 +179,6 @@ export function buildChatMessages(input: ChatContextInput): ChatMessage[] {
   // answered « I cannot access files or search » to « ça va ? »
   // (28/09/2026). Nor is the « disabled » note useful when no excerpt was
   // ever shared in this conversation.
-  const chatty = smallTalk(input.content);
   const excerptsBefore = input.history.some((row) => /\[(?:excerpt|extrait|source)\b|<<excerpt|\[\d+\]/i.test(row.content));
   const documentPolicy = chatty ? null : input.documentMode === "only"
     ? "[Document-only mode] Answer only from the supplied document excerpts or explicitly attached documents. Cite evidence for every factual answer. Treat earlier conversation as questions/context, never as documentary evidence. Do not use general knowledge, memories or web results as evidence. If the documents do not contain the answer, say so clearly. Folder inventory questions may use the supplied library list."

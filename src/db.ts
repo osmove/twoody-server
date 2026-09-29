@@ -212,6 +212,15 @@ export const contacts = sqliteTable("contacts", {
   relationType: text("relation_type"),
   relationSubtype: text("relation_subtype"),
   origin: text("origin").notNull().default("local"),
+  /// Null for a contact the person added here; "macos" for one copied
+  /// from the Mac's Contacts app, which the next copy replaces.
+  source: text("source"),
+  externalId: text("external_id"),
+  organization: text("organization"),
+  phonesJson: text("phones_json"),
+  emailsJson: text("emails_json"),
+  birthday: text("birthday"),
+  addressesJson: text("addresses_json"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 });
@@ -231,6 +240,11 @@ export const calendarEvents = sqliteTable("events", {
   endTime: integer("end_time", { mode: "timestamp" }),
   allDay: integer("all_day", { mode: "boolean" }).notNull().default(false),
   location: text("location"),
+  /// Null for an event made here; "macos" for one copied from the Mac's
+  /// Calendar app, which the next copy replaces.
+  source: text("source"),
+  externalId: text("external_id"),
+  calendar: text("calendar"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 });
@@ -801,6 +815,18 @@ const tunnelPeerColumns = sqlite.prepare("PRAGMA table_info(tunnel_peers)").all(
 }>;
 if (!tunnelPeerColumns.some((column) => column.name === "session_id")) {
   sqlite.exec("ALTER TABLE tunnel_peers ADD COLUMN session_id TEXT");
+}
+
+// Contacts and events copied from the Mac's own apps (29/09/2026).
+for (const [table, columns] of [
+  ["contacts", [["source", "TEXT"], ["external_id", "TEXT"], ["organization", "TEXT"], ["phones_json", "TEXT"], ["emails_json", "TEXT"], ["birthday", "TEXT"], ["addresses_json", "TEXT"]]],
+  ["events", [["source", "TEXT"], ["external_id", "TEXT"], ["calendar", "TEXT"]]],
+] as const) {
+  const existing = sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  for (const [name, type] of columns) {
+    if (!existing.some((column) => column.name === name)) sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+  }
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_user_source ON ${table} (user_id, source)`);
 }
 
 export const db = drizzle(sqlite);

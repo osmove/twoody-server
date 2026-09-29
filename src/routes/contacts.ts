@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { and, asc, eq, like, or } from "drizzle-orm";
+import { and, asc, eq, isNull, like, or } from "drizzle-orm";
 import { db, contacts } from "../db.js";
 import { requireAuth, generateId } from "../auth.js";
 
@@ -20,6 +20,13 @@ interface ContactRow {
   relation_type:     string | null;
   relation_subtype:  string | null;
   origin:            string;
+  /// "macos" for a card copied from the Mac's Contacts: read-only here.
+  source:            string | null;
+  organization:      string | null;
+  phones:            string[];
+  emails:            string[];
+  birthday:          string | null;
+  read_only:         boolean;
   url:               string;
   created_at:        string;
   updated_at:        string;
@@ -39,10 +46,25 @@ function serialize(row: typeof contacts.$inferSelect): ContactRow {
     relation_type:      row.relationType,
     relation_subtype:   row.relationSubtype,
     origin:             row.origin,
+    source:             row.source,
+    organization:       row.organization,
+    phones:             row.phonesJson ? jsonList(row.phonesJson) : [row.phoneNumber].filter((phone): phone is string => Boolean(phone)),
+    emails:             row.emailsJson ? jsonList(row.emailsJson) : [row.email].filter((email): email is string => Boolean(email)),
+    birthday:           row.birthday,
+    read_only:          row.source !== null,
     url:                `/contacts/${row.id}.json`,
     created_at:         row.createdAt.toISOString(),
     updated_at:         row.updatedAt.toISOString(),
   };
+}
+
+function jsonList(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 function displayName(row: typeof contacts.$inferSelect): string {
@@ -107,6 +129,7 @@ export async function contactRoutes(app: FastifyInstance) {
           like(contacts.firstName, pat),
           like(contacts.lastName, pat),
           like(contacts.email, pat),
+          like(contacts.organization, pat),
         );
         if (text) filters.push(text);
       }
@@ -228,6 +251,8 @@ export async function contactRoutes(app: FastifyInstance) {
         .limit(1)
         .all();
       if (!existing) return reply.code(404).send({ error: "not_found" });
+      // A card copied from the Mac is changed in the Mac's Contacts app.
+      if (existing.source !== null) return reply.code(409).send({ error: "read_only", source: existing.source });
 
       const body = readBody(req.body);
       const next = {
@@ -260,7 +285,7 @@ export async function contactRoutes(app: FastifyInstance) {
       if (!auth) return;
       const result = db
         .delete(contacts)
-        .where(and(eq(contacts.id, req.params.id), eq(contacts.userId, auth.userId)))
+        .where(and(eq(contacts.id, req.params.id), eq(contacts.userId, auth.userId), isNull(contacts.source)))
         .run();
       if (result.changes === 0) return reply.code(404).send({ error: "not_found" });
       reply.code(204).send();

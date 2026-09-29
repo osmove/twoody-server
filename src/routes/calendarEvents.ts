@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { and, asc, eq, gte, lte } from "drizzle-orm";
+import { and, asc, eq, gte, isNull, lte } from "drizzle-orm";
 import { db, calendarEvents } from "../db.js";
 import { requireAuth, generateId } from "../auth.js";
 
@@ -27,10 +27,12 @@ interface CalendarEventRow {
 interface AgendaEventRow extends CalendarEventRow {
   local_id:     string;
   provider_id:  null;
-  provider:     "twoody";
-  source:       "twoody";
-  source_label: "Twoody";
-  read_only:    false;
+  provider:     "twoody" | "apple";
+  /// "macos": copied from the Mac's Calendar app, changed there only.
+  source:       "twoody" | "macos";
+  source_label: string;
+  calendar:     string | null;
+  read_only:    boolean;
 }
 
 const DEFAULT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
@@ -55,15 +57,17 @@ function serialize(row: typeof calendarEvents.$inferSelect): CalendarEventRow {
 }
 
 function serializeAgenda(row: typeof calendarEvents.$inferSelect): AgendaEventRow {
+  const fromMac = row.source === "macos";
   return {
     ...serialize(row),
-    id:           `twoody:${row.id}`,
+    id:           fromMac ? `macos:${row.id}` : `twoody:${row.id}`,
     local_id:     row.id,
     provider_id:  null,
-    provider:     "twoody",
-    source:       "twoody",
-    source_label: "Twoody",
-    read_only:    false,
+    provider:     fromMac ? "apple" : "twoody",
+    source:       fromMac ? "macos" : "twoody",
+    source_label: fromMac ? (row.calendar ?? "Calendar") : "Twoody",
+    calendar:     row.calendar,
+    read_only:    row.source !== null,
   };
 }
 
@@ -98,7 +102,7 @@ function agendaRange(query: { start_time?: string; start_date?: string; end_time
 }
 
 function normalizeId(id: string): string {
-  return id.startsWith("twoody:") ? id.slice("twoody:".length) : id;
+  return id.replace(/^(?:twoody|macos):/, "");
 }
 
 function readBody(raw: unknown): {
@@ -259,6 +263,8 @@ export async function calendarEventRoutes(app: FastifyInstance) {
         .limit(1)
         .all();
       if (!existing) return reply.code(404).send({ error: "not_found" });
+      // An event copied from the Mac is changed in the Mac's Calendar app.
+      if (existing.source !== null) return reply.code(409).send({ error: "read_only", source: existing.source });
 
       const body = readBody(req.body);
       const next = {
@@ -290,7 +296,7 @@ export async function calendarEventRoutes(app: FastifyInstance) {
       if (!auth) return;
       const result = db
         .delete(calendarEvents)
-        .where(and(eq(calendarEvents.id, normalizeId(req.params.id)), eq(calendarEvents.userId, auth.userId)))
+        .where(and(eq(calendarEvents.id, normalizeId(req.params.id)), eq(calendarEvents.userId, auth.userId), isNull(calendarEvents.source)))
         .run();
       if (result.changes === 0) return reply.code(404).send({ error: "not_found" });
       reply.code(204).send();

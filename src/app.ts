@@ -27,6 +27,7 @@ import { llmModelsRoutes } from "./routes/llmModels.js";
 import { builtInCapabilitiesRoutes } from "./routes/builtInCapabilities.js";
 import { calendarEventRoutes } from "./routes/calendarEvents.js";
 import { contactRoutes } from "./routes/contacts.js";
+import { localSyncRoutes } from "./routes/localSync.js";
 import { discussionRoutes } from "./routes/discussions.js";
 import { memoryRoutes } from "./routes/memories.js";
 import { usageRoutes } from "./routes/usage.js";
@@ -144,6 +145,7 @@ export async function buildApp() {
   await app.register(llmModelsRoutes);
   await app.register(calendarEventRoutes);
   await app.register(contactRoutes);
+  await app.register(localSyncRoutes);
   await app.register(discussionRoutes);
   await app.register(memoryRoutes);
   await app.register(usageRoutes);
@@ -178,6 +180,7 @@ export async function buildApp() {
   await app.register(llmModelsRoutes, { prefix: "/api/v1" });
   await app.register(calendarEventRoutes, { prefix: "/api/v1" });
   await app.register(contactRoutes, { prefix: "/api/v1" });
+  await app.register(localSyncRoutes, { prefix: "/api/v1" });
   await app.register(discussionRoutes, { prefix: "/api/v1" });
   await app.register(memoryRoutes, { prefix: "/api/v1" });
   await app.register(usageRoutes, { prefix: "/api/v1" });

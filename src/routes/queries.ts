@@ -24,6 +24,8 @@ import { hasIndexedDocuments, listFolders, searchPassages, indexStatus } from ".
 import { LOCAL_ONLY, LocalOnlyError, outboundFetch } from "../outbound.js";
 import { probeRuntime } from "../localRuntime.js";
 import { discussionTitle, typedText } from "../documentBlocks.js";
+import { loadPersonalData } from "./localSync.js";
+import { validTimeZone } from "../usagePeriods.js";
 
 interface QueryBody {
   document_access?: unknown;
@@ -49,6 +51,9 @@ interface QueryBody {
   /// syncs it (vaultSync): kept on both messages so that importing the
   /// conversation again does not add this exchange a second time.
   vault_ref?: string;
+  /// The person's time zone (IANA): « demain » and the times of their
+  /// events are theirs. This computer's when absent.
+  time_zone?: string;
   // The watch + iPhone voice path nests fields under `query`. We
   // accept both flat and nested shapes so a single client codebase
   // can target either backend without case-by-case wire reshaping.
@@ -430,6 +435,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text })),
       local: provider.kind === "local_openai",
       remembered,
+      personal: onThisComputer(provider) && access.mode !== "only" ? loadPersonalData(auth.userId) : null,
+      timeZone: validTimeZone(parsed.time_zone),
     });
     // « Répondre maintenant », for this reply.
     const answerNowController = new AbortController();
@@ -1325,6 +1332,17 @@ export function loadHistory(discussionId: string, after: string | null = null): 
     .limit(HISTORY_MAX_MESSAGES * 2)
     .all();
   return rows.reverse();
+}
+
+/// A runtime on this very computer: the contacts and calendar may go to it,
+/// and to nothing else (a runtime elsewhere on the network is not this one).
+function onThisComputer(provider: Provider): boolean {
+  if (provider.kind !== "local_openai") return false;
+  try {
+    return ["127.0.0.1", "localhost", "[::1]", "::1"].includes(new URL(provider.baseUrl).hostname);
+  } catch {
+    return false;
+  }
 }
 
 function loadUserContext(userId: string): {
