@@ -57,8 +57,8 @@ function rowId(userId: string, src: SyncSource, externalId: string): string {
 
 /// "1990-05-17" or "--05-17" (a birthday without its year).
 function birthday(value: unknown): string | null {
-  const raw = text(value, 10);
-  return raw && /^(?:\d{4}|-)-\d{2}-\d{2}$/.test(raw) ? raw : null;
+  const raw = text(value, 40);
+  return raw && /^(?:\d{4}|-)-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/.test(raw) ? raw : null;
 }
 
 function instant(value: unknown): Date | null {
@@ -83,7 +83,8 @@ export function readContacts(raw: unknown): Array<{
     const firstName = text(row.given_name ?? row.first_name, 200);
     const lastName = text(row.family_name ?? row.last_name, 200);
     const organization = text(row.organization, 200);
-    const name = text(row.name, 300) ?? ([firstName, lastName].filter(Boolean).join(" ") || null);
+    // A company's card is called by its organization, as in Contacts.
+    const name = text(row.name, 300) ?? ([firstName, lastName].filter(Boolean).join(" ") || organization);
     const phones = list(row.phones);
     const emails = list(row.emails);
     // A card with nothing to call it by is of no use to the chat.

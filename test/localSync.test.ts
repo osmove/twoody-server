@@ -58,6 +58,8 @@ test.after(async () => {
 const MAC_CONTACTS = [
   { id: "ABC:ABPerson", name: "Paul Motte", given_name: "Paul", family_name: "Motte", organization: "Secrétaire", phones: ["+33 6 12 34 56 78"], emails: ["paul@example.com"], birthday: "1988-10-02" },
   { id: "DEF:ABPerson", name: "Jacky Azran", given_name: "Jacky", family_name: "Azran", organization: "2CG Consulting", phones: [], emails: ["jacky@example.com"], birthday: "--03-14", addresses: ["1 rue de la Paix, 75002 Paris, France"] },
+  // A malformed birthday is dropped, not the card.
+  { id: "ORG:ABPerson", name: "", organization: "Hyundai Motor France", phones: ["01 41 00 00 00"], emails: [], birthday: "1990-13-45x" },
   // Nothing to call it by: skipped.
   { id: "EMPTY:ABPerson", name: "", phones: [], emails: [] },
 ];
@@ -79,10 +81,11 @@ test("each copy replaces the last, and a contact added by hand stays", async () 
 
   const first = await app.inject({ method: "PUT", url: "/api/v1/local_sync/contacts", headers: desktop, payload: { source: "macos", contacts: MAC_CONTACTS } });
   assert.equal(first.statusCode, 200, first.body);
-  assert.deepEqual(first.json(), { source: "macos", contacts: 2 });
+  assert.deepEqual(first.json(), { source: "macos", contacts: 3 });
 
   let listed = (await app.inject({ method: "GET", url: "/contacts", headers: desktop })).json() as Array<Record<string, unknown>>;
-  assert.deepEqual(listed.map((row) => row.name).sort(), ["Jacky Azran", "Nadine", "Paul Motte"]);
+  assert.deepEqual(listed.map((row) => row.name).sort(), ["Hyundai Motor France", "Jacky Azran", "Nadine", "Paul Motte"]);
+  assert.equal(listed.find((row) => row.name === "Hyundai Motor France")!.birthday, null);
   const paul = listed.find((row) => row.name === "Paul Motte")!;
   assert.equal(paul.source, "macos");
   assert.equal(paul.read_only, true);
