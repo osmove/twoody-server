@@ -19,6 +19,7 @@ const { forgetRuntimeProbes } = await import("../src/localRuntime.js");
 type Chat = {
   messages: Array<{ role: string; content: string }>;
   chat_template_kwargs?: { enable_thinking?: boolean };
+  reasoning_effort?: string;
   thinking_budget_tokens?: number;
   max_tokens?: number;
 };
@@ -85,6 +86,8 @@ async function ask(effort?: string) {
 test("Rapide: no reasoning asked for, none shown", async () => {
   const { final, reasoning } = await ask();
   assert.equal(asked.at(-1)!.chat_template_kwargs?.enable_thinking, false);
+  // Ollama's switch: it ignores chat_template_kwargs (29/09/2026).
+  assert.equal(asked.at(-1)!.reasoning_effort, "none");
   assert.equal(asked.at(-1)!.thinking_budget_tokens, undefined);
   assert.equal(reasoning, "");
   assert.equal(final.message, "Trois mois, sans détour.");
@@ -96,6 +99,7 @@ test("Réfléchi: the reasoning is sent as it comes and kept with the answer", a
   const { final, reasoning } = await ask("think");
   assert.equal(asked.at(-1)!.chat_template_kwargs?.enable_thinking, true);
   assert.equal(asked.at(-1)!.thinking_budget_tokens, 1_500, "llama.cpp ends it there itself");
+  assert.equal(asked.at(-1)!.reasoning_effort, "medium");
   assert.equal(reasoning, "Le préavis est de trois mois selon l'article 7.");
   assert.equal(final.message, "Trois mois.");
   assert.equal(typeof final.reasoning_ms, "number");
@@ -105,6 +109,7 @@ test("Réfléchi: the reasoning is sent as it comes and kept with the answer", a
   style = "tags";
   const tagged = await ask("deep");
   assert.equal(asked.at(-1)!.thinking_budget_tokens, 6_000);
+  assert.equal(asked.at(-1)!.reasoning_effort, "high");
   assert.equal(tagged.reasoning, "Je relis l'article 7.");
   assert.equal(tagged.final.message, "Trois mois.");
 });

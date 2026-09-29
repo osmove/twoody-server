@@ -1087,12 +1087,15 @@ async function streamLocal(
   };
   // Qwen3-style models otherwise reason silently for 20-40 s before the
   // first token: reasoning is on only when the person asked for it.
-  // mlx-lm, vLLM and llama.cpp honour this switch and Ollama ignores it.
+  // mlx-lm, vLLM and llama.cpp honour this switch; Ollama ignores it and
+  // reads reasoning_effort instead — « none » answered in 4 s where Qwen3.5
+  // otherwise reasoned for minutes on a Raspberry Pi (29/09/2026).
   // The tokens used come last in the stream when asked (the context
   // gauge); llama.cpp ends the reasoning itself at the budget. A strict
   // OpenAI-compatible server may reject these fields: plain retry below.
   const extras = {
     chat_template_kwargs: { enable_thinking: thinking },
+    reasoning_effort: thinking ? (options.effort === "deep" ? "high" : "medium") : "none",
     stream_options: { include_usage: true },
     ...(thinking ? { thinking_budget_tokens: budget } : {}),
   };
@@ -1181,6 +1184,7 @@ async function streamLocal(
         { ...last, content: `${last.content}\n\n[Your reasoning so far, cut to answer in time:]\n${reasoning.trim()}\n[Now answer directly.]` },
       ],
       chat_template_kwargs: { enable_thinking: false },
+      reasoning_effort: "none",
       stream_options: { include_usage: true },
     });
     if (!answer.ok) throw new LocalLlmUnavailableError(`Local LLM provider returned ${answer.status}`);
