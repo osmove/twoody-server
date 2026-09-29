@@ -143,7 +143,7 @@ export async function peerRequest(peer: PeerRow, path: string, init: PeerRequest
   if (lanAllowed) {
     try {
       link.direct ??= directClient(peer);
-      return await link.direct.request(path, { ...init, headers });
+      return noteAnswer(peer, await link.direct.request(path, { ...init, headers }));
     } catch (err) {
       if (init.signal?.aborted) throw err;
       failures.push(err instanceof Error ? err.message : String(err));
@@ -158,13 +158,42 @@ export async function peerRequest(peer: PeerRow, path: string, init: PeerRequest
   }
   try {
     link.relay ??= relayClient(peer, creds);
-    return await link.relay.request(path, { ...init, headers });
+    return noteAnswer(peer, await link.relay.request(path, { ...init, headers }));
   } catch (err) {
     if (init.signal?.aborted) throw err;
     link.relay?.stop();
     link.relay = null;
     throw new PeerUnavailableError(`${peer.name} does not answer (${[...failures, err instanceof Error ? err.message : String(err)].join("; ")})`);
   }
+}
+
+/// A peer that answers 401 no longer knows this computer's session: it
+/// left the account, or was removed from it, or forgot this computer. It
+/// is set aside (state « revoked ») so that no turn goes to it any more,
+/// and the account's list is looked at again. A 404 or 410 has the list
+/// looked at again too.
+function noteAnswer(peer: PeerRow, response: Response): Response {
+  if (response.status === 401) {
+    markPeer(peer.computerId, "revoked", "session_revoked");
+    requestPeerSync(peer.userId);
+  } else if (response.status === 404 || response.status === 410) {
+    requestPeerSync(peer.userId);
+  }
+  return response;
+}
+
+/// Sets a peer aside: nothing is routed to it, and what reached it is
+/// forgotten (its session, address and key). DELETE /peers/:id forgets it.
+function markPeer(computerId: string, state: "revoked" | "removed", error: string): void {
+  closePeerLink(computerId);
+  statuses.delete(computerId);
+  const poll = polls.get(computerId);
+  if (poll) clearTimeout(poll);
+  polls.delete(computerId);
+  db.update(accountPeers)
+    .set({ state, error, token: null, url: null, tunnelKey: null, requestId: null, updatedAt: new Date() })
+    .where(eq(accountPeers.computerId, computerId))
+    .run();
 }
 
 // ── status ───────────────────────────────────────────────────────────────
@@ -209,22 +238,64 @@ export async function refreshPeerStatus(peer: PeerRow): Promise<PeerStatusEntry 
 }
 
 let poller: NodeJS.Timeout | null = null;
+let listingPoller: NodeJS.Timeout | null = null;
 
-/// Asks each linked peer for its status every 20 s.
+/// Asks each linked peer for its status every 20 s, and the account which
+/// computers it still has every 5 min (TWOODY_PEER_LISTING_MS): a peer
+/// removed from the account is set aside (syncPeersWithAccount).
 export function startPeerStatusPoller(userIds: () => string[], everyMs = 20_000): () => void {
   const tick = async () => {
     for (const userId of userIds()) {
       await Promise.all(linkedPeers(userId).map((peer) => refreshPeerStatus(peer)));
     }
   };
+  const override = Number(process.env.TWOODY_PEER_LISTING_MS);
+  const listingEveryMs = Number.isFinite(override) && override > 0 ? override : 5 * 60_000;
+  const sync = async () => {
+    for (const userId of userIds()) {
+      if (listPeers(userId).length > 0) await syncPeersWithAccount(userId).catch(() => undefined);
+    }
+  };
   if (poller) clearInterval(poller);
+  if (listingPoller) clearInterval(listingPoller);
   poller = setInterval(() => void tick(), everyMs);
   poller.unref();
+  listingPoller = setInterval(() => void sync(), listingEveryMs);
+  listingPoller.unref();
+  void sync();
   void tick();
   return () => {
     if (poller) clearInterval(poller);
+    if (listingPoller) clearInterval(listingPoller);
     poller = null;
+    listingPoller = null;
   };
+}
+
+/// The peers the account no longer lists are set aside (state « removed »):
+/// the router stops sending them turns, on the LAN as through the relay.
+/// Nothing changes when the list cannot be had. Returns the ids set aside.
+export async function syncPeersWithAccount(userId: string): Promise<string[]> {
+  const computers = await accountComputers({ fresh: true, strict: true });
+  if (!computers) return [];
+  const listed = new Set(computers.map((c) => c.id));
+  const removed: string[] = [];
+  for (const peer of listPeers(userId)) {
+    if (listed.has(peer.computerId) || peer.state === "removed") continue;
+    markPeer(peer.computerId, "removed", "removed_from_account");
+    removed.push(peer.computerId);
+  }
+  return removed;
+}
+
+const syncRequested = new Map<string, number>();
+
+/// A sync soon, at most one every 30 s per account.
+function requestPeerSync(userId: string): void {
+  const last = syncRequested.get(userId) ?? 0;
+  if (Date.now() - last < 30_000) return;
+  syncRequested.set(userId, Date.now());
+  void syncPeersWithAccount(userId).catch(() => undefined);
 }
 
 // ── pairing as a peer ────────────────────────────────────────────────────
@@ -269,17 +340,23 @@ export function readAccountComputers(raw: unknown): AccountComputer[] {
   });
 }
 
-/// The account's computers, as the backend lists them (kept 30 s).
-export async function accountComputers(options: { fresh?: boolean } = {}): Promise<AccountComputer[] | null> {
+/// The account's computers, as the backend lists them (kept 30 s). When
+/// the backend does not answer, the last list — unless `strict`, which
+/// wants the backend's answer or null.
+export async function accountComputers(options: { fresh?: boolean; strict?: boolean } = {}): Promise<AccountComputer[] | null> {
   const creds = accountCredentials();
   if (!creds) return null;
   const key = `${creds.backendUrl}|${creds.userToken}`;
   if (!options.fresh && listing && listing.key === key && Date.now() - listing.at < 30_000) return listing.computers;
   try {
     const { body } = await backendCall({ backendUrl: creds.backendUrl, userToken: creds.userToken, deviceToken: creds.deviceToken }, "account_computers", { timeoutMs: 8_000 });
+    const list = (body as { computers?: unknown } | null)?.computers;
+    // An answer that is not a list says nothing of which computers left.
+    if (!Array.isArray(list)) return options.strict ? null : listing && listing.key === key ? listing.computers : null;
     listing = { at: Date.now(), key, computers: readAccountComputers(body) };
     return listing.computers;
   } catch {
+    if (options.strict) return null;
     return listing && listing.key === key ? listing.computers : null;
   }
 }
@@ -351,7 +428,10 @@ export async function checkPeerRequest(userId: string, computerId: string): Prom
   try {
     answer = (await backendCall<typeof answer>(userCreds, path)).body ?? {};
   } catch (err) {
-    if (err instanceof BackendError && (err.status === 410 || err.status === 404)) return fail("expired");
+    if (err instanceof BackendError && (err.status === 410 || err.status === 404)) {
+      requestPeerSync(userId);
+      return fail("expired");
+    }
     return "pending";
   }
   if (answer.state === "denied") return fail("denied");

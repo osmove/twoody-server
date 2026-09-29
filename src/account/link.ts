@@ -355,6 +355,23 @@ export async function logout(options: { force?: boolean } = {}): Promise<{ confi
   return { confirmed, sessionsDropped };
 }
 
+/// The account no longer lets this computer in — it was removed from the
+/// account, its credential or its session revoked (the heartbeat answered
+/// 401/403, service.ts): account.json keeps only what makes this computer
+/// itself (pairing key, device token; 0600), so that its fingerprint stays
+/// the same for a new link, and the sessions the account approved here go
+/// with the approvers it had pinned. Returns how many sessions went.
+export function unlinkRemoved(): number {
+  const file = readAccountFile();
+  stopPolling();
+  pending = null;
+  if (file) writeAccountFile({ device_token: file.device_token, pairing_key: file.pairing_key, approvers: [] });
+  const sessionsDropped = dropAccountSessions();
+  lastError = null;
+  emit();
+  return sessionsDropped;
+}
+
 /// Only for tests.
 export function resetLinkForTests(): void {
   stopPolling();

@@ -32,6 +32,7 @@ const NOT_FOR_A_HUMAN = new Set([
   "TWOODY_HEARTBEAT_MS", // tests: how often the heartbeat goes
   "TWOODY_LINK_POLL_MS", // tests: how often a pending login is polled
   "TWOODY_PEER_POLL_MS", // tests: how often a peer request's answer is looked for
+  "TWOODY_PEER_LISTING_MS", // tests: how often the account's computers are listed to drop removed peers
 ]);
 
 function sourceFiles(dir: string): string[] {

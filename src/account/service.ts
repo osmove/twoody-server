@@ -2,8 +2,8 @@ import { deriveCapabilities, readBridgeClientEnv, startBridgeClient, type Bridge
 import { isPrivateUrl, LOCAL_ONLY } from "../outbound.js";
 import { runningTunnel, startTunnelService, type TunnelService } from "../tunnel/index.js";
 import { startApprovalLoop, type ApprovalLoop } from "./approvals.js";
-import { backendCall } from "./backend.js";
-import { linkState, onLinkChanged } from "./link.js";
+import { backendCall, BackendError } from "./backend.js";
+import { linkState, onLinkChanged, unlinkRemoved } from "./link.js";
 import { buildStatus } from "./statusSource.js";
 import { linkedAccount, type LinkedAccount } from "./store.js";
 
@@ -84,6 +84,11 @@ export function startAccountService(options: {
   let bridgeDeviceUuid: string | null = null;
   let stopped = false;
 
+  // Two refusals in a row (401/403: the computer was removed from the
+  // account, its credential or its session revoked) and this server leaves
+  // the account on its side too: a single one could be a backend's bad
+  // second, and linking again means typing a code.
+  let refusals = 0;
   const heartbeat = async () => {
     const account = linkedAccount();
     if (!account) return;
@@ -93,8 +98,17 @@ export function startAccountService(options: {
         `account_computers/${encodeURIComponent(account.computer.id)}/heartbeat`,
         { body: { status: await buildStatus(), platform: process.platform === "darwin" ? "macos" : process.platform, ...(bridgeDeviceUuid ? { bridge_device_uuid: bridgeDeviceUuid } : {}) } },
       );
-    } catch {
-      // next beat
+      refusals = 0;
+    } catch (err) {
+      if (!(err instanceof BackendError) || (err.status !== 401 && err.status !== 403)) return; // next beat
+      refusals += 1;
+      if (refusals < 2 || stopped) return;
+      refusals = 0;
+      const dropped = unlinkRemoved();
+      options.log?.(
+        `The Twoody account refused this server (${err.status}): it was removed from the account, or its access revoked. ` +
+          `Unlinked here${dropped ? `, and the ${dropped} access(es) given through the account withdrawn` : ""}. To add it again: twoody-server login`,
+      );
     }
   };
 

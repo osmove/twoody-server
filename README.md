@@ -279,9 +279,12 @@ the server answers on the home network only.
 finds a new server on the network) makes the server one of your account's
 computers, without a keyboard or a screen on it:
 
-1. it prints a code and `https://twoody.com/appareil`; enter the code on a
+1. it prints a code and `https://twoody.com/appareil` on its own console
+   (the terminal, or `journalctl -u twoody-server`); enter the code on a
    device signed in to your account (the web page, Twoody Desktop or the
-   app);
+   app). The code is never shown on the network: Twoody Desktop asks you
+   to type it. Once linked, the console says which account (masked, e.g.
+   `j***@gmail.com`);
 2. once approved, it keeps its credentials in `account.json` in the data
    directory (mode 0600), sends its status every 30 s (models, load,
    speed), lends its models to the account and waits at the relay for your
@@ -291,7 +294,10 @@ computers, without a keyboard or a screen on it:
    « Appareils »), or when you allow it here: `twoody-server approve`.
    Nothing is allowed for merely being signed in to the same account.
 
-`twoody-server logout` takes it out of the account. Twoody Desktop can then
+`twoody-server logout` takes it out of the account, and says so when the
+account could not confirm it (the server then stays linked; `--force` leaves
+here anyway). A server removed from the account elsewhere notices at its next
+heartbeat and unlinks itself. Twoody Desktop can then
 send it questions — by name, or « Automatique », where each answer goes to
 the computer of the account that will write it fastest (and says which).
 
