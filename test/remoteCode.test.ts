@@ -33,13 +33,21 @@ const fake: RemoteCodeBridge = {
       if (input.sessionId !== ID) throw new Error("session_unavailable");
       const hook = afterSnapshot;
       if (hook) setTimeout(hook, 5);
-      return { seq: 5, session: { id: ID, title: "Fix", workspace: "/work/app", items: [], running: true }, pending: [{ callId: "c1", name: "run_command", kind: "exec", summary: "npm test" }], output: {} };
+      return {
+        seq: 5,
+        session: { id: ID, title: "Fix", workspace: "/work/app", items: [], running: true },
+        pending: [{ callId: "c1", name: "run_command", kind: "exec", summary: "npm test" }],
+        output: {},
+        processes: [{ id: "p1", command: "npm run dev", running: true, exitCode: null, startedAt: "2026-09-29T10:00:00.000Z" }],
+        processOutput: { p1: "listening on 5173\n" },
+      };
     }
     if (command === "send") return { id: ID };
     if (command === "approve") {
       if (input.callId !== "c1") throw new Error("approval_unavailable");
       return { decided: true };
     }
+    if (command === "stopProcess" && input.id !== "p1") throw new Error("process_unavailable");
     return { stopped: true };
   },
   follow(listener) {
@@ -99,6 +107,23 @@ test("commands carry the phone's input and map the Desktop's refusals", async ()
   assert.equal((await app.inject({ url: "/code/sessions/../../etc", headers })).statusCode, 404);
 });
 
+test("a phone stops a process the session keeps running in the background", async () => {
+  calls.length = 0;
+  const stopped = await app.inject({ method: "POST", url: `/code/sessions/${ID}/processes/p1/stop`, headers });
+  assert.equal(stopped.statusCode, 200);
+  assert.deepEqual(stopped.json(), { stopped: true });
+  assert.deepEqual(calls.at(-1), { command: "stopProcess", input: { sessionId: ID, id: "p1" } });
+  const gone = await app.inject({ method: "POST", url: `/code/sessions/${ID}/processes/p9/stop`, headers });
+  assert.equal(gone.statusCode, 404);
+  assert.deepEqual(gone.json(), { error: "process_unavailable" });
+  assert.equal((await app.inject({ method: "POST", url: `/code/sessions/${ID}/processes/p1%20x/stop`, headers })).statusCode, 400);
+  assert.equal((await app.inject({ method: "POST", url: `/code/sessions/${ID}/processes/p1/stop` })).statusCode, 401);
+  assert.equal((await app.inject({ method: "POST", url: `/code/sessions/${ID}/processes/p1/stop`, headers: { authorization: `Bearer ${ordinary.token}` } })).statusCode, 403);
+  const snapshot = await app.inject({ url: `/code/sessions/${ID}`, headers });
+  assert.equal(snapshot.json().processes[0].command, "npm run dev");
+  assert.equal(snapshot.json().processOutput.p1, "listening on 5173\n");
+});
+
 test("while off, the list says so and everything else is refused", async () => {
   off = true;
   try {
@@ -109,6 +134,7 @@ test("while off, the list says so and everything else is refused", async () => {
       { url: `/code/sessions/${ID}` },
       { method: "POST" as const, url: "/code/sessions", payload: { workspace: "/work/app", text: "x" } },
       { method: "POST" as const, url: `/code/sessions/${ID}/stop` },
+      { method: "POST" as const, url: `/code/sessions/${ID}/processes/p1/stop` },
       { method: "POST" as const, url: `/code/sessions/${ID}/stream` },
     ]) {
       const refused = await app.inject({ ...request, headers });
@@ -127,6 +153,9 @@ test("the stream opens with the snapshot, then this session's newer events, and 
     emit({ type: "event", seq: 6, event: { sessionId: "other", type: "item", item: { id: "elsewhere" } } });
     emit({ type: "event", seq: 7, event: { sessionId: ID, type: "approval", request: { callId: "c2", kind: "edit" } } });
     emit({ type: "event", seq: 8, event: { sessionId: ID, type: "output", itemId: "t1", chunk: "ok\n" } });
+    emit({ type: "event", seq: 9, event: { sessionId: ID, type: "process-output", processId: "p1", chunk: "GET /\n" } });
+    emit({ type: "event", seq: 10, event: { sessionId: ID, type: "process", process: { id: "p1", command: "npm run dev", running: false, exitCode: null } } });
+    emit({ type: "event", seq: 11, event: { sessionId: "other", type: "process", process: { id: "p1" } } });
   };
   const response = await app.inject({ method: "POST", url: `/code/sessions/${ID}/stream`, headers });
   afterSnapshot = null;
@@ -136,11 +165,15 @@ test("the stream opens with the snapshot, then this session's newer events, and 
     const [name, data] = block.split("\n");
     return { name: name!.slice("event: ".length), data: JSON.parse(data!.slice("data: ".length)) };
   });
-  assert.deepEqual(events.map((event) => event.name), ["snapshot", "approval", "output", "end"]);
+  assert.deepEqual(events.map((event) => event.name), ["snapshot", "approval", "output", "process_output", "process", "end"]);
   assert.equal(events[0]!.data.session.id, ID);
   assert.equal(events[0]!.data.seq, undefined);
+  assert.deepEqual(events[0]!.data.processes.map((process: { id: string }) => process.id), ["p1"]);
+  assert.deepEqual(events[0]!.data.processOutput, { p1: "listening on 5173\n" });
   assert.deepEqual(events[1]!.data, { sessionId: ID, request: { callId: "c2", kind: "edit" } });
-  assert.deepEqual(events[3]!.data, { reason: "time" });
+  assert.deepEqual(events[3]!.data, { sessionId: ID, processId: "p1", chunk: "GET /\n" });
+  assert.deepEqual(events[4]!.data, { sessionId: ID, process: { id: "p1", command: "npm run dev", running: false, exitCode: null } });
+  assert.deepEqual(events[5]!.data, { reason: "time" });
   assert.equal(listeners.size, 0);
 });
 

@@ -24,6 +24,7 @@ const STATUS: Record<string, number> = {
   remote_code_off: 403,
   session_unavailable: 404,
   approval_unavailable: 404,
+  process_unavailable: 404,
   workspace_unavailable: 404,
   session_busy: 409,
   request_conflict: 409,
@@ -34,7 +35,10 @@ const STATUS: Record<string, number> = {
   desktop_timeout: 503,
 };
 
-const STREAMED = new Set(["item", "output", "todos", "state", "approval", "usage", "session"]);
+const STREAMED = new Set(["item", "output", "todos", "state", "approval", "usage", "session", "process", "process-output"]);
+/// Event names as the phone reads them.
+const EVENT_NAME: Record<string, string> = { "process-output": "process_output" };
+const PROCESS_ID = { type: "string", pattern: "^[a-zA-Z0-9_-]{1,40}$" };
 const SESSION_ID = { type: "string", pattern: "^[0-9a-f-]{36}$" };
 const REQUEST_ID = { type: "string", pattern: "^[a-zA-Z0-9_-]{16,80}$" };
 const TEXT = { type: "string", minLength: 1, maxLength: 16000 };
@@ -125,6 +129,13 @@ export async function remoteCodeRoutes(app: FastifyInstance, options: RemoteCode
     schema: { tags, security, summary: "Twoody Code: stop the session's request", params: { type: "object", required: ["id"], properties: { id: SESSION_ID } } },
   }, (req, reply) => call(req, reply, "stop", { sessionId: req.params.id }));
 
+  app.post<{ Params: { id: string; processId: string } }>("/code/sessions/:id/processes/:processId/stop", {
+    schema: {
+      tags, security, summary: "Twoody Code: stop a process the session keeps running in the background",
+      params: { type: "object", required: ["id", "processId"], properties: { id: SESSION_ID, processId: PROCESS_ID } },
+    },
+  }, (req, reply) => call(req, reply, "stopProcess", { sessionId: req.params.id, id: req.params.processId }));
+
   // The session as it goes: a snapshot, then Code's events for it.
   app.post<{ Params: { id: string } }>("/code/sessions/:id/stream", {
     schema: { tags, security, summary: "Twoody Code: follow a session (text/event-stream)", params: { type: "object", required: ["id"], properties: { id: SESSION_ID } } },
@@ -192,7 +203,7 @@ export async function remoteCodeRoutes(app: FastifyInstance, options: RemoteCode
       }
       if (signal.seq <= seen || signal.event.sessionId !== id || !STREAMED.has(signal.event.type)) return;
       const { type, ...data } = signal.event;
-      send(type, data);
+      send(EVENT_NAME[type] ?? type, data);
     };
     for (const signal of early.splice(0)) forward(signal);
   });
