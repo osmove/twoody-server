@@ -179,6 +179,8 @@ export async function discussionRoutes(app: FastifyInstance) {
           prompt_tokens: row.promptTokens ?? null,
           completion_tokens: row.completionTokens ?? null,
           tokens_estimated: row.tokensEstimated ?? null,
+          // Which of the account's computers wrote it (router/, /queries).
+          answered_by: parseAnsweredBy(row.answeredByJson),
           created_at: row.createdAt.toISOString(),
         })),
       });
@@ -329,4 +331,13 @@ async function importDiscussion(app: FastifyInstance) {
       reply.send({ discussion_id: result.id, added: result.added, created: result.created });
     },
   });
+}
+
+function parseAnsweredBy(json: string | null): unknown {
+  if (!json) return null;
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
 }

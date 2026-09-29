@@ -55,6 +55,9 @@ const HOP_HEADERS = new Set([
 
 const CHUNK_BYTES = 64 * 1024;
 
+/// Set on every request the tunnel serves, whatever the other end sent.
+export const VIA_TUNNEL_HEADER = "x-twoody-via-tunnel";
+
 export interface TunnelHost {
   /// Feed it every frame that arrives. It never throws: a frame that
   /// cannot be opened is reported and dropped, because the other side of
@@ -112,6 +115,9 @@ export function createTunnelHost(options: TunnelHostOptions): TunnelHost {
       for (const [name, value] of Object.entries(request.headers)) {
         if (!HOP_HEADERS.has(name)) headers.set(name, value);
       }
+      // Every request from the tunnel arrives from 127.0.0.1: said so, for
+      // the routes that trust this machine's own requests (localAccess.ts).
+      headers.set(VIA_TUNNEL_HEADER, "1");
       const response = await fetchImpl(url, {
         method: request.method,
         headers,

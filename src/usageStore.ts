@@ -8,7 +8,9 @@ import { generateId } from "./auth.js";
 // usage_events, kept as long as the conversations are; the machine's load
 // is sampled every 15 s and thinned out with age (see compactUsageSamples).
 
-export type UsageSource = "chat" | "code" | "agent" | "memory";
+/// « peer »: an answer this computer wrote for another computer of the
+/// account (routes/peer.ts) — recorded here, never posted by a client.
+export type UsageSource = "chat" | "code" | "agent" | "memory" | "peer";
 export const USAGE_SOURCES: readonly UsageSource[] = ["chat", "code", "agent", "memory"];
 
 export interface UsageEventInput {

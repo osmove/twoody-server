@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { db, providers } from "../db.js";
 import { generateId, requireAuth } from "../auth.js";
 import { offeredModels, probeRuntime } from "../localRuntime.js";
+import { listComputers } from "../router/index.js";
 
 type ProviderPatchBody = {
   name?: string;
@@ -78,7 +79,12 @@ export async function providerRoutes(app: FastifyInstance) {
         })
       );
 
-      reply.send({ providers: serialized });
+      // The account's computers, when this server knows its account: the
+      // picker's « Automatique » (provider "auto") and one section per
+      // computer (provider "computer:<id>"). Absent, the clients behave as
+      // before.
+      const computers = await listComputers(auth.userId).catch(() => null);
+      reply.send({ providers: serialized, ...(computers ? { auto: true, computers } : {}) });
     },
   });
 

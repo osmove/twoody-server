@@ -93,6 +93,33 @@ export const tunnelPeers = sqliteTable("tunnel_peers", {
   sessionId: text("session_id"),
 });
 
+// The account's other computers this one sends questions to (a Raspberry
+// Pi next to the Mac): paired as a peer through the account
+// (docs/multi-computer-design.md §3, routes/peers.ts). `token` is the
+// `peer:` session the other computer gave this one; it only opens
+// /api/v1/peer/* there.
+export const accountPeers = sqliteTable("account_peers", {
+  computerId: text("computer_id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id),
+  name: text("name").notNull(),
+  kind: text("kind"),
+  platform: text("platform"),
+  /// requested → linked (or failed, with the reason in `error`).
+  state: text("state").notNull(),
+  requestId: text("request_id"),
+  requestExpiresAt: integer("request_expires_at", { mode: "timestamp" }),
+  /// The other computer's pairing key (account computer public_key): what
+  /// its sealed answer is opened with.
+  hostKey: text("host_key"),
+  url: text("url"),
+  token: text("token"),
+  tunnelKey: text("tunnel_key"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  error: text("error"),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
 export const providers = sqliteTable("providers", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull().references(() => users.id),
@@ -156,6 +183,9 @@ export const messages = sqliteTable("messages", {
   completionTokens: integer("completion_tokens"),
   tokensEstimated: integer("tokens_estimated", { mode: "boolean" }),
   client: text("client"),
+  // Which of the account's computers wrote an answer, and how it was
+  // chosen: {computer_id, computer_name, model, routed}.
+  answeredByJson: text("answered_by_json"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
@@ -761,6 +791,25 @@ sqlite.exec(`
     key TEXT PRIMARY KEY,
     value TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS account_peers (
+    computer_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    name TEXT NOT NULL,
+    kind TEXT,
+    platform TEXT,
+    state TEXT NOT NULL,
+    request_id TEXT,
+    request_expires_at INTEGER,
+    host_key TEXT,
+    url TEXT,
+    token TEXT,
+    tunnel_key TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
 `);
 
 const userColumns = sqlite.prepare("PRAGMA table_info(users)").all() as Array<{
@@ -788,7 +837,7 @@ if (!messageColumns.some((column) => column.name === "reasoning_ms")) {
 if (!messageColumns.some((column) => column.name === "vault_ref")) {
   sqlite.exec("ALTER TABLE messages ADD COLUMN vault_ref TEXT");
 }
-for (const [name, type] of [["prompt_tokens", "INTEGER"], ["completion_tokens", "INTEGER"], ["tokens_estimated", "INTEGER"], ["client", "TEXT"]] as const) {
+for (const [name, type] of [["prompt_tokens", "INTEGER"], ["completion_tokens", "INTEGER"], ["tokens_estimated", "INTEGER"], ["client", "TEXT"], ["answered_by_json", "TEXT"]] as const) {
   if (!messageColumns.some((column) => column.name === name)) sqlite.exec(`ALTER TABLE messages ADD COLUMN ${name} ${type}`);
 }
 

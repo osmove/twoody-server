@@ -68,7 +68,8 @@ key = HKDF-SHA256(X25519(approver_priv, host_pub), salt="twoody-endorse-v1:"+rid
 msg = "twoody-endorse-v1\n"+host_id+"\n"+rid+"\n"+requester_key+"\n"+expires_at
 endorsement = base64(HMAC-SHA256(key, msg))
 ```
-Test vectors: `twoody-server/test/fixtures/endorsement-v1.json` (copied into Desktop and app tests).
+`host_id` is the host's **AccountComputer id** (the id login/poll returns for it, the `:id` of `/account_computers/:id/…/endorse`, `delegated_requests[].host_id`) — not the bridge uuid the listing calls `host_id`. `rid` and `host_id` are sent as decimal strings; `expires_at` is the request's string exactly as the backend serialised it.
+Test vectors: `twoody-server/test/fixtures/endorsement-v1.json` (copied into Desktop and app tests). Status object: `test/fixtures/computer-status.schema.json`.
 
 ### Server (twoody-server, headless)
 - `DATA_DIR/account.json` (0600): `{backend_url, account_id, user_token, device_token, computer:{id, credential}, pairing_key:{priv, pub}, approvers:[…]}`; env `TWOODY_USER_TOKEN`/`TWOODY_BACKEND_URL` take precedence.
@@ -113,3 +114,12 @@ Deployment: backend first (additive) → server npm/Docker → Desktop release �
 ## 5. Risks and deferred
 Risks: backend introduces the approver key once (TOFU; later: compare fingerprints); LAN neighbour adopting a fresh Pi (one-click only when fresh); relay load (one wait per peer; Redis 25 MB); losing the KV cache when routing away (stickiness); model names differ between runtimes (exact names only in v1); speed/load cross the backend (bounded fields).
 Deferred: splitting a model across computers; offloading transcription/indexing (v1.1, LAN only: 3 MB relay limit); automatic routing to others' shared computers; phone-side per-request routing; history merged across computers (vault); approvers UI; model alias table.
+
+## 6. Lot 2 as built (twoody-server, 29/09/2026)
+- `src/account/`: `store.ts` (account.json), `link.ts` (device code, poll interval from the backend, +5 s on slow_down, denied/expired end it), `approvals.ts` (rules 1–2 pure in `judge`, loop every 15 s, `twoody-server approve` for rule 3), `pairingSeal.ts` (port of the Desktop's `sealPairing`, cross-checked with an envelope the Desktop sealed: `test/fixtures/account-pairing-v1.json`), `service.ts` (heartbeat with `status`, `platform`, `bridge_device_uuid`; bridge; tunnel), `statusSource.ts`.
+- `GET /account/link` also returns `fresh` and `fp` (= `fingerprint`, 8 hex of the pairing key, as Bonjour's `fp` and the backend's login `fingerprint`). `POST /account/link` is accepted from the LAN **while the server is fresh** (the code is shown there anyway), so Desktop's one click can start a code; otherwise loopback or admin token. Requests through the tunnel are marked `x-twoody-via-tunnel` and are never "this machine".
+- Twoody Desktop gives the embedded server its account with `{type:"account"|"tunnel", backendUrl, userToken, deviceToken, computerId, computerName}` (the `account` message works without `TWOODY_TUNNEL`); without `computerId`, the server calls itself `self` in `/providers` and `answered_by`.
+- `/queries`: `provider:"auto"` (model optional) or `provider:"computer:<id>"` (model optional); anything else behaves as before. `answered_by = {computer_id, computer_name, model, routed, auto}`; an explicit computer that fails before its first word ends with `error: computer_unavailable, fallback:{computer_id, computer_name}` (this computer). Up to 2 fallbacks for « Automatique ».
+- `/providers` `computers[]` entries also carry `peer` (linked as a peer, so selectable). `/me` has `background_computer` ("auto" | "self" | "computer:<id>").
+- Peer protocol errors: 404 `no_model`, 503 `busy`, 422 `invalid_request`; `max_tokens` is cut to 4096, not refused. Usage events on the answering computer have `source:"peer"`; the asking computer records none for that answer.
+

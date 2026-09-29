@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import { allowSecretAttempt } from "../rateLimit.js";
-import { forgetTunnelPeersOfSession, rememberTunnelPeer, tunnelIdentity } from "../tunnel/identity.js";
+import { forgetTunnelPeersOfSession } from "../tunnel/identity.js";
+import { pairDevice } from "../pairing.js";
 import { tunnelPeersChanged } from "../tunnel/index.js";
 import {
   db,
@@ -21,7 +22,6 @@ import {
   hashPassword,
   verifyPassword,
   createAuthSession,
-  PLACEHOLDER_USER_NAME,
 } from "../auth.js";
 
 export async function sessionRoutes(app: FastifyInstance) {
@@ -203,48 +203,13 @@ export async function sessionRoutes(app: FastifyInstance) {
       }
 
       // Reuse the existing account when there is one — which is the
-      // case for every pairing by code. Otherwise create a
-      // "self-hosted" account on the fly so the iPhone doesn't have to
-      // ask for a name.
-      const [existing] = db.select().from(users).limit(1).all();
-      let userId: string;
-      let userRow: typeof users.$inferSelect;
-      if (existing) {
-        userId = existing.id;
-        userRow = existing;
-      } else {
-        userId = generateId();
-        db.insert(users)
-          .values({
-            id: userId,
-            email: `local-${userId.slice(0, 8)}@self-hosted.twoody`,
-            name: PLACEHOLDER_USER_NAME,
-            // No password set; signin remains blocked unless the
-            // user later flips this via a future /auth/set_password
-            // flow. Pair-token-only access is the design here.
-            passwordDigest: null,
-            createdAt: new Date(),
-          })
-          .run();
-        const [created] = db.select().from(users).where(eq(users.id, userId)).limit(1).all();
-        userRow = created!;
-      }
-
-      const { token, sessionId } = createAuthSession(userId, `pair:${deviceName}`);
-
-      // The key swap, when the device brought one. This computer's key
-      // is handed over only after the setup token has been checked, so
-      // a device that is refused learns nothing about it. The key goes
-      // with the session: removing the device takes both.
-      let tunnelPublicKey: string | undefined;
-      if (offered) {
-        rememberTunnelPeer({ userId, publicKey: Buffer.from(offered, "hex"), name: deviceName, sessionId });
-        tunnelPublicKey = tunnelIdentity().publicKey.toString("hex");
-        // A tunnel already waiting at the relay starts waiting for this
-        // device too, without a restart: the phone paired at home is
-        // expected to reach home as soon as it leaves.
-        tunnelPeersChanged();
-      }
+      // case for every pairing by code. Otherwise a "self-hosted" account
+      // is made on the fly so the iPhone doesn't have to ask for a name.
+      // The key swap happens there too, when the device brought one: this
+      // computer's key is handed over only after the setup token has been
+      // checked, so a device that is refused learns nothing about it.
+      const { token, sessionId, user: userRow, tunnelPublicKey } = pairDevice({ deviceName, tunnelPublicKey: offered || null });
+      const userId = userRow.id;
 
       reply.code(201).send({
         token,

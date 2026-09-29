@@ -164,7 +164,7 @@ export function readBridgeClientEnv(): BridgeClientOptions | null {
  *
  * Override with `TWOODY_BRIDGE_CAPABILITIES` (comma-separated) to pin
  * the advertised set explicitly. */
-function deriveCapabilities(): string[] {
+export function deriveCapabilities(): string[] {
   const override = process.env.TWOODY_BRIDGE_CAPABILITIES;
   if (override && override.trim().length > 0) {
     return override

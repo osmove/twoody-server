@@ -28,6 +28,10 @@ const NOT_FOR_A_HUMAN = new Set([
   "TWOODY_WHISPER_BINARY",
   "TWOODY_WHISPER_MODEL",
   "TWOODY_WHISPER_MODEL_DIR",
+  "TWOODY_ACCOUNT_POLL_MS", // tests: how often the approval loop looks
+  "TWOODY_HEARTBEAT_MS", // tests: how often the heartbeat goes
+  "TWOODY_LINK_POLL_MS", // tests: how often a pending login is polled
+  "TWOODY_PEER_POLL_MS", // tests: how often a peer request's answer is looked for
 ]);
 
 function sourceFiles(dir: string): string[] {

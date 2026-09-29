@@ -1,7 +1,7 @@
 import { Channel, rendezvousId, startHandshake, type StaticIdentity } from "./channel.js";
 import { helloFrame, readHello } from "./link.js";
 import { decode, encode, type Message } from "./protocol.js";
-import { createRelayTransport, type RelayTransport } from "./relayTransport.js";
+import { createRelayTransport } from "./relayTransport.js";
 
 // The other end: a phone, or anything else, reaching the Twoody on its
 // own computer through the relay.
@@ -29,6 +29,24 @@ export interface TunnelClientOptions {
   waitSeconds?: number;
   /// How long to wait for the computer to answer a hello.
   handshakeTimeoutMs?: number;
+  /// How often to say hello again while waiting; null: once (a direct
+  /// socket carries it, and closes on a second one).
+  helloRetryMs?: number | null;
+  /// Something else than the relay to carry the frames — the computer's
+  /// own `/tunnel` WebSocket on the local network (directTransport.ts).
+  createTransport?: (hooks: {
+    onFrames(frames: Buffer[]): void | Promise<void>;
+    onError?(err: unknown): void;
+    /// The connection dropped: the session on it is over.
+    onReset(): void;
+  }) => FrameTransport;
+}
+
+/// What carries the sealed frames: the relay, or a direct socket.
+export interface FrameTransport {
+  send(frames: Buffer[]): Promise<void>;
+  readonly peerListening: boolean;
+  stop(): void;
 }
 
 export interface TunnelClient {
@@ -51,7 +69,7 @@ const HELLO_RETRY_MS = 3_000;
 export function startTunnelClient(options: TunnelClientOptions): TunnelClient {
   const rendezvous = rendezvousId(options.identity.publicKey, options.peerStaticKey);
   const handshakeTimeoutMs = options.handshakeTimeoutMs ?? 15_000;
-  let transport: RelayTransport;
+  let transport: FrameTransport;
   let channel: Channel | null = null;
   let handshake = startHandshake();
   let waitingForHello: Array<(channel: Channel) => void> = [];
@@ -83,7 +101,20 @@ export function startTunnelClient(options: TunnelClientOptions): TunnelClient {
     for (const resolve of waiting) resolve(channel);
   }
 
-  async function ready(): Promise<Channel> {
+  // One handshake at a time: a request made while one is under way waits
+  // for it rather than sending a second hello (which a direct socket takes
+  // for an intruder, and a relay for a new session).
+  let connecting: Promise<Channel> | null = null;
+
+  function ready(): Promise<Channel> {
+    if (channel) return Promise.resolve(channel);
+    connecting ??= handshakeNow().finally(() => {
+      connecting = null;
+    });
+    return connecting;
+  }
+
+  async function handshakeNow(): Promise<Channel> {
     if (channel) return channel;
     if (stopped) throw new Error("the tunnel is closed");
 
@@ -92,8 +123,8 @@ export function startTunnelClient(options: TunnelClientOptions): TunnelClient {
     // be waking up, or may have missed the first while reconnecting.
     handshake = startHandshake();
     const hello = helloFrame(handshake.ephemeralPublicKey);
-    const retry = setInterval(() => void transport.send([hello]).catch(() => {}), HELLO_RETRY_MS);
-    retry.unref?.();
+    const retry = options.helloRetryMs === null ? null : setInterval(() => void transport.send([hello]).catch(() => {}), options.helloRetryMs ?? HELLO_RETRY_MS);
+    retry?.unref?.();
     void transport.send([hello]).catch((err) => options.onError?.(err));
 
     try {
@@ -107,62 +138,74 @@ export function startTunnelClient(options: TunnelClientOptions): TunnelClient {
         ),
       ]);
     } finally {
-      clearInterval(retry);
+      if (retry) clearInterval(retry);
     }
   }
 
-  transport = createRelayTransport({
-    backendUrl: options.backendUrl,
-    userToken: options.userToken,
-    deviceToken: options.deviceToken,
-    rendezvous,
-    as: "phone",
-    onError: options.onError,
-    fetchImpl: options.fetchImpl,
-    waitSeconds: options.waitSeconds,
-    onFrames: (frames) => {
-      for (const frame of frames) {
-        const hello = readHello(frame);
-        if (hello) {
-          onHello(hello);
-          continue;
-        }
-        if (!channel) continue;
-
-        let message: Message;
-        let body: Buffer;
-        try {
-          ({ message, body } = decode(channel.open(frame)));
-        } catch (err) {
-          options.onError?.(err);
-          continue;
-        }
-
-        if (message.t === "ping") continue;
-        if (!("id" in message)) continue;
-        const exchange = exchanges.get(message.id);
-        if (!exchange) continue;
-        switch (message.t) {
-          case "res":
-            exchange.head(message.status, message.headers);
-            break;
-          case "chunk":
-            exchange.chunk(body);
-            break;
-          case "end":
-            exchange.end();
-            exchanges.delete(message.id);
-            break;
-          case "err":
-            exchange.fail(message.message);
-            exchanges.delete(message.id);
-            break;
-          default:
-            break;
-        }
+  const onFrames = (frames: Buffer[]): void => {
+    for (const frame of frames) {
+      const hello = readHello(frame);
+      if (hello) {
+        onHello(hello);
+        continue;
       }
-    },
-  });
+      if (!channel) continue;
+
+      let message: Message;
+      let body: Buffer;
+      try {
+        ({ message, body } = decode(channel.open(frame)));
+      } catch (err) {
+        options.onError?.(err);
+        continue;
+      }
+
+      if (message.t === "ping") continue;
+      if (!("id" in message)) continue;
+      const exchange = exchanges.get(message.id);
+      if (!exchange) continue;
+      switch (message.t) {
+        case "res":
+          exchange.head(message.status, message.headers);
+          break;
+        case "chunk":
+          exchange.chunk(body);
+          break;
+        case "end":
+          exchange.end();
+          exchanges.delete(message.id);
+          break;
+        case "err":
+          exchange.fail(message.message);
+          exchanges.delete(message.id);
+          break;
+        default:
+          break;
+      }
+    }
+  };
+
+  transport = options.createTransport
+    ? options.createTransport({
+        onFrames,
+        onError: options.onError,
+        onReset: () => {
+          channel = null;
+          for (const exchange of exchanges.values()) exchange.fail("the connection to your computer was closed");
+          exchanges.clear();
+        },
+      })
+    : createRelayTransport({
+        backendUrl: options.backendUrl,
+        userToken: options.userToken,
+        deviceToken: options.deviceToken,
+        rendezvous,
+        as: "phone",
+        onError: options.onError,
+        fetchImpl: options.fetchImpl,
+        waitSeconds: options.waitSeconds,
+        onFrames,
+      });
 
   return {
     rendezvous,

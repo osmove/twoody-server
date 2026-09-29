@@ -14,6 +14,8 @@
 //     api:     "/api/v1"
 //     paired:  "true" | "false" (lets the client skip the pairing
 //              prompt when an existing setup_token is on this host)
+//     account: "linked" | "unlinked" (in a Twoody account or not)
+//     fp:      8 hex characters of the account pairing key
 //
 // Lifecycle is owned by the caller (index.ts) — `start(...)` returns
 // a `stop()` so a graceful shutdown can unpublish before the process
@@ -39,7 +41,23 @@ export type BonjourOptions = {
   /// the app can chain straight into the setup-token flow after
   /// picking the service.
   paired?: boolean;
+  /// Whether it belongs to a Twoody account (account/link.ts): Twoody
+  /// Desktop offers « Ajouter à mon compte » for an unlinked one.
+  account?: "linked" | "unlinked";
+  /// Eight hex characters of its pairing key, to compare with the code's.
+  fp?: string | null;
 };
+
+/// The TXT record, as published.
+export function bonjourTxt(options: BonjourOptions): Record<string, string> {
+  return {
+    version: options.version ?? "0.0.0",
+    api:     "/api/v1",
+    paired:  options.paired ? "true" : "false",
+    ...(options.account ? { account: options.account } : {}),
+    ...(options.fp ? { fp: options.fp } : {}),
+  };
+}
 
 export function startBonjour(options: BonjourOptions): BonjourHandle {
   const bonjour = new Bonjour();
@@ -53,11 +71,7 @@ export function startBonjour(options: BonjourOptions): BonjourHandle {
     type: "twoody",
     protocol: "tcp",
     port: options.port,
-    txt: {
-      version: options.version ?? "0.0.0",
-      api:     "/api/v1",
-      paired:  options.paired ? "true" : "false",
-    },
+    txt: bonjourTxt(options),
   });
 
   // Errors are non-fatal: advertisement failure means the user falls

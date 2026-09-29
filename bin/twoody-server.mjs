@@ -23,6 +23,11 @@ function version() {
 const HELP = `twoody-server ${version()} — the Twoody server, without the desktop app
 
 Usage: twoody-server [options]
+       twoody-server login     add this server to your Twoody account (a code
+                               to enter on a signed-in device)
+       twoody-server approve [id] [--deny]
+                               allow (or refuse) a device waiting for access
+       twoody-server logout    take this server out of the account
 
 Options:
   -p, --port <port>         port to listen on (default 3000, or $PORT)
@@ -52,7 +57,11 @@ function fail(message) {
   process.exit(2);
 }
 
-const args = process.argv.slice(2);
+const argv = process.argv.slice(2);
+const ACCOUNT_COMMANDS = new Set(["login", "approve", "logout"]);
+const command = ACCOUNT_COMMANDS.has(argv[0]) ? argv[0] : null;
+const args = command ? argv.slice(1) : argv;
+const rest = [];
 for (let i = 0; i < args.length; i++) {
   let arg = args[i];
   let inline = null;
@@ -104,6 +113,10 @@ for (let i = 0; i < args.length; i++) {
       process.env.TWOODY_BONJOUR_DISABLED = "1";
       break;
     default:
+      if (command && !args[i].startsWith("-") || command && args[i] === "--deny") {
+        rest.push(args[i]);
+        break;
+      }
       fail(`unknown option: ${args[i]}`);
   }
 }
@@ -112,6 +125,11 @@ const [major] = process.versions.node.split(".").map(Number);
 if (major < 22) {
   console.error(`twoody-server needs Node.js 22 or later (this is ${process.versions.node}).`);
   process.exit(1);
+}
+
+if (command) {
+  const { runAccountCommand } = await import(pathToFileURL(join(root, "dist", "cli", "account.js")).href);
+  process.exit(await runAccountCommand(command, rest));
 }
 
 // The environment is set: the server reads it as its modules load.

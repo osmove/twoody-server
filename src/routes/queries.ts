@@ -26,6 +26,11 @@ import { probeRuntime } from "../localRuntime.js";
 import { discussionTitle, typedText } from "../documentBlocks.js";
 import { loadPersonalData } from "./localSync.js";
 import { validTimeZone } from "../usagePeriods.js";
+import { beginGeneration } from "../account/inflight.js";
+import { noteModelUsed } from "../account/statusSource.js";
+import type { Purpose } from "../account/status.js";
+import { peerById, peerRequest, PeerUnavailableError, type PeerRow } from "../peers/index.js";
+import { isSelf, pick, pickBackground, selfIdentity } from "../router/index.js";
 
 interface QueryBody {
   document_access?: unknown;
@@ -384,12 +389,19 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   let reasoningMs: number | null = null;
   let answerNowKey: string | null = null;
   let answeredBy: { kind: string; model: string | null } | null = null;
+  let answeredByComputer: AnsweredBy | null = null;
+  const routing = readRouting(parsed.provider ?? parsed.query?.provider);
   try {
-    const provider = await resolveProvider(auth.userId, model);
+    // Which computer of the account answers, and with which model
+    // (router/, docs/multi-computer-design.md §3): the ones to try in
+    // order — one unless « Automatique » found several.
+    const plan = await planRoute(auth.userId, model, routing, previousComputer(discussion.id));
+    let provider = plan[0]!.provider;
     answeredBy = { kind: provider.kind, model: "model" in provider ? provider.model : null };
+    answeredByComputer = plan[0]!.answeredBy;
     // A runtime that is not there is said now, as an HTTP error, before
-    // the reply is opened below.
-    if (provider.kind === "local_openai" && !(await probeRuntime(provider.baseUrl)).reachable) {
+    // the reply is opened below — unless another computer can answer.
+    if (plan.length === 1 && provider.kind === "local_openai" && !(await probeRuntime(provider.baseUrl)).reachable) {
       throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
     }
     const userContext = loadUserContext(auth.userId);
@@ -433,7 +445,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       documentFiles: retrieved.files,
       documentFileTotal: retrieved.total,
       excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text })),
-      local: provider.kind === "local_openai",
+      local: provider.kind === "local_openai" || provider.kind === "peer_openai",
       remembered,
       personal: onThisComputer(provider) && access.mode !== "only" ? loadPersonalData(auth.userId) : null,
       timeZone: validTimeZone(parsed.time_zone),
@@ -473,25 +485,55 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // The usage screen's speed: from the call to the model to its first
     // token (reasoning or answer), and from there to its last.
     timing.sentChars = messagesChars(chatMessages);
-    timing.started = Date.now();
-    const reported = await streamFromProvider(
-      provider,
-      chatMessages,
-      readTemperature(userContext.prefs),
-      (delta) => {
-        timing.first ||= Date.now();
-        thinkFilter.push(delta);
-      },
-      upstream.signal,
-      {
-        effort: readEffort(parsed.effort),
-        onReasoning: (delta) => {
-          timing.first ||= Date.now();
-          onReasoning(delta);
-        },
-        answerNow: answerNowSignal,
-      },
-    );
+    let reported: Usage | null = null;
+    // Failure before the first token (a computer that does not answer, is
+    // busy, lost its model) goes to the next candidate — « Automatique »
+    // only. After it, or for a computer chosen by name, the error is said.
+    for (let attempt = 0; attempt < plan.length; attempt++) {
+      const entry = plan[attempt]!;
+      provider = entry.provider;
+      answeredBy = { kind: provider.kind, model: "model" in provider ? provider.model : null };
+      answeredByComputer = { ...entry.answeredBy, ...(attempt > 0 ? { routed: "fallback" as const, auto: true } : {}) };
+      timing.started = Date.now();
+      const done = provider.kind === "local_openai" ? beginGeneration("chat") : () => undefined;
+      try {
+        if (attempt > 0 && provider.kind === "local_openai" && !(await probeRuntime(provider.baseUrl)).reachable) {
+          throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
+        }
+        if (provider.kind === "local_openai") noteModelUsed(provider.model);
+        reported = await streamFromProvider(
+          provider,
+          chatMessages,
+          readTemperature(userContext.prefs),
+          (delta) => {
+            timing.first ||= Date.now();
+            thinkFilter.push(delta);
+          },
+          upstream.signal,
+          {
+            effort: readEffort(parsed.effort),
+            onReasoning: (delta) => {
+              timing.first ||= Date.now();
+              onReasoning(delta);
+            },
+            answerNow: answerNowSignal,
+            purpose: "chat",
+          },
+        );
+        break;
+      } catch (err) {
+        const beforeFirstToken = !timing.first && !aggregated && !reasoning;
+        const last = attempt === plan.length - 1 || attempt >= MAX_FALLBACKS;
+        if (upstream.signal.aborted || !beforeFirstToken || last || !retriable(err)) {
+          if (routing.mode === "explicit" && beforeFirstToken && provider.kind === "peer_openai" && !upstream.signal.aborted) {
+            throw new ComputerUnavailableError(err instanceof Error ? err.message : String(err), selfIdentity());
+          }
+          throw err;
+        }
+      } finally {
+        done();
+      }
+    }
     const ended = Date.now();
     thinkFilter.flush();
     if (reasoningStarted && reasoningMs === null) reasoningMs = Date.now() - reasoningStarted;
@@ -519,8 +561,11 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       vaultRef:     vaultRef ? `${vaultRef}#reply` : null,
       usage,
       client:       clientOf(auth),
+      answeredBy:   answeredByComputer,
     });
-    countCall({
+    // What another computer wrote is counted there (source « peer »), not
+    // as this computer's work.
+    if (provider.kind !== "peer_openai") countCall({
       userId:           auth.userId,
       source:           "chat",
       model:            providerModel,
@@ -562,6 +607,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       sources,
       usage,
       reasoning_ms: reasoningMs,
+      answered_by:  answeredByComputer,
     };
     reply.raw.write(`event: final\ndata: ${JSON.stringify(finalPayload)}\n\n`);
     // What the message said in passing about the person, asked of the model
@@ -572,13 +618,36 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         message: typedText(content),
         sourceRef: discussion.id,
         ask: async (extraction) => {
-          let text = "";
-          const asked = Date.now();
-          let first = 0;
-          const spent = await streamFromProvider(provider, extraction, 0, (delta) => { first ||= Date.now(); text += delta; }, AbortSignal.timeout(60_000));
-          recordModelCall(auth.userId, "memory", providerModel, clientOf(auth), spent, messagesChars(extraction), text.length, asked, first, Date.now());
-          // A model that reasons first writes it before the facts.
-          return text.replace(/<think>[\s\S]*?(?:<\/think>|$)/g, "");
+          const answered = provider;
+          const run = async (target: Provider) => {
+            let text = "";
+            const asked = Date.now();
+            let first = 0;
+            const done = target.kind === "local_openai" ? beginGeneration("background") : () => undefined;
+            try {
+              const spent = await streamFromProvider(target, extraction, 0, (delta) => { first ||= Date.now(); text += delta; }, AbortSignal.timeout(60_000), { purpose: "background" });
+              if (target.kind !== "peer_openai") recordModelCall(auth.userId, "memory", "model" in target ? target.model : null, clientOf(auth), spent, messagesChars(extraction), text.length, asked, first, Date.now());
+            } finally {
+              done();
+            }
+            // A model that reasons first writes it before the facts.
+            return text.replace(/<think>[\s\S]*?(?:<\/think>|$)/g, "");
+          };
+          // « Tâches de fond »: an idle computer of the account may do it
+          // (router.pickBackground); this one does otherwise, or when that
+          // one fails.
+          const elsewhere = await pickBackground({ userId: auth.userId, preference: userContext.prefs.background_computer, model: "model" in answered ? answered.model : null }).catch(() => null);
+          if (elsewhere) {
+            const peer = peerById(auth.userId, elsewhere.computerId);
+            if (peer) {
+              try {
+                return await run(peerProvider(peer, elsewhere.model));
+              } catch {
+                // done here instead
+              }
+            }
+          }
+          return run(answered.kind === "peer_openai" ? await resolveProvider(auth.userId) : answered);
         },
       }).catch(() => 0);
     }
@@ -595,10 +664,11 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
           provider:     answeredBy?.kind ?? null,
           model:        answeredBy?.model ?? null,
           vaultRef:     vaultRef ? `${vaultRef}#reply` : null,
+          answeredBy:   answeredByComputer,
         });
         // Stopped, but the model worked: counted, from the characters.
         const stopped = Date.now();
-        countCall({
+        if (answeredBy?.kind !== "peer_openai") countCall({
           userId:           auth.userId,
           source:           "chat",
           model:            answeredBy?.model ?? null,
@@ -616,14 +686,19 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     }
     const msg = err instanceof Error ? err.message : "Unknown error";
     const [status, code] =
-      err instanceof LocalLlmUnavailableError ? [503, "local_llm_unavailable"]
+      err instanceof ComputerUnavailableError ? [503, "computer_unavailable"]
+      : err instanceof PeerUnavailableError ? [503, "computer_unavailable"]
+      : err instanceof LocalLlmUnavailableError ? [503, "local_llm_unavailable"]
       : err instanceof LocalOnlyError ? [403, "local_only"]
       : [502, "provider_error"];
+    // A computer chosen by name that did not answer: the error offers this
+    // one instead (« Répondre avec le Mac ? »), never switched silently.
+    const extra = err instanceof ComputerUnavailableError ? { fallback: { computer_id: err.fallback.id, computer_name: err.fallback.name } } : {};
     if (!sseStarted) {
-      return reply.code(status).send({ error: code, message: msg });
+      return reply.code(status).send({ error: code, message: msg, ...extra });
     }
     // Once the reply is open, the same error, as its last event.
-    reply.raw.write(`event: error\ndata: ${JSON.stringify({ error: code, message: msg })}\n\n`);
+    reply.raw.write(`event: error\ndata: ${JSON.stringify({ error: code, message: msg, ...extra })}\n\n`);
   } finally {
     if (answerNowKey) answerNow.delete(answerNowKey);
     if (keepalive) clearInterval(keepalive);
@@ -708,9 +783,125 @@ type Provider =
   | { kind: "openai"; model: string }
   | { kind: "anthropic"; model: string }
   | { kind: "gemini"; model: string }
-  | { kind: "local_openai"; model: string; baseUrl: string };
+  | { kind: "local_openai"; model: string; baseUrl: string }
+  /// Another computer of the account (a peer, peers/index.ts), reached
+  /// through the sealed tunnel; its runtime is asked through
+  /// /api/v1/peer/v1/chat/completions there.
+  | { kind: "peer_openai"; model: string; baseUrl: string; computerId: string; computerName: string; userId: string };
 
 class LocalLlmUnavailableError extends Error {}
+
+/// A computer chosen by name did not answer before its first word.
+class ComputerUnavailableError extends Error {
+  constructor(message: string, readonly fallback: { id: string; name: string }) {
+    super(message);
+  }
+}
+
+/// Who wrote an answer: stored with it (messages.answered_by_json) and sent
+/// in `final`. `auto` says the same as `routed` for clients that only want
+/// to know whether it was chosen for them.
+export interface AnsweredBy {
+  computer_id: string;
+  computer_name: string;
+  model: string | null;
+  routed: "auto" | "explicit" | "fallback";
+  auto: boolean;
+}
+
+type Routing = { mode: "legacy" } | { mode: "auto" } | { mode: "explicit"; computerId: string };
+
+/// `provider`: "auto" (« Automatique »), "computer:<id>" (that computer),
+/// anything else or nothing: as before — this computer's providers.
+export function readRouting(value: unknown): Routing {
+  if (value === "auto") return { mode: "auto" };
+  if (typeof value === "string" && /^computer:[\w-]{1,64}$/.test(value)) return { mode: "explicit", computerId: value.slice("computer:".length) };
+  return { mode: "legacy" };
+}
+
+/// How many other computers « Automatique » tries after the first.
+const MAX_FALLBACKS = 2;
+
+function retriable(err: unknown): boolean {
+  return err instanceof PeerUnavailableError || err instanceof LocalLlmUnavailableError || (err instanceof TypeError && /fetch/i.test(err.message));
+}
+
+function peerProvider(peer: PeerRow, model: string): Provider {
+  return { kind: "peer_openai", model, baseUrl: `peer:${peer.computerId}`, computerId: peer.computerId, computerName: peer.name, userId: peer.userId };
+}
+
+/// The computer that answered the previous turn of this conversation.
+function previousComputer(discussionId: string): string | null {
+  const [row] = db
+    .select({ answeredByJson: messages.answeredByJson })
+    .from(messages)
+    .where(and(eq(messages.discussionId, discussionId), eq(messages.role, "assistant")))
+    .orderBy(desc(messages.createdAt), sql`rowid DESC`)
+    .limit(1)
+    .all();
+  if (!row?.answeredByJson) return null;
+  try {
+    const parsed = JSON.parse(row.answeredByJson) as { computer_id?: unknown };
+    return typeof parsed.computer_id === "string" ? parsed.computer_id : null;
+  } catch {
+    return null;
+  }
+}
+
+type PlanEntry = { provider: Provider; answeredBy: AnsweredBy };
+
+function answeredByOf(provider: Provider, routed: AnsweredBy["routed"]): AnsweredBy {
+  const me = selfIdentity();
+  return {
+    computer_id: provider.kind === "peer_openai" ? provider.computerId : me.id,
+    computer_name: provider.kind === "peer_openai" ? provider.computerName : me.name,
+    model: "model" in provider ? provider.model : null,
+    routed,
+    auto: routed !== "explicit",
+  };
+}
+
+/// The providers to try for this turn, in order.
+async function planRoute(userId: string, requestedModel: string | undefined, routing: Routing, previous: string | null): Promise<PlanEntry[]> {
+  const wanted = requestedModel && requestedModel !== "local" && requestedModel !== "auto" ? requestedModel : null;
+  if (routing.mode === "legacy") {
+    const provider = await resolveProvider(userId, requestedModel);
+    return [{ provider, answeredBy: answeredByOf(provider, "explicit") }];
+  }
+  if (routing.mode === "explicit") {
+    if (isSelf(routing.computerId)) {
+      const provider = await resolveProvider(userId, requestedModel);
+      return [{ provider, answeredBy: answeredByOf(provider, "explicit") }];
+    }
+    const peer = peerById(userId, routing.computerId);
+    if (!peer || peer.state !== "linked") {
+      throw new ComputerUnavailableError("this computer is not linked to this one yet", selfIdentity());
+    }
+    const model = wanted ?? (await pick({ userId, model: null, purpose: "chat" })).find((c) => c.computerId === peer.computerId)?.model ?? null;
+    if (!model) throw new ComputerUnavailableError(`${peer.name} has no model to answer with`, selfIdentity());
+    const provider = peerProvider(peer, model);
+    return [{ provider, answeredBy: answeredByOf(provider, "explicit") }];
+  }
+  const choices = await pick({ userId, model: wanted, purpose: "chat", previous });
+  const plan: PlanEntry[] = [];
+  for (const choice of choices.slice(0, 1 + MAX_FALLBACKS)) {
+    if (choice.self) {
+      const provider = await resolveProvider(userId, choice.model);
+      plan.push({ provider, answeredBy: answeredByOf(provider, "auto") });
+      continue;
+    }
+    const peer = peerById(userId, choice.computerId);
+    if (peer) {
+      const provider = peerProvider(peer, choice.model);
+      plan.push({ provider, answeredBy: answeredByOf(provider, "auto") });
+    }
+  }
+  if (plan.length === 0) {
+    const provider = await resolveProvider(userId, requestedModel);
+    plan.push({ provider, answeredBy: answeredByOf(provider, "auto") });
+  }
+  return plan;
+}
 
 /// Where a turn goes. With a local provider as the default, a model named
 /// by the client goes to the runtime that holds it: the provider naming
@@ -803,7 +994,7 @@ async function streamFromProvider(
   temperature: number | undefined,
   onDelta: (text: string) => void,
   signal: AbortSignal,
-  options: { effort?: Effort; onReasoning?: (text: string) => void; answerNow?: AbortSignal } = {},
+  options: { effort?: Effort; onReasoning?: (text: string) => void; answerNow?: AbortSignal; purpose?: Purpose } = {},
 ): Promise<Usage | null> {
   switch (provider.kind) {
     case "openai":
@@ -817,6 +1008,28 @@ async function streamFromProvider(
       return null;
     case "local_openai":
       return streamLocal(provider.baseUrl, chatMessages, provider.model, temperature, onDelta, signal, options);
+    case "peer_openai": {
+      const peer = peerById(provider.userId, provider.computerId);
+      if (!peer) throw new PeerUnavailableError(`${provider.computerName} is no longer linked`, "not_linked");
+      return streamLocal(provider.baseUrl, chatMessages, provider.model, temperature, onDelta, signal, {
+        ...options,
+        post: async (payload, postSignal) => {
+          const response = await peerRequest(peer, "/api/v1/peer/v1/chat/completions", {
+            method: "POST",
+            headers: { "content-type": "application/json", accept: "text/event-stream" },
+            body: JSON.stringify({ ...payload, x_purpose: options.purpose ?? "chat" }),
+            signal: postSignal,
+          });
+          // Busy, or the model gone: before the first word, the next
+          // computer may answer instead.
+          if (response.status === 503 || response.status === 404) {
+            const body = (await response.json().catch(() => null)) as { error?: string; message?: string } | null;
+            throw new PeerUnavailableError(body?.message ?? `${peer.name} answered ${response.status}`, response.status === 503 ? "busy" : "no_model");
+          }
+          return response;
+        },
+      });
+    }
   }
 }
 
@@ -1072,7 +1285,15 @@ async function streamLocal(
   temperature: number | undefined,
   onDelta: (t: string) => void,
   signal: AbortSignal,
-  options: { effort?: Effort; onReasoning?: (text: string) => void; answerNow?: AbortSignal } = {},
+  options: {
+    effort?: Effort;
+    onReasoning?: (text: string) => void;
+    answerNow?: AbortSignal;
+    purpose?: Purpose;
+    /// Another way to send the request than to `baseUrl` (a peer, through
+    /// the tunnel).
+    post?: (payload: object, signal: AbortSignal) => Promise<Response>;
+  } = {},
 ): Promise<Usage | null> {
   const endpoint = baseUrl.replace(/\/$/, "");
   const budget = THINKING_BUDGET[options.effort ?? "fast"];
@@ -1108,6 +1329,7 @@ async function streamLocal(
 
   const post = async (payload: object): Promise<Response> => {
     try {
+      if (options.post) return await options.post(payload, upstream.signal);
       return await outboundFetch(endpoint + "/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...runtimeAuthHeaders(endpoint) },
@@ -1118,6 +1340,7 @@ async function streamLocal(
       // A provider URL outside the private network is a configuration
       // problem the user must see, not a runtime that happens to be down.
       if (err instanceof LocalOnlyError) throw err;
+      if (err instanceof PeerUnavailableError) throw err;
       if (signal.aborted) throw err;
       throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
     }
@@ -1341,6 +1564,8 @@ export function loadHistory(discussionId: string, after: string | null = null): 
 /// A runtime on this very computer: the contacts and calendar may go to it,
 /// and to nothing else (a runtime elsewhere on the network is not this one).
 function onThisComputer(provider: Provider): boolean {
+  // Another computer of the same account is the person's own too.
+  if (provider.kind === "peer_openai") return true;
   if (provider.kind !== "local_openai") return false;
   try {
     return ["127.0.0.1", "localhost", "[::1]", "::1"].includes(new URL(provider.baseUrl).hostname);
@@ -1389,6 +1614,7 @@ function insertMessage(args: {
   vaultRef?: string | null;
   usage?: { prompt_tokens: number; completion_tokens: number; estimated?: boolean } | null;
   client?: string | null;
+  answeredBy?: AnsweredBy | null;
 }): string {
   const id = generateId();
   db.insert(messages)
@@ -1408,6 +1634,7 @@ function insertMessage(args: {
       completionTokens: args.usage?.completion_tokens ?? null,
       tokensEstimated:  args.usage ? args.usage.estimated === true : null,
       client:       args.client ?? null,
+      answeredByJson: args.answeredBy ? JSON.stringify(args.answeredBy) : null,
       createdAt:    new Date(),
     })
     .run();

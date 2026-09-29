@@ -39,9 +39,13 @@ import { voiceRoutes } from "./routes/voices.js";
 import { wsRoutes } from "./routes/ws.js";
 import { tunnelDirectRoutes } from "./routes/tunnelDirect.js";
 import { localDocumentRoutes } from "./routes/localDocuments.js";
+import { accountLinkRoutes } from "./routes/accountLink.js";
+import { peerRoutes } from "./routes/peer.js";
+import { peersRoutes } from "./routes/peers.js";
 import { requireAdminAccess } from "./adminAccess.js";
 import { requireAuth } from "./auth.js";
 import { outboundFetch } from "./outbound.js";
+import { enforcePeerScope } from "./peerSessions.js";
 
 export async function buildApp() {
   const app = Fastify({
@@ -65,6 +69,10 @@ export async function buildApp() {
       done(failure, undefined);
     }
   });
+
+  // Another computer of the account, paired as a peer, reaches
+  // /api/v1/peer/* and nothing else (peerSessions.ts).
+  app.addHook("onRequest", enforcePeerScope);
 
   await app.register(cors, {
     origin: true,
@@ -159,6 +167,7 @@ export async function buildApp() {
   await app.register(wsRoutes);
   await app.register(tunnelDirectRoutes);
   await app.register(remoteCodeRoutes);
+  await app.register(accountLinkRoutes);
 
   // Versioned aliases for API clients migrating away from root-level
   // Rails-style paths. Health, docs, admin, MCP and WebSocket routes stay
@@ -193,6 +202,11 @@ export async function buildApp() {
   await app.register(localDocumentRoutes, { prefix: "/api/v1" });
   await app.register(mobileAgentRoutes, { prefix: "/api/v1" });
   await app.register(remoteCodeRoutes, { prefix: "/api/v1" });
+  await app.register(accountLinkRoutes, { prefix: "/api/v1" });
+  // The account's other computers: what this one answers them
+  // (/api/v1/peer/*), and those it sends questions to (/api/v1/peers).
+  await app.register(peerRoutes, { prefix: "/api/v1" });
+  await app.register(peersRoutes, { prefix: "/api/v1" });
 
   app.get("/admin", {
     schema: {

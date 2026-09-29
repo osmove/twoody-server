@@ -1,0 +1,17 @@
+{
+  "about": "An envelope sealed by Twoody Desktop's own sealPairing (twoody-desktop src/main/accountPairingCrypto.ts, 29/09/2026), for the cross-compatibility test of twoody-server's port. Keys are those of endorsement-v1.json: host = the sealing computer, phone = the requester.",
+  "host_private_pkcs8_base64": "MC4CAQAwBQYDK2VuBCIEIGy9lKTuR/CKoWploswTLnM4VtbGxdMf5U224cA9BemD",
+  "host_public": "1f0b6205c0e1649d34da3a3ce6d4735ffb502843f53bc451b3135f91d5acf76a",
+  "requester_private_hex": "52b859fa8fa4ea712c56b7b602dba8c398e9a1e03d42288ba63c7220efdafdfe",
+  "requester_public": "7b729068f51448d71bb63e6502b16f6310cfe9af099630d71d3f3214af34c600",
+  "request_id": "317",
+  "payload": {
+    "localServerUrl": "http://192.168.1.42:3000",
+    "localServerToken": "tok_0123456789abcdef",
+    "computerTunnelKey": "1f0b6205c0e1649d34da3a3ce6d4735ffb502843f53bc451b3135f91d5acf76a",
+    "computerName": "Raspberry Pi",
+    "computerId": "42",
+    "kind": "server"
+  },
+  "sealed": "AduMZNAqVvCHqnkMaRCJ4+tspHMFrMA3aqQfGWLAKGHQkZqFyXPj7kxHCgC6fkqZH73DmooyzQ7V+mGbj40Ml/UOCzBYawX/Lc6/Lr+KINFNtYb0gKMX4PHP11zTTOs6SXGz8er6DL7I4HAFae5G1xGIVtP3e//RuN75t/bzMQL1XJSyhxVexcZwXjMl4mNdWIkOPfbqhlMC6qbhQyvUuZErSKvYyRHOrZYML4JL8wEJLsAmd3ZZNdeDmHoUq77dQ9WYEGA8x8NUKYCwYIsarjurDbRBRa6vFJDSzHYUWIZdG1/qCG3ttZUlIDSTy2xuBBUI0DO6si757yMnGRby9uzma4z9Supso1Xk"
+}

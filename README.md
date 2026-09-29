@@ -273,6 +273,28 @@ a Twoody account: `TWOODY_TUNNEL=1` with `TWOODY_BACKEND_URL` and
 `TWOODY_USER_TOKEN` (see `scripts/twoody-server.env.example`). Without it,
 the server answers on the home network only.
 
+### Adding the server to your Twoody account
+
+`twoody-server login` (or « Ajouter à mon compte » in Twoody Desktop, which
+finds a new server on the network) makes the server one of your account's
+computers, without a keyboard or a screen on it:
+
+1. it prints a code and `https://twoody.com/appareil`; enter the code on a
+   device signed in to your account (the web page, Twoody Desktop or the
+   app);
+2. once approved, it keeps its credentials in `account.json` in the data
+   directory (mode 0600), sends its status every 30 s (models, load,
+   speed), lends its models to the account and waits at the relay for your
+   devices;
+3. a device may then use it when it is the one that approved it, when a
+   device that approved it vouches for the request (Twoody Desktop's
+   « Appareils »), or when you allow it here: `twoody-server approve`.
+   Nothing is allowed for merely being signed in to the same account.
+
+`twoody-server logout` takes it out of the account. Twoody Desktop can then
+send it questions — by name, or « Automatique », where each answer goes to
+the computer of the account that will write it fastest (and says which).
+
 ### systemd unit (npm install)
 
 After `sudo npm install -g twoody-server` (Node 22 from NodeSource) and

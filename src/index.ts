@@ -16,11 +16,19 @@ import { adminToken } from "./adminAccess.js";
 import { reindex } from "./documents/library.js";
 import { startUsageMaintenance } from "./usageStore.js";
 import { readFileSync } from "node:fs";
+import { setLocalPort } from "./account/approvals.js";
+import { linkState, onLinkChanged } from "./account/link.js";
+import { setDesktopAccount, startAccountService } from "./account/service.js";
+import { ensureAccountFile, fingerprint } from "./account/store.js";
+import { startMachineSampler } from "./machineSampler.js";
+import { isFresh } from "./pairing.js";
+import { startPeerStatusPoller } from "./peers/index.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 const HOST = process.env.HOST ?? "0.0.0.0";
+setLocalPort(PORT);
 
 // twoody-server is the single-user "Twoody Local" edition. Refuse to
 // boot when bound publicly with more than one auth account on disk —
@@ -95,18 +103,33 @@ try {
   // (useful in CI / Docker bridge networks where mDNS can't reach
   // the host).
   let bonjour: { stop(): Promise<void> } | null = null;
-  if (process.env.TWOODY_BONJOUR_DISABLED !== "1") {
+  // The TXT record says whether this server is in an account, and the
+  // fingerprint of its pairing key: published again when that changes.
+  const advertise = (announce: boolean) => {
     try {
       bonjour = startBonjour({
         port:    PORT,
         version: readPackageVersion(),
         paired:  setupToken == null,
+        account: linkState() === "linked" ? "linked" : "unlinked",
+        fp:      fingerprint(ensureAccountFile()),
       });
-      console.log(`  Advertised on the network as _twoody._tcp.\n`);
+      if (announce) console.log(`  Advertised on the network as _twoody._tcp.\n`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`  Bonjour advertisement failed (${message}); manual URL entry still works.\n`);
     }
+  };
+  if (process.env.TWOODY_BONJOUR_DISABLED !== "1") {
+    advertise(true);
+    let advertised = linkState() === "linked";
+    onLinkChanged((state) => {
+      if ((state === "linked") === advertised) return;
+      advertised = state === "linked";
+      const previous = bonjour;
+      bonjour = null;
+      void (previous?.stop() ?? Promise.resolve()).then(() => advertise(false));
+    });
   }
 
   // Bridge client — long-polls an upstream Twoody backend so the
@@ -137,6 +160,27 @@ try {
   // door that mode has: the relay's frames endpoint, carrying frames the
   // relay cannot open (outbound.ts, `relayFetch`).
   const localBaseUrl = `http://127.0.0.1:${PORT}`;
+
+  // A server in a Twoody account (account.json, `twoody-server login`):
+  // heartbeat with its status, approvals by its rules, bridge and tunnel
+  // (account/service.ts). Inert while it is not linked.
+  const accountService = startAccountService({
+    localBaseUrl,
+    log: (message) => console.log(`  ${message}`),
+    onTunnelError: (err) => app.log.debug({ err }, "tunnel"),
+  });
+  onLinkChanged((state) => {
+    if (state === "linked") console.log("  Linked to a Twoody account.\n");
+    else if (state === "unlinked") console.log("  Not linked to a Twoody account.\n");
+  });
+  if (linkState() === "linked") {
+    console.log("  Linked to a Twoody account: heartbeat, approvals, bridge and tunnel on.\n");
+  } else if (isFresh()) {
+    console.log("  To add this server to your Twoody account: twoody-server login\n");
+  }
+  // The account's other computers this one sends questions to: their
+  // status every 20 s, for the router.
+  const stopPeerPoller = startPeerStatusPoller(() => db.select({ id: users.id }).from(users).all().map((u) => u.id));
   const onTunnelError = (err: unknown) => app.log.debug({ err }, "tunnel");
   const announceTunnel = (service: TunnelService) => {
     const paired = service.links.length;
@@ -160,6 +204,35 @@ try {
   // TWOODY_TUNNEL=1 is still what opts in: a server started without it
   // ignores the message.
   const parentPort = (process as unknown as { parentPort?: TunnelParentPort }).parentPort;
+  // The machine's load, when no Desktop measures it (it posts its own
+  // samples to /usage/samples): a Raspberry Pi, a NAS.
+  const sampler = parentPort || process.env.TWOODY_MACHINE_SAMPLER === "0" ? null : startMachineSampler({ log: (message) => app.log.debug(message) });
+  // The Desktop's account, for the account's computers (/providers
+  // `computers`, /api/v1/peers, the router): in the tunnel message, or on
+  // its own ({type:"account", backendUrl, userToken, deviceToken,
+  // computerId, computerName}) — whether or not the tunnel is on.
+  const desktopAccount = (data: unknown) => {
+    const credentials = tunnelCredentialsFrom(data);
+    const extra = (data ?? {}) as { computerId?: unknown; computerName?: unknown };
+    const computerId = typeof extra.computerId === "string" || typeof extra.computerId === "number" ? String(extra.computerId) : null;
+    setDesktopAccount(
+      credentials
+        ? {
+            backendUrl: credentials.backendUrl,
+            userToken: credentials.userToken,
+            deviceToken: credentials.deviceToken,
+            computerId,
+            computerName: typeof extra.computerName === "string" ? extra.computerName.slice(0, 100) : null,
+          }
+        : null,
+    );
+  };
+  if (parentPort) {
+    parentPort.on("message", ({ data }) => {
+      const type = (data as { type?: unknown } | null)?.type;
+      if (type === "account" || type === "tunnel") desktopAccount(data);
+    });
+  }
   if (parentPort && process.env.TWOODY_TUNNEL === "1") {
     parentPort.on("message", ({ data }) => {
       if ((data as { type?: unknown } | null)?.type !== "tunnel") return;
@@ -216,6 +289,9 @@ try {
     process.once(signal, async () => {
       try {
         bridgeClient?.stop();
+        accountService.stop();
+        stopPeerPoller();
+        sampler?.stop();
       } catch {
         // Best-effort.
       }

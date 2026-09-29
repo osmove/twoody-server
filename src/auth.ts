@@ -55,7 +55,7 @@ function readHeaderValue(value: string | string[] | undefined): string | null {
   return Array.isArray(value) ? value[0] ?? null : value;
 }
 
-function extractAuthToken(req: FastifyRequest): string | null {
+export function extractAuthToken(req: FastifyRequest): string | null {
   const authorization = readHeaderValue(req.headers.authorization);
   if (authorization?.startsWith("Bearer ")) {
     return authorization.slice(7).trim();

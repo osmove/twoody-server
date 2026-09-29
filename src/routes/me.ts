@@ -119,6 +119,9 @@ function serializeUser(userId: string) {
     system_prompt_replace_base: readBool(prefs, "system_prompt_replace_base", false),
     tools_opt_in_only:   readBool(prefs, "tools_opt_in_only", false),
     default_temperature: prefs.default_temperature ?? null,
+    // « Tâches de fond »: which computer of the account runs memory
+    // extraction (router/index.ts): "auto", "self" or "computer:<id>".
+    background_computer: readBackgroundComputer(prefs.background_computer),
     quota: {
       // No quotas in self-hosted mode — surface a budget so high
       // it's effectively infinite, matching the shape the app
@@ -128,6 +131,13 @@ function serializeUser(userId: string) {
       pipeline: unlimitedResource(),
     },
   };
+}
+
+/// "auto" (the default), "self", or "computer:<account computer id>".
+export function readBackgroundComputer(value: unknown): string {
+  if (value === "self" || value === "auto") return value;
+  if (typeof value === "string" && /^computer:[\w-]{1,64}$/.test(value)) return value;
+  return "auto";
 }
 
 function unlimitedResource() {
@@ -185,12 +195,13 @@ function mergePrefs(userId: string, patch: Record<string, unknown>) {
     "system_prompt",
     "system_prompt_replace_base",
     "tools_opt_in_only",
+    "background_computer",
   ]);
 
   const merged = { ...current };
   for (const [key, value] of Object.entries(patch)) {
     if (ACCEPTED.has(key)) {
-      merged[key] = value;
+      merged[key] = key === "background_computer" ? readBackgroundComputer(value) : value;
     }
   }
 
