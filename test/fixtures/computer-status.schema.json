@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://twoody.com/schemas/computer-status-v1.json",
+  "title": "Twoody computer status v1",
+  "description": "The `status` object a computer sends with POST /api/v1/account_computers/:id/heartbeat, the backend returns in GET /api/v1/account_computers, and a peer answers on GET /api/v1/peer/status (twoody-server docs/multi-computer-design.md §2-3). At most 4096 bytes once serialised as JSON. Readers ignore fields they do not know; writers send only these.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["app_version", "models", "load", "tps", "inflight", "accepts", "tools"],
+  "properties": {
+    "app_version": { "type": "string", "maxLength": 32, "description": "Version of the Twoody server or Desktop that answers." },
+    "models": {
+      "type": "array",
+      "maxItems": 32,
+      "description": "Models this computer can answer with, exact runtime names.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "loaded"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "loaded": { "type": "boolean", "description": "In memory now (no load delay)." }
+        }
+      }
+    },
+    "load": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu_pct", "gpu_pct", "ram_used_pct", "at"],
+      "properties": {
+        "cpu_pct": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "gpu_pct": { "type": ["number", "null"], "minimum": 0, "maximum": 100, "description": "null when the machine has no GPU the sampler can read." },
+        "ram_used_pct": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "at": { "type": ["string", "null"], "maxLength": 32, "description": "ISO 8601 time of the sample, null when none was taken yet." }
+      }
+    },
+    "tps": {
+      "type": "object",
+      "maxProperties": 32,
+      "description": "Median generation speed (tokens per second) measured per model; a model never measured is absent.",
+      "propertyNames": { "maxLength": 80 },
+      "additionalProperties": { "type": "number", "minimum": 0, "maximum": 100000 }
+    },
+    "inflight": { "type": "integer", "minimum": 0, "maximum": 64, "description": "Generations running now (chat and background together)." },
+    "accepts": {
+      "type": "array",
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": { "enum": ["chat", "background"] },
+      "description": "Purposes a peer may send it; empty means it takes none."
+    },
+    "tools": { "type": "boolean", "description": "Its models may be called with OpenAI tools." }
+  },
+  "examples": [
+    {
+      "app_version": "0.3.0",
+      "models": [{ "id": "qwen3:8b", "loaded": true }, { "id": "qwen3:1.7b", "loaded": false }],
+      "load": { "cpu_pct": 12.5, "gpu_pct": null, "ram_used_pct": 41, "at": "2026-09-29T10:00:00.000Z" },
+      "tps": { "qwen3:8b": 23.4 },
+      "inflight": 0,
+      "accepts": ["chat", "background"],
+      "tools": true
+    }
+  ]
+}

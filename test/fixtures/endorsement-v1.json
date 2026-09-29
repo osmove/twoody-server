@@ -1,0 +1,62 @@
+{
+  "about": "Endorsement v1 test vectors (twoody-server docs/multi-computer-design.md §2). Keys are X25519: *_private_hex is the raw 32-byte scalar (what @noble/curves takes), *_private_pkcs8_base64 the same key as PKCS#8 DER (what node:crypto / the Desktop keep), *_public the raw 32-byte public key in hex. host_id is the account computer id (the :id of /account_computers/:id); expires_at is the request's expires_at string exactly as the backend returned it. key = HKDF-SHA256(X25519(approver_priv, host_pub), salt='twoody-endorse-v1:'+rid, info='approval endorsement', 32); msg = 'twoody-endorse-v1\\n'+host_id+'\\n'+rid+'\\n'+requester_key+'\\n'+expires_at; endorsement = base64(HMAC-SHA256(key, msg)). The host verifies with X25519(host_priv, approver_pub).",
+  "host": {
+    "private_hex": "6cbd94a4ee47f08aa16a65a2cc132e733856d6c6c5d31fe54db6e1c03d05e983",
+    "private_pkcs8_base64": "MC4CAQAwBQYDK2VuBCIEIGy9lKTuR/CKoWploswTLnM4VtbGxdMf5U224cA9BemD",
+    "public": "1f0b6205c0e1649d34da3a3ce6d4735ffb502843f53bc451b3135f91d5acf76a"
+  },
+  "approvers": {
+    "mac": {
+      "private_hex": "d43d278e7a104d0d718e3fc51a177038388ebf120678b463d4395ad1350fa03a",
+      "private_pkcs8_base64": "MC4CAQAwBQYDK2VuBCIEINQ9J456EE0NcY4/xRoXcDg4jr8SBni0Y9Q5WtE1D6A6",
+      "public": "3073c5a64bd9790a47e948b05aa08b7a8d2fba784940ca0015361617606e792a"
+    },
+    "phone": {
+      "private_hex": "52b859fa8fa4ea712c56b7b602dba8c398e9a1e03d42288ba63c7220efdafdfe",
+      "private_pkcs8_base64": "MC4CAQAwBQYDK2VuBCIEIFK4WfqPpOpxLFa3tgLbqMOY6aHgPUIoi6Y8ciDv2v3+",
+      "public": "7b729068f51448d71bb63e6502b16f6310cfe9af099630d71d3f3214af34c600"
+    }
+  },
+  "vectors": [
+    {
+      "name": "Mac endorses Claire's iPhone",
+      "approver": "mac",
+      "host_id": "42",
+      "rid": "317",
+      "requester_key": "c71ac42c5c139fcabb900c902a89a5b75a75b847c1352d7574e25b58cbcbda03",
+      "expires_at": "2026-09-29T10:15:00.000Z",
+      "message": "twoody-endorse-v1\n42\n317\nc71ac42c5c139fcabb900c902a89a5b75a75b847c1352d7574e25b58cbcbda03\n2026-09-29T10:15:00.000Z",
+      "endorsement": "W8IbFQvRvFhPZwgnDPb1DMRcFu/2PVnN2bwxAiuZC7k="
+    },
+    {
+      "name": "iPhone endorses the same request",
+      "approver": "phone",
+      "host_id": "42",
+      "rid": "317",
+      "requester_key": "c71ac42c5c139fcabb900c902a89a5b75a75b847c1352d7574e25b58cbcbda03",
+      "expires_at": "2026-09-29T10:15:00.000Z",
+      "message": "twoody-endorse-v1\n42\n317\nc71ac42c5c139fcabb900c902a89a5b75a75b847c1352d7574e25b58cbcbda03\n2026-09-29T10:15:00.000Z",
+      "endorsement": "HSotg2Zrr93w8qJFhTUztvIG5KoP5CVqL+T9nS4wQRY="
+    },
+    {
+      "name": "Mac endorses a peer request (uuid ids)",
+      "approver": "mac",
+      "host_id": "b8c4f0e2-7d1a-4c55-9a39-2f6e0d9c1a77",
+      "rid": "5f0c2a9e-11b3-4e8d-8f7a-c3d2e1f0a9b8",
+      "requester_key": "05ca29e6e49d10fdad302239f85cd0a9ced8efb67d276990d9f6651cdf9a4770",
+      "expires_at": "2026-09-29T12:00:00Z",
+      "message": "twoody-endorse-v1\nb8c4f0e2-7d1a-4c55-9a39-2f6e0d9c1a77\n5f0c2a9e-11b3-4e8d-8f7a-c3d2e1f0a9b8\n05ca29e6e49d10fdad302239f85cd0a9ced8efb67d276990d9f6651cdf9a4770\n2026-09-29T12:00:00Z",
+      "endorsement": "cc3vkTYw/2gXGRI8QmlSXsMEzGOSQI9TLcS2gT5eVPI="
+    },
+    {
+      "name": "Another request id changes everything",
+      "approver": "mac",
+      "host_id": "42",
+      "rid": "318",
+      "requester_key": "c71ac42c5c139fcabb900c902a89a5b75a75b847c1352d7574e25b58cbcbda03",
+      "expires_at": "2026-09-29T10:15:00.000Z",
+      "message": "twoody-endorse-v1\n42\n318\nc71ac42c5c139fcabb900c902a89a5b75a75b847c1352d7574e25b58cbcbda03\n2026-09-29T10:15:00.000Z",
+      "endorsement": "b/JvSgQCjV+OWaj+ojPFH5hpr8LiSVFRaU0/8Vv6O3U="
+    }
+  ]
+}
