@@ -1,0 +1,88 @@
+name: llama.cpp runtime (linux-arm64, Clang)
+
+# Builds llama-server for linux-arm64 from a pinned llama.cpp tag with a
+# pinned Clang (scripts/build-llama-arm64.sh), and keeps the tarball and
+# its SHA256SUMS as a workflow artifact. Never a GitHub release: hosting
+# and the hash pinned in src/builtin/runtimeManifest.ts are decided by hand.
+# Why: docs/builtin-runtime-design.md, section 1.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: llama.cpp tag (its commit is pinned in scripts/build-llama-arm64.sh)
+        required: true
+        default: b11146
+      variant:
+        # all: every ARM CPU generation, picked at run time (Pi 4 and Pi 5 alike); the one to ship.
+        # The -omp variants need an OpenMP runtime the LLVM release does not carry: local builds only.
+        description: CPU backend (see scripts/build-llama-arm64.sh)
+        required: true
+        default: all
+        type: choice
+        options: [all, dotprod, dotprod-kleidi]
+
+permissions:
+  contents: read
+
+env:
+  # The LLVM project's own release build, checked against its digest.
+  LLVM_VERSION: 21.1.8
+  LLVM_SHA256: 65ce0b329514e5643407db2d02a5bd34bf33d159055dafa82825c8385bd01993
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libssl-dev
+
+      - name: Cache Clang
+        id: llvm-cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/llvm
+          key: llvm-${{ env.LLVM_VERSION }}-linux-arm64-${{ env.LLVM_SHA256 }}
+
+      - name: Clang ${{ env.LLVM_VERSION }}
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          archive="LLVM-${LLVM_VERSION}-Linux-ARM64.tar.xz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" "https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/$archive"
+          echo "${LLVM_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
+          sudo mkdir -p /opt/llvm
+          sudo tar -xJf "$RUNNER_TEMP/$archive" -C /opt/llvm --strip-components=1 --wildcards \
+            '*/bin/clang' '*/bin/clang++' '*/bin/clang-[0-9]*' '*/lib/clang/*'
+          rm "$RUNNER_TEMP/$archive"
+
+      - name: Check Clang
+        run: |
+          /opt/llvm/bin/clang --version
+          /opt/llvm/bin/clang --version | head -1 | grep -q "clang version ${LLVM_VERSION}"
+
+      - name: Build
+        env:
+          CC: /opt/llvm/bin/clang
+          CXX: /opt/llvm/bin/clang++
+          TAG: ${{ inputs.tag }}
+          VARIANT: ${{ inputs.variant }}
+        run: scripts/build-llama-arm64.sh --tag "$TAG" --variant "$VARIANT" --work "$RUNNER_TEMP/llama" --out "$RUNNER_TEMP/out"
+
+      - name: Contents
+        run: |
+          tar -tzvf "$RUNNER_TEMP"/out/*.tar.gz
+          cat "$RUNNER_TEMP/out/SHA256SUMS" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llama-${{ inputs.tag }}-bin-ubuntu-arm64-clang-${{ inputs.variant }}
+          path: |
+            ${{ runner.temp }}/out/*.tar.gz
+            ${{ runner.temp }}/out/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90

@@ -5,3 +5,5 @@ data/
 .env.*
 npm-debug.log*
 smoke-docs-*
+# Local llama.cpp runtime builds (scripts/build-llama-arm64.sh)
+.cache/
