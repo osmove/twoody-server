@@ -1,0 +1,1157 @@
+{
+  "doc": [
+    "Memories stream (docs/mesh-design.md §3, lot P0). Reference: src/vault/contracts.ts. Schema of the plaintext payloads: memory-event.schema.json.",
+    "Stream: memory events travel as ordinary sealed vault events (header {v, user_id, conversation_id, event_id, epoch, kind, created_at}, XChaCha20-Poly1305 under HKDF-SHA256(epoch key, salt 'twoody/vault/conversation/v1', info conversation_id, 32), header canonical bytes as AAD — exactly sealEvent/openEvent of twoody-desktop src/shared/vault.ts) with kind 'memory' or 'tombstone' in their own stream (backend vault_events.stream = 'memories'). conversation_id = memories stream id; the payload is the JSON of the event (UTF-8).",
+    "Stream id: uuid5-shaped (uuidFrom of vaultSync.ts: first 16 bytes, byte 6 = (b & 0x0f) | 0x50, byte 8 = (b & 0x3f) | 0x80, 8-4-4-4-12 lowercase hex) of HKDF-SHA256(ikm = the epoch-1 key, salt = UTF-8 'twoody/vault/memories-id/v1', info = empty, length 16). Epoch 1 is used whatever the current epoch, so the id never changes; the events themselves are sealed under the current epoch as usual.",
+    "Content hash: normalise = String.toLowerCase() (no locale) → NFKD → remove every \\p{M} → replace each run of characters not in \\p{L} or \\p{N} by one ASCII space → trim spaces; content_hash = lowercase hex SHA-256 of its UTF-8. Empty after normalising → no hash, never learned. Local source 'conversation' (memoryLearning.ts) maps to 'learned'.",
+    "Learned memory id: uuidFrom(HMAC-SHA256(key = HKDF-SHA256(epoch-1 key, salt 'twoody/vault/memories-id/v1', info 'learned', 32), msg = UTF-8 of content_hash hex)). Keyed so the account cannot confirm a guessed fact. Manual and imported memories take a random UUID v4.",
+    "Event ids (the header's event_id, unique per account): eventIdFor(stream_id, kind, ref) of twoody-desktop vaultSync.ts = uuidFrom(SHA-256('twoody/vault/event-id/v1\\n' + stream_id + '\\n' + kind + '\\n' + ref)) with ref = 'learned\\n' + id for a learned event (the same wherever the fact is learned: the account keeps it once), id + '\\n' + hlc + '\\n' + device for a manual/import memory event, id + '\\n' + hlc for a tombstone (kind 'tombstone'). A person editing a learned memory writes a 'manual' event.",
+    "HLC: '<wall>-<counter>', wall = Unix ms zero-padded to 13 digits, counter 0..9999 zero-padded to 4; string order = clock order. tick(last, now): wall = max(last.wall, now), counter = last.counter + 1 if wall = last.wall else 0. receive(last, remote, now): if remote.wall > now + 3600000 the remote clock is not adopted (= tick); else wall = max(last.wall, remote.wall, now), counter = max of the counters of those equal to wall, + 1 (0 when only now). A counter past 9999 carries: wall + 1, counter 0. device = the writer's vault device id.",
+    "Merge (commutative, idempotent): drop payloads that do not match the schema ('invalid') and learned events whose id is not the learned id of their content ('learned_id_mismatch'); one event per event_id (two different copies: the lesser by the order below). Per memory id the winner is the greatest by: hlc; then tombstone > memory; then source manual > import > learned; then device id (string order); then event_id. Forbidden hashes F = content hashes of every memory event of every id whose winner is a tombstone; learned events whose hash is in F are left out ('forbidden_hash') and winners recomputed until F stops growing. Result: memories = winners that are memory events, minus learned ones whose hash equals a live manual/import memory's (hidden_duplicates); tombstoned = ids whose winner is a tombstone. Superseded memories stay in the set. All lists sorted by id / event_id (string order).",
+    "sealed_memory_event: the first scenario's memory sealed under epoch 1 with a fixed nonce; it opens with openEvent of twoody-desktop and twoody-app unchanged."
+  ],
+  "epoch_one_key": "0000000000400000408000004000004000000000000040000000004000000000",
+  "epoch_one_key_from": "twoody-app test/fixtures/vault-vectors.json epochKey",
+  "memories_stream_id": "3779f9d4-1a82-541d-939c-67f5a6fbd45b",
+  "learned_id_key": "ea6331da8d0b7e26f9d69c17d80bd301ed920e757e70db462cd1c8e32b33881e",
+  "normalise": [
+    {
+      "input": "Je m'appelle Jimmy.",
+      "normalised": "je m appelle jimmy",
+      "content_hash": "1d016e7ed36549c8d2de2e5a3e3c0db96be773514b5f666d33a8e437e8d97fed"
+    },
+    {
+      "input": "  JE M’APPELLE\t\tjimmy !! ",
+      "normalised": "je m appelle jimmy",
+      "content_hash": "1d016e7ed36549c8d2de2e5a3e3c0db96be773514b5f666d33a8e437e8d97fed"
+    },
+    {
+      "input": "Élodie préfère le thé",
+      "normalised": "elodie prefere le the",
+      "content_hash": "d21dcc0b0e071b4183bcfc1926b8924cf4dc47b4fa78345b313d4520bc7e76c7"
+    },
+    {
+      "input": "ﬁnance ２０２６",
+      "normalised": "finance 2026",
+      "content_hash": "cffc8ccab05b3b222a00a5c865e5f0edb37dcd9a61bfcd06e63ba00372fbf411"
+    },
+    {
+      "input": "אני גר בבית שמש",
+      "normalised": "אני גר בבית שמש",
+      "content_hash": "211f98ff722f2e1b0620b5f0c93f17c27160d687cdf44908932e951177cc8c88"
+    },
+    {
+      "input": "בֵּית שֶׁמֶשׁ",
+      "normalised": "בית שמש",
+      "content_hash": "ad338c87dbd98ca4787ac04d7a0ecb4cb203d9d3ec85a0a9d33ff9597f7101ff"
+    },
+    {
+      "input": "İstanbul",
+      "normalised": "istanbul",
+      "content_hash": "751c59fe1fa734e61bec7c142171bfcbca97ff8223171b4bd63d8165a67a4d74"
+    },
+    {
+      "input": "Straße 12",
+      "normalised": "straße 12",
+      "content_hash": "c644542b54c5425add7713e5144168d728012014bba998c1d559a3045a291dea"
+    },
+    {
+      "input": "J'aime 🍕 et le café",
+      "normalised": "j aime et le cafe",
+      "content_hash": "eb1b73d6449f7f97f9c849921e0c58bbedfb9dcf0629437bff1ca8cc85dc16d2"
+    },
+    {
+      "input": "!!! ...",
+      "normalised": "",
+      "content_hash": null
+    },
+    {
+      "input": "",
+      "normalised": "",
+      "content_hash": null
+    },
+    {
+      "input": "Ｃａｆé-crème ½",
+      "normalised": "cafe creme 1 2",
+      "content_hash": "557b2e2bd1e11511cdddb9d4ea0a581d91c4da7b7d48db3df5abed76f9ee195d"
+    }
+  ],
+  "learned_ids": [
+    {
+      "content": "Je m'appelle Jimmy.",
+      "content_hash": "1d016e7ed36549c8d2de2e5a3e3c0db96be773514b5f666d33a8e437e8d97fed",
+      "memory_id": "6b7081e4-1aa0-5762-967e-ddccd413f56c"
+    },
+    {
+      "content": "J'habite à Paris",
+      "content_hash": "e06744a8687f92ed09b99810e6f89e8e669e510d36ccad8d04ef043e6c6a0158",
+      "memory_id": "04843519-3441-5025-a61d-32de850f4b4c"
+    }
+  ],
+  "event_ids": [
+    {
+      "payload": {
+        "type": "memory",
+        "id": "6b7081e4-1aa0-5762-967e-ddccd413f56c",
+        "kind": "user",
+        "title": "Je m'appelle Jimmy.",
+        "content": "Je m'appelle Jimmy.",
+        "tags": [],
+        "source": "learned",
+        "superseded_by": null,
+        "hlc": "1790762400000-0000",
+        "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03"
+      },
+      "event_id": "207ce8ff-00dc-5d63-9558-2f1a00a5338d"
+    },
+    {
+      "payload": {
+        "type": "memory",
+        "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+        "kind": "user",
+        "title": null,
+        "content": "Jimmy dirige Osmove",
+        "tags": [],
+        "source": "manual",
+        "superseded_by": null,
+        "hlc": "1790762400000-0000",
+        "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01"
+      },
+      "event_id": "6ddea23c-3688-510c-9fe4-869d57a8c5e9"
+    },
+    {
+      "payload": {
+        "type": "tombstone",
+        "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+        "hlc": "1790762401000-0000"
+      },
+      "event_id": "1cb8b776-b13b-5d26-8ad3-80e2cd437b04"
+    }
+  ],
+  "hlc": [
+    {
+      "op": "tick",
+      "last": null,
+      "now": 1790762400000,
+      "expected": "1790762400000-0000"
+    },
+    {
+      "op": "tick",
+      "last": "1790762400000-0000",
+      "now": 1790762400000,
+      "expected": "1790762400000-0001"
+    },
+    {
+      "op": "tick",
+      "last": "1790762400000-0007",
+      "now": 1790762400025,
+      "expected": "1790762400025-0000"
+    },
+    {
+      "op": "tick",
+      "last": "1790762405000-0003",
+      "now": 1790762400000,
+      "expected": "1790762405000-0004"
+    },
+    {
+      "op": "tick",
+      "last": "1790762400000-9999",
+      "now": 1790762400000,
+      "expected": "1790762400001-0000"
+    },
+    {
+      "op": "receive",
+      "last": "1790762400000-0002",
+      "remote": "1790762403000-0005",
+      "now": 1790762401000,
+      "expected": "1790762403000-0006"
+    },
+    {
+      "op": "receive",
+      "last": "1790762403000-0002",
+      "remote": "1790762403000-0005",
+      "now": 1790762401000,
+      "expected": "1790762403000-0006"
+    },
+    {
+      "op": "receive",
+      "last": "1790762403000-0008",
+      "remote": "1790762401000-0005",
+      "now": 1790762401000,
+      "expected": "1790762403000-0009"
+    },
+    {
+      "op": "receive",
+      "last": "1790762400000-0002",
+      "remote": "1790762400100-0005",
+      "now": 1790762409000,
+      "expected": "1790762409000-0000"
+    },
+    {
+      "op": "receive",
+      "last": null,
+      "remote": "1790762403000-0005",
+      "now": 1790762401000,
+      "expected": "1790762403000-0006"
+    },
+    {
+      "op": "receive",
+      "last": "1790762400000-0002",
+      "remote": "1790769600000-0000",
+      "now": 1790762401000,
+      "expected": "1790762401000-0000"
+    }
+  ],
+  "sealed_memory_event": {
+    "v": 1,
+    "user_id": "42",
+    "conversation_id": "3779f9d4-1a82-541d-939c-67f5a6fbd45b",
+    "event_id": "6ddea23c-3688-510c-9fe4-869d57a8c5e9",
+    "epoch": 1,
+    "kind": "memory",
+    "created_at": "2026-09-30T10:00:00.000Z",
+    "nonce": "6f7a94f8f01ada2530fc5cef5fc0f04e7ba832d34a08f8dd",
+    "ciphertext": "07950ba1ef3ba2b5990d8f2ffeab528afa8d59eb3628681afffbf88b99f69f5782da4d0484c0190147cdb413d3ea2794991323ed81023ff0af46f2350c903162990daf745971e377c32602ce0f9fd465397b465b6f7fc07d2b4598c68c831cb4aa24781b73304ed513414ffcd9aebffef733ff751e129987191562c3066f298dc6651fc7c592dd150591edca3eb90dddcfdbdfd9eb95cf34fc55784ff65b5a20c94a4cb89e772193dc47a87804bf61b15c7918219aa2245bac6047a356bee28f653030300c82fbad70c6e1404284a1f3c890159f8ecec7944768d63e1305e2ec797bba373c8adc8304675e894299ca52d92a75bc8347cbdbcf66ba84864c926323ea3a038f659ea78a5fc9939465084032fa",
+    "payload": {
+      "type": "memory",
+      "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+      "kind": "user",
+      "title": "Travail",
+      "content": "Jimmy dirige Osmove",
+      "tags": [
+        "travail"
+      ],
+      "source": "manual",
+      "superseded_by": null,
+      "hlc": "1790762400000-0000",
+      "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01"
+    }
+  },
+  "scenarios": [
+    {
+      "name": "one manual memory",
+      "events": [
+        {
+          "event_id": "6ddea23c-3688-510c-9fe4-869d57a8c5e9",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": "Travail",
+            "content": "Jimmy dirige Osmove",
+            "tags": [
+              "travail"
+            ],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01"
+          }
+        }
+      ],
+      "expected": {
+        "memories": [
+          {
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": "Travail",
+            "content": "Jimmy dirige Osmove",
+            "tags": [
+              "travail"
+            ],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01",
+            "content_hash": "345f84fc58113003bbba96152bad1c8a46b408e43fe0d2817e6f87a7e5fd039f"
+          }
+        ],
+        "tombstoned": [],
+        "hidden_duplicates": [],
+        "ignored": []
+      }
+    },
+    {
+      "name": "a later edit wins, whatever the order",
+      "events": [
+        {
+          "event_id": "fe002a93-b9b3-54d1-8c8a-9a7ffbf53086",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Jimmy dirige Osmove, une SASU",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762405000-0000",
+            "device": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02"
+          }
+        },
+        {
+          "event_id": "6ddea23c-3688-510c-9fe4-869d57a8c5e9",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Jimmy dirige Osmove",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01"
+          }
+        }
+      ],
+      "expected": {
+        "memories": [
+          {
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Jimmy dirige Osmove, une SASU",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762405000-0000",
+            "device": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02",
+            "content_hash": "124c720a02e415c10ec334ecef8fe682f09ae7b6a644206a1bada9c09ad71802"
+          }
+        ],
+        "tombstoned": [],
+        "hidden_duplicates": [],
+        "ignored": []
+      }
+    },
+    {
+      "name": "the same tick: the greater device id wins",
+      "events": [
+        {
+          "event_id": "709ef600-49c2-57de-a501-64d42dfca1e1",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Version du Mac",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02"
+          }
+        },
+        {
+          "event_id": "9e8b17ac-32ae-5459-b650-b62c7efea5d9",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Version du Pi",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03"
+          }
+        }
+      ],
+      "expected": {
+        "memories": [
+          {
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Version du Pi",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03",
+            "content_hash": "bff4939af390b2cb84d8a88f731d97e78b0aacbb70da2bd93096bd972f50cd11"
+          }
+        ],
+        "tombstoned": [],
+        "hidden_duplicates": [],
+        "ignored": []
+      }
+    },
+    {
+      "name": "a tombstone wins a tie, even against a greater device",
+      "events": [
+        {
+          "event_id": "9e8b17ac-32ae-5459-b650-b62c7efea5d9",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "À supprimer",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03"
+          }
+        },
+        {
+          "event_id": "8bb6e1da-8d07-5235-8255-2727402eadef",
+          "payload": {
+            "type": "tombstone",
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "hlc": "1790762400000-0000"
+          }
+        }
+      ],
+      "expected": {
+        "memories": [],
+        "tombstoned": [
+          "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e"
+        ],
+        "hidden_duplicates": [],
+        "ignored": []
+      }
+    },
+    {
+      "name": "the counter orders the same millisecond",
+      "events": [
+        {
+          "event_id": "3d45dc89-481c-5e4f-9ed9-d7d8c13e2195",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Avant",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0001",
+            "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03"
+          }
+        },
+        {
+          "event_id": "38b26f97-dfc2-5972-989f-9ee3adf3960c",
+          "payload": {
+            "type": "tombstone",
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "hlc": "1790762400000-0002"
+          }
+        },
+        {
+          "event_id": "9e8b17ac-32ae-5459-b650-b62c7efea5d9",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Encore avant",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03"
+          }
+        }
+      ],
+      "expected": {
+        "memories": [],
+        "tombstoned": [
+          "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e"
+        ],
+        "hidden_duplicates": [],
+        "ignored": []
+      }
+    },
+    {
+      "name": "an edit after the delete brings a manual memory back",
+      "events": [
+        {
+          "event_id": "6ddea23c-3688-510c-9fe4-869d57a8c5e9",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Premier",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01"
+          }
+        },
+        {
+          "event_id": "1cb8b776-b13b-5d26-8ad3-80e2cd437b04",
+          "payload": {
+            "type": "tombstone",
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "hlc": "1790762401000-0000"
+          }
+        },
+        {
+          "event_id": "dc3dcfd1-af60-5c8f-ac52-a24a55502ef1",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Réécrit plus tard",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762402000-0000",
+            "device": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02"
+          }
+        }
+      ],
+      "expected": {
+        "memories": [
+          {
+            "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Réécrit plus tard",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762402000-0000",
+            "device": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02",
+            "content_hash": "b487309038261bbaf791eddf98a30ee90b68f3e43a273a711b8a092548754e5b"
+          }
+        ],
+        "tombstoned": [],
+        "hidden_duplicates": [],
+        "ignored": []
+      }
+    },
+    {
+      "name": "manual beats learned on the same tick",
+      "events": [
+        {
+          "event_id": "6d292822-4138-552f-a7ef-70454d4491df",
+          "payload": {
+            "type": "memory",
+            "id": "600edcf0-a299-5a9d-8f6e-05862e7a7547",
+            "kind": "user",
+            "title": "Ma fille s'appelle Claire-Sophie",
+            "content": "Ma fille s'appelle Claire-Sophie",
+            "tags": [],
+            "source": "learned",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03"
+          }
+        },
+        {
+          "event_id": "80126838-2d70-54f2-92ce-ca9d904b8c53",
+          "payload": {
+            "type": "memory",
+            "id": "600edcf0-a299-5a9d-8f6e-05862e7a7547",
+            "kind": "user",
+            "title": "Famille",
+            "content": "Ma fille s'appelle Claire-Sophie Douieb",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01"
+          }
+        }
+      ],
+      "expected": {
+        "memories": [
+          {
+            "id": "600edcf0-a299-5a9d-8f6e-05862e7a7547",
+            "kind": "user",
+            "title": "Famille",
+            "content": "Ma fille s'appelle Claire-Sophie Douieb",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01",
+            "content_hash": "74f277b96c97f8287e6c7b44801515bdbea0d3b9fa7132bceb189870adb0b8be"
+          }
+        ],
+        "tombstoned": [],
+        "hidden_duplicates": [],
+        "ignored": []
+      }
+    },
+    {
+      "name": "the same fact learned on two computers is one memory (one event_id)",
+      "events": [
+        {
+          "event_id": "207ce8ff-00dc-5d63-9558-2f1a00a5338d",
+          "payload": {
+            "type": "memory",
+            "id": "6b7081e4-1aa0-5762-967e-ddccd413f56c",
+            "kind": "user",
+            "title": "Je m'appelle Jimmy.",
+            "content": "Je m'appelle Jimmy.",
+            "tags": [],
+            "source": "learned",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03"
+          }
+        },
+        {
+          "event_id": "207ce8ff-00dc-5d63-9558-2f1a00a5338d",
+          "payload": {
+            "type": "memory",
+            "id": "6b7081e4-1aa0-5762-967e-ddccd413f56c",
+            "kind": "user",
+            "title": "je m’appelle JIMMY",
+            "content": "je m’appelle JIMMY",
+            "tags": [],
+            "source": "learned",
+            "superseded_by": null,
+            "hlc": "1790762400010-0000",
+            "device": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02"
+          }
+        }
+      ],
+      "expected": {
+        "memories": [
+          {
+            "id": "6b7081e4-1aa0-5762-967e-ddccd413f56c",
+            "kind": "user",
+            "title": "Je m'appelle Jimmy.",
+            "content": "Je m'appelle Jimmy.",
+            "tags": [],
+            "source": "learned",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03",
+            "content_hash": "1d016e7ed36549c8d2de2e5a3e3c0db96be773514b5f666d33a8e437e8d97fed"
+          }
+        ],
+        "tombstoned": [],
+        "hidden_duplicates": [],
+        "ignored": []
+      }
+    },
+    {
+      "name": "a learned fact already written by hand is hidden",
+      "events": [
+        {
+          "event_id": "bda8215d-b5e5-545b-923f-d155e5f524b3",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0002-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Je travaille chez Hyundai Motor France",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01"
+          }
+        },
+        {
+          "event_id": "a7377d60-7165-5584-b2dc-e89a5e6164ca",
+          "payload": {
+            "type": "memory",
+            "id": "d0bb873f-dbe8-5f04-a3b3-4fee74d59d3b",
+            "kind": "user",
+            "title": "je travaille chez Hyundai Motor France !",
+            "content": "je travaille chez Hyundai Motor France !",
+            "tags": [],
+            "source": "learned",
+            "superseded_by": null,
+            "hlc": "1790762400500-0000",
+            "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03"
+          }
+        }
+      ],
+      "expected": {
+        "memories": [
+          {
+            "id": "5e0c0002-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Je travaille chez Hyundai Motor France",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01",
+            "content_hash": "1d05cea71fa4bb9ddc03507588506e38c273230f86d249ffc2feea2a64457bd6"
+          }
+        ],
+        "tombstoned": [],
+        "hidden_duplicates": [
+          "d0bb873f-dbe8-5f04-a3b3-4fee74d59d3b"
+        ],
+        "ignored": []
+      }
+    },
+    {
+      "name": "a deleted learned fact is never learned again",
+      "events": [
+        {
+          "event_id": "320c7905-d3be-5b47-8fcc-07856eb0015f",
+          "payload": {
+            "type": "memory",
+            "id": "04843519-3441-5025-a61d-32de850f4b4c",
+            "kind": "user",
+            "title": "J'habite à Paris",
+            "content": "J'habite à Paris",
+            "tags": [],
+            "source": "learned",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03"
+          }
+        },
+        {
+          "event_id": "0d89c5f5-b5b7-54fa-a9a8-737348493e45",
+          "payload": {
+            "type": "tombstone",
+            "id": "04843519-3441-5025-a61d-32de850f4b4c",
+            "hlc": "1790762401000-0000"
+          }
+        },
+        {
+          "event_id": "320c7905-d3be-5b47-8fcc-07856eb0015f",
+          "payload": {
+            "type": "memory",
+            "id": "04843519-3441-5025-a61d-32de850f4b4c",
+            "kind": "user",
+            "title": "j'habite a PARIS",
+            "content": "j'habite a PARIS",
+            "tags": [],
+            "source": "learned",
+            "superseded_by": null,
+            "hlc": "1790762450000-0000",
+            "device": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02"
+          }
+        }
+      ],
+      "expected": {
+        "memories": [],
+        "tombstoned": [
+          "04843519-3441-5025-a61d-32de850f4b4c"
+        ],
+        "hidden_duplicates": [],
+        "ignored": [
+          {
+            "event_id": "320c7905-d3be-5b47-8fcc-07856eb0015f",
+            "reason": "forbidden_hash"
+          }
+        ]
+      }
+    },
+    {
+      "name": "content deleted by hand is not learned under another id",
+      "events": [
+        {
+          "event_id": "2d24c7e8-31d4-5359-9c1e-82b01fef1a08",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0003-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "J'habite à Nice",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01"
+          }
+        },
+        {
+          "event_id": "0f67e656-dd9a-5a73-a163-f707824d9b94",
+          "payload": {
+            "type": "tombstone",
+            "id": "5e0c0003-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "hlc": "1790762401000-0000"
+          }
+        },
+        {
+          "event_id": "215013ac-d889-58a2-ae42-a793b977a657",
+          "payload": {
+            "type": "memory",
+            "id": "1abfcc3a-b98b-527d-ac10-540d9328933c",
+            "kind": "user",
+            "title": "j’habite à nice",
+            "content": "j’habite à nice",
+            "tags": [],
+            "source": "learned",
+            "superseded_by": null,
+            "hlc": "1790762402000-0000",
+            "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03"
+          }
+        }
+      ],
+      "expected": {
+        "memories": [],
+        "tombstoned": [
+          "5e0c0003-1f2a-4b3c-8d4e-5f6a7b8c9d0e"
+        ],
+        "hidden_duplicates": [],
+        "ignored": [
+          {
+            "event_id": "215013ac-d889-58a2-ae42-a793b977a657",
+            "reason": "forbidden_hash"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a learned memory edited by hand is not reverted by a later re-learn",
+      "events": [
+        {
+          "event_id": "fc121ddc-13a1-5b31-af00-c97e2facc38f",
+          "payload": {
+            "type": "memory",
+            "id": "5f499d6d-9b5b-5348-8002-6d8720effc30",
+            "kind": "user",
+            "title": "Je préfère le thé",
+            "content": "Je préfère le thé",
+            "tags": [],
+            "source": "learned",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03"
+          }
+        },
+        {
+          "event_id": "f865e14c-28c9-5976-a45e-f9ea07a3c6e7",
+          "payload": {
+            "type": "memory",
+            "id": "5f499d6d-9b5b-5348-8002-6d8720effc30",
+            "kind": "user",
+            "title": null,
+            "content": "Je préfère le café",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762401000-0000",
+            "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01"
+          }
+        },
+        {
+          "event_id": "fc121ddc-13a1-5b31-af00-c97e2facc38f",
+          "payload": {
+            "type": "memory",
+            "id": "5f499d6d-9b5b-5348-8002-6d8720effc30",
+            "kind": "user",
+            "title": "je prefere le the",
+            "content": "je prefere le the",
+            "tags": [],
+            "source": "learned",
+            "superseded_by": null,
+            "hlc": "1790762402000-0000",
+            "device": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02"
+          }
+        }
+      ],
+      "expected": {
+        "memories": [
+          {
+            "id": "5f499d6d-9b5b-5348-8002-6d8720effc30",
+            "kind": "user",
+            "title": null,
+            "content": "Je préfère le café",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762401000-0000",
+            "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01",
+            "content_hash": "4b4bc1bb68e1e079f78178dadfbb309832bc835edd72c3e2ec665dedbb6e4fd9"
+          }
+        ],
+        "tombstoned": [],
+        "hidden_duplicates": [],
+        "ignored": []
+      }
+    },
+    {
+      "name": "superseded memories stay, pointing to the new one",
+      "events": [
+        {
+          "event_id": "aaf44a90-943d-5699-bfaa-2d10f1008f69",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0004-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "J'ai 40 ans",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": "5e0c0005-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "hlc": "1790762400000-0000",
+            "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01"
+          }
+        },
+        {
+          "event_id": "7a4be34d-136c-521b-9c52-3471d75698a3",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0005-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "J'ai 41 ans",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01"
+          }
+        }
+      ],
+      "expected": {
+        "memories": [
+          {
+            "id": "5e0c0004-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "J'ai 40 ans",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": "5e0c0005-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "hlc": "1790762400000-0000",
+            "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01",
+            "content_hash": "6415a40cbbfb66af6d3cb8730cf19c7eb42cb322d860addfe3743c019e8fd6e5"
+          },
+          {
+            "id": "5e0c0005-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "J'ai 41 ans",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01",
+            "content_hash": "37ea00fbd84af3223eff0dc138f5df970faaf2c4fe88ef962252c749015530ee"
+          }
+        ],
+        "tombstoned": [],
+        "hidden_duplicates": [],
+        "ignored": []
+      }
+    },
+    {
+      "name": "two tombstones of one memory, and a tombstone of a memory never seen",
+      "events": [
+        {
+          "event_id": "f68de9c8-35ba-5de8-8230-3fbc6906ac5b",
+          "payload": {
+            "type": "tombstone",
+            "id": "5e0c0006-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "hlc": "1790762400000-0000"
+          }
+        },
+        {
+          "event_id": "80b27e7b-88ae-5569-b542-a2ecf5228e57",
+          "payload": {
+            "type": "tombstone",
+            "id": "5e0c0006-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "hlc": "1790762400001-0000"
+          }
+        },
+        {
+          "event_id": "f43d7ccc-1fbb-59e5-b9af-fc1b2dc2a72c",
+          "payload": {
+            "type": "tombstone",
+            "id": "5e0c0007-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "hlc": "1790762400000-0000"
+          }
+        }
+      ],
+      "expected": {
+        "memories": [],
+        "tombstoned": [
+          "5e0c0006-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+          "5e0c0007-1f2a-4b3c-8d4e-5f6a7b8c9d0e"
+        ],
+        "hidden_duplicates": [],
+        "ignored": []
+      }
+    },
+    {
+      "name": "a learned memory in Hebrew is not the same as one in French",
+      "events": [
+        {
+          "event_id": "88e1d4c3-9ebb-52a1-b8ad-ea6336c323cf",
+          "payload": {
+            "type": "memory",
+            "id": "a58ba87d-44c0-52bc-befc-49cefdaa6ade",
+            "kind": "user",
+            "title": "אני גר בבית שמש",
+            "content": "אני גר בבית שמש",
+            "tags": [],
+            "source": "learned",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03"
+          }
+        },
+        {
+          "event_id": "e73b1fc2-7c83-5e02-be73-466bdb2b11e2",
+          "payload": {
+            "type": "memory",
+            "id": "9b824cd0-8420-5f77-861d-49a66734ddb1",
+            "kind": "user",
+            "title": "J'habite à Beit Shemesh",
+            "content": "J'habite à Beit Shemesh",
+            "tags": [],
+            "source": "learned",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03"
+          }
+        }
+      ],
+      "expected": {
+        "memories": [
+          {
+            "id": "9b824cd0-8420-5f77-861d-49a66734ddb1",
+            "kind": "user",
+            "title": "J'habite à Beit Shemesh",
+            "content": "J'habite à Beit Shemesh",
+            "tags": [],
+            "source": "learned",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03",
+            "content_hash": "5db805e223986346773609a2175830e8a666b931a031a58c66a755d205b52a21"
+          },
+          {
+            "id": "a58ba87d-44c0-52bc-befc-49cefdaa6ade",
+            "kind": "user",
+            "title": "אני גר בבית שמש",
+            "content": "אני גר בבית שמש",
+            "tags": [],
+            "source": "learned",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03",
+            "content_hash": "211f98ff722f2e1b0620b5f0c93f17c27160d687cdf44908932e951177cc8c88"
+          }
+        ],
+        "tombstoned": [],
+        "hidden_duplicates": [],
+        "ignored": []
+      }
+    },
+    {
+      "name": "invalid events take no part",
+      "events": [
+        {
+          "event_id": "6a000001-0000-4000-8000-000000000001",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0008-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Avec un chemin",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02",
+            "path": "/Users/jimmy/Documents/x.pdf"
+          }
+        },
+        {
+          "event_id": "6a000001-0000-4000-8000-000000000002",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0008-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Horloge fausse",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "2026-09-30T10:00:00Z",
+            "device": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02"
+          }
+        },
+        {
+          "event_id": "6a000001-0000-4000-8000-000000000003",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0008-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Appris sous un faux id",
+            "tags": [],
+            "source": "learned",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02"
+          }
+        },
+        {
+          "event_id": "6a000001-0000-4000-8000-000000000004",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0008-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "hlc": "1790762400000-0000"
+          }
+        },
+        {
+          "event_id": "6a000001-0000-4000-8000-000000000005",
+          "payload": {
+            "type": "memory",
+            "id": "5e0c0008-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Mémoire valable",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02"
+          }
+        }
+      ],
+      "expected": {
+        "memories": [
+          {
+            "id": "5e0c0008-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+            "kind": "user",
+            "title": null,
+            "content": "Mémoire valable",
+            "tags": [],
+            "source": "manual",
+            "superseded_by": null,
+            "hlc": "1790762400000-0000",
+            "device": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02",
+            "content_hash": "cf500894ce1b140d0a09d6a9f70244f09b987618b4f58dc72954d09fa8a46b91"
+          }
+        ],
+        "tombstoned": [],
+        "hidden_duplicates": [],
+        "ignored": [
+          {
+            "event_id": "6a000001-0000-4000-8000-000000000001",
+            "reason": "invalid"
+          },
+          {
+            "event_id": "6a000001-0000-4000-8000-000000000002",
+            "reason": "invalid"
+          },
+          {
+            "event_id": "6a000001-0000-4000-8000-000000000003",
+            "reason": "learned_id_mismatch"
+          },
+          {
+            "event_id": "6a000001-0000-4000-8000-000000000004",
+            "reason": "invalid"
+          }
+        ]
+      }
+    }
+  ]
+}

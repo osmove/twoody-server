@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "memory-event.schema.json",
+  "title": "Memories stream event (plaintext payload)",
+  "description": "docs/mesh-design.md §3, lot P0. The JSON sealed inside a vault event of the memories stream (header kind 'memory' or 'tombstone', matching `type`; conversation_id = the memories stream id; see memory-lww-vectors.json for the ids, the HLC, the content hash and the merge rules; reference: src/vault/contracts.ts readMemoryEvent and mergeMemories). Exactly these fields: anything else (a path, a source_ref) makes the event invalid and it takes no part in the merge. Draft-07 so that Fastify's Ajv compiles it as is.",
+  "$comment": "Local mapping: memories.kind as is; memories.source 'manual' → manual, 'conversation' → learned, an import → import; superseded_by_id → superseded_by (a memory id of the stream). source_ref, entity_type, entity_id stay on the computer.",
+  "oneOf": [
+    { "$ref": "#/definitions/memory" },
+    { "$ref": "#/definitions/tombstone" }
+  ],
+  "definitions": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "hlc": {
+      "description": "Hybrid logical clock '<wall>-<counter>': Unix ms on 13 digits, counter on 4; string order is clock order.",
+      "type": "string",
+      "pattern": "^[0-9]{13}-[0-9]{4}$"
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "kind", "title", "content", "tags", "source", "superseded_by", "hlc", "device"],
+      "properties": {
+        "type": { "const": "memory" },
+        "id": { "$ref": "#/definitions/uuid", "description": "Random UUID v4 for manual/import; for learned, the keyed id of the content hash (memory-lww-vectors.json learned_ids)." },
+        "kind": { "enum": ["user", "feedback", "project", "reference"] },
+        "title": { "oneOf": [{ "type": "string", "maxLength": 200 }, { "type": "null" }] },
+        "content": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "tags": { "type": "array", "maxItems": 32, "items": { "type": "string", "minLength": 1, "maxLength": 64 } },
+        "source": { "enum": ["manual", "learned", "import"] },
+        "superseded_by": { "oneOf": [{ "$ref": "#/definitions/uuid" }, { "type": "null" }] },
+        "hlc": { "$ref": "#/definitions/hlc" },
+        "device": { "$ref": "#/definitions/uuid", "description": "The writer's vault device id." }
+      },
+      "examples": [
+        {
+          "type": "memory",
+          "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+          "kind": "user",
+          "title": "Travail",
+          "content": "Jimmy dirige Osmove",
+          "tags": ["travail"],
+          "source": "manual",
+          "superseded_by": null,
+          "hlc": "1790762400000-0000",
+          "device": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01"
+        }
+      ]
+    },
+    "tombstone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "hlc"],
+      "properties": {
+        "type": { "const": "tombstone" },
+        "id": { "$ref": "#/definitions/uuid" },
+        "hlc": { "$ref": "#/definitions/hlc" }
+      },
+      "examples": [
+        { "type": "tombstone", "id": "5e0c0001-1f2a-4b3c-8d4e-5f6a7b8c9d0e", "hlc": "1790762401000-0000" }
+      ]
+    }
+  }
+}

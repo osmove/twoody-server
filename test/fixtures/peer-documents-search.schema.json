@@ -1,0 +1,172 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "peer-documents-search.schema.json",
+  "title": "POST /api/v1/peer/documents/search",
+  "description": "docs/mesh-design.md §2, lot P0. A trusted computer of the account (a `peer:` session whose requester_computer_id is in the verified vault roster) searches this computer's documents. Request: definitions/request; 200: definitions/response; 400/403/429: definitions/error. Draft-07 so that Fastify's Ajv compiles it as is (app.addSchema(this), then {$ref: 'peer-documents-search.schema.json#/definitions/request'}); compile with removeAdditional off so an unknown field is refused, not dropped.",
+  "$comment": "No absolute path anywhere: a passage or file says `folder` (the display name of the granted root, never its path) and `rel_path` (POSIX, relative to that root). source_id = '<computer_id>:<document_id>' where computer_id is this computer's account_computers id (the same as the response's computer_id) and document_id its local documents.id (src/vault/contracts.ts sourceId/parseSourceId). A citation is twoody://doc/<computer_id>/<document_id>. The caller's identity comes from its session, never from this body. Retrieval: retrieveDocuments with absolutePaths:false; scope ∩ this computer's own grants; semantic skipped while this computer is generating; 30 requests/min/session; each request audited.",
+  "definitions": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "local_id": {
+      "description": "A local id of this computer (documents.id, document_folders.id: 32 hex today).",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$"
+    },
+    "source_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[A-Za-z0-9_-]{1,64}$"
+    },
+    "display_name": {
+      "description": "A file or folder name: no slash, no backslash, no control character.",
+      "type": "string",
+      "pattern": "^[^/\\\\\\u0000-\\u001f]{1,255}$"
+    },
+    "rel_path": {
+      "description": "POSIX path relative to the granted root, the file's name last: not absolute, no drive letter, no '~', no backslash, no empty, '.' or '..' segment, no trailing slash.",
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^(?![A-Za-z]:)(?!~)(?!.*\\\\)(?!.*//)(?!.*/$)(?!(?:.*/)?\\.{1,2}(?:/|$))[^/\\u0000-\\u001f][^\\u0000-\\u001f]*$"
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["q", "scope"],
+      "properties": {
+        "q": { "type": "string", "minLength": 1, "maxLength": 2000, "description": "The question as the answering computer searches it (follow-up context already folded in)." },
+        "hint": { "type": "string", "maxLength": 2000, "description": "The previous user turn, for follow-ups (« résume-le »)." },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {
+            "mode": { "enum": ["all", "selected"] },
+            "folder_ids": { "type": "array", "minItems": 1, "maxItems": 200, "uniqueItems": true, "items": { "$ref": "#/definitions/local_id" } }
+          },
+          "if": { "properties": { "mode": { "const": "selected" } } },
+          "then": { "required": ["folder_ids"] },
+          "else": { "not": { "required": ["folder_ids"] } }
+        },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 8, "default": 6 },
+        "budget_chars": { "type": "integer", "minimum": 200, "maximum": 10000, "default": 6000, "description": "Sum of passages[].text lengths, at most." },
+        "deadline_ms": { "type": "integer", "minimum": 100, "maximum": 3000, "default": 3000, "description": "Answer with what is found by then; semantic search is the first thing skipped." }
+      },
+      "examples": [
+        { "q": "Quelle est la date de fin du contrat Dupont ?", "scope": { "mode": "all" }, "limit": 6, "budget_chars": 6000, "deadline_ms": 1500 },
+        { "q": "résume-le", "hint": "Le contrat Dupont est-il signé ?", "scope": { "mode": "selected", "folder_ids": ["0f1e2d3c4b5a69788796a5b4c3d2e1f0"] } }
+      ]
+    },
+    "passage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "document_id", "name", "folder", "rel_path", "page", "text", "snippet", "match", "rank"],
+      "properties": {
+        "source_id": { "$ref": "#/definitions/source_id" },
+        "document_id": { "$ref": "#/definitions/local_id" },
+        "name": { "$ref": "#/definitions/display_name" },
+        "folder": { "$ref": "#/definitions/display_name" },
+        "rel_path": { "$ref": "#/definitions/rel_path" },
+        "page": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+        "text": { "type": "string", "maxLength": 10000 },
+        "snippet": { "type": "string", "maxLength": 300 },
+        "match": { "enum": ["content", "name", "semantic"] },
+        "rank": { "type": "integer", "minimum": 1, "description": "1 = this computer's best passage; the caller fuses lists by reciprocal rank." },
+        "cosine": { "type": "number", "minimum": -1, "maximum": 1, "description": "Only for semantic matches; comparable across computers only when embed_model is the same." }
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "document_id", "name", "folder", "rel_path", "modified_at", "chars"],
+      "properties": {
+        "source_id": { "$ref": "#/definitions/source_id" },
+        "document_id": { "$ref": "#/definitions/local_id" },
+        "name": { "$ref": "#/definitions/display_name" },
+        "folder": { "$ref": "#/definitions/display_name" },
+        "rel_path": { "$ref": "#/definitions/rel_path" },
+        "modified_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,3})?Z$" },
+        "chars": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["computer_id", "took_ms", "embed_model", "index", "passages", "files"],
+      "properties": {
+        "computer_id": { "$ref": "#/definitions/uuid" },
+        "took_ms": { "type": "integer", "minimum": 0 },
+        "embed_model": { "oneOf": [{ "type": "string", "minLength": 1, "maxLength": 120 }, { "type": "null" }] },
+        "index": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["documents", "pending", "semantic"],
+          "properties": {
+            "documents": { "type": "integer", "minimum": 0, "description": "Indexed documents in the caller's scope." },
+            "pending": { "type": "integer", "minimum": 0, "description": "Documents in scope still being indexed." },
+            "semantic": { "enum": ["used", "skipped_generating", "skipped_deadline", "unavailable"] }
+          }
+        },
+        "passages": { "type": "array", "maxItems": 8, "items": { "$ref": "#/definitions/passage" } },
+        "files": { "type": "array", "maxItems": 20, "items": { "$ref": "#/definitions/file" } }
+      },
+      "examples": [
+        {
+          "computer_id": "9f3d5b72-4c6e-4a8f-8b2d-3e5f7a9b1c22",
+          "took_ms": 212,
+          "embed_model": "nomic-embed-text-v1.5",
+          "index": { "documents": 214, "pending": 0, "semantic": "used" },
+          "passages": [
+            {
+              "source_id": "9f3d5b72-4c6e-4a8f-8b2d-3e5f7a9b1c22:3b1f0c9d8e7a6b5c4d3e2f1a0b9c8d7e",
+              "document_id": "3b1f0c9d8e7a6b5c4d3e2f1a0b9c8d7e",
+              "name": "contrat-dupont.pdf",
+              "folder": "Contrats",
+              "rel_path": "2026/contrat-dupont.pdf",
+              "page": 2,
+              "text": "Le présent contrat prend fin le 31 décembre 2027.",
+              "snippet": "Le présent contrat prend fin le 31 décembre 2027.",
+              "match": "content",
+              "rank": 1
+            },
+            {
+              "source_id": "9f3d5b72-4c6e-4a8f-8b2d-3e5f7a9b1c22:3b1f0c9d8e7a6b5c4d3e2f1a0b9c8d7e",
+              "document_id": "3b1f0c9d8e7a6b5c4d3e2f1a0b9c8d7e",
+              "name": "contrat-dupont.pdf",
+              "folder": "Contrats",
+              "rel_path": "2026/contrat-dupont.pdf",
+              "page": 1,
+              "text": "Entre Dupont SARL et Osmove SASU…",
+              "snippet": "Entre Dupont SARL et Osmove SASU…",
+              "match": "semantic",
+              "rank": 2,
+              "cosine": 0.71
+            }
+          ],
+          "files": [
+            {
+              "source_id": "9f3d5b72-4c6e-4a8f-8b2d-3e5f7a9b1c22:3b1f0c9d8e7a6b5c4d3e2f1a0b9c8d7e",
+              "document_id": "3b1f0c9d8e7a6b5c4d3e2f1a0b9c8d7e",
+              "name": "contrat-dupont.pdf",
+              "folder": "Contrats",
+              "rel_path": "2026/contrat-dupont.pdf",
+              "modified_at": "2026-09-12T08:30:00.000Z",
+              "chars": 18234
+            }
+          ]
+        }
+      ]
+    },
+    "error": {
+      "description": "400 bad_request (body refused by this schema), 403 not_trusted (requester not in the verified roster, or no session of a peer), 403 documents_off (this computer shares no folder), 429 rate_limited (with retry_after_s).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error"],
+      "properties": {
+        "error": { "enum": ["bad_request", "not_trusted", "documents_off", "rate_limited"] },
+        "retry_after_s": { "type": "integer", "minimum": 1 }
+      },
+      "examples": [{ "error": "rate_limited", "retry_after_s": 12 }]
+    }
+  }
+}

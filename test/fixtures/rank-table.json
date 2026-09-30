@@ -1,0 +1,2827 @@
+{
+  "doc": [
+    "The router's rank() as src/router/score.ts has it on 30/09/2026 (docs/multi-computer-design.md §3), so the app's JS port (twoody-app utils/meshRouting.js, lot A2) is checked on the same cases. test/meshContracts.test.ts runs every row against score.ts.",
+    "rank: input {computers: ComputerView[], ask: RouteAsk} → expected Choice[] (best first; the first is the pick, the rest the fallbacks). ComputerView = {id, name, self, platform, kind, status: ComputerStatus (account/status.ts), statusAgeMs, loads: last two {cpu_pct, gpu_pct} oldest first, defaultModel?}; RouteAsk = {model: string|null (null = « Automatique »), tools, purpose: 'chat'|'background', tokens, previous?}; Choice = {computerId, name, self, model, loaded, est}.",
+    "Constants: status older than 60000 ms out (≥), inflight ≥ 2 out, not loaded with RAM > 90 % out, est = tokens / max(tps, 0.1) + (loaded ? 0 : 10) + inflight × 15, × 1.5 when CPU or GPU > 85 % in both of the last two samples, rounded to 1/100; unmeasured tps = 10 on Linux ARM (or a non-self Linux 'server' without x64/x86/amd64 in its platform), 30 elsewhere; sort by est then self first; self wins if its est ≤ 1.2 × the best; the previous computer keeps it unless the pick's est ≤ 0.7 × its own. Only non-self computers are filtered on status age and purpose.",
+    "estimate: {computer, model, tokens} → seconds. prior_tps: {platform, kind, self} → tok/s."
+  ],
+  "constants": {
+    "STATUS_MAX_AGE_MS": 60000,
+    "MAX_INFLIGHT": 2,
+    "LOAD_PENALTY_S": 10,
+    "INFLIGHT_PENALTY_S": 15,
+    "HOT_PCT": 85,
+    "HOT_FACTOR": 1.5,
+    "RAM_FULL_PCT": 90,
+    "STICKY_BETTER": 0.7,
+    "SELF_TIE": 1.2
+  },
+  "rank": [
+    {
+      "name": "the faster computer first",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 10
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 40
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "pi",
+          "name": "pi",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 7.5
+        },
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 30
+        }
+      ]
+    },
+    {
+      "name": "this computer wins within 20 %",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 25
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 29
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 12
+        },
+        {
+          "computerId": "pi",
+          "name": "pi",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10.34
+        }
+      ]
+    },
+    {
+      "name": "this computer loses beyond 20 %",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 20
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 29
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "pi",
+          "name": "pi",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10.34
+        },
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 15
+        }
+      ]
+    },
+    {
+      "name": "exact model only",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "llama3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "pi",
+          "name": "pi",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 30
+        }
+      ]
+    },
+    {
+      "name": "a stale status is out",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 500
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 61000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10
+        }
+      ]
+    },
+    {
+      "name": "a status exactly 60 s old is out",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 500
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 60000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10
+        }
+      ]
+    },
+    {
+      "name": "at its limit is out",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 500
+            },
+            "inflight": 2,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10
+        }
+      ]
+    },
+    {
+      "name": "one generation running costs 15 s",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 30
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 300
+            },
+            "inflight": 1,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10
+        },
+        {
+          "computerId": "pi",
+          "name": "pi",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 16
+        }
+      ]
+    },
+    {
+      "name": "memory full and the model not loaded is out",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": false
+              }
+            ],
+            "load": {
+              "cpu_pct": 5,
+              "gpu_pct": null,
+              "ram_used_pct": 95,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10
+        }
+      ]
+    },
+    {
+      "name": "memory full but loaded stays",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 5
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 5,
+              "gpu_pct": null,
+              "ram_used_pct": 95,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 50
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "pi",
+          "name": "pi",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 6
+        },
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 60
+        }
+      ]
+    },
+    {
+      "name": "tools need tools",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 500
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": false
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": true,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10
+        }
+      ]
+    },
+    {
+      "name": "a peer that takes no background work is out of it",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 500
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "background",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10
+        }
+      ]
+    },
+    {
+      "name": "this computer answers background work whatever it accepts",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "background",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10
+        }
+      ]
+    },
+    {
+      "name": "automatic: each with its loaded model",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": false
+              },
+              {
+                "id": "gemma3:4b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": [],
+          "defaultModel": "qwen3:8b"
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:1.7b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:1.7b": 60
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": null,
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "pi",
+          "name": "pi",
+          "self": false,
+          "model": "qwen3:1.7b",
+          "loaded": true,
+          "est": 5
+        },
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "gemma3:4b",
+          "loaded": true,
+          "est": 10
+        }
+      ]
+    },
+    {
+      "name": "automatic: the default model when nothing is loaded",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": false
+              },
+              {
+                "id": "qwen3:14b",
+                "loaded": false
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": [],
+          "defaultModel": "qwen3:14b"
+        }
+      ],
+      "ask": {
+        "model": null,
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:14b",
+          "loaded": false,
+          "est": 20
+        }
+      ]
+    },
+    {
+      "name": "automatic: the first model when nothing is loaded and no default",
+      "computers": [
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": true,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:1.7b",
+                "loaded": false
+              },
+              {
+                "id": "qwen3:8b",
+                "loaded": false
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": null,
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "pi",
+          "name": "pi",
+          "self": true,
+          "model": "qwen3:1.7b",
+          "loaded": false,
+          "est": 20
+        }
+      ]
+    },
+    {
+      "name": "no one holds it",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "mistral",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": []
+    },
+    {
+      "name": "the previous computer keeps the conversation",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 30
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 40
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "mini",
+          "name": "mini",
+          "self": false,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 36
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300,
+        "previous": "mini"
+      },
+      "expected": [
+        {
+          "computerId": "mini",
+          "name": "mini",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 8.33
+        },
+        {
+          "computerId": "pi",
+          "name": "pi",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 7.5
+        },
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10
+        }
+      ]
+    },
+    {
+      "name": "another computer 30 % faster takes it from the previous one",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 10
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 60
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "mini",
+          "name": "mini",
+          "self": false,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 30
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300,
+        "previous": "mini"
+      },
+      "expected": [
+        {
+          "computerId": "pi",
+          "name": "pi",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 5
+        },
+        {
+          "computerId": "mini",
+          "name": "mini",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10
+        },
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 30
+        }
+      ]
+    },
+    {
+      "name": "a previous computer that cannot answer is ignored",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 60
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300,
+        "previous": "gone"
+      },
+      "expected": [
+        {
+          "computerId": "pi",
+          "name": "pi",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 5
+        },
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10
+        }
+      ]
+    },
+    {
+      "name": "hot twice: × 1.5",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 30
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": [
+            {
+              "cpu_pct": 90,
+              "gpu_pct": null
+            },
+            {
+              "cpu_pct": 20,
+              "gpu_pct": 95
+            }
+          ]
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 25
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "pi",
+          "name": "pi",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 12
+        },
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 15
+        }
+      ]
+    },
+    {
+      "name": "unmeasured: a Linux ARM computer counts 10 tok/s, a Mac 30",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux-arm64",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10
+        },
+        {
+          "computerId": "pi",
+          "name": "pi",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 30
+        }
+      ]
+    },
+    {
+      "name": "an unmeasured Linux x64 server counts 30 tok/s, and this computer wins the tie",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "nas",
+          "name": "nas",
+          "self": false,
+          "platform": "linux-x64",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {},
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10
+        },
+        {
+          "computerId": "nas",
+          "name": "nas",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10
+        }
+      ]
+    },
+    {
+      "name": "equal estimates: this computer first",
+      "computers": [
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 30
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 30
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10
+        },
+        {
+          "computerId": "pi",
+          "name": "pi",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 10
+        }
+      ]
+    },
+    {
+      "name": "not loaded: + 10 s",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": false
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 30
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 20
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 300
+      },
+      "expected": [
+        {
+          "computerId": "pi",
+          "name": "pi",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 15
+        },
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": false,
+          "est": 20
+        }
+      ]
+    },
+    {
+      "name": "the expected length changes the pick",
+      "computers": [
+        {
+          "id": "mac",
+          "name": "mac",
+          "self": true,
+          "platform": "macos-arm64",
+          "kind": "desktop",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": false
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 30
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        },
+        {
+          "id": "pi",
+          "name": "pi",
+          "self": false,
+          "platform": "linux",
+          "kind": "server",
+          "status": {
+            "app_version": "0.3.0",
+            "models": [
+              {
+                "id": "qwen3:8b",
+                "loaded": true
+              }
+            ],
+            "load": {
+              "cpu_pct": 10,
+              "gpu_pct": null,
+              "ram_used_pct": 40,
+              "at": null
+            },
+            "tps": {
+              "qwen3:8b": 20
+            },
+            "inflight": 0,
+            "accepts": [
+              "chat",
+              "background"
+            ],
+            "tools": true
+          },
+          "statusAgeMs": 1000,
+          "loads": []
+        }
+      ],
+      "ask": {
+        "model": "qwen3:8b",
+        "tools": false,
+        "purpose": "chat",
+        "tokens": 2000
+      },
+      "expected": [
+        {
+          "computerId": "mac",
+          "name": "mac",
+          "self": true,
+          "model": "qwen3:8b",
+          "loaded": false,
+          "est": 76.67
+        },
+        {
+          "computerId": "pi",
+          "name": "pi",
+          "self": false,
+          "model": "qwen3:8b",
+          "loaded": true,
+          "est": 100
+        }
+      ]
+    }
+  ],
+  "estimate": [
+    {
+      "name": "unmeasured Linux server: 10 tok/s",
+      "computer": {
+        "id": "pi",
+        "name": "pi",
+        "self": false,
+        "platform": "linux",
+        "kind": "server",
+        "status": {
+          "app_version": "0.3.0",
+          "models": [
+            {
+              "id": "qwen3:8b",
+              "loaded": true
+            }
+          ],
+          "load": {
+            "cpu_pct": 10,
+            "gpu_pct": null,
+            "ram_used_pct": 40,
+            "at": null
+          },
+          "tps": {},
+          "inflight": 0,
+          "accepts": [
+            "chat",
+            "background"
+          ],
+          "tools": true
+        },
+        "statusAgeMs": 1000,
+        "loads": []
+      },
+      "model": {
+        "id": "qwen3:8b",
+        "loaded": true
+      },
+      "tokens": 300,
+      "expected": 30
+    },
+    {
+      "name": "unmeasured Mac: 30 tok/s",
+      "computer": {
+        "id": "mac",
+        "name": "mac",
+        "self": true,
+        "platform": "macos-arm64",
+        "kind": "desktop",
+        "status": {
+          "app_version": "0.3.0",
+          "models": [
+            {
+              "id": "qwen3:8b",
+              "loaded": true
+            }
+          ],
+          "load": {
+            "cpu_pct": 10,
+            "gpu_pct": null,
+            "ram_used_pct": 40,
+            "at": null
+          },
+          "tps": {},
+          "inflight": 0,
+          "accepts": [
+            "chat",
+            "background"
+          ],
+          "tools": true
+        },
+        "statusAgeMs": 1000,
+        "loads": []
+      },
+      "model": {
+        "id": "qwen3:8b",
+        "loaded": true
+      },
+      "tokens": 300,
+      "expected": 10
+    },
+    {
+      "name": "measured",
+      "computer": {
+        "id": "pi",
+        "name": "pi",
+        "self": false,
+        "platform": "linux",
+        "kind": "server",
+        "status": {
+          "app_version": "0.3.0",
+          "models": [
+            {
+              "id": "qwen3:8b",
+              "loaded": true
+            }
+          ],
+          "load": {
+            "cpu_pct": 10,
+            "gpu_pct": null,
+            "ram_used_pct": 40,
+            "at": null
+          },
+          "tps": {
+            "qwen3:8b": 20
+          },
+          "inflight": 0,
+          "accepts": [
+            "chat",
+            "background"
+          ],
+          "tools": true
+        },
+        "statusAgeMs": 1000,
+        "loads": []
+      },
+      "model": {
+        "id": "qwen3:8b",
+        "loaded": true
+      },
+      "tokens": 300,
+      "expected": 15
+    },
+    {
+      "name": "not loaded: +10 s",
+      "computer": {
+        "id": "pi",
+        "name": "pi",
+        "self": false,
+        "platform": "linux",
+        "kind": "server",
+        "status": {
+          "app_version": "0.3.0",
+          "models": [
+            {
+              "id": "qwen3:8b",
+              "loaded": true
+            }
+          ],
+          "load": {
+            "cpu_pct": 10,
+            "gpu_pct": null,
+            "ram_used_pct": 40,
+            "at": null
+          },
+          "tps": {
+            "qwen3:8b": 20
+          },
+          "inflight": 0,
+          "accepts": [
+            "chat",
+            "background"
+          ],
+          "tools": true
+        },
+        "statusAgeMs": 1000,
+        "loads": []
+      },
+      "model": {
+        "id": "qwen3:8b",
+        "loaded": false
+      },
+      "tokens": 300,
+      "expected": 25
+    },
+    {
+      "name": "one running: +15 s",
+      "computer": {
+        "id": "pi",
+        "name": "pi",
+        "self": false,
+        "platform": "linux",
+        "kind": "server",
+        "status": {
+          "app_version": "0.3.0",
+          "models": [
+            {
+              "id": "qwen3:8b",
+              "loaded": true
+            }
+          ],
+          "load": {
+            "cpu_pct": 10,
+            "gpu_pct": null,
+            "ram_used_pct": 40,
+            "at": null
+          },
+          "tps": {
+            "qwen3:8b": 20
+          },
+          "inflight": 1,
+          "accepts": [
+            "chat",
+            "background"
+          ],
+          "tools": true
+        },
+        "statusAgeMs": 1000,
+        "loads": []
+      },
+      "model": {
+        "id": "qwen3:8b",
+        "loaded": true
+      },
+      "tokens": 300,
+      "expected": 30
+    },
+    {
+      "name": "hot twice: ×1.5",
+      "computer": {
+        "id": "pi",
+        "name": "pi",
+        "self": false,
+        "platform": "linux",
+        "kind": "server",
+        "status": {
+          "app_version": "0.3.0",
+          "models": [
+            {
+              "id": "qwen3:8b",
+              "loaded": true
+            }
+          ],
+          "load": {
+            "cpu_pct": 10,
+            "gpu_pct": null,
+            "ram_used_pct": 40,
+            "at": null
+          },
+          "tps": {
+            "qwen3:8b": 20
+          },
+          "inflight": 0,
+          "accepts": [
+            "chat",
+            "background"
+          ],
+          "tools": true
+        },
+        "statusAgeMs": 1000,
+        "loads": [
+          {
+            "cpu_pct": 90,
+            "gpu_pct": null
+          },
+          {
+            "cpu_pct": 20,
+            "gpu_pct": 95
+          }
+        ]
+      },
+      "model": {
+        "id": "qwen3:8b",
+        "loaded": true
+      },
+      "tokens": 300,
+      "expected": 22.5
+    },
+    {
+      "name": "hot once is not hot",
+      "computer": {
+        "id": "pi",
+        "name": "pi",
+        "self": false,
+        "platform": "linux",
+        "kind": "server",
+        "status": {
+          "app_version": "0.3.0",
+          "models": [
+            {
+              "id": "qwen3:8b",
+              "loaded": true
+            }
+          ],
+          "load": {
+            "cpu_pct": 10,
+            "gpu_pct": null,
+            "ram_used_pct": 40,
+            "at": null
+          },
+          "tps": {
+            "qwen3:8b": 20
+          },
+          "inflight": 0,
+          "accepts": [
+            "chat",
+            "background"
+          ],
+          "tools": true
+        },
+        "statusAgeMs": 1000,
+        "loads": [
+          {
+            "cpu_pct": 20,
+            "gpu_pct": null
+          },
+          {
+            "cpu_pct": 95,
+            "gpu_pct": null
+          }
+        ]
+      },
+      "model": {
+        "id": "qwen3:8b",
+        "loaded": true
+      },
+      "tokens": 300,
+      "expected": 15
+    },
+    {
+      "name": "rounded to 1/100 s",
+      "computer": {
+        "id": "pi",
+        "name": "pi",
+        "self": false,
+        "platform": "linux",
+        "kind": "server",
+        "status": {
+          "app_version": "0.3.0",
+          "models": [
+            {
+              "id": "qwen3:8b",
+              "loaded": true
+            }
+          ],
+          "load": {
+            "cpu_pct": 10,
+            "gpu_pct": null,
+            "ram_used_pct": 40,
+            "at": null
+          },
+          "tps": {
+            "qwen3:8b": 7
+          },
+          "inflight": 0,
+          "accepts": [
+            "chat",
+            "background"
+          ],
+          "tools": true
+        },
+        "statusAgeMs": 1000,
+        "loads": []
+      },
+      "model": {
+        "id": "qwen3:8b",
+        "loaded": true
+      },
+      "tokens": 100,
+      "expected": 14.29
+    },
+    {
+      "name": "a measured 0 counts 0.1 tok/s",
+      "computer": {
+        "id": "pi",
+        "name": "pi",
+        "self": false,
+        "platform": "linux",
+        "kind": "server",
+        "status": {
+          "app_version": "0.3.0",
+          "models": [
+            {
+              "id": "qwen3:8b",
+              "loaded": true
+            }
+          ],
+          "load": {
+            "cpu_pct": 10,
+            "gpu_pct": null,
+            "ram_used_pct": 40,
+            "at": null
+          },
+          "tps": {
+            "qwen3:8b": 0
+          },
+          "inflight": 0,
+          "accepts": [
+            "chat",
+            "background"
+          ],
+          "tools": true
+        },
+        "statusAgeMs": 1000,
+        "loads": []
+      },
+      "model": {
+        "id": "qwen3:8b",
+        "loaded": true
+      },
+      "tokens": 10,
+      "expected": 100
+    }
+  ],
+  "prior_tps": [
+    {
+      "input": {
+        "platform": "linux-arm64",
+        "kind": null,
+        "self": true
+      },
+      "expected": 10
+    },
+    {
+      "input": {
+        "platform": "linux-aarch64",
+        "kind": "server",
+        "self": false
+      },
+      "expected": 10
+    },
+    {
+      "input": {
+        "platform": "linux-x64",
+        "kind": null,
+        "self": true
+      },
+      "expected": 30
+    },
+    {
+      "input": {
+        "platform": "linux",
+        "kind": "server",
+        "self": false
+      },
+      "expected": 10
+    },
+    {
+      "input": {
+        "platform": "linux",
+        "kind": "server",
+        "self": true
+      },
+      "expected": 30
+    },
+    {
+      "input": {
+        "platform": "linux-x64",
+        "kind": "server",
+        "self": false
+      },
+      "expected": 30
+    },
+    {
+      "input": {
+        "platform": "macos-arm64",
+        "kind": "desktop",
+        "self": false
+      },
+      "expected": 30
+    },
+    {
+      "input": {
+        "platform": null,
+        "kind": "server",
+        "self": false
+      },
+      "expected": 30
+    },
+    {
+      "input": {
+        "platform": "windows-x64",
+        "kind": "desktop",
+        "self": false
+      },
+      "expected": 30
+    }
+  ]
+}

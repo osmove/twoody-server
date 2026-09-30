@@ -1,0 +1,93 @@
+{
+  "doc": [
+    "twoody/vault/device-access/v1 (docs/mesh-design.md §1 rule 5, lot P0). Reference: src/vault/contracts.ts (signDeviceAccess, deviceAccessValid).",
+    "A person-device (the phone) states with its own vault signing key that a tunnel key is its own, so that a trusted computer links it without the account token deciding anything.",
+    "Signature scheme: the v1 vault approval's — Ed25519 (RFC 8032) by the private half of the vault device's sign_public, over the canonical header: UTF-8 of the label 'twoody/vault/device-access/v1', then for each field the UTF-8 of String(field) prefixed by its byte length on 2 bytes big-endian. Fields: [v, user_id, vault_device_id, tunnel_public_key] — v = '1' like every other vault statement (the design's short list [user, vault_device_id, tunnel_public_key] plus the version).",
+    "Field encodings: user_id decimal ('42'); vault_device_id the phone's vault_devices uuid; tunnel_public_key the phone's X25519 tunnel key, 64 lowercase hex (the key it pairs with, POST /api/v1/session tunnel_public_key). Signature: 128 lowercase hex.",
+    "Wire form: {vault_device_id, tunnel_public_key, signature}; the verifier takes the signer's sign_public from the verified roster entry of vault_device_id. Rules for verifiers: vault_device_id must be a trusted member of the verified roster that is a person-device (no binding, or a binding with can_approve=true); a statement for a computer (binding can_approve=false) is refused even when its signature checks; the tunnel key presented on the link must equal tunnel_public_key.",
+    "Keys: those of computer-binding-v1.json (same devices, same derivation); iphone_tunnel is the phone's X25519 tunnel key."
+  ],
+  "label": "twoody/vault/device-access/v1",
+  "devices": {
+    "iphone": {
+      "id": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01",
+      "sign_private": "a4d2b581957d9ac5459a37aea0a4a6f8af902b343284ac28c6c65ba8b020e467",
+      "sign_public": "9c434dfe00b872f9ab33b6ff59ca1b11d3729e17d5778aac1e20e71558042aaa",
+      "enc_private": "764f702d94ceed050f3d8d4ecf9cac1ad7698684b02eb04690eeed22c35cb300",
+      "enc_public": "00236f8aaa82a9e84a955c60cf882920d3f810eef0b8733fc8d1bb3ed2a5eb06"
+    },
+    "pi": {
+      "id": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03",
+      "sign_private": "32e1eefa06d35cf83abe50b2eb7fcc179e340bc952a4856497fb3a3e39e38061",
+      "sign_public": "8f9b010444a159d464036102ce4d5ec637324e4a400582e32ac73fbba71b359e",
+      "enc_private": "7b4c5284d7a11a97edf537f5757c0c2c516a5d7cd8e038ad0b178dc9e3b9b0f6",
+      "enc_public": "07665403eba8d716fbc6ecf1acf21aa0ebe268d2b9fa91b1ada3e28194efa96b"
+    }
+  },
+  "iphone_tunnel": {
+    "private_hex": "c272e76a9f45c5734d1acd93b240cd471f27427bed29e7a17e59c866287e8767",
+    "public": "f5680f48673699dc425cc40e773b77b4ea0655c16b5ba01e92e167dfc662be3b"
+  },
+  "vectors": [
+    {
+      "name": "the iPhone's own tunnel key",
+      "user_id": "42",
+      "wire": {
+        "vault_device_id": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01",
+        "tunnel_public_key": "f5680f48673699dc425cc40e773b77b4ea0655c16b5ba01e92e167dfc662be3b",
+        "signature": "ff27aa64951e110c6a2e85b7184a7e03f581f4d0eb984859dcce4cf3d3c3511283d56106f00d9d7393d0d0530a5acd1fc8200cd38d8e0dd407a51317b3c0e50a"
+      },
+      "signed_by": "iphone",
+      "verified_with": "iphone",
+      "statement_hex": "74776f6f64792f7661756c742f6465766963652d6163636573732f763100013100023432002431613666306332652d376434312d346238612d396535332d326630633664386131623031004066353638306634383637333639396463343235636334306537373362373762346561303635356331366235626130316539326531363764666336363262653362",
+      "expected": {
+        "valid": true
+      }
+    },
+    {
+      "name": "tampered: another tunnel key",
+      "user_id": "42",
+      "wire": {
+        "vault_device_id": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01",
+        "tunnel_public_key": "918db729b935ee5c12da2937485f4b1954a51327f923495ce57f83b1ea72d409",
+        "signature": "ff27aa64951e110c6a2e85b7184a7e03f581f4d0eb984859dcce4cf3d3c3511283d56106f00d9d7393d0d0530a5acd1fc8200cd38d8e0dd407a51317b3c0e50a"
+      },
+      "signed_by": "iphone",
+      "verified_with": "iphone",
+      "statement_hex": "74776f6f64792f7661756c742f6465766963652d6163636573732f763100013100023432002431613666306332652d376434312d346238612d396535332d326630633664386131623031004039313864623732396239333565653563313264613239333734383566346231393534613531333237663932333439356365353766383362316561373264343039",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "name": "tampered: another vault device id",
+      "user_id": "42",
+      "wire": {
+        "vault_device_id": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02",
+        "tunnel_public_key": "f5680f48673699dc425cc40e773b77b4ea0655c16b5ba01e92e167dfc662be3b",
+        "signature": "ff27aa64951e110c6a2e85b7184a7e03f581f4d0eb984859dcce4cf3d3c3511283d56106f00d9d7393d0d0530a5acd1fc8200cd38d8e0dd407a51317b3c0e50a"
+      },
+      "signed_by": "iphone",
+      "verified_with": "iphone",
+      "statement_hex": "74776f6f64792f7661756c742f6465766963652d6163636573732f763100013100023432002432623765316433662d386535322d346339622d386636342d336131643765396232633032004066353638306634383637333639396463343235636334306537373362373762346561303635356331366235626130316539326531363764666336363262653362",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "name": "wrong key: signed by the Pi, claimed as the iPhone's",
+      "user_id": "42",
+      "wire": {
+        "vault_device_id": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01",
+        "tunnel_public_key": "f5680f48673699dc425cc40e773b77b4ea0655c16b5ba01e92e167dfc662be3b",
+        "signature": "7c3bca60e02755afe746271328b9fb7e406c840de6a5d9722e6136d4507f0c1a550a4575032335854ebc0b33d3ea9e21671664fca422795bb2be21f07588410c"
+      },
+      "signed_by": "pi",
+      "verified_with": "iphone",
+      "statement_hex": "74776f6f64792f7661756c742f6465766963652d6163636573732f763100013100023432002431613666306332652d376434312d346238612d396535332d326630633664386131623031004066353638306634383637333639396463343235636334306537373362373762346561303635356331366235626130316539326531363764666336363262653362",
+      "expected": {
+        "valid": false
+      }
+    }
+  ]
+}
