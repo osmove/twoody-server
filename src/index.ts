@@ -24,6 +24,7 @@ import { startMachineSampler } from "./machineSampler.js";
 import { isFresh } from "./pairing.js";
 import { startMeshLinks, startPeerStatusPoller } from "./peers/index.js";
 import { startRosterRefresh } from "./vault/roster.js";
+import { desktopVaultAccount } from "./vault/desktopAccount.js";
 import { setDesktopVault, startVaultService } from "./vault/service.js";
 import { startMemorySync } from "./vault/memories.js";
 import { builtinAddress, initEngine, preloadBuiltin, stopEngine } from "./engine.js";
@@ -282,11 +283,14 @@ try {
     );
   };
   if (parentPort) {
+    // The vault's calls to the account go through the Desktop, which
+    // speaks to it anyway: this server stays local-only (vault/desktopAccount.ts).
+    const vaultAccount = desktopVaultAccount(parentPort);
     parentPort.on("message", ({ data }) => {
       const type = (data as { type?: unknown } | null)?.type;
       if (type === "account" || type === "tunnel") desktopAccount(data);
       // The Desktop's vault keys, held in memory only (src/vault/service.ts).
-      if (type === "vault") setDesktopVault(data);
+      if (type === "vault") setDesktopVault(data, vaultAccount);
     });
   }
   // A headless computer in an account is a member of the encrypted history

@@ -31,6 +31,9 @@ docs/multi-computer-design.md (hub-and-spoke: a primary holds data, others lend 
   device lacked; the backend cannot forge, alter or move it, only withhold it. The roster then keys that Desktop by
   account computer + tunnel key like any computer (can_approve true). Its embedded server signs and publishes it
   with the handed keys and the account computer the Desktop hands over (src/vault/service.ts ensureDesktopBinding).
+  That server runs local-only (TWOODY_LOCAL_ONLY=1): its vault's account calls (GET /vault, the desktop-binding,
+  events) go by message through the Desktop's main process, which sends only a binding its device signed for itself
+  and its computer (src/vault/desktopAccount.ts ↔ twoody-desktop src/shared/vaultServerAccount.ts).
 - Roster derived, not stored: each computer verifies GET /vault (devices, approvals, bindings) in
   src/vault/roster.ts, cached 60 s, refreshed on 401/404/410. Serving side: requester_computer_id in the verified
   roster ⇒ may reach /peer/documents/* and /peer/vault/*.
