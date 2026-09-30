@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
+import { randomBytes } from "node:crypto";
 import test from "node:test";
 import { validate } from "./helpers/jsonSchema.js";
 
@@ -112,8 +113,13 @@ const inRoster = new Set<string>();
 const rosterStandIn = async (id: string) => inRoster.has(id);
 setTrustCheck(rosterStandIn);
 
-function peer(computerId: string | null, trusted: boolean | null, state = "linked") {
-  const session = pairDevice({ deviceName: `Computer ${computerId}`, role: "peer", origin: "account", requesterComputerId: computerId });
+/// What the tunnel puts on every request it serves (tunnel/host.ts): its
+/// marker and the key of the device at the other end.
+const sealedFrom = (key: string) => ({ "x-twoody-via-tunnel": "relay", "x-twoody-tunnel-peer": key });
+
+function peer(computerId: string | null, trusted: boolean | null, state = "linked", options: { plain?: boolean } = {}) {
+  const tunnelKey = randomBytes(32).toString("hex");
+  const session = pairDevice({ deviceName: `Computer ${computerId}`, role: "peer", origin: "account", requesterComputerId: computerId, tunnelPublicKey: tunnelKey });
   if (computerId && trusted !== null) {
     const now = new Date();
     db.insert(accountPeers)
@@ -124,7 +130,7 @@ function peer(computerId: string | null, trusted: boolean | null, state = "linke
     if (trusted && state === "linked") inRoster.add(computerId);
     else inRoster.delete(computerId);
   }
-  return { authorization: `Bearer ${session.token}` };
+  return { authorization: `Bearer ${session.token}`, ...(options.plain ? {} : sealedFrom(tunnelKey)) };
 }
 
 let trustedCount = 0;
@@ -163,6 +169,22 @@ test("a trusted computer's peer session searches; an untrusted, removed or unkno
     }
   }
   assert.equal((await app.inject({ method: "POST", url: "/api/v1/peer/documents/search", payload: { q: "loyer", scope: { mode: "all" } } })).statusCode, 401);
+});
+
+test("a trusted computer's peer token over plain HTTP, or through another key's tunnel, reaches nothing", async () => {
+  const plain = peer("47", true, "linked", { plain: true });
+  const refused = await search(plain, {});
+  assert.equal(refused.statusCode, 403, "no tunnel: a sniffed or replayed peer token");
+  assert.deepEqual(refused.json(), { error: "not_trusted" });
+  const other = randomBytes(32).toString("hex");
+  assert.equal((await search({ ...plain, ...sealedFrom(other) }, {})).statusCode, 403, "the tunnel of another key");
+  // The tunnel's stamp typed by someone on the network is no tunnel.
+  const typed = await app.inject({ method: "POST", url: "/api/v1/peer/documents/search", headers: peer("48", true), remoteAddress: "192.168.1.30", payload: { q: "loyer", scope: { mode: "all" } } });
+  assert.equal(typed.statusCode, 403);
+  for (const url of ["/api/v1/peer/documents/folders", "/api/v1/peer/documents/files/bail", "/api/v1/peer/documents/files/scan/raw"]) {
+    assert.equal((await app.inject({ url, headers: plain })).statusCode, 403, url);
+  }
+  assert.equal((await search(peer("49", true), {})).statusCode, 200, "the same, through its own tunnel");
 });
 
 test("trust is switched off (the computer leaves the roster): 403 from the next request on", async () => {
@@ -478,7 +500,8 @@ test("raw: 25 MB an answer through the relay, 32 MB on the local network", async
   assert.equal(direct.statusCode, 200);
   assert.equal(direct.rawPayload.length, big.length);
   assert.ok(big.length <= LAN_RAW_CAP);
-  assert.equal((await app.inject({ url, headers })).statusCode, 200, "plain HTTP on the local network");
+  const { "x-twoody-via-tunnel": _marker, "x-twoody-tunnel-peer": _key, ...plain } = headers;
+  assert.equal((await app.inject({ url, headers: plain })).statusCode, 403, "plain HTTP on the local network: a peer reaches nothing");
 });
 
 test("raw: a document swapped for a symlink out of its grant is not served", async () => {
@@ -490,6 +513,22 @@ test("raw: a document swapped for a symlink out of its grant is not served", asy
   assert.equal(response.statusCode, 404);
   assert.ok(!response.body.includes("hors du dossier"));
   assert.equal(readFileSync(path, "utf8"), "hors du dossier accordé", "the fixture really points outside");
+});
+
+test("raw: a folder on the way swapped for a link out of the grant is not served (the file opened is the one checked)", async () => {
+  const sub = join(contracts, "Annexes");
+  mkdirSync(sub);
+  const path = join(sub, "secret.txt");
+  indexDoc("annex", "f-contracts", path, ["annexe"]);
+  // The last component is a plain file, so O_NOFOLLOW lets it open: the
+  // folder above it now leads outside the grant.
+  rmSync(sub, { recursive: true });
+  symlinkSync(outside, sub);
+  const response = await app.inject({ url: "/api/v1/peer/documents/files/annex/raw", headers: trustedPeer() });
+  assert.equal(response.statusCode, 404);
+  assert.ok(!response.body.includes("hors du dossier"));
+  assert.equal(readFileSync(path, "utf8"), "hors du dossier accordé", "the fixture really leads outside");
+  unlinkSync(sub);
 });
 
 // ── rate limit and audit ────────────────────────────────────────────────────
@@ -516,7 +555,7 @@ test("audit: which computer read which document, shown to the owner, never to a 
   assert.equal(audit.statusCode, 200);
   const entries = audit.json().entries as Array<{ action: string; document_id: string | null; name: string | null; bytes: number | null; at: string }>;
   assert.equal(entries[0]!.action, "raw", "newest first");
-  assert.deepEqual({ ...entries[0], at: undefined, id: undefined }, { action: "raw", document_id: "scan", name: "scan-bail.pdf", bytes: 100, at: undefined, id: undefined });
+  assert.deepEqual({ ...entries[0], at: undefined, id: undefined }, { action: "raw", document_id: "scan", name: "scan-bail.pdf", bytes: 100, at: undefined, id: undefined, requester: null, requester_name: null });
   assert.ok(entries.some((e) => e.action === "read" && e.document_id === "bail"));
   assert.ok(entries.some((e) => e.action === "search" && e.document_id === "client"));
   assert.ok(entries.every((e) => !Number.isNaN(Date.parse(e.at))));
@@ -526,6 +565,14 @@ test("audit: which computer read which document, shown to the owner, never to a 
   assert.equal(page.entries.length, 1);
   const next = (await app.inject({ url: `/api/v1/peers/77/audit?limit=1&before=${page.next_before}`, headers: desktop })).json();
   assert.notEqual(next.entries[0].id, page.entries[0].id);
+
+  // Passed on for one of the person's devices (documents/remote.ts): the
+  // audit names it too, as that computer says.
+  await app.inject({ url: "/api/v1/peer/documents/files/scan/raw", headers: { ...headers, range: "bytes=0-9", "x-twoody-requester": "person:1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01", "x-twoody-requester-name": encodeURIComponent("iPhone de Jimmy") } });
+  const passedOn = (await app.inject({ url: "/api/v1/peers/77/audit?limit=1", headers: desktop })).json().entries[0];
+  assert.deepEqual([passedOn.requester, passedOn.requester_name, passedOn.bytes], ["person:1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01", "iPhone de Jimmy", 10]);
+  await app.inject({ url: "/api/v1/peer/documents/files/scan/raw", headers: { ...headers, range: "bytes=0-9", "x-twoody-requester": "../../etc", "x-twoody-requester-name": "%E0%A4%A" } });
+  assert.equal((await app.inject({ url: "/api/v1/peers/77/audit?limit=1", headers: desktop })).json().entries[0].requester, null, "a requester that is none is not written");
 
   assert.equal((await app.inject({ url: "/api/v1/peers/77/audit", headers })).statusCode, 403, "a peer session does not read the audit");
   assert.equal((await app.inject({ url: "/api/v1/peers/77/audit" })).statusCode, 401);

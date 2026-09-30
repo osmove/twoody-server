@@ -4,6 +4,7 @@ import { BackendError } from "../account/backend.js";
 import { LeaveUnconfirmedError, LinkThrottledError, linkState, linkView, logout, startLink } from "../account/link.js";
 import { ensureAccountFile, fingerprint, linkedAccount } from "../account/store.js";
 import { LocalOnlyError } from "../outbound.js";
+import { thisSecurityCode } from "../tunnel/identity.js";
 import { isFresh } from "../pairing.js";
 import { ownerRequest, requireOwner } from "../localAccess.js";
 import { fromOtherPage } from "../webOrigin.js";
@@ -16,8 +17,12 @@ import { fromOtherPage } from "../webOrigin.js";
 // on the computer's own console: the person types it on the Desktop.
 //
 //   GET    /account/link       console: {state, user_code?, verification_uri?, verification_uri_complete?,
-//                               expires_at?, account_computer_id?, account?, fresh, fp, fingerprint, last_error?}
+//                               expires_at?, account_computer_id?, account?, fresh, fp, fingerprint,
+//                               security_code, last_error?}
 //                               network: {state, fp} and nothing else
+//                               security_code: this computer's code de sécurité (vault/contracts.ts
+//                               securityCode, from its tunnel key), for the person to compare with
+//                               the one the Desktop or the app shows; fp is only Bonjour's hint
 //   POST   /account/link       starts a code — or answers with the live one, never replacing it
 //                               (409 when already linked; from the network: only while fresh,
 //                               and 429 when a code was asked for too recently)
@@ -63,6 +68,7 @@ export async function accountLinkRoutes(app: FastifyInstance) {
       fresh: isFresh(),
       fp,
       fingerprint: fp,
+      security_code: thisSecurityCode(),
     };
   };
 

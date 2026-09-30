@@ -15,7 +15,7 @@ function headers(): Record<string, string> {
   return { Accept: "application/json", "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
 }
 
-type LinkBody = { state: string; user_code?: string; verification_uri?: string; verification_uri_complete?: string | null; expires_at?: string; account_computer_id?: string; account?: string; last_error?: string | null; fp?: string };
+type LinkBody = { state: string; user_code?: string; verification_uri?: string; verification_uri_complete?: string | null; expires_at?: string; account_computer_id?: string; account?: string; last_error?: string | null; fp?: string; security_code?: string | null };
 
 /// "the Twoody account j***@gmail.com" — or "a Twoody account" when the server did not say which.
 function which(account: string | null | undefined): string {
@@ -50,7 +50,9 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 function showCode(link: LinkBody): void {
   const where = link.verification_uri_complete ?? link.verification_uri ?? "https://twoody.com/appareil";
   console.log(`\n  To add this server to your Twoody account, open\n\n    ${where}\n\n  on a device signed in to it (or Twoody Desktop, or the Twoody app), and enter the code\n\n    ${link.user_code}\n`);
-  if (link.fp) console.log(`  This server's fingerprint: ${link.fp}\n`);
+  // What the approving screen shows for this computer, to compare: its
+  // code de sécurité (from its tunnel key), never the 8-hex Bonjour hint.
+  if (link.security_code) console.log(`  Security code of this server (check that the approving screen shows the same):\n\n    ${link.security_code}\n`);
   console.log("  Waiting for the approval… (Ctrl-C to stop)");
 }
 
@@ -76,7 +78,7 @@ async function login(): Promise<number> {
       }
       link = started.body as LinkBody;
     }
-    showCode(link);
+    showCode({ ...link, security_code: link.security_code ?? (current.body as LinkBody).security_code ?? null });
     for (;;) {
       await sleep(2_000);
       const next = await local("/account/link");
@@ -99,13 +101,14 @@ async function login(): Promise<number> {
 
   // No server running: the flow here, account.json written for its next start.
   const { startLink, linkState, linkView } = await import("../account/link.js");
-  const { linkedAccount, fingerprint, ensureAccountFile } = await import("../account/store.js");
+  const { linkedAccount } = await import("../account/store.js");
   if (linkedAccount()) {
     console.log(`Already linked to ${which(linkView().account)} (computer ${linkedAccount()!.computer.id}).`);
     return 0;
   }
   try {
-    showCode({ ...(await startLink()), fp: fingerprint(ensureAccountFile()) ?? undefined } as LinkBody);
+    const { thisSecurityCode } = await import("../tunnel/identity.js");
+    showCode({ ...(await startLink()), security_code: thisSecurityCode() } as LinkBody);
   } catch (err) {
     console.error(`Could not start linking: ${err instanceof Error ? err.message : String(err)}`);
     return 1;

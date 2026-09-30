@@ -29,10 +29,16 @@ export function sqliteHistory(userId: string): LocalHistory {
       const row = sqlite.prepare("SELECT vault_id FROM discussions WHERE user_id = ? AND id = ?").get(userId, discussionId) as { vault_id: string | null } | undefined;
       return row?.vault_id ?? null;
     },
+    // Only an exchange this computer answered itself: one question and one
+    // answer under the ref, the answer written here (an exchange imported
+    // from the vault or inlined by a client as prior_turns is answered
+    // « vault »: it is context, never sealed again as this computer's).
     turn(discussionId, ref) {
-      const question = sqlite.prepare("SELECT content, created_at FROM messages WHERE discussion_id = ? AND role = 'user' AND vault_ref = ? LIMIT 1").get(discussionId, ref) as { content: string; created_at: number } | undefined;
-      const answer = sqlite.prepare("SELECT content, model, sources_json, answered_by_json FROM messages WHERE discussion_id = ? AND role = 'assistant' AND vault_ref = ? LIMIT 1").get(discussionId, `${ref}#reply`) as { content: string; model: string | null; sources_json: string | null; answered_by_json: string | null } | undefined;
-      if (!question || !answer) return null;
+      const questions = sqlite.prepare("SELECT content, created_at FROM messages WHERE discussion_id = ? AND role = 'user' AND vault_ref = ? ORDER BY rowid LIMIT 2").all(discussionId, ref) as Array<{ content: string; created_at: number }>;
+      const answers = sqlite.prepare("SELECT content, model, provider, sources_json, answered_by_json FROM messages WHERE discussion_id = ? AND role = 'assistant' AND vault_ref = ? ORDER BY rowid LIMIT 2").all(discussionId, `${ref}#reply`) as Array<{ content: string; model: string | null; provider: string | null; sources_json: string | null; answered_by_json: string | null }>;
+      if (questions.length !== 1 || answers.length !== 1) return null;
+      const [question, answer] = [questions[0]!, answers[0]!];
+      if (!answer.provider || answer.provider === "vault") return null;
       const sources = parse(answer.sources_json);
       return {
         text: question.content,

@@ -35,6 +35,8 @@ import { rmSync } from "node:fs";
 // of the device, as on the Desktop.
 
 export const COMPUTER_KIND = "computer";
+/// The person devices a computer's trust may start from, at most.
+export const MAX_ANCHORS = 8;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /// A binding as the account returns it (docs of test/fixtures/computer-binding-v1.json, « Wire form »).
@@ -148,11 +150,11 @@ export function readDesktopBinding(device: Pick<VaultDevice, "desktop_binding"> 
 /// the signature. Whether the device is verified is the caller's walk
 /// (verifiedIds): the binding adds nothing to who the device is, only
 /// which computer of the account it runs as.
-export function desktopBindingOf(userId: string | number, device: VaultDevice | undefined, byId: Map<string, VaultDevice>): WireDesktopBinding | null {
+export function desktopBindingOf(userId: string | number, device: VaultDevice | undefined, byId: Map<string, VaultDevice>, verified?: Set<string>): WireDesktopBinding | null {
   if (!device || device.status !== "trusted" || isComputer(device)) return null;
   const binding = readDesktopBinding(device);
   if (!binding || binding.vault_device_id !== device.id) return null;
-  if (deviceKind(userId, device, byId)?.kind !== "person") return null;
+  if (deviceKind(userId, device, byId, verified)?.kind !== "person") return null;
   const { signature, ...bound } = binding;
   try {
     return desktopBindingValid({ userId, binding: bound, deviceSignPublic: fromHex(device.sign_public), signature }) ? binding : null;
@@ -175,10 +177,17 @@ export function isComputer(device: VaultDevice | undefined): boolean {
 /// device the account marks as a computer whose approval says person (a
 /// computer is never demoted to a person-device, which may approve). The
 /// kind the account gives is never read.
-export function deviceKind(userId: string | number, device: VaultDevice | undefined, byId: Map<string, VaultDevice>): ApprovedKind | null {
+///
+/// With `verified` (the walk's, verifiedIds): only an approval signed by a
+/// verified device counts, unless the device is itself verified already —
+/// an anchor, or a device the walk reached through that very approval. An
+/// approver the account made up (its own keys, its own signature) never
+/// says what anything is.
+export function deviceKind(userId: string | number, device: VaultDevice | undefined, byId: Map<string, VaultDevice>, verified?: Set<string>): ApprovedKind | null {
   if (!device?.approval) return null;
   const approver = byId.get(device.approval.approver_id);
   if (!approver) return null;
+  if (verified && !verified.has(approver.id) && !verified.has(device.id)) return null;
   let approverSignPublic: Uint8Array;
   try {
     approverSignPublic = fromHex(approver.sign_public);
@@ -201,7 +210,7 @@ export function deviceKind(userId: string | number, device: VaultDevice | undefi
 /// true. (fixture rules, P0 and approval/v2)
 export function mayApprove(userId: string | number, device: VaultDevice | undefined, byId: Map<string, VaultDevice>, verified?: Set<string>, seen: Set<string> = new Set()): boolean {
   if (!device || device.status === "revoked" || seen.has(device.id)) return false;
-  const kind = deviceKind(userId, device, byId);
+  const kind = deviceKind(userId, device, byId, verified);
   if (!kind) return false;
   if (kind.kind === "person") return true;
   const binding = readBinding(device);
@@ -223,18 +232,12 @@ export type Anchor = { id: string; sign_public: string };
 /// account computer, signed by a reached device that may approve. Trust
 /// never flows back from a device to whoever the account says approved it
 /// — the account could name an approver it invented. An anchor counts only
-/// while the roster gives it the key it was pinned with, and never as a
-/// computer.
+/// while the roster gives it the key it was pinned with, never as a
+/// computer, and only with an approval of its own that checks as a
+/// person's (anchorHolds).
 export function verifiedIds(userId: string | number, devices: VaultDevice[], anchors: Anchor[]): Set<string> {
   const byId = new Map(devices.map((d) => [d.id, d]));
-  const verified = new Set(
-    anchors
-      .filter((a) => {
-        const d = byId.get(a.id);
-        return !!d && d.status !== "revoked" && d.sign_public === a.sign_public && !isComputer(d) && deviceKind(userId, d, byId)?.kind !== "computer";
-      })
-      .map((a) => a.id),
-  );
+  const verified = new Set(anchors.filter((a) => anchorHolds(userId, a, byId)).map((a) => a.id));
   for (let changed = true; changed; ) {
     changed = false;
     for (const device of devices) {
@@ -242,7 +245,7 @@ export function verifiedIds(userId: string | number, devices: VaultDevice[], anc
       const approver = byId.get(device.approval.approver_id);
       if (!approver || approver.id === device.id || !verified.has(approver.id)) continue;
       if (!mayApprove(userId, approver, byId, verified)) continue;
-      const kind = deviceKind(userId, device, byId);
+      const kind = deviceKind(userId, device, byId, verified);
       if (!kind) continue;
       if (kind.kind === "computer") {
         const binding = readBinding(device);
@@ -254,6 +257,17 @@ export function verifiedIds(userId: string | number, devices: VaultDevice[], anc
     }
   }
   return verified;
+}
+
+/// Whether a pinned anchor counts: the roster lists that device with the
+/// key it was pinned with, not revoked, not a computer by anything the
+/// account says, and approved as a person — its approval checks under its
+/// approver's key (the founding device approves itself). An anchor whose
+/// approval does not check, or names an approver the roster does not have,
+/// counts for nothing.
+export function anchorHolds(userId: string | number, anchor: Anchor, byId: Map<string, VaultDevice>): boolean {
+  const d = byId.get(anchor.id);
+  return !!d && d.status !== "revoked" && d.sign_public === anchor.sign_public && !isComputer(d) && deviceKind(userId, d, byId)?.kind === "person";
 }
 
 /// Whom this computer takes epoch keys from: verified from its anchors,
@@ -426,9 +440,9 @@ export function createComputerVaultClient({ api, store, userId, accountComputerI
     const keys = bindingKeys?.() ?? null;
     const ours = binding.account_computer_id === accountComputerId && binding.can_approve === false
       && (!keys || (binding.tunnel_public_key === keys.tunnel_public_key && binding.pairing_public_key === keys.pairing_public_key));
-    const signed = deviceKind(user, mine, byId);
-    const approvedAsThis = signed?.kind === "computer" && signed.account_computer_id === accountComputerId;
     const verified = verifiedIds(user, devices, readLocal()?.anchors ?? []);
+    const signed = deviceKind(user, mine, byId, verified);
+    const approvedAsThis = signed?.kind === "computer" && signed.account_computer_id === accountComputerId;
     return ours && approvedAsThis && verified.has(binding.approver_id) && bindingChecks(user, mine, binding, byId) && mayApprove(user, byId.get(binding.approver_id), byId, verified) ? "valid" : "invalid";
   }
 
@@ -512,8 +526,14 @@ export function createComputerVaultClient({ api, store, userId, accountComputerI
   /// revoked → registers (pending: nothing is given until a person
   /// approves it); pending → picks up its keys; trusted → picks up the keys
   /// of a newer epoch.
-  async function ensureEnrolled(): Promise<{ status: ComputerVaultStatus; revoked?: boolean }> {
+  async function ensureEnrolled(): Promise<{ status: ComputerVaultStatus; revoked?: boolean; pruned?: string[] }> {
     const current = await status();
+    const pruned = pruneAnchors(current.devices);
+    if (pruned.length) return { ...(await ensureEnrolledWith(current)), pruned };
+    return ensureEnrolledWith(current);
+  }
+
+  async function ensureEnrolledWith(current: Awaited<ReturnType<typeof status>>): Promise<{ status: ComputerVaultStatus; revoked?: boolean }> {
     if (current.status === "none") return { status: "none" };
     if (current.status === "unregistered" || current.status === "revoked") {
       if (current.status === "revoked") store.clear();
@@ -531,15 +551,46 @@ export function createComputerVaultClient({ api, store, userId, accountComputerI
 
   /// The person device approving this computer says who it is, over the
   /// tunnel (never the account): its vault device id and signing key. Kept
-  /// with the keys; at most 8, the latest first.
+  /// with the keys, at most MAX_ANCHORS. Only before this computer holds
+  /// any epoch key (not yet approved: « already_approved »); an anchor
+  /// already pinned is never replaced — the same key again changes nothing,
+  /// another key is refused (« anchor_conflict ») — and none is ever pushed
+  /// out to make room (« too_many_anchors »). Who may name one is the
+  /// route's to check (routes/peerVault.ts).
   function pinAnchor(anchor: Anchor) {
     const local = readLocal();
     if (!local?.deviceId) throw new VaultError("not_registered");
     if (!UUID.test(anchor.id) || !/^[0-9a-f]{64}$/.test(anchor.sign_public)) throw new VaultError("bad_anchor");
     if (anchor.id === local.deviceId) throw new VaultError("bad_anchor");
-    local.anchors = [anchor, ...local.anchors.filter((a) => a.id !== anchor.id)].slice(0, 8);
+    const known = local.anchors.find((a) => a.id === anchor.id);
+    if (known) {
+      if (known.sign_public !== anchor.sign_public) throw new VaultError("anchor_conflict");
+      return { anchors: local.anchors.length, pinned: false as const };
+    }
+    if (local.epochs.size > 0) throw new VaultError("already_approved");
+    if (local.anchors.length >= MAX_ANCHORS) throw new VaultError("too_many_anchors");
+    local.anchors = [...local.anchors, anchor];
     store.write(local);
-    return { anchors: local.anchors.length };
+    return { anchors: local.anchors.length, pinned: true as const };
+  }
+
+  /// Anchors whose device the vault revoked go: the roster lists that very
+  /// device (same id, same signing key) as revoked. A revoked vault device
+  /// never comes back (it registers again with new keys), and the walk
+  /// already left it out; an anchor merely missing from the listing is
+  /// kept (the account may be withholding it). Returns the ids pruned.
+  function pruneAnchors(devices: VaultDevice[]): string[] {
+    const local = readLocal();
+    if (!local || local.anchors.length === 0) return [];
+    const byId = new Map(devices.map((d) => [d.id, d]));
+    const revoked = local.anchors.filter((a) => {
+      const d = byId.get(a.id);
+      return !!d && d.status === "revoked" && d.sign_public === a.sign_public;
+    });
+    if (revoked.length === 0) return [];
+    local.anchors = local.anchors.filter((a) => !revoked.includes(a));
+    store.write(local);
+    return revoked.map((a) => a.id);
   }
 
   function epochKeys(): Map<number, Uint8Array> {
@@ -560,7 +611,7 @@ export function createComputerVaultClient({ api, store, userId, accountComputerI
     };
   }
 
-  return { status, requestAccess, checkApproval, ensureEnrolled, pinAnchor, epochKeys, identity, readLocal };
+  return { status, requestAccess, checkApproval, ensureEnrolled, pinAnchor, pruneAnchors, epochKeys, identity, readLocal };
 }
 
 export type ComputerVaultClient = ReturnType<typeof createComputerVaultClient>;

@@ -2,6 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { and, desc, eq, inArray, isNull, like, or } from "drizzle-orm";
 import { db, memories } from "../db.js";
 import { requireAuth } from "../auth.js";
+import { ownerRequest } from "../localAccess.js";
+import { isPersonOrOwner } from "../sessionTrust.js";
+import { meshRoster } from "../vault/roster.js";
 import { factsFromImport, importAccountMemories, importMemories, IMPORT_SOURCES, MAX_ACCOUNT_MEMORIES, type AccountMemory, type ImportSource } from "../memoryLearning.js";
 import { memoryDeleted, memoryWritten, newMemoryId, possibleDuplicates } from "../vault/memories.js";
 
@@ -300,6 +303,13 @@ export async function memoryRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
+      // A deletion goes to every computer of the vault and forbids the fact
+      // for good: only this server's owner (its session, this machine) or
+      // one of the person's own devices (sessionTrust.ts) — not a household
+      // member's phone, a device paired by code or a firmware device.
+      if (!ownerRequest(req) && !(await isPersonOrOwner(auth, () => meshRoster().get()))) {
+        return reply.code(403).send({ error: "person_device_required" });
+      }
       const [existing] = db.select().from(memories).where(and(eq(memories.id, req.params.id), eq(memories.userId, auth.userId))).limit(1).all();
       const result = db
         .delete(memories)

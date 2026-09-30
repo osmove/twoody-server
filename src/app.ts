@@ -38,6 +38,7 @@ import { transcriptionRoutes } from "./routes/transcriptions.js";
 import { voiceRoutes } from "./routes/voices.js";
 import { wsRoutes } from "./routes/ws.js";
 import { tunnelDirectRoutes } from "./routes/tunnelDirect.js";
+import { thisSecurityCode } from "./tunnel/identity.js";
 import { localDocumentRoutes } from "./routes/localDocuments.js";
 import { accountLinkRoutes } from "./routes/accountLink.js";
 import { peerRoutes } from "./routes/peer.js";
@@ -280,6 +281,11 @@ export async function buildApp() {
             <td class="muted">${escape(entry.last_seen)}</td>
           </tr>`).join("");
 
+      // What the Desktop or the app shows for this computer, to compare
+      // before trusting it (vault/contracts.ts securityCode).
+      const code = thisSecurityCode();
+      const securityCodeHtml = code ? `<code>${escape(code)}</code>` : `<span class="muted">unavailable</span>`;
+
       const capsHtml = advertisedCaps.length === 0
         ? `<span class="muted">none — set TWOODY_SELF_BRIDGE=1 + BRIDGE_LOCAL_LLM_ENDPOINT + HOME_ASSISTANT_URL etc.</span>`
         : advertisedCaps.map((c) => `<code>${escape(c)}</code>`).join(" ");
@@ -316,6 +322,8 @@ export async function buildApp() {
     <div>${upstream ? `<code>${escape(upstream)}</code>` : `<span class="muted">none (local-only mode)</span>`}</div>
     <div class="muted">Advertised capabilities</div>
     <div>${capsHtml}</div>
+    <div class="muted">Security code</div>
+    <div>${securityCodeHtml}</div>
   </div>
 
   <h2>External bridge workers (polling this server)</h2>

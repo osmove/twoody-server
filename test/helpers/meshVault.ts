@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { signApprovalV2, signBinding, signDesktopBinding, signDeviceAccess } from "../../src/vault/contracts.js";
+import { signApprovalV2, signBinding, signDesktopBinding, signDeviceAccess, signDeviceAccessV2 } from "../../src/vault/contracts.js";
 import { createDeviceKeys, signApproval, toHex, type DeviceKeys } from "../../src/vault/crypto.js";
 import type { Anchor, VaultDevice } from "../../src/vault/client.js";
 
@@ -68,8 +68,15 @@ export function meshVault(userId: string | number = "42") {
     return Object.assign(device, { tunnelKey });
   }
 
-  /// A phone's device-access-v1 for `tunnelKey`, signed by `signer`.
-  function deviceAccess(signer: MeshDevice, tunnelKey: string) {
+  /// A phone's device-access/v2 for `tunnelKey`, for account computer
+  /// `accountComputerId`, signed by `signer`; valid for an hour unless `exp`.
+  function deviceAccess(signer: MeshDevice, tunnelKey: string, accountComputerId: string, exp = Math.floor(Date.now() / 1000) + 3600) {
+    const access = { vault_device_id: signer.id, tunnel_public_key: tunnelKey, account_computer_id: accountComputerId, exp };
+    return { ...access, signature: signDeviceAccessV2({ userId: user, access, signPrivate: signer.keys.signPrivate }) };
+  }
+
+  /// The same as device-access/v1 (no computer, no expiry): refused now.
+  function deviceAccessV1(signer: MeshDevice, tunnelKey: string) {
     const access = { vault_device_id: signer.id, tunnel_public_key: tunnelKey };
     return { ...access, signature: signDeviceAccess({ userId: user, access, signPrivate: signer.keys.signPrivate }) };
   }
@@ -82,6 +89,7 @@ export function meshVault(userId: string | number = "42") {
     computer,
     desktop,
     deviceAccess,
+    deviceAccessV1,
     anchorOf,
     /// What the roster reads: the devices as the account lists them (no keys).
     input(anchors: MeshDevice[]) {

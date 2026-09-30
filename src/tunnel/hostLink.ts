@@ -62,6 +62,7 @@ export function startTunnelHostLink(options: TunnelHostLinkOptions): TunnelHostL
         localBaseUrl: options.localBaseUrl,
         onError: options.onError,
         transport: "relay",
+        peerPublicKey: options.peerStaticKey,
         send: (frame) => transport.send([frame]),
       }),
     };

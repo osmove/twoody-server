@@ -229,27 +229,36 @@ test("rule 4: a roster computer asking as a peer with its bound tunnel key; noth
   assert.equal(judgeMesh(ok, null), null, "no vault here: no rule 4");
 });
 
-test("rule 5: a phone carrying a device-access signed by a person device of the roster, for the key it asks with", () => {
+test("rule 5: a phone carrying a device-access/v2 signed by a person device of the roster, for the key it asks with, this computer, not expired", () => {
   const roster = buildRoster(vault.input([iphone]));
-  const signed = vault.deviceAccess(ipad, phoneKey);
-  assert.deepEqual(judgeMesh(pending({ public_key: phoneKey, device_access: signed }), roster), { approve: true, rule: "device_access", vaultDeviceId: ipad.id });
+  const here = { selfComputerId: PI };
+  const signed = vault.deviceAccess(ipad, phoneKey, PI);
+  assert.deepEqual(judgeMesh(pending({ public_key: phoneKey, device_access: signed }), roster, here), { approve: true, rule: "device_access", vaultDeviceId: ipad.id });
   // The Desktop's binding says can_approve: it may vouch too.
-  assert.equal(judgeMesh(pending({ public_key: phoneKey, device_access: vault.deviceAccess(macDevice, phoneKey) }), roster)?.approve, true);
+  assert.equal(judgeMesh(pending({ public_key: phoneKey, device_access: vault.deviceAccess(macDevice, phoneKey, PI) }), roster, here)?.approve, true);
   const outsider = meshVault(USER).person("Someone else's phone");
+  const now = Math.floor(Date.now() / 1000);
   for (const [why, request] of [
-    ["signed by the Pi (can_approve=false)", pending({ public_key: phoneKey, device_access: vault.deviceAccess(piDevice, phoneKey) })],
+    ["signed by the Pi (can_approve=false)", pending({ public_key: phoneKey, device_access: vault.deviceAccess(piDevice, phoneKey, PI) })],
     ["for another key", pending({ public_key: hex(), device_access: signed })],
     ["tampered", pending({ public_key: phoneKey, device_access: { ...signed, signature: signed.signature.replace(/^./, (c) => (c === "0" ? "1" : "0")) } })],
-    ["a device not in the vault", pending({ public_key: phoneKey, device_access: { ...vault.deviceAccess(outsider, phoneKey) } })],
+    ["a device not in the vault", pending({ public_key: phoneKey, device_access: { ...vault.deviceAccess(outsider, phoneKey, PI) } })],
     ["from a computer (role peer)", pending({ role: "peer", requester_computer_id: Number(LISTED), public_key: phoneKey, device_access: signed })],
     ["none", pending({ public_key: phoneKey })],
     ["garbage", pending({ public_key: phoneKey, device_access: "{not json" })],
+    ["for another computer (replayed from the Mac)", pending({ public_key: phoneKey, device_access: vault.deviceAccess(ipad, phoneKey, MAC) })],
+    ["another computer, said as this one", pending({ public_key: phoneKey, device_access: { ...vault.deviceAccess(ipad, phoneKey, MAC), account_computer_id: PI } })],
+    ["expired", pending({ public_key: phoneKey, device_access: vault.deviceAccess(ipad, phoneKey, PI, now - 1) })],
+    ["expiring too far ahead (kept, not made for one request)", pending({ public_key: phoneKey, device_access: vault.deviceAccess(ipad, phoneKey, PI, now + 2 * 86_400) })],
+    ["a later expiry than signed", pending({ public_key: phoneKey, device_access: { ...signed, exp: signed.exp + 60 } })],
+    ["v1 (no computer, no expiry)", pending({ public_key: phoneKey, device_access: vault.deviceAccessV1(ipad, phoneKey) })],
   ] as const) {
-    assert.equal(judgeMesh(request, roster), null, why);
+    assert.equal(judgeMesh(request, roster, here), null, why);
   }
+  assert.equal(judgeMesh(pending({ public_key: phoneKey, device_access: signed }), roster), null, "not knowing which computer it is: no rule 5");
   const revoked = vault.input([iphone]);
   revoked.devices.find((d) => d.id === ipad.id)!.status = "revoked";
-  assert.equal(judgeMesh(pending({ public_key: phoneKey, device_access: signed }), buildRoster(revoked)), null, "a revoked person device");
+  assert.equal(judgeMesh(pending({ public_key: phoneKey, device_access: signed }), buildRoster(revoked), here), null, "a revoked person device");
 });
 
 let macSessionId = "";
@@ -263,7 +272,7 @@ test("the approval loop applies rules 4 and 5 against the account; a computer it
   // The phone asks the way twoody-app A1 does: device_access in request_access.
   const asked = await fetch(`${backend.url}/api/v1/account_computers/${pi.id}/request_access`, {
     method: "POST", headers: { "content-type": "application/json", "x-user-token": backend.userToken },
-    body: JSON.stringify({ name: "iPhone de Claire", public_key: phoneKey, role: "device", device_access: vault.deviceAccess(ipad, phoneKey) }),
+    body: JSON.stringify({ name: "iPhone de Claire", public_key: phoneKey, role: "device", device_access: vault.deviceAccess(ipad, phoneKey, PI) }),
   }).then((r) => r.json());
 
   const loop = startApprovalLoop({ everyMs: 60_000 });

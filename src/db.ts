@@ -73,6 +73,14 @@ export const authSessions = sqliteTable("auth_sessions", {
   /// device leaves the verified vault roster, the session goes
   /// (peers/index.ts). Null otherwise.
   vaultDeviceId: text("vault_device_id"),
+  /// Which rule of account/approvals.ts let the session in (« approver »,
+  /// « endorsed », « console », « mesh_computer », « device_access »); null
+  /// for a session not given through the account.
+  approvalRule: text("approval_rule"),
+  /// The device-access/v2 the requester carried (JSON of its wire form),
+  /// kept so that its vault device can be checked again later: for a rule
+  /// 1 session, whose device the roster may not know yet when it is let in.
+  deviceAccessJson: text("device_access_json"),
 });
 
 export const pairingCodes = sqliteTable("pairing_codes", {
@@ -940,6 +948,11 @@ if (!sessionColumns.some((column) => column.name === "requester_computer_id")) {
 // phone's session was given to, and the links asked for by the roster.
 if (!sessionColumns.some((column) => column.name === "vault_device_id")) {
   sqlite.exec("ALTER TABLE auth_sessions ADD COLUMN vault_device_id TEXT");
+}
+// Which approval rule let a session in, and the device-access it carried
+// (30/09/2026): who may name this computer's vault anchors, and seal turns.
+for (const name of ["approval_rule", "device_access_json"]) {
+  if (!sessionColumns.some((column) => column.name === name)) sqlite.exec(`ALTER TABLE auth_sessions ADD COLUMN ${name} TEXT`);
 }
 if (!peerColumns.some((column) => column.name === "origin")) {
   sqlite.exec("ALTER TABLE account_peers ADD COLUMN origin TEXT");

@@ -138,8 +138,8 @@ test("approved and bound by the iPhone, the Pi takes its keys once the iPhone is
   await phoneTrusts(await identityNow(), { pin: false });
   assert.equal((await vaultService.tick()).status, "pending");
   assert.equal(service.vaultEpochKeys().size, 0);
-  // Pinning is for the tunnel only, and for a well-formed person device.
-  assert.equal((await app.inject({ method: "POST", url: "/api/v1/peer/vault/anchor", headers: local, payload: { vault_device_id: phone.id, sign_public: crypto.toHex(phone.keys.signPublic) } })).statusCode, 403);
+  // Pinning is for the tunnel (or this machine's own console) only, and for a well-formed person device.
+  assert.equal((await app.inject({ method: "POST", url: "/api/v1/peer/vault/anchor", headers: local, remoteAddress: "192.168.1.20", payload: { vault_device_id: phone.id, sign_public: crypto.toHex(phone.keys.signPublic) } })).statusCode, 403);
   assert.equal((await app.inject({ method: "POST", url: "/api/v1/peer/vault/anchor", headers: { ...local, "x-twoody-via-tunnel": "relay" }, payload: { vault_device_id: "nope", sign_public: crypto.toHex(phone.keys.signPublic) } })).statusCode, 422);
 
   await phoneTrusts(await identityNow());

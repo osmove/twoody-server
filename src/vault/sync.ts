@@ -286,7 +286,8 @@ export interface LocalHistory {
   byVaultId(vaultId: string): { id: string; refs: Set<string> } | null;
   /// A discussion's vault id, if it is synchronised.
   vaultIdOf(discussionId: string): string | null;
-  /// One exchange of a discussion, by its question's vault ref.
+  /// One exchange of a discussion that this computer answered itself, by its
+  /// question's vault ref: null when it has none, several, or one imported.
   turn(discussionId: string, ref: string): { text: string; reply: string; model: string | null; created_at: string; sources: unknown[]; answered_by: unknown } | null;
 }
 

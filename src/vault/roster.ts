@@ -68,7 +68,7 @@ export function buildRoster({ userId, devices, anchors }: RosterInput): Roster {
   for (const device of devices) {
     if (device.status !== "trusted" || !verified.has(device.id)) continue;
     const approver = (binding: { approver_id: string }) => byId.get(binding.approver_id);
-    const kind = deviceKind(userId, device, byId);
+    const kind = deviceKind(userId, device, byId, verified);
     if (!kind) continue;
     if (kind.kind === "computer") {
       const binding = readBinding(device);
@@ -88,7 +88,7 @@ export function buildRoster({ userId, devices, anchors }: RosterInput): Roster {
     const person = mayApprove(userId, device, byId, verified);
     if (person) persons.set(device.id, { vaultDeviceId: device.id, label: device.label, signPublic: device.sign_public });
     // A Desktop: a person-device of the walk that says which computer it is.
-    const desktop = person && kind.kind === "person" ? desktopBindingOf(userId, device, byId) : null;
+    const desktop = person && kind.kind === "person" ? desktopBindingOf(userId, device, byId, verified) : null;
     if (desktop) {
       add({
         accountComputerId: desktop.account_computer_id,

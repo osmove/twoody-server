@@ -10,6 +10,8 @@ import { fusePassages } from "../documents/vectorMath.js";
 import { homedir } from "node:os";
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
+import { meshRequester } from "../sessionTrust.js";
+import { meshRoster } from "../vault/roster.js";
 import {
   addFolder,
   FolderRejected,
@@ -263,7 +265,9 @@ export async function localDocumentRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      reply.send({ computers: await foldersOfComputers(auth.userId) });
+      // The other computers' folders: only to the owner or the person's own
+      // devices (sessionTrust.ts); anyone else sees none.
+      reply.send({ computers: await foldersOfComputers(auth.userId, undefined, await meshRequester(auth, () => meshRoster().get())) });
     },
   });
 
@@ -283,7 +287,8 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       if (!auth) return;
       // A person's session, not a firmware device's token.
       if (!auth.sessionId) return reply.code(403).send({ error: "session_required" });
-      await serveRemoteRaw(req, reply, { userId: auth.userId, client: auth.sessionId, computerId: req.params.computer_id, documentId: req.params.id });
+      const requester = await meshRequester(auth, () => meshRoster().get());
+      await serveRemoteRaw(req, reply, { userId: auth.userId, client: auth.sessionId, computerId: req.params.computer_id, documentId: req.params.id, requester });
       return reply;
     },
   });

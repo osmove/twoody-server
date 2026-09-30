@@ -330,7 +330,7 @@ export function createMemoryVault({ sqlite, owner, access, now = () => Date.now(
   function apply(ctx: Context) {
     const me = owner();
     const log = sqlite.prepare("SELECT event_id, memory_id, payload_json FROM memory_vault_events WHERE stream_id = ?").all(ctx.streamId) as Array<Pick<LogRow, "event_id" | "memory_id" | "payload_json">>;
-    const merged = mergeMemories(log.map((r) => ({ event_id: r.event_id, payload: parse(r.payload_json) })), { epochOne: ctx.epochOne });
+    const merged = mergeMemories(log.map((r) => ({ event_id: r.event_id, payload: parse(r.payload_json) })), { epochOne: ctx.epochOne, nowMs: now() });
     const tombstoned = new Set(merged.tombstoned);
     const hashes = new Set<string>();
     for (const r of log) {

@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { open, realpath } from "node:fs/promises";
+import { open, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative } from "node:path";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { sqlite } from "../db.js";
@@ -98,11 +98,15 @@ export async function serveRawDocument(
     return null;
   }
 
+  // Opened first, then checked: what is read is what the descriptor holds,
+  // so the check is about that file — the path's real location must be in
+  // the grant AND be the very file opened (same device and inode). A
+  // symlink or directory swapped in between the two is caught either way;
+  // checking the path and then opening it would read whatever the path
+  // pointed to by then.
   let handle;
   try {
-    const [real, root] = await Promise.all([realpath(doc.path), realpath(doc.folder_path)]);
-    if (!inside(root, real)) throw new Error("outside_grant");
-    handle = await open(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    handle = await open(doc.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   } catch {
     reply.code(404).send({ error: "not_found" });
     return null;
@@ -110,6 +114,10 @@ export async function serveRawDocument(
   let stats;
   try {
     stats = await handle.stat();
+    const [real, root] = await Promise.all([realpath(doc.path), realpath(doc.folder_path)]);
+    if (!inside(root, real)) throw new Error("outside_grant");
+    const there = await stat(real);
+    if (there.dev !== stats.dev || there.ino !== stats.ino) throw new Error("swapped");
   } catch {
     await handle.close();
     reply.code(404).send({ error: "not_found" });

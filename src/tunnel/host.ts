@@ -38,6 +38,11 @@ export interface TunnelHostOptions {
   /// in the marker below, for the routes whose limits depend on it (a raw
   /// file is capped lower through the relay). Relay when unsaid.
   transport?: "relay" | "direct";
+  /// The other end's static X25519 key, which the channel was built with
+  /// (the only proof of who sealed a frame): stamped on every request it
+  /// serves (TUNNEL_PEER_HEADER), so that a route can hold a session to the
+  /// key it was given for.
+  peerPublicKey?: Buffer;
   /// Only for tests.
   fetchImpl?: typeof fetch;
   onError?(err: unknown): void;
@@ -63,6 +68,10 @@ const CHUNK_BYTES = 64 * 1024;
 /// Set on every request the tunnel serves, whatever the other end sent:
 /// "relay", or "direct" for the local network's socket.
 export const VIA_TUNNEL_HEADER = "x-twoody-via-tunnel";
+/// Set on every request the tunnel serves to the hex of the key of the
+/// device at the other end, replacing whatever that device sent; removed
+/// when the host was not told it.
+export const TUNNEL_PEER_HEADER = "x-twoody-tunnel-peer";
 
 export interface TunnelHost {
   /// Feed it every frame that arrives. It never throws: a frame that
@@ -124,6 +133,8 @@ export function createTunnelHost(options: TunnelHostOptions): TunnelHost {
       // Every request from the tunnel arrives from 127.0.0.1: said so, for
       // the routes that trust this machine's own requests (localAccess.ts).
       headers.set(VIA_TUNNEL_HEADER, options.transport ?? "relay");
+      if (options.peerPublicKey) headers.set(TUNNEL_PEER_HEADER, options.peerPublicKey.toString("hex"));
+      else headers.delete(TUNNEL_PEER_HEADER);
       const response = await fetchImpl(url, {
         method: request.method,
         headers,

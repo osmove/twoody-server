@@ -12,6 +12,7 @@ import { serveRawDocument } from "../peerDocuments/raw.js";
 import { trustedPeerCaller, type PeerCaller } from "../peerDocuments/trust.js";
 import { createRateLimiter } from "../rateLimit.js";
 import { requirePairedPerson } from "./peers.js";
+import { readRequester, type Requester } from "../sessionTrust.js";
 
 // This computer's documents, for the account's other computers it trusts
 // (docs/mesh-design.md §2), through the sealed tunnel:
@@ -38,7 +39,7 @@ const limiter = createRateLimiter({ limit: PEER_DOCUMENTS_PER_MINUTE, windowMs: 
 const MAX_FILES = 20;
 const MAX_SNIPPET = 300;
 
-type Caller = PeerCaller & { self: string };
+type Caller = PeerCaller & { self: string; requester: Requester | null };
 /// Search requests whose body named a field the contract does not.
 const unknownFields = new WeakSet<FastifyRequest>();
 
@@ -60,14 +61,14 @@ async function peerCaller(req: FastifyRequest, reply: FastifyReply): Promise<Cal
       return null;
     }
   }
-  const caller = await trustedPeerCaller(auth);
+  const caller = await trustedPeerCaller(auth, req);
   const self = accountCredentials()?.computerId ?? null;
   if ("error" in caller || !self) {
     req.log.info({ reason: "error" in caller ? caller.reason : "no_account" }, "peer documents refused");
     refuse(reply, 403, "not_trusted");
     return null;
   }
-  return { ...caller, self };
+  return { ...caller, self, requester: readRequester(req.headers) };
 }
 
 interface SearchBody {
@@ -154,7 +155,7 @@ export async function peerDocumentRoutes(app: FastifyInstance) {
         }));
       const status = indexStatus(caller.userId);
       const seen = new Map(passages.map((p) => [p.document_id, p.name]));
-      recordAccess({ userId: caller.userId, computerId: caller.computerId, sessionId: caller.sessionId, action: "search", documents: [...seen].map(([id, name]) => ({ id, name })) });
+      recordAccess({ userId: caller.userId, computerId: caller.computerId, sessionId: caller.sessionId, requester: caller.requester, action: "search", documents: [...seen].map(([id, name]) => ({ id, name })) });
       return reply.send({
         computer_id: caller.self,
         took_ms: Date.now() - started,
@@ -176,7 +177,7 @@ export async function peerDocumentRoutes(app: FastifyInstance) {
       const caller = await peerCaller(req, reply);
       if (!caller) return;
       const folders = scopedFolders(caller.userId, { mode: "all" });
-      recordAccess({ userId: caller.userId, computerId: caller.computerId, sessionId: caller.sessionId, action: "folders" });
+      recordAccess({ userId: caller.userId, computerId: caller.computerId, sessionId: caller.sessionId, requester: caller.requester, action: "folders" });
       return reply.send({
         computer_id: caller.self,
         folders: folders.map((f) => ({ id: f.id, name: f.name, documents: f.documents, indexed: f.indexed })),
@@ -210,7 +211,7 @@ export async function peerDocumentRoutes(app: FastifyInstance) {
       const rows = sqlite
         .prepare("SELECT page, text FROM document_chunks WHERE document_id = ? AND user_id = ? ORDER BY position, rowid LIMIT 21 OFFSET ?")
         .all(file.id, caller.userId, offset) as Array<{ page: number | null; text: string }>;
-      recordAccess({ userId: caller.userId, computerId: caller.computerId, sessionId: caller.sessionId, action: "read", documents: [{ id: file.id, name: file.name }] });
+      recordAccess({ userId: caller.userId, computerId: caller.computerId, sessionId: caller.sessionId, requester: caller.requester, action: "read", documents: [{ id: file.id, name: file.name }] });
       return reply.send({
         computer_id: caller.self,
         file: {
@@ -239,7 +240,7 @@ export async function peerDocumentRoutes(app: FastifyInstance) {
       if (!caller) return;
       const folderIds = scopedFolders(caller.userId, { mode: "all" }).map((f) => f.id);
       const sent = await serveRawDocument(req, reply, { userId: caller.userId, documentId: req.params.id, folderIds });
-      if (sent) recordAccess({ userId: caller.userId, computerId: caller.computerId, sessionId: caller.sessionId, action: "raw", documents: [{ id: sent.id, name: sent.name }], bytes: sent.bytes });
+      if (sent) recordAccess({ userId: caller.userId, computerId: caller.computerId, sessionId: caller.sessionId, requester: caller.requester, action: "raw", documents: [{ id: sent.id, name: sent.name }], bytes: sent.bytes });
       return reply;
     },
   });

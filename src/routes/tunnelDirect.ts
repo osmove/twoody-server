@@ -48,6 +48,7 @@ export async function tunnelDirectRoutes(app: FastifyInstance) {
           channel,
           localBaseUrl,
           transport: "direct",
+          peerPublicKey: peer.publicKey,
           send: (sealed) => {
             if (socket.readyState === socket.OPEN) socket.send(sealed);
           },

@@ -7,6 +7,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { startFakeRuntime } from "./helpers/fakeBackend.js";
+import { randomBytes } from "node:crypto";
 
 // Documents across the person's trusted computers (docs/mesh-design.md §2,
 // §3, lot S4), with two Twoody servers on loopback: this process is the Mac
@@ -44,7 +45,7 @@ delete process.env.TWOODY_BACKEND_URL;
 const { buildApp } = await import("../src/app.js");
 const { ensureSetupToken } = await import("../src/auth.js");
 const { accountPeers, db, sqlite } = await import("../src/db.js");
-const { ensureLocalUser } = await import("../src/pairing.js");
+const { ensureLocalUser, pairDevice } = await import("../src/pairing.js");
 const { setDesktopAccount } = await import("../src/account/service.js");
 const { folderRisk } = await import("../src/documents/folderRisk.js");
 const { closeAllPeerLinks, peerById, refreshPeerStatus, setPeerHandshakeTimeouts } = await import("../src/peers/index.js");
@@ -247,6 +248,88 @@ test("the Documents screen lists the Pi's folders through the Mac, ids as a docu
   assert.deepEqual((await app.inject({ url: "/local_documents/computers", headers: auth })).json(), { computers: [] });
   await withPi();
   assert.equal((await app.inject({ url: "/local_documents/computers" })).statusCode, 401);
+});
+
+test("only the owner or the person's own devices reach the Pi's documents through the Mac; the Pi's audit is told which", async () => {
+  setFanOutDeadlines({ direct: 10_000, relay: 10_000 });
+  // A device paired by the code on the Mac's screen, a household member's
+  // phone vouched for by a pinned approver (rule 2), the console's: none
+  // is one of the person's own devices.
+  const byCode = pairDevice({ deviceName: "iPad de la cuisine", tunnelPublicKey: randomBytes(32).toString("hex"), origin: "code" });
+  const household = pairDevice({ deviceName: "iPhone de Claire", tunnelPublicKey: randomBytes(32).toString("hex"), origin: "account", approvalRule: "endorsed" });
+  for (const [who, session] of [["paired by code", byCode], ["household (rule 2)", household]] as const) {
+    const headers = { "x-user-token": session.token };
+    const raw = await fetch(`${macUrl}/local_documents/remote/${PI}/files/pi-voiture/raw`, { headers });
+    assert.equal(raw.status, 403, who);
+    assert.deepEqual(await raw.json(), { error: "person_device_required" }, who);
+    const own = await fetch(`${macUrl}/local_documents/remote/${MAC}/files/mac-facture/raw`, { headers });
+    assert.equal(own.status, 200, `${who}: this computer's own documents, as before`);
+    assert.deepEqual((await app.inject({ url: "/local_documents/computers", headers })).json(), { computers: [] }, who);
+    const before = await piSearches();
+    const answer = final((await ask({}, headers)).payload);
+    assert.deepEqual(answer.documents.computers.map((c: { computer_id: string }) => c.computer_id), [MAC], `${who}: no other computer asked`);
+    assert.ok(answer.sources.every((s: { computer_id: string }) => s.computer_id === MAC), who);
+    assert.equal(await piSearches(), before, `${who}: no search reached the Pi`);
+  }
+
+  // The person's iPhone, let in on its device-access/v2 (rule 5): signed
+  // by the iPhone's vault key for the key its session holds.
+  const phoneKey = randomBytes(32).toString("hex");
+  const access = vault.deviceAccess(iphone, phoneKey, MAC);
+  const phone = pairDevice({ deviceName: "iPhone de Jimmy", tunnelPublicKey: phoneKey, origin: "mesh", vaultDeviceId: iphone.id, approvalRule: "device_access", deviceAccessJson: JSON.stringify(access) });
+  const seen: Array<unknown> = [];
+  setPeerSearch(async (peer, body, signal, requester) => {
+    seen.push(requester);
+    return tunnelPeerSearch(peer, body, signal, requester);
+  });
+  try {
+    const headers = { "x-user-token": phone.token };
+    const raw = await fetch(`${macUrl}/local_documents/remote/${PI}/files/pi-voiture/raw`, { headers });
+    assert.equal(raw.status, 200, await raw.clone().text());
+    const answer = final((await ask({}, headers)).payload);
+    assert.deepEqual(answer.documents.computers.map((c: { computer_id: string; status: string }) => [c.computer_id, c.status]), [[MAC, "answered"], [PI, "answered"]]);
+    assert.deepEqual(seen.at(-1), { id: `person:${iphone.id}`, name: "iPhone de Jimmy" }, "named to the Pi for its audit");
+    // The desktop's own session: the owner.
+    final((await ask({})).payload);
+    assert.deepEqual(seen.at(-1), { id: "owner", name: "Twoody Desktop" });
+    // A session claiming the iPhone with a statement signed by another key: not it.
+    const forger = vault.person("Forger");
+    const fakeKey = randomBytes(32).toString("hex");
+    const forged = pairDevice({ deviceName: "Pas l'iPhone", tunnelPublicKey: fakeKey, origin: "mesh", vaultDeviceId: iphone.id, approvalRule: "device_access", deviceAccessJson: JSON.stringify({ ...vault.deviceAccess(forger, fakeKey, MAC), vault_device_id: iphone.id }) });
+    assert.equal((await fetch(`${macUrl}/local_documents/remote/${PI}/files/pi-voiture/raw`, { headers: { "x-user-token": forged.token } })).status, 403);
+    // The iPhone's statement, kept by a session holding another tunnel key: not it either.
+    const moved = pairDevice({ deviceName: "Autre clé", tunnelPublicKey: randomBytes(32).toString("hex"), origin: "mesh", vaultDeviceId: iphone.id, approvalRule: "device_access", deviceAccessJson: JSON.stringify(access) });
+    assert.equal((await fetch(`${macUrl}/local_documents/remote/${PI}/files/pi-voiture/raw`, { headers: { "x-user-token": moved.token } })).status, 403);
+  } finally {
+    setPeerSearch(null);
+  }
+});
+
+test("a synchronised conversation is the person's: anyone else's question stays out of it, and a ref is used once", async () => {
+  const conversation = "6e4d3c2b-1a0f-4e9d-8c7b-a69584736251";
+  const prior = [{ ref: "claire-1", text: "Le code de l'alarme est 0000.", reply: "Noté.", created_at: "2026-09-30T08:00:00.000Z" }];
+  const byCode = pairDevice({ deviceName: "iPad de la cuisine", tunnelPublicKey: randomBytes(32).toString("hex"), origin: "code" });
+  const answer = final((await ask({ content: "Quel est le code ?", vault_conversation_id: conversation, known_refs: ["claire-1"], prior_turns: prior, vault_ref: "claire-2" }, { "x-user-token": byCode.token })).payload);
+  assert.equal(answer.vault_conversation_id ?? null, null, "answered in a conversation of this computer's own");
+  assert.equal(sqlite.prepare("SELECT id FROM discussions WHERE vault_id = ?").get(conversation), undefined, "nothing brought into the vault's conversation");
+  assert.equal(sqlite.prepare("SELECT id FROM messages WHERE vault_ref IN ('claire-1', 'claire-2', 'claire-2#reply')").get(), undefined, "no ref kept: nothing to seal");
+  assert.ok(!lastPrompt().includes("0000"), "the inlined turns are not taken either");
+
+  // The owner: an inlined turn's ref, or one already answered, is not asked again.
+  const inlined = [{ ref: "own-1", text: "Mon garagiste s'appelle Martin.", reply: "Noté, Martin.", created_at: "2026-09-30T08:00:00.000Z" }];
+  const clash = await ask({ content: "Répète", vault_conversation_id: conversation, known_refs: ["own-1"], prior_turns: inlined, vault_ref: "own-1" });
+  assert.equal(clash.statusCode, 409);
+  assert.deepEqual(clash.json(), { error: "vault_ref_exists", vault_ref: "own-1" });
+  final((await ask({ content: "Et son prénom ?", vault_conversation_id: conversation, known_refs: ["own-1"], vault_ref: "own-2" })).payload);
+  const again = await ask({ content: "Autre chose", vault_conversation_id: conversation, known_refs: ["own-1", "own-2"], vault_ref: "own-2" });
+  assert.equal(again.statusCode, 409);
+  const row = sqlite.prepare("SELECT id FROM discussions WHERE vault_id = ?").get(conversation) as { id: string };
+  assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM messages WHERE discussion_id = ? AND vault_ref = 'own-2'").get(row.id) as { n: number }).n, 1);
+  // Which exchange a ref names is settled: the one this computer answered,
+  // never one it imported (its answer is « vault »).
+  const { sqliteHistory } = await import("../src/vault/localHistory.js");
+  assert.equal(sqliteHistory(user.id).turn(row.id, "own-1"), null, "inlined: context only, never sealed as this computer's");
+  assert.equal(sqliteHistory(user.id).turn(row.id, "own-2")?.text, "Et son prénom ?");
 });
 
 test("what the fan-out adds to the time to the first token, with the Pi 20 ms and 300 ms away", async () => {

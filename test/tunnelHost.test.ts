@@ -70,7 +70,7 @@ function localServer(): Promise<{ url: string; close(): Promise<void>; seen: Arr
 }
 
 /// The phone's end: seals requests, collects what comes back.
-function phoneSide(localBaseUrl: string, timeoutMs?: number) {
+function phoneSide(localBaseUrl: string, timeoutMs?: number, options: { stamp?: boolean } = {}) {
   const phone = createIdentity();
   const computer = createIdentity();
   const phoneHandshake = startHandshake();
@@ -98,6 +98,7 @@ function phoneSide(localBaseUrl: string, timeoutMs?: number) {
     channel: computerChannel,
     localBaseUrl,
     timeoutMs,
+    ...(options.stamp === false ? {} : { peerPublicKey: phone.publicKey }),
     onError: (err) => errors.push(err),
     send: (frame) => {
       received.push({ ...decode(phoneChannel.open(frame)), at: Date.now() });
@@ -145,6 +146,23 @@ test("a request from the phone is served by the server on this computer", async 
   // The headers the phone set travel; the ones that describe the hop do not.
   assert.equal(server.seen[0].headers["x-user-token"], "secret");
   assert.equal(side.errors.length, 0);
+});
+
+test("every request served carries the key of the device at the other end, whatever that device wrote", async (t) => {
+  const server = await localServer();
+  t.after(() => server.close());
+  const side = phoneSide(server.url);
+  t.after(() => side.host.close());
+  const forged = "ab".repeat(32);
+  await side.request({ t: "req", id: 2, method: "GET", path: "/health", headers: { "x-twoody-tunnel-peer": forged, "x-twoody-via-tunnel": "direct" } });
+  assert.equal(server.seen[0].headers["x-twoody-tunnel-peer"], side.keys.phone.publicKey.toString("hex"));
+  assert.equal(server.seen[0].headers["x-twoody-via-tunnel"], "relay", "the marker is the host's too");
+
+  // A host not told the key sends none, not the one the device wrote.
+  const unstamped = phoneSide(server.url, undefined, { stamp: false });
+  t.after(() => unstamped.host.close());
+  await unstamped.request({ t: "req", id: 3, method: "GET", path: "/health", headers: { "x-twoody-tunnel-peer": forged } });
+  assert.equal(server.seen[1].headers["x-twoody-tunnel-peer"], undefined);
 });
 
 test("a request carries its method and its body", async (t) => {

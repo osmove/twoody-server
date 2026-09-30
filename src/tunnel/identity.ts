@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { DATA_DIR, db, tunnelPeers } from "../db.js";
 import { createIdentity, KEY_BYTES, type StaticIdentity } from "./channel.js";
+import { securityCode } from "../vault/contracts.js";
 
 // This computer's long-lived tunnel key, and the devices it is paired
 // with.
@@ -27,6 +28,17 @@ const IDENTITY_PATH = join(DATA_DIR, "tunnel-identity");
 const PRIVATE_KEY_PREFIX = Buffer.from("302e020100300506032b656e04220420", "hex");
 
 let cached: StaticIdentity | null = null;
+
+/// This computer's security code (src/vault/contracts.ts securityCode):
+/// what a person compares with the code the Desktop or the app shows for
+/// it. Null when the key cannot be read.
+export function thisSecurityCode(): string | null {
+  try {
+    return securityCode(new Uint8Array(tunnelIdentity().publicKey));
+  } catch {
+    return null;
+  }
+}
 
 /// The key pair for this computer, made the first time it is asked for.
 export function tunnelIdentity(): StaticIdentity {

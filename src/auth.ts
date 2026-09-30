@@ -132,7 +132,8 @@ export function createAuthSession(
   clientKind = "cli",
   origin: SessionOrigin | null = null,
   requesterComputerId: string | null = null,
-  vaultDeviceId: string | null = null
+  vaultDeviceId: string | null = null,
+  approval: { rule?: string | null; deviceAccessJson?: string | null } = {}
 ): { token: string; sessionId: string } {
   const token = generateToken();
   const sessionId = generateId();
@@ -148,6 +149,8 @@ export function createAuthSession(
       origin,
       requesterComputerId,
       vaultDeviceId,
+      approvalRule: approval.rule ?? null,
+      deviceAccessJson: approval.deviceAccessJson ?? null,
     })
     .run();
 

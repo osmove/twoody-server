@@ -51,6 +51,10 @@ export function pairDevice(args: {
   /// (account/approvals.ts rule 5): its session goes when that device
   /// leaves the vault roster.
   vaultDeviceId?: string | null;
+  /// Which rule of account/approvals.ts let it in, and the device-access it
+  /// carried (JSON), kept with the session (sessionTrust.ts).
+  approvalRule?: string | null;
+  deviceAccessJson?: string | null;
 }): {
   token: string;
   sessionId: string;
@@ -58,7 +62,7 @@ export function pairDevice(args: {
   tunnelPublicKey?: string;
 } {
   const user = ensureLocalUser();
-  const { token, sessionId } = createAuthSession(user.id, sessionKindFor(args.role ?? "device", args.deviceName), args.origin ?? null, args.requesterComputerId ?? null, args.vaultDeviceId ?? null);
+  const { token, sessionId } = createAuthSession(user.id, sessionKindFor(args.role ?? "device", args.deviceName), args.origin ?? null, args.requesterComputerId ?? null, args.vaultDeviceId ?? null, { rule: args.approvalRule ?? null, deviceAccessJson: args.deviceAccessJson ?? null });
   // The key swap, when the device brought one. The key goes with the
   // session: removing the device takes both.
   if (args.tunnelPublicKey) {

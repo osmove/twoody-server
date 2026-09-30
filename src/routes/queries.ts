@@ -9,7 +9,7 @@ import { VIA_TUNNEL_HEADER } from "../tunnel/host.js";
 import { documentAccess } from "../documents/access.js";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { requireAuth, generateId, PLACEHOLDER_USER_NAME } from "../auth.js";
-import { db, providers, discussions, messages, memories, users } from "../db.js";
+import { db, providers, discussions, messages, memories, sqlite, users } from "../db.js";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { transcribeWavWithWhisperCpp, withoutNonSpeech, WhisperUnavailableError } from "../whisper.js";
 import { publish as publishEvent } from "../events.js";
@@ -41,6 +41,7 @@ import type { Purpose } from "../account/status.js";
 import { peerById, peerRequest, PeerUnavailableError, type PeerRow } from "../peers/index.js";
 import { isSelf, peerTrusted, pick, pickBackground, selfIdentity } from "../router/index.js";
 import { meshRoster } from "../vault/roster.js";
+import { meshRequester } from "../sessionTrust.js";
 import { ensureConversation, sealAnsweredTurn } from "../vault/service.js";
 import { sqliteHistory } from "../vault/localHistory.js";
 import { pathlessSource } from "../vault/sync.js";
@@ -332,10 +333,24 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // computer: brought here first (the vault, else the turns the client
   // inlined), so that this computer answers with its history.
   const nested = (parsed.query ?? {}) as Record<string, unknown>;
-  const vaultConversationId = readVaultConversationId(parsed.vault_conversation_id ?? nested.vault_conversation_id);
-  const priorTurns = readPriorTurns(parsed.prior_turns ?? nested.prior_turns);
-  if (vaultConversationId === "invalid") return reply.code(422).send({ error: "invalid_vault_conversation_id" });
-  if (priorTurns === "invalid") return reply.code(422).send({ error: "invalid_prior_turns", max_turns: PRIOR_TURNS_MAX, max_bytes: PRIOR_TURNS_MAX_BYTES });
+  const askedVaultConversationId = readVaultConversationId(parsed.vault_conversation_id ?? nested.vault_conversation_id);
+  const askedPriorTurns = readPriorTurns(parsed.prior_turns ?? nested.prior_turns);
+  if (askedVaultConversationId === "invalid") return reply.code(422).send({ error: "invalid_vault_conversation_id" });
+  if (askedPriorTurns === "invalid") return reply.code(422).send({ error: "invalid_prior_turns", max_turns: PRIOR_TURNS_MAX, max_bytes: PRIOR_TURNS_MAX_BYTES });
+  const rawVaultRef = parsed.vault_ref ?? (parsed.query as { vault_ref?: unknown } | undefined)?.vault_ref;
+  const askedVaultRef = typeof rawVaultRef === "string" && /^[\w:.-]{1,200}$/.test(rawVaultRef) ? rawVaultRef : null;
+  // The encrypted history is the person's: only this server's owner or one
+  // of the person's own devices (sessionTrust.ts) may bring a synchronised
+  // conversation here or have this computer seal a turn into it. Anyone
+  // else — a device paired by code, a household member's phone, a firmware
+  // device — is answered in a conversation of this computer's own, as if
+  // it had named none: nothing of it reaches the vault.
+  // The same who reaches the other computers' documents (documents/remote.ts).
+  const requester = await meshRequester(auth, () => meshRoster().get());
+  const vaultMember = requester !== null;
+  const vaultConversationId = vaultMember ? askedVaultConversationId : null;
+  const priorTurns = vaultMember ? askedPriorTurns : null;
+  const vaultRef = vaultMember ? askedVaultRef : null;
   let caughtUp: CatchUp | null = null;
   if (vaultConversationId) {
     caughtUp = await catchUp(auth.userId, vaultConversationId, readKnownRefs(parsed.known_refs ?? nested.known_refs), priorTurns, parsed.discussion_id ?? null);
@@ -360,12 +375,18 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   const compacted = discussionSummary(discussion.id);
   const history = loadHistory(discussion.id, compacted.summaryThrough);
 
+  // An exchange is sealed under its ref once: a ref already in the
+  // conversation (an exchange imported, inlined, or asked before) is
+  // refused, so that no other text can be sealed under it as this
+  // computer's. Checked and inserted with nothing awaited in between.
+  if (vaultRef && vaultRefTaken(discussion.id, vaultRef)) {
+    return reply.code(409).send({ error: "vault_ref_exists", vault_ref: vaultRef });
+  }
+
   // Persist the user prompt up front so a streaming failure doesn't
   // erase the question. Assistant message is inserted after the
   // stream completes (or with a partial body on error).
   // Flat, or nested under `query[…]` as voice messages send it.
-  const rawVaultRef = parsed.vault_ref ?? (parsed.query as { vault_ref?: unknown } | undefined)?.vault_ref;
-  const vaultRef = typeof rawVaultRef === "string" && /^[\w:.-]{1,200}$/.test(rawVaultRef) ? rawVaultRef : null;
   const promptId = insertMessage({
     discussionId: discussion.id,
     userId:       auth.userId,
@@ -495,12 +516,13 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       budgetChars: contextBudget(readWindow(parsed.context_window) ?? 32_768),
       // A computer given the conversation only would see no excerpt.
       remote: fullFor !== null,
+      requester,
     });
     const passages = retrieved.passages;
     // A source says which computer holds it, and is cited by the link that
     // opens it there; never an absolute path, except this computer's own
     // shown to its own Desktop in a conversation that is not shared.
-    const shared = !!vaultRef || !!vaultConversationId || retrieved.remote
+    const shared = !!askedVaultRef || !!askedVaultConversationId || retrieved.remote
       || req.headers[VIA_TUNNEL_HEADER] !== undefined || clientOf(auth) !== "this-computer";
     const sources = passages.map((passage, index) => ({
       n: index + 1,
@@ -1852,6 +1874,12 @@ export function validFirstName(value: unknown): string | null {
 }
 
 // ── a synchronised conversation, caught up (docs/mesh-design.md §3) ─────
+
+/// Whether an exchange of this discussion already has this vault ref (its
+/// question or its answer).
+function vaultRefTaken(discussionId: string, ref: string): boolean {
+  return !!sqlite.prepare("SELECT 1 FROM messages WHERE discussion_id = ? AND vault_ref IN (?, ?) LIMIT 1").get(discussionId, ref, `${ref}#reply`);
+}
 
 export const PRIOR_TURNS_MAX = 20;
 export const PRIOR_TURNS_MAX_BYTES = 64 * 1024;

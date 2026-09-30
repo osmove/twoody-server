@@ -209,6 +209,23 @@ test("once linked, the console says which account (masked), and the network stil
   }
 });
 
+test("the security code: shown on the console and the admin page, from the tunnel key; never to the network", async () => {
+  const { securityCode } = await import("../src/vault/contracts.js");
+  const { tunnelIdentity } = await import("../src/tunnel/identity.js");
+  const code = securityCode(new Uint8Array(tunnelIdentity().publicKey));
+  assert.match(code, /^[0-9A-HJKMNP-TV-Z]{5}(-[0-9A-HJKMNP-TV-Z]{5}){3}$/);
+  const local = (await app.inject({ method: "GET", url: "/account/link", remoteAddress: "127.0.0.1" })).json();
+  assert.equal(local.security_code, code);
+  assert.notEqual(local.security_code, local.fp, "the 8-hex fp is Bonjour's hint only");
+  const fromLan = (await app.inject({ method: "GET", url: "/account/link", remoteAddress: "192.168.1.30" })).json();
+  assert.deepEqual(Object.keys(fromLan).sort(), ["fp", "state"]);
+  const tunnelled = (await app.inject({ method: "GET", url: "/account/link", remoteAddress: "127.0.0.1", headers: { "x-twoody-via-tunnel": "relay" } })).json();
+  assert.equal(tunnelled.security_code, undefined, "through the tunnel is not the console");
+  const admin = await app.inject({ url: "/admin", remoteAddress: "127.0.0.1" });
+  assert.equal(admin.statusCode, 200);
+  assert.ok(admin.body.includes(code), "the admin page shows it");
+});
+
 test("the account's label: e-mail masked, else the name masked, else its id", async () => {
   const { accountLabel, maskEmail } = await import("../src/account/link.js");
   assert.equal(maskEmail("jimmy@gmail.com"), "j***@gmail.com");

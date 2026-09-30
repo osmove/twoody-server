@@ -208,6 +208,19 @@ test("an edit on one computer is the memory everywhere", async () => {
 
 test("deleted on one computer: gone everywhere, never learned again", async () => {
   const paris = vectors.learned_ids[1].memory_id;
+  // Only the owner or one of the person's own devices deletes (for every
+  // computer, for good): not a device paired by code, not a household
+  // member's phone, not over the network as « this machine ».
+  const { pairDevice } = await import("../src/pairing.js");
+  for (const [why, session] of [
+    ["paired by code", pairDevice({ deviceName: "iPad de la cuisine", origin: "code" })],
+    ["household (rule 2)", pairDevice({ deviceName: "iPhone de Claire", origin: "account", approvalRule: "endorsed" })],
+  ] as const) {
+    const refused = await app.inject({ method: "DELETE", url: `/memories/${paris}`, headers: { authorization: `Bearer ${session.token}` }, remoteAddress: "192.168.1.30" });
+    assert.equal(refused.statusCode, 403, why);
+    assert.equal(refused.json().error, "person_device_required", why);
+  }
+  assert.ok(held(sqlite).some((m) => m.id === paris), "still there");
   assert.equal((await app.inject({ method: "DELETE", url: `/memories/${paris}`, headers: local })).statusCode, 204);
   await syncBoth();
   assert.ok(!held(piDb.sqlite).some((m) => m.id === paris));

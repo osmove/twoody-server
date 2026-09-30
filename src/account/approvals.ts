@@ -5,7 +5,7 @@ import { verifyEndorsement } from "./endorsement.js";
 import { computerName } from "./link.js";
 import { sealPairing } from "./pairingSeal.js";
 import { linkedAccount, type LinkedAccount } from "./store.js";
-import { deviceAccessValid } from "../vault/contracts.js";
+import { deviceAccessUsable, deviceAccessV2Valid } from "../vault/contracts.js";
 import { fromHex } from "../vault/crypto.js";
 import { meshRoster, type Roster } from "../vault/roster.js";
 
@@ -27,8 +27,9 @@ import { meshRoster, type Roster } from "../vault/roster.js";
 //      vault roster (vault/roster.ts: a computer the person devices
 //      enrolled and bound), and asks with the very tunnel key its binding
 //      names (docs/mesh-design.md §1);
-//   5. a phone asks carrying a device-access-v1 (`device_access`) for the
-//      key it asks with, signed by a person device of the verified roster.
+//   5. a phone asks carrying a device-access/v2 (`device_access`) for the
+//      key it asks with, for this computer and not expired, signed by a
+//      person device of the verified roster.
 //
 // Rules 4 and 5 rest on the vault's signatures, never on the account's say
 // (its listing, requester_kind or token): the account only carries them.
@@ -59,13 +60,15 @@ export interface PendingRequest {
   /// That computer's id in the account: its session here goes when the
   /// account stops listing it (peers/index.ts).
   requester_computer_id: string | null;
-  /// A phone's signed device-access-v1 for its key (rule 5), as the app
+  /// A phone's signed device-access/v2 for its key (rule 5), as the app
   /// sends it with request_access and the account passes it on; null when
-  /// there is none or it is not one.
+  /// there is none or it is not one (a v1 statement is none).
   device_access: DeviceAccessWire | null;
 }
 
-export type DeviceAccessWire = { vault_device_id: string; tunnel_public_key: string; signature: string };
+/// device-access/v2's wire form (src/vault/contracts.ts): `exp` in Unix
+/// seconds, `account_computer_id` the computer asked.
+export type DeviceAccessWire = { vault_device_id: string; tunnel_public_key: string; account_computer_id: string; exp: number; signature: string };
 
 export type Verdict =
   | { approve: true; rule: "approver" | "endorsed" }
@@ -83,11 +86,24 @@ function readDeviceAccess(raw: unknown): DeviceAccessWire | null {
   }
   const d = value as Record<string, unknown> | null;
   if (!d || typeof d !== "object" || Array.isArray(d)) return null;
-  const { vault_device_id: id, tunnel_public_key: key, signature } = d;
+  const { vault_device_id: id, tunnel_public_key: key, account_computer_id: computer, exp, signature } = d;
   if (typeof id !== "string" || !id || id.length > 64) return null;
   if (typeof key !== "string" || !/^[0-9a-f]{64}$/i.test(key)) return null;
+  if (typeof computer !== "string" || !computer || computer.length > 64) return null;
+  if (typeof exp !== "number" || !Number.isSafeInteger(exp) || exp <= 0) return null;
   if (typeof signature !== "string" || !/^[0-9a-f]{128}$/i.test(signature)) return null;
-  return { vault_device_id: id.toLowerCase(), tunnel_public_key: key.toLowerCase(), signature: signature.toLowerCase() };
+  return { vault_device_id: id.toLowerCase(), tunnel_public_key: key.toLowerCase(), account_computer_id: computer, exp, signature: signature.toLowerCase() };
+}
+
+/// The device-access a request carried, when it is for the key it asks
+/// with, for this computer, and not expired: what a session keeps
+/// (sessionTrust.ts) to know later which vault device it is. Unverified
+/// here — only the vault device's key, from the roster or a pinned
+/// anchor, can say whether it signed it.
+export function claimedDeviceAccess(request: Pick<PendingRequest, "device_access" | "public_key">, selfComputerId: string, now = Date.now()): DeviceAccessWire | null {
+  const access = request.device_access;
+  if (!access || access.tunnel_public_key !== request.public_key) return null;
+  return deviceAccessUsable(access, { accountComputerId: selfComputerId, nowMs: now }) ? access : null;
 }
 
 export function readPending(raw: unknown): PendingRequest[] {
@@ -169,16 +185,12 @@ export function judgeMesh(request: PendingRequest, roster: Roster | null, option
   }
   // Rule 5: a phone, vouched for by a person device of the roster for the
   // key it asks with. A computer's statement never counts (not in persons).
-  const access = request.device_access;
-  if (!access || access.tunnel_public_key !== request.public_key || request.requester_computer_id) return null;
+  const access = options.selfComputerId ? claimedDeviceAccess(request, options.selfComputerId, now) : null;
+  if (!access || request.requester_computer_id) return null;
   const person = roster.persons.get(access.vault_device_id);
   if (!person) return null;
-  const valid = deviceAccessValid({
-    userId: roster.userId,
-    access: { vault_device_id: access.vault_device_id, tunnel_public_key: access.tunnel_public_key },
-    signerSignPublic: fromHex(person.signPublic),
-    signature: access.signature,
-  });
+  const { signature, ...stated } = access;
+  const valid = deviceAccessV2Valid({ userId: roster.userId, access: stated, signerSignPublic: fromHex(person.signPublic), signature });
   return valid ? { approve: true, rule: "device_access", vaultDeviceId: person.vaultDeviceId } : null;
 }
 
@@ -231,13 +243,20 @@ export async function approveRequest(account: LinkedAccount, request: PendingReq
   // the requester gave itself. « mesh » (rules 4, 5): undone too when the
   // requester leaves the vault roster.
   const mesh = verdict?.approve === true && (verdict.rule === "mesh_computer" || verdict.rule === "device_access");
+  // Rule 3 is the console's (`twoody-server approve`, no verdict). Rules 1
+  // and 5 keep the device-access the requester carried: which vault device
+  // it is (checked again whenever it counts, sessionTrust.ts).
+  const rule = verdict?.approve === true ? verdict.rule : "console";
+  const claimed = rule === "approver" || rule === "device_access" ? claimedDeviceAccess(request, account.computer.id) : null;
   const paired = pairDevice({
     deviceName: request.name,
     tunnelPublicKey: request.public_key,
     role: request.role,
     origin: mesh ? "mesh" : "account",
     requesterComputerId: request.requester_computer_id,
-    vaultDeviceId: verdict?.approve === true && verdict.rule === "device_access" ? (verdict.vaultDeviceId ?? null) : null,
+    vaultDeviceId: verdict?.approve === true && verdict.rule === "device_access" ? (verdict.vaultDeviceId ?? null) : (claimed?.vault_device_id ?? null),
+    approvalRule: rule,
+    deviceAccessJson: claimed ? JSON.stringify(claimed) : null,
   });
   const payload = {
     localServerUrl: lanUrl(),

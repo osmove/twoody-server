@@ -6,6 +6,7 @@ import { createRateLimiter } from "../rateLimit.js";
 import { isSelf, selfIdentity } from "../router/index.js";
 import { STATUS_MAX_AGE_MS } from "../router/score.js";
 import { rosterSnapshot, trustedNow } from "../vault/roster.js";
+import { requesterHeaders, type Requester } from "../sessionTrust.js";
 import type { DocumentAccess } from "./access.js";
 import { smallTalk } from "./query.js";
 import { documentLocations, followUpQuestion, retrieveDocuments, scopedFolders } from "./retrieval.js";
@@ -29,6 +30,11 @@ import { fuseRankedLists } from "./vectorMath.js";
 //     and cited as twoody://doc/<computer_id>/<document_id>; no absolute
 //     path ever comes from another computer, and none leaves this one once
 //     a turn is shared (routes/queries.ts).
+//
+// Only for this server's owner or one of the person's own devices
+// (sessionTrust.ts meshRequester), named to the other computer for its
+// audit: a household member's phone, a device paired by code or a firmware
+// device reaches this computer's documents and no other's.
 //
 // The request's document access applies to every computer: « off » asks
 // none; folders chosen by id ask only the computers they belong to
@@ -55,19 +61,19 @@ type SearchBody = {
   deadline_ms: number;
 };
 /// One search sent to a computer; answers its status and JSON body.
-export type PeerSearch = (peer: PeerRow, body: SearchBody, signal: AbortSignal) => Promise<{ status: number; body: unknown }>;
+export type PeerSearch = (peer: PeerRow, body: SearchBody, signal: AbortSignal, requester?: Requester | null) => Promise<{ status: number; body: unknown }>;
 
-const tunnelSearch: PeerSearch = async (peer, body, signal) => {
+const tunnelSearch: PeerSearch = async (peer, body, signal, requester) => {
   const response = await peerRequest(peer, "/api/v1/peer/documents/search", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...requesterHeaders(requester) },
     body: JSON.stringify(body),
     signal,
   });
   return { status: response.status, body: await response.json().catch(() => null) };
 };
 /// The search through the sealed tunnel, as the fan-out sends it.
-export const tunnelPeerSearch: PeerSearch = (peer, body, signal) => tunnelSearch(peer, body, signal);
+export const tunnelPeerSearch: PeerSearch = (peer, body, signal, requester) => tunnelSearch(peer, body, signal, requester);
 let search: PeerSearch = tunnelSearch;
 /// Tests: another way to reach the computers (a fake peer with its latency); null puts the tunnel back.
 export function setPeerSearch(next: PeerSearch | null): void {
@@ -219,7 +225,7 @@ function readFile(raw: unknown, peer: PeerRow): MeshFile | null {
 
 type Asked = { outcome: ComputerOutcome; passages: MeshPassage[]; files: MeshFile[]; embedModel: string | null };
 
-async function ask(peer: PeerRow, body: Omit<SearchBody, "deadline_ms">): Promise<Asked> {
+async function ask(peer: PeerRow, body: Omit<SearchBody, "deadline_ms">, requester: Requester): Promise<Asked> {
   const transport = peerPathHint(peer);
   const deadline = deadlines[transport];
   const outcome = (status: ComputerOutcome["status"], took: number | null = null, passages = 0): ComputerOutcome => ({
@@ -242,7 +248,7 @@ async function ask(peer: PeerRow, body: Omit<SearchBody, "deadline_ms">): Promis
     }, deadline);
   });
   // The computer answers with what it found a little before the deadline.
-  const asked = search(peer, { ...body, deadline_ms: Math.min(3_000, Math.max(100, deadline - 250)) }, controller.signal);
+  const asked = search(peer, { ...body, deadline_ms: Math.min(3_000, Math.max(100, deadline - 250)) }, controller.signal, requester);
   // Found out of reach after the deadline: not waited for on the next turns either.
   asked.catch((err) => {
     if (err instanceof PeerUnavailableError) down.set(peer.computerId, Date.now() + DOWN_MS);
@@ -298,7 +304,8 @@ export function missingNote(computers: ComputerOutcome[]): string | null {
  * This computer's retrieval and every trusted computer's, for one turn.
  * `localFolders`: this computer's folders the request may read (queries.ts
  * computes them from the access and the grants). `remote: false` asks no
- * other computer (a conversation-only answer, say).
+ * other computer (a conversation-only answer, say), nor does a request
+ * without `requester` (not the owner, not one of the person's devices).
  */
 export async function retrieveAcrossComputers(args: {
   userId: string;
@@ -308,12 +315,15 @@ export async function retrieveAcrossComputers(args: {
   localFolders: string[];
   budgetChars: number;
   remote?: boolean;
+  /// Who asked (sessionTrust.ts meshRequester); null: no other computer.
+  requester?: Requester | null;
 }): Promise<MeshRetrieval> {
   const started = Date.now();
   const me = selfIdentity();
   const followUp = followUpQuestion(args.question);
+  const requester = args.requester ?? null;
   const peers =
-    args.remote === false || args.access.mode === "off" || (!followUp && smallTalk(args.question))
+    !requester || args.remote === false || args.access.mode === "off" || (!followUp && smallTalk(args.question))
       ? []
       : meshPeers(args.userId).flatMap((peer) => {
           const scope = remoteScope(args.access, peer.computerId);
@@ -338,7 +348,7 @@ export async function retrieveAcrossComputers(args: {
       if (status && Date.now() - status.at >= STATUS_MAX_AGE_MS) return skip("offline");
       if ((down.get(peer.computerId) ?? 0) > Date.now()) return skip("unreachable");
       if (!q) return skip("none");
-      return ask(peer, { q, ...(hint ? { hint } : {}), scope, limit: 6, budget_chars: Math.max(200, Math.min(10_000, args.budgetChars)) });
+      return ask(peer, { q, ...(hint ? { hint } : {}), scope, limit: 6, budget_chars: Math.max(200, Math.min(10_000, args.budgetChars)) }, requester!);
     }),
   ).then((all) => {
     remoteDone = Date.now();
@@ -414,7 +424,8 @@ const count = (value: unknown) => (Number.isInteger(value) && (value as number) 
  * parallel, each for at most `timeoutMs`. A member not linked, or whose
  * status is stale, is listed offline without being asked.
  */
-export async function foldersOfComputers(userId: string, timeoutMs = 4_000): Promise<ComputerFolders[]> {
+export async function foldersOfComputers(userId: string, timeoutMs = 4_000, requester: Requester | null = null): Promise<ComputerFolders[]> {
+  if (!requester) return [];
   const members = [...(rosterSnapshot()?.computers.values() ?? [])].filter((member) => !isSelf(member.accountComputerId));
   return Promise.all(
     members.map(async (member): Promise<ComputerFolders> => {
@@ -425,7 +436,7 @@ export async function foldersOfComputers(userId: string, timeoutMs = 4_000): Pro
       if (status && Date.now() - status.at >= STATUS_MAX_AGE_MS) return { ...base, status: "offline" };
       if ((down.get(peer.computerId) ?? 0) > Date.now()) return { ...base, status: "unreachable" };
       try {
-        const response = await peerRequest(peer, "/api/v1/peer/documents/folders", { signal: AbortSignal.timeout(timeoutMs) });
+        const response = await peerRequest(peer, "/api/v1/peer/documents/folders", { headers: requesterHeaders(requester), signal: AbortSignal.timeout(timeoutMs) });
         if (response.status === 401 || response.status === 403) {
           await response.body?.cancel().catch(() => undefined);
           return { ...base, status: "refused" };
@@ -460,12 +471,14 @@ const PASSED_HEADERS = ["content-type", "content-length", "content-range", "acce
  * writes it in its audit (« Appareils »). Here: 60 files a minute per
  * client, a line in the log, and nothing for a computer outside the roster
  * (404, as for a document that is not there). This computer's own id
- * serves its own file.
+ * serves its own file. Another computer's only to this server's owner or
+ * one of the person's own devices (`requester`, named to that computer
+ * for its audit): anyone else 403 person_device_required.
  */
 export async function serveRemoteRaw(
   req: FastifyRequest,
   reply: FastifyReply,
-  args: { userId: string; client: string; computerId: string; documentId: string },
+  args: { userId: string; client: string; computerId: string; documentId: string; requester?: Requester | null },
 ): Promise<void> {
   const verdict = rawLimiter.hit(args.client);
   if (!verdict.allowed) {
@@ -482,6 +495,10 @@ export async function serveRemoteRaw(
     req.log.info({ computer_id: args.computerId, document_id: args.documentId, bytes: sent?.bytes ?? 0 }, "cited document served");
     return;
   }
+  if (!args.requester) {
+    reply.code(403).send({ error: "person_device_required" });
+    return;
+  }
   const peer = peerById(args.userId, args.computerId);
   if (!peer || peer.state !== "linked" || !peer.enabled || !trustedNow(peer.computerId, peer.tunnelKey)) {
     reply.code(404).send({ error: "not_found" });
@@ -491,14 +508,14 @@ export async function serveRemoteRaw(
   let response: Response;
   try {
     response = await peerRequest(peer, `/api/v1/peer/documents/files/${encodeURIComponent(args.documentId)}/raw`, {
-      headers: range && /^bytes=\d*-\d*$/.test(range.trim()) ? { range: range.trim() } : {},
+      headers: { ...(range && /^bytes=\d*-\d*$/.test(range.trim()) ? { range: range.trim() } : {}), ...requesterHeaders(args.requester) },
       signal: AbortSignal.timeout(120_000),
     });
   } catch (err) {
     reply.code(503).send({ error: "computer_unavailable", computer_id: peer.computerId, computer_name: peer.name, message: err instanceof Error ? err.message : String(err) });
     return;
   }
-  req.log.info({ computer_id: peer.computerId, document_id: args.documentId, status: response.status, bytes: response.headers.get("content-length") }, "cited document passed on from another computer");
+  req.log.info({ computer_id: peer.computerId, document_id: args.documentId, requester: args.requester.id, status: response.status, bytes: response.headers.get("content-length") }, "cited document passed on from another computer");
   if (response.status === 401 || response.status === 403) {
     await response.body?.cancel().catch(() => undefined);
     reply.code(404).send({ error: "not_found" });

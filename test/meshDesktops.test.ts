@@ -210,10 +210,13 @@ for (const [id, name, peer] of [[MINI, "Mac mini", mini], [PI, "Raspberry Pi", p
     .run();
 }
 
-const search = (target: typeof mini, token: string) =>
+/// A search as the tunnel serves it: from this machine, with its marker and
+/// the key of the device at the other end (tunnel/host.ts), the Air's
+/// unless said. `plain`: as plain HTTP would carry it.
+const search = (target: typeof mini, token: string, key: string | null = airTunnelKey) =>
   fetch(`${target.ready.url}/api/v1/peer/documents/search`, {
     method: "POST",
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(key ? { "x-twoody-via-tunnel": "direct", "x-twoody-tunnel-peer": key } : {}) },
     body: JSON.stringify({ q: "facture électricité contrat location voiture", scope: { mode: "all" } }),
   });
 
@@ -252,14 +255,18 @@ test("the Mac mini (a Desktop) and the Pi now serve the Air their documents, ove
   assert.equal(body.computer_id, MINI);
   assert.ok(body.passages.some((p: { document_id: string }) => p.document_id === "mini-facture"));
   assert.equal((await search(pi, pi.ready.token)).status, 200);
+  // The same token over plain HTTP, or through the tunnel of another key: nothing.
+  assert.equal((await search(mini, mini.ready.token, null)).status, 403);
+  assert.equal((await search(mini, mini.ready.token, randomBytes(32).toString("hex"))).status, 403);
   // The Air's id under another tunnel key: not the Air.
-  const other = await mini.ask<{ token: string }>({ type: "session", computerId: AIR, key: randomBytes(32).toString("hex") }, "session");
-  assert.equal((await search(mini, other.token)).status, 403);
+  const otherKey = randomBytes(32).toString("hex");
+  const other = await mini.ask<{ token: string }>({ type: "session", computerId: AIR, key: otherKey }, "session");
+  assert.equal((await search(mini, other.token, otherKey)).status, 403);
 });
 
 test("the Pi searches the Mac mini (a Desktop) with its own bound key; a forged or moved desktop-binding counts for nothing", async () => {
   const piOnMini = await mini.ask<{ token: string }>({ type: "session", computerId: PI, key: pi.ready.tunnelKey }, "session");
-  const answer = await search(mini, piOnMini.token);
+  const answer = await search(mini, piOnMini.token, pi.ready.tunnelKey);
   assert.equal(answer.status, 200, await answer.clone().text());
   assert.ok((await answer.json()).passages.some((p: { document_id: string }) => p.document_id === "mini-facture"));
   // The account forges the Air's binding (another tunnel key), or moves it

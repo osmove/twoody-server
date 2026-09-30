@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { chmodSync, closeSync, constants, existsSync, fchmodSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 
 // Where the vault keeps what it must remember (docs/mesh-design.md §1):
 //
@@ -17,12 +18,26 @@ import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync 
 
 export type VaultStore = { get(key: string): Promise<string | null>; set(key: string, value: string): Promise<void> };
 
-/// Written whole, through a temporary file, 0600 from the first byte.
+/// Written whole, through a temporary file, 0600 from the first byte. The
+/// temporary name is random and created exclusively (O_EXCL, no symlink
+/// followed): nobody can have put a file or a link there beforehand to
+/// catch the keys or have them written elsewhere.
 export function writePrivateFile(path: string, content: string): void {
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, content, { mode: 0o600 });
-  chmodSync(temporary, 0o600);
-  renameSync(temporary, path);
+  const temporary = `${path}.${randomBytes(12).toString("hex")}.tmp`;
+  const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
+  try {
+    try {
+      fchmodSync(fd, 0o600);
+      writeSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temporary, path);
+  } catch (err) {
+    rmSync(temporary, { force: true });
+    throw err;
+  }
   chmodSync(path, 0o600);
 }
 

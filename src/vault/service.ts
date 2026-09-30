@@ -267,6 +267,7 @@ export function startVaultService(options: { log?: (message: string) => void; ap
         current.syncStore.clear();
         log("Vault: this computer was removed from the encrypted history; registered again, waiting for approval.");
       }
+      if (enrolled.pruned?.length) log(`Vault: ${enrolled.pruned.length} pinned device(s) revoked in the encrypted history, no longer trusted here.`);
       if (enrolled.status !== current.status) log(`Vault: ${enrolled.status}.`);
       current.status = enrolled.status;
       const synced = enrolled.status === "trusted" && current.bridge ? await current.bridge.run() : null;

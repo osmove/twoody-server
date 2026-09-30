@@ -242,9 +242,13 @@ test("the Desktop reads a peer's vault identity and names itself to it through t
   const identity = await app.inject({ method: "GET", url: `/api/v1/peers/${piComputerId}/vault/identity`, headers: auth });
   assert.equal(identity.statusCode, 404, identity.payload);
   assert.equal(identity.json().error, "not_enrolled");
+  // The Desktop's peer session on the Pi carries no device-access/v2 of
+  // that vault device: it may not name it as the Pi's anchor (only the Pi's
+  // owner, or that very device, routes/peerVault.ts). The Pi's answer is
+  // passed on as it is.
   const anchor = await app.inject({ method: "POST", url: `/api/v1/peers/${piComputerId}/vault/anchor`, headers: auth, payload: { vault_device_id: "5b0c3c1e-8a1f-4d2e-9c7b-1f2e3d4c5b6a", sign_public: "ab".repeat(32) } });
-  assert.equal(anchor.statusCode, 404, anchor.payload);
-  assert.equal(anchor.json().error, "not_enrolled");
+  assert.equal(anchor.statusCode, 403, anchor.payload);
+  assert.equal(anchor.json().error, "anchor_not_allowed");
   assert.equal((await app.inject({ method: "POST", url: `/api/v1/peers/${piComputerId}/vault/anchor`, headers: auth, payload: { vault_device_id: "x", sign_public: "not-a-key" } })).statusCode, 400);
   // No link with it: nothing is asked in clear.
   const unknown = await app.inject({ method: "GET", url: "/api/v1/peers/no-such-computer/vault/identity", headers: auth });
