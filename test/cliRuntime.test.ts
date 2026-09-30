@@ -10,7 +10,7 @@ test("config set: an engine, an address, the built-in runtime's settings", () =>
   assert.deepEqual(parseAssignments(["default_model=Qwen3.5-4B-Q4_K_M", "builtin.ctx=4096", "threads=default"]), {
     builtin: { default_model: "Qwen3.5-4B-Q4_K_M", ctx: 4096, threads: null },
   });
-  for (const bad of [[], ["runtime=vllm"], ["runtime"], ["ctx=big"], ["idle_minutes="], ["colour=blue"], ["default_model=../x"], ["custom_url=ftp://x"]]) {
+  for (const bad of [[], ["runtime=vllm"], ["runtime"], ["ctx=big"], ["idle_minutes=-5"], ["colour=blue"], ["default_model=../x"], ["custom_url=ftp://x"]]) {
     assert.throws(() => parseAssignments(bad), undefined, bad.join(" "));
   }
 });

@@ -42,7 +42,9 @@ stopped only if its command line has our models dir.
 
 ## 4. « Moteur »
 `DATA_DIR/runtime.json` (0600), per computer, overridable by `TWOODY_RUNTIME`, re-read on mtime change:
-`{engine:"auto"|"builtin"|"ollama"|"lmstudio"|"mlx"|"custom", custom_url?, builtin:{default_model?, idle_minutes:30, ctx?, threads?}}`.
+`{engine:"auto"|"builtin"|"ollama"|"lmstudio"|"mlx"|"custom", custom_url?, builtin:{default_model?, idle_minutes?, preload?, ctx?, threads?}}` (`idle_minutes` 0: never
+released; unset: kept while the server runs when MemAvailable holds the model twice over, else 30;
+`preload` false: no model loaded at startup; files carry `"v": 2`, and an older file's `idle_minutes: 30` is read as unset).
 Auto = first engine with a chat model: builtin → Ollama :11434 (or TWOODY_OLLAMA_URL) → LM Studio :1234 → mlx-lm :8080 (macOS).
 `engine.ts` exports `resolveEngine() → {id, baseUrl, models, reason}`.
 Routes `src/routes/runtime.ts` (owner session only, peers 403):

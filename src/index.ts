@@ -23,7 +23,7 @@ import { ensureAccountFile, fingerprint } from "./account/store.js";
 import { startMachineSampler } from "./machineSampler.js";
 import { isFresh } from "./pairing.js";
 import { startPeerStatusPoller } from "./peers/index.js";
-import { builtinAddress, initEngine, stopEngine } from "./engine.js";
+import { builtinAddress, initEngine, preloadBuiltin, stopEngine } from "./engine.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -101,10 +101,15 @@ try {
     console.log(`  Engine: ${described}${why}; twoody-server config set runtime=… changes it.`);
     console.log(
       installed
-        ? `  Built-in llama.cpp runtime: installed, ${models.length} model(s)${models.length ? ` (${models.join(", ")})` : ": twoody-server models add <id>"}; started on the first question.\n`
+        ? `  Built-in llama.cpp runtime: installed, ${models.length} model(s)${models.length ? ` (${models.join(", ")})` : ": twoody-server models add <id>"}; ${prefs.builtin.preload === false || !["builtin", "auto"].includes(prefs.engine) ? "started on the first question" : "the default model loads now, in the background"}.\n`
         : "  Built-in llama.cpp runtime: not installed (twoody-server runtime install).\n",
     );
-    if (installed) void builtinAddress().catch(() => undefined);
+    if (installed) {
+      void builtinAddress().catch(() => undefined);
+      // The default model, loaded in the background now that the server
+      // answers, and kept in memory when there is room (engine.ts).
+      void preloadBuiltin({ log: (line) => console.log(`  ${line}`) });
+    }
   }
   const admin = adminToken();
   if (!admin) {

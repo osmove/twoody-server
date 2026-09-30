@@ -11,7 +11,8 @@ import { ownerRequest } from "../localAccess.js";
 // « Moteur » and « Modèles » of this computer (docs/builtin-runtime-design.md §4):
 //
 //   GET    /runtime                  the preference, the engine in use, every engine, the built-in runtime
-//   PUT    /runtime                  {engine?, custom_url?, builtin?: {default_model?, idle_minutes?, ctx?, threads?}}
+//   PUT    /runtime                  {engine?, custom_url?, builtin?: {default_model?, idle_minutes?, preload?, ctx?, threads?}}
+//                                     (idle_minutes 0: never unloaded; null: the server decides)
 //   POST   /runtime/install          the built-in runtime (llama.cpp, pinned), when it is not there
 //   GET    /runtime/catalog          the models Twoody offers: installed, recommended, fits
 //   POST   /runtime/models {id}      → 202 {job}: runtime → downloading → verifying → done
@@ -136,11 +137,14 @@ export async function runtimeRoutes(app: FastifyInstance) {
           }
           builtin.default_model = given.default_model;
         }
-        for (const [key, min, max] of [["idle_minutes", 1, 1440], ["ctx", 512, 262_144], ["threads", 1, 256]] as const) {
+        if (given.preload !== undefined) {
+          if (typeof given.preload !== "boolean") return reply.code(422).send({ error: "invalid_preload", message: "preload is true or false" });
+          builtin.preload = given.preload;
+        }
+        for (const [key, min, max] of [["idle_minutes", 0, 1440], ["ctx", 512, 262_144], ["threads", 1, 256]] as const) {
           const value = given[key];
           if (value === undefined) continue;
           if (value === null) {
-            if (key === "idle_minutes") return reply.code(422).send({ error: `invalid_${key}` });
             builtin[key] = undefined;
           } else if (typeof value === "number" && Number.isInteger(value) && value >= min && value <= max) {
             builtin[key] = value;

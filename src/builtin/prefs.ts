@@ -9,7 +9,15 @@ import { migratedPreference } from "./engine.js";
 //
 //   {"engine":"auto"|"builtin"|"ollama"|"lmstudio"|"mlx"|"custom",
 //    "custom_url"?: "http://…/v1",
-//    "builtin": {"default_model"?, "idle_minutes": 30, "ctx"?, "threads"?}}
+//    "builtin": {"default_model"?, "idle_minutes"?, "preload"?, "ctx"?, "threads"?}}
+//
+// `idle_minutes`: how long the model stays in memory with nothing asked, 0
+// for as long as the server runs; unset, the server decides (engine.ts,
+// preloadBuiltin): kept loaded on a computer without the Desktop whose free
+// memory holds the model twice over, else 30 minutes. `preload`: false stops
+// the server from loading the default model when it starts (default true).
+// A file written before these (no "v": 2) holds the old default,
+// idle_minutes 30, which is read as unset.
 //
 // TWOODY_RUNTIME overrides the engine (an engine id, or a URL, which means
 // `custom` at that URL). The file is read again whenever its mtime or size
@@ -22,7 +30,10 @@ export type EnginePreference = (typeof ENGINE_PREFERENCES)[number];
 
 export interface BuiltinPrefs {
   default_model?: string;
-  idle_minutes: number;
+  /// 0: never unloaded. Unset: decided by the server (see above).
+  idle_minutes?: number;
+  /// Load the default model at startup (headless only); default true.
+  preload?: boolean;
   ctx?: number;
   threads?: number;
 }
@@ -37,6 +48,8 @@ export type PrefsSource = "file" | "env" | "migrated";
 
 export const DEFAULT_IDLE_MINUTES = 30;
 export const PREFS_FILE = "runtime.json";
+/// Files written with idle_minutes optional and preload.
+const FILE_VERSION = 2;
 
 function isEngine(value: unknown): value is EnginePreference {
   return typeof value === "string" && (ENGINE_PREFERENCES as readonly string[]).includes(value);
@@ -64,8 +77,13 @@ export function parsePrefs(raw: unknown): RuntimePrefs {
   const builtin = value.builtin && typeof value.builtin === "object" ? (value.builtin as Record<string, unknown>) : {};
   const prefs: RuntimePrefs = {
     engine: isEngine(value.engine) ? value.engine : "auto",
-    builtin: { idle_minutes: integer(builtin.idle_minutes, 1, 24 * 60) ?? DEFAULT_IDLE_MINUTES },
+    builtin: {},
   };
+  const idle = integer(builtin.idle_minutes, 0, 24 * 60);
+  // Before version 2, every file carried the default (30) written at the
+  // first start: read as not chosen.
+  if (idle !== undefined && !(value.v !== FILE_VERSION && idle === DEFAULT_IDLE_MINUTES)) prefs.builtin.idle_minutes = idle;
+  if (typeof builtin.preload === "boolean") prefs.builtin.preload = builtin.preload;
   if (isHttpUrl(value.custom_url)) prefs.custom_url = value.custom_url.trim().replace(/\/+$/, "");
   if (typeof builtin.default_model === "string" && /^[\w.-]{1,80}$/.test(builtin.default_model)) prefs.builtin.default_model = builtin.default_model;
   const ctx = integer(builtin.ctx, 512, 262_144);
@@ -120,7 +138,7 @@ export function createPrefsStore({ dataDir, env = process.env }: { dataDir: stri
 
   function writeFile(prefs: RuntimePrefs): void {
     const temp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
-    writeFileSync(temp, `${JSON.stringify(prefs, null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(temp, `${JSON.stringify({ v: FILE_VERSION, ...prefs }, null, 2)}\n`, { mode: 0o600 });
     chmodSync(temp, 0o600);
     renameSync(temp, path);
     cache = null;
@@ -142,7 +160,8 @@ export function createPrefsStore({ dataDir, env = process.env }: { dataDir: stri
     write(update) {
       const current = readFile() ?? parsePrefs(migratedPreference(env));
       const builtin = update.builtin === null ? {} : { ...current.builtin, ...(update.builtin ?? {}) };
-      const merged: Record<string, unknown> = { ...current, ...update, builtin };
+      // What is read is already of this version: nothing of it is legacy.
+      const merged: Record<string, unknown> = { ...current, ...update, builtin, v: FILE_VERSION };
       const next = parsePrefs(merged);
       writeFile(next);
       return next;

@@ -24,7 +24,8 @@ import { serverBinaryName } from "./runtimeManifest.js";
 //     on a command line; CORS is pinned to an origin that does not exist;
 //   - `--offline`: the runtime can fetch models by itself, and must not;
 //   - one model in memory at a time, released after half an hour of
-//     silence (the « Moteur » preference's idle_minutes);
+//     silence (the « Moteur » preference's idle_minutes; 0 keeps it, and on
+//     a computer without the Desktop the server may, engine.ts);
 //   - started on demand, by ensure() on a chat to the built-in engine.
 //     status() and loadedModel() never start it;
 //   - a model is not loaded where it would not fit: MemAvailable must hold
@@ -214,7 +215,9 @@ export function runtimeArgs(options: {
     ...(options.threads ? ["--threads", String(options.threads)] : []),
     ...(options.threadsBatch ? ["--threads-batch", String(options.threadsBatch)] : []),
     ...(options.extra ?? []),
-    "--sleep-idle-seconds", String(options.idleSeconds),
+    // 0: the model stays in memory as long as the runtime runs (llama.cpp's
+    // default when the flag is absent).
+    ...(options.idleSeconds > 0 ? ["--sleep-idle-seconds", String(options.idleSeconds)] : []),
   ];
 }
 

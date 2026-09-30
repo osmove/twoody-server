@@ -85,7 +85,7 @@ test("runtime.json: absent means migrated; written 0600; re-read when changed; T
   try {
     const env: NodeJS.ProcessEnv = { BRIDGE_LOCAL_LLM_ENDPOINT: "http://127.0.0.1:11434/v1" };
     const store = createPrefsStore({ dataDir: dir, env });
-    assert.deepEqual(store.read(), { prefs: { engine: "ollama", builtin: { idle_minutes: 30 } }, source: "migrated" });
+    assert.deepEqual(store.read(), { prefs: { engine: "ollama", builtin: {} }, source: "migrated" });
 
     assert.equal(store.migrate().written, true);
     assert.equal(statSync(store.path).mode & 0o777, 0o600);
@@ -93,9 +93,9 @@ test("runtime.json: absent means migrated; written 0600; re-read when changed; T
     assert.equal(store.read().source, "file");
 
     const next = store.write({ engine: "builtin", builtin: { default_model: "Qwen3.5-4B-Q4_K_M", threads: 4 } });
-    assert.deepEqual(next, { engine: "builtin", builtin: { idle_minutes: 30, default_model: "Qwen3.5-4B-Q4_K_M", threads: 4 } });
+    assert.deepEqual(next, { engine: "builtin", builtin: { default_model: "Qwen3.5-4B-Q4_K_M", threads: 4 } });
     assert.equal(statSync(store.path).mode & 0o777, 0o600);
-    assert.deepEqual(JSON.parse(readFileSync(store.path, "utf8")), next);
+    assert.deepEqual(JSON.parse(readFileSync(store.path, "utf8")), { v: 2, ...next });
 
     // Edited by hand (or by the CLI in another process): seen without a restart.
     writeFileSync(store.path, JSON.stringify({ engine: "custom", custom_url: "http://10.0.0.2:8000/v1/", builtin: { idle_minutes: 5, ctx: 4096 } }));
@@ -122,10 +122,10 @@ test("runtime.json: absent means migrated; written 0600; re-read when changed; T
 });
 
 test("a preference is validated field by field", () => {
-  assert.deepEqual(parsePrefs(null), { engine: "auto", builtin: { idle_minutes: 30 } });
+  assert.deepEqual(parsePrefs(null), { engine: "auto", builtin: {} });
   assert.deepEqual(
-    parsePrefs({ engine: "gpt", custom_url: "ftp://x", builtin: { idle_minutes: 0, ctx: 10, threads: 1.5, default_model: "../x" } }),
-    { engine: "auto", builtin: { idle_minutes: 30 } },
+    parsePrefs({ engine: "gpt", custom_url: "ftp://x", builtin: { idle_minutes: -1, ctx: 10, threads: 1.5, default_model: "../x", preload: "yes" } }),
+    { engine: "auto", builtin: {} },
   );
   assert.equal(parsePrefs({ custom_url: "http://user:pw@host/v1" }).custom_url, undefined);
   assert.deepEqual(parsePrefs({ engine: "mlx", builtin: { idle_minutes: 90, ctx: 16384, threads: 8 } }), { engine: "mlx", builtin: { idle_minutes: 90, ctx: 16384, threads: 8 } });

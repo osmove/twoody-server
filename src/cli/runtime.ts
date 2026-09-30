@@ -8,7 +8,7 @@ import { initEngine, type Engine } from "../engine.js";
 // (docs/builtin-runtime-design.md §4):
 //
 //   twoody-server config get [key]
-//   twoody-server config set runtime=builtin|ollama|lmstudio|mlx|auto|<url> [default_model=…] [idle_minutes=…] [ctx=…] [threads=…]
+//   twoody-server config set runtime=builtin|ollama|lmstudio|mlx|auto|<url> [default_model=…] [idle_minutes=…|never|default] [preload=on|off] [ctx=…] [threads=…]
 //   twoody-server runtime install [--force] [--archive <file>]
 //   twoody-server runtime status
 //   twoody-server models list | add <id> [--force] | rm <id>
@@ -91,7 +91,7 @@ function option(args: string[], name: string): string | null {
 
 // ── config ────────────────────────────────────────────────────────────
 
-const KEYS = ["runtime", "custom_url", "default_model", "idle_minutes", "ctx", "threads"] as const;
+const KEYS = ["runtime", "custom_url", "default_model", "idle_minutes", "preload", "ctx", "threads"] as const;
 type Key = (typeof KEYS)[number];
 
 function flatten(prefs: RuntimePrefs): Record<Key, string> {
@@ -99,15 +99,16 @@ function flatten(prefs: RuntimePrefs): Record<Key, string> {
     runtime: prefs.engine,
     custom_url: prefs.custom_url ?? "",
     default_model: prefs.builtin.default_model ?? "",
-    idle_minutes: String(prefs.builtin.idle_minutes),
+    idle_minutes: prefs.builtin.idle_minutes === undefined ? "" : prefs.builtin.idle_minutes === 0 ? "never" : String(prefs.builtin.idle_minutes),
+    preload: prefs.builtin.preload === undefined ? "" : prefs.builtin.preload ? "on" : "off",
     ctx: prefs.builtin.ctx !== undefined ? String(prefs.builtin.ctx) : "",
     threads: prefs.builtin.threads !== undefined ? String(prefs.builtin.threads) : "",
   };
 }
 
 /// `key=value` pairs → the body of PUT /runtime.
-export function parseAssignments(pairs: string[]): { engine?: EnginePreference; custom_url?: string; builtin?: Record<string, number | string | null> } {
-  const update: { engine?: EnginePreference; custom_url?: string; builtin?: Record<string, number | string | null> } = {};
+export function parseAssignments(pairs: string[]): { engine?: EnginePreference; custom_url?: string; builtin?: Record<string, number | string | boolean | null> } {
+  const update: { engine?: EnginePreference; custom_url?: string; builtin?: Record<string, number | string | boolean | null> } = {};
   if (pairs.length === 0) throw new Error("nothing to set: key=value, for example runtime=builtin");
   for (const pair of pairs) {
     const eq = pair.indexOf("=");
@@ -130,16 +131,27 @@ export function parseAssignments(pairs: string[]): { engine?: EnginePreference; 
         if (!/^[\w.-]{1,80}$/.test(value)) throw new Error("default_model is the id of an installed model (twoody-server models list)");
         (update.builtin ??= {}).default_model = value;
         break;
+      case "preload": {
+        const on = ["on", "true", "yes", "1"].includes(value.toLowerCase());
+        const off = ["off", "false", "no", "0"].includes(value.toLowerCase());
+        if (!on && !off) throw new Error("preload is on or off");
+        (update.builtin ??= {}).preload = on;
+        break;
+      }
       case "idle_minutes":
       case "ctx":
       case "threads": {
         if (value === "" || value === "default") {
-          if (key === "idle_minutes") throw new Error("idle_minutes needs a number of minutes");
+          // idle_minutes back to the server's choice (kept loaded when there is room).
           (update.builtin ??= {})[key] = null;
           break;
         }
+        if (key === "idle_minutes" && value === "never") {
+          (update.builtin ??= {}).idle_minutes = 0;
+          break;
+        }
         const number = Number(value);
-        if (!Number.isInteger(number) || number < 1) throw new Error(`${key} is a whole number`);
+        if (!Number.isInteger(number) || number < (key === "idle_minutes" ? 0 : 1)) throw new Error(`${key} is a whole number${key === "idle_minutes" ? " of minutes, or never" : ""}`);
         (update.builtin ??= {})[key] = number;
         break;
       }
@@ -252,7 +264,7 @@ async function runtime(args: string[]): Promise<number> {
       const b = view.builtin;
       console.log(`Built-in runtime: ${b.installed ? b.version : "not installed"} (${b.platform})${b.managed_by === "desktop" ? ", run by Twoody Desktop" : ""}`);
       if (b.installed) {
-        console.log(`  ${b.running ? `running, ${b.loaded_model ? `${b.loaded_model} in memory` : "no model in memory"}` : "stopped (starts on the first question)"}; ctx ${b.ctx}, threads ${b.threads ?? "auto"}/${b.threads_batch ?? "auto"}, idle ${b.idle_minutes} min`);
+        console.log(`  ${b.running ? `running, ${b.loaded_model ? `${b.loaded_model} in memory` : "no model in memory"}` : "stopped (starts on the first question)"}; ctx ${b.ctx}, threads ${b.threads ?? "auto"}/${b.threads_batch ?? "auto"}, idle ${b.idle_minutes === 0 ? "never (kept in memory)" : `${b.idle_minutes} min`}`);
         console.log(`  models: ${b.models.length ? b.models.join(", ") : "none (twoody-server models add <id>)"}${b.default_model ? `; default ${b.default_model}` : ""}`);
         if (b.failure) console.log(`  last failure: ${b.failure.reason} (exit ${b.failure.exitCode}); see runtime.log in the data directory`);
         if (b.missing_libraries.length) console.log(`  missing libraries: ${b.missing_libraries.join(", ")}`);

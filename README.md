@@ -77,10 +77,14 @@ twoody-server models list | add <id> | rm <id>
 
 - **builtin** — llama.cpp run by the server: `llama-server` in router mode
   on `127.0.0.1` only, with a key drawn at each start, `--offline` (it
-  never fetches anything by itself), one model in memory at a time, loaded
-  on the first question and released after 30 minutes of silence
-  (`idle_minutes`), not loaded at all when it would not fit in the memory
-  available (the chat answers 507 `insufficient_memory`). The runtime is
+  never fetches anything by itself), one model in memory at a time. The
+  default model is loaded in the background as soon as the server starts
+  (`preload=off` to wait for the first question), and kept in memory while
+  the server runs when the free memory holds it twice over; otherwise, or
+  with `idle_minutes=N`, released after N minutes of silence (30 by
+  default; `idle_minutes=never` keeps it, `idle_minutes=default` gives the
+  choice back to the server). Not loaded at all when it would not fit in
+  the memory available (the chat answers 507 `insufficient_memory`). The runtime is
   `DATA_DIR/runtime/b11146-<platform>-<arch>`, the models `DATA_DIR/models`,
   its output `DATA_DIR/runtime.log`. Linux is CPU only (no Vulkan yet); on
   Linux arm64 it is Osmove's own Clang build of the same llama.cpp commit
