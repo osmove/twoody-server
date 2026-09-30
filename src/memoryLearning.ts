@@ -1,6 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db, memories } from "./db.js";
-import { generateId } from "./auth.js";
+import { normaliseMemoryContent } from "./vault/contracts.js";
+import { isForgottenFact, learnedFactId, memoryWritten, newMemoryId } from "./vault/memories.js";
 
 // What Twoody learns from a conversation (Jimmy, 28/09/2026: the Memories
 // screen stayed empty — the « memory » tools were announced to the model
@@ -80,10 +81,15 @@ export function rememberFacts(userId: string, facts: string[], sourceRef: string
     const key = normalize(fact);
     if (!key || known.has(key)) continue;
     known.add(key);
+    // Deleted by the person, here or on another of their computers: not again.
+    if (isForgottenFact(fact)) continue;
+    // Learned on another computer of the vault already: the same id.
+    const id = learnedFactId(fact);
+    if (db.select({ id: memories.id }).from(memories).where(eq(memories.id, id)).limit(1).all().length) continue;
     const now = new Date();
     db.insert(memories)
       .values({
-        id: generateId(),
+        id,
         userId,
         kind: "user",
         title: fact.length > 60 ? `${fact.slice(0, 57).trimEnd()}…` : fact,
@@ -95,6 +101,8 @@ export function rememberFacts(userId: string, facts: string[], sourceRef: string
         updatedAt: now,
       })
       .run();
+    // To the other computers of the vault, when this one is a member.
+    memoryWritten(id);
     added += 1;
   }
   return added;
@@ -115,9 +123,10 @@ export async function learnFromMessage(args: {
   return rememberFacts(args.userId, facts, args.sourceRef ?? null);
 }
 
-function normalize(text: string): string {
-  return text.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
+/// The vault's normalisation (src/vault/contracts.ts): the same fact
+/// written differently is known, in any script — the older a-z0-9 one made
+/// every Hebrew or Cyrillic fact the same empty string, never learned.
+const normalize = normaliseMemoryContent;
 
 function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
@@ -177,16 +186,16 @@ export function importMemories(userId: string, text: string, source: ImportSourc
     const key = normalize(fact);
     if (known.has(key)) { skipped += 1; continue; }
     known.add(key);
-    const id = generateId();
+    const id = newMemoryId();
     db.insert(memories).values({
       id, userId, kind: kindOfFact(fact),
       title: fact.length > 60 ? `${fact.slice(0, 57).trimEnd()}…` : fact,
       content: fact, tagsJson: JSON.stringify(["import", source]),
       source: "import", sourceRef: source, createdAt: now, updatedAt: now,
     }).run();
-    ids.push(id);
+    ids.push(memoryWritten(id));
   }
-  const archiveId = generateId();
+  const archiveId = newMemoryId();
   const day = now.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
   db.insert(memories).values({
     id: archiveId, userId, kind: "reference",
@@ -194,5 +203,6 @@ export function importMemories(userId: string, text: string, source: ImportSourc
     content: text.trim().slice(0, 50_000), tagsJson: JSON.stringify(["import", source, "archive"]),
     source: "import", sourceRef: source, createdAt: now, updatedAt: now,
   }).run();
-  return { ids, skipped, archiveId };
+  // Longer than a memory event may be, the whole answer usually stays here.
+  return { ids, skipped, archiveId: memoryWritten(archiveId) };
 }

@@ -24,6 +24,7 @@ import { startMachineSampler } from "./machineSampler.js";
 import { isFresh } from "./pairing.js";
 import { startPeerStatusPoller } from "./peers/index.js";
 import { setDesktopVault, startVaultService } from "./vault/service.js";
+import { startMemorySync } from "./vault/memories.js";
 import { builtinAddress, initEngine, preloadBuiltin, stopEngine } from "./engine.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -286,6 +287,10 @@ try {
   // once a person device approves it (docs/mesh-design.md §1): inert while
   // it is not linked. Inside Twoody Desktop the Desktop holds the keys.
   const vaultService = parentPort ? null : startVaultService({ log: (message) => console.log(`  ${message}`) });
+  // Memories through the vault's own stream (lot S5), in both modes: with
+  // this computer's keys, or the ones Twoody Desktop handed over. Inert
+  // while this computer is no trusted member.
+  const memorySync = startMemorySync({ log: (message) => console.log(`  ${message}`) });
   if (parentPort && process.env.TWOODY_TUNNEL === "1") {
     parentPort.on("message", ({ data }) => {
       if ((data as { type?: unknown } | null)?.type !== "tunnel") return;
@@ -344,6 +349,7 @@ try {
         bridgeClient?.stop();
         accountService.stop();
         vaultService?.stop();
+        memorySync.stop();
         stopPeerPoller();
         sampler?.stop();
       } catch {

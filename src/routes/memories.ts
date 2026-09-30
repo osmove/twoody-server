@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { and, desc, eq, inArray, isNull, like, or } from "drizzle-orm";
 import { db, memories } from "../db.js";
-import { requireAuth, generateId } from "../auth.js";
+import { requireAuth } from "../auth.js";
 import { factsFromImport, importMemories, IMPORT_SOURCES, type ImportSource } from "../memoryLearning.js";
+import { memoryDeleted, memoryWritten, newMemoryId, possibleDuplicates } from "../vault/memories.js";
 
 // Cloud-shape /memories CRUD against the local SQLite store. Wire
 // shape mirrors `app/views/memories/_memory.json.jbuilder` on Rails:
@@ -129,6 +130,29 @@ export async function memoryRoutes(app: FastifyInstance) {
     },
   });
 
+  /// « Doublons possibles »: memories sharing a title whose contents
+  /// differ — typically the same thing written on two computers before
+  /// they shared their memories (src/vault/memories.ts). The screens show
+  /// them side by side; the person keeps, edits or deletes.
+  app.get("/memories/duplicates", {
+    schema: {
+      tags: ["memories"],
+      summary: "Possible duplicates: memories with the same title and different contents",
+      security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
+    },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      const groups = possibleDuplicates(auth.userId);
+      const ids = groups.flatMap((g) => g.memory_ids);
+      const rows = ids.length ? db.select().from(memories).where(inArray(memories.id, ids)).all() : [];
+      const byId = new Map(rows.map((row) => [row.id, serialize(row)]));
+      reply.send({
+        groups: groups.map((g) => ({ title: g.title, memories: g.memory_ids.map((id) => byId.get(id)).filter((m): m is MemoryRow => !!m) })),
+      });
+    },
+  });
+
   app.get<{ Params: { id: string } }>("/memories/:id", {
     schema: {
       tags: ["memories"],
@@ -170,10 +194,10 @@ export async function memoryRoutes(app: FastifyInstance) {
         return reply.code(422).send({ errors: ["content can't be blank"] });
       }
       const now = new Date();
-      const id = generateId();
+      const created = newMemoryId();
       db.insert(memories)
         .values({
-          id,
+          id:            created,
           userId:        auth.userId,
           kind:          body.kind ?? "user",
           title:         body.title ?? null,
@@ -187,6 +211,8 @@ export async function memoryRoutes(app: FastifyInstance) {
           updatedAt:     now,
         })
         .run();
+      // Through the vault too, when this computer is a trusted member.
+      const id = memoryWritten(created);
       const [row] = db.select().from(memories).where(eq(memories.id, id)).limit(1).all();
       reply.code(201).send(serialize(row!));
     },
@@ -249,7 +275,8 @@ export async function memoryRoutes(app: FastifyInstance) {
         updatedAt:     new Date(),
       };
       db.update(memories).set(next).where(eq(memories.id, existing.id)).run();
-      const [row] = db.select().from(memories).where(eq(memories.id, existing.id)).limit(1).all();
+      const id = memoryWritten(existing.id, "edit");
+      const [row] = db.select().from(memories).where(eq(memories.id, id)).limit(1).all();
       reply.send(serialize(row!));
     },
   });
@@ -263,11 +290,14 @@ export async function memoryRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
+      const [existing] = db.select().from(memories).where(and(eq(memories.id, req.params.id), eq(memories.userId, auth.userId))).limit(1).all();
       const result = db
         .delete(memories)
         .where(and(eq(memories.id, req.params.id), eq(memories.userId, auth.userId)))
         .run();
-      if (result.changes === 0) return reply.code(404).send({ error: "not_found" });
+      if (result.changes === 0 || !existing) return reply.code(404).send({ error: "not_found" });
+      // Deleted on every computer of the vault, and never learned again.
+      memoryDeleted({ id: existing.id, content: existing.content, vaultEventId: existing.vaultEventId });
       reply.code(204).send();
     },
   });

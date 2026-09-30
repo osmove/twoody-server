@@ -339,6 +339,12 @@ export const memories = sqliteTable("memories", {
   supersededById: text("superseded_by_id"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  /// The vault's clock of the version held here (src/vault/memories.ts):
+  /// null while the memory has never been through the vault.
+  hlc: text("hlc"),
+  /// The vault event this version comes from; "local" for a memory that
+  /// stays on this computer (too long for the vault's memory events).
+  vaultEventId: text("vault_event_id"),
 });
 
 /// Folders the user let Twoody read. Everything under them is indexed
@@ -917,6 +923,32 @@ if (!sessionColumns.some((column) => column.name === "origin")) {
 if (!sessionColumns.some((column) => column.name === "requester_computer_id")) {
   sqlite.exec("ALTER TABLE auth_sessions ADD COLUMN requester_computer_id TEXT");
 }
+
+// Memories through the vault's « memories » stream (docs/mesh-design.md §3,
+// lot S5, src/vault/memories.ts): the clock and event of the version held
+// here, and the opened events themselves — this computer's own tombstones
+// among them, kept even when the account withholds them.
+const memoryColumns = sqlite.prepare("PRAGMA table_info(memories)").all() as Array<{ name: string }>;
+for (const name of ["hlc", "vault_event_id"]) {
+  if (!memoryColumns.some((column) => column.name === name)) sqlite.exec(`ALTER TABLE memories ADD COLUMN ${name} TEXT`);
+}
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS memory_vault_events (
+    event_id TEXT PRIMARY KEY,
+    stream_id TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    own INTEGER NOT NULL DEFAULT 0,
+    sealed_json TEXT,
+    sent INTEGER NOT NULL DEFAULT 0,
+    seq INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_memory_vault_events_stream ON memory_vault_events (stream_id, sent);
+  CREATE TABLE IF NOT EXISTS memory_vault_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+`);
 
 // Contacts and events copied from the Mac's own apps (29/09/2026).
 for (const [table, columns] of [
