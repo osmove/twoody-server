@@ -505,6 +505,8 @@ export function createComputerVaultClient({ api, store, userId, accountComputerI
         refused += 1;
         continue;
       }
+      // An epoch key held is never replaced: one number, one key.
+      if (epochs.has(envelope.epoch)) continue;
       try {
         epochs.set(envelope.epoch, unwrapEpochKey(envelope, { userId: user, device: { deviceId: local.deviceId, ...local.keys }, signers }));
         approver = approver || devices.find((d) => d.id === envelope.from_device) || null;

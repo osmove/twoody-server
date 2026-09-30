@@ -229,8 +229,28 @@ export interface AccountMemory {
   created_at?: unknown;
 }
 
-const MEMORY_KINDS = new Set(["user", "feedback", "project", "reference"]);
+// What the account hands over is data about the person, never how to
+// answer: a « feedback » memory (an instruction, chatContext.ts) is taken
+// as a fact about the person. The account is not trusted with the model's
+// instructions.
+const ACCOUNT_KINDS = new Set(["user", "project", "reference"]);
 export const MAX_ACCOUNT_MEMORIES = 500;
+/// One memory from the account, at most (bytes of UTF-8).
+export const MAX_ACCOUNT_MEMORY_BYTES = 8 * 1024;
+
+/// `text` cut to `bytes` of UTF-8, never in the middle of a character.
+function cutToBytes(text: string, bytes: number): string {
+  if (Buffer.byteLength(text, "utf8") <= bytes) return text;
+  let out = "";
+  let used = 0;
+  for (const char of text) {
+    const size = Buffer.byteLength(char, "utf8");
+    if (used + size > bytes) break;
+    out += char;
+    used += size;
+  }
+  return out;
+}
 
 export function importAccountMemories(userId: string, items: AccountMemory[], now = new Date()) {
   const known = new Set(
@@ -241,14 +261,15 @@ export function importAccountMemories(userId: string, items: AccountMemory[], no
   const ids: string[] = [];
   let skipped = 0;
   for (const item of items.slice(0, MAX_ACCOUNT_MEMORIES)) {
-    const content = typeof item?.content === "string" ? item.content.trim().slice(0, 50_000) : "";
+    const content = typeof item?.content === "string" ? cutToBytes(item.content.trim(), MAX_ACCOUNT_MEMORY_BYTES).trim() : "";
     const key = normalize(content);
     if (!content || !key) continue;
     // Known here, or forgotten here on purpose (never learned again).
     if (known.has(key) || isForgottenFact(content)) { skipped += 1; continue; }
     known.add(key);
     const title = typeof item.title === "string" && item.title.trim() ? item.title.trim().slice(0, 200) : null;
-    const kind = typeof item.kind === "string" && MEMORY_KINDS.has(item.kind) ? item.kind : kindOfFact(content);
+    const guessed = typeof item.kind === "string" && ACCOUNT_KINDS.has(item.kind) ? item.kind : kindOfFact(content);
+    const kind = guessed === "feedback" ? "user" : guessed;
     const tags = Array.isArray(item.tags) ? item.tags.filter((tag): tag is string => typeof tag === "string" && tag !== "import" && tag !== "account").slice(0, 20) : [];
     const created = typeof item.created_at === "string" && !Number.isNaN(Date.parse(item.created_at)) ? new Date(item.created_at) : now;
     const id = newMemoryId();

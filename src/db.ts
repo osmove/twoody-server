@@ -148,6 +148,14 @@ export const accountPeers = sqliteTable("account_peers", {
   /// goes when it leaves the roster. Null for a link asked for from
   /// « Appareils », which stays (a computer that only lends its models).
   origin: text("origin"),
+  /// The tunnel key the other computer's sealed answer must carry: the one
+  /// whose code de sécurité the person compared, or the roster's for a
+  /// link the roster asked for (peers/index.ts checkPeerRequest).
+  expectedTunnelKey: text("expected_tunnel_key"),
+  /// The tunnel key whose code de sécurité the person compared with the
+  /// one the computer shows (« Appareils »): a link sealed to it may take
+  /// turns even out of the vault roster (router/index.ts routablePeers).
+  checkedTunnelKey: text("checked_tunnel_key"),
   error: text("error"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
@@ -859,6 +867,8 @@ sqlite.exec(`
     enabled INTEGER NOT NULL DEFAULT 1,
     trusted INTEGER NOT NULL DEFAULT 0,
     origin TEXT,
+    expected_tunnel_key TEXT,
+    checked_tunnel_key TEXT,
     error TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
@@ -956,6 +966,11 @@ for (const name of ["approval_rule", "device_access_json"]) {
 }
 if (!peerColumns.some((column) => column.name === "origin")) {
   sqlite.exec("ALTER TABLE account_peers ADD COLUMN origin TEXT");
+}
+// The key a peer's answer must carry, and the one the person checked
+// (30/09/2026): the account's listing never picks the key of a link.
+for (const name of ["expected_tunnel_key", "checked_tunnel_key"]) {
+  if (!peerColumns.some((column) => column.name === name)) sqlite.exec(`ALTER TABLE account_peers ADD COLUMN ${name} TEXT`);
 }
 
 // Memories through the vault's « memories » stream (docs/mesh-design.md §3,

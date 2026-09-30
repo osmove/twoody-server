@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { realpathSync, statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, extname, join, relative } from "node:path";
+import { basename, extname, isAbsolute, join, relative } from "node:path";
 import { generateId } from "../auth.js";
 import { db, documentFolders, documents, sqlite } from "../db.js";
 import { chunkSections } from "./chunk.js";
@@ -359,12 +359,36 @@ export function hasIndexedDocuments(userId: string): boolean {
   return row !== undefined;
 }
 
-/// True when `path` is a file this user's index knows about. The desktop
-/// asks before opening a cited document, so a forged path cannot be used
-/// to open arbitrary files.
+/// True when `path` is a file this user's index knows about AND lies, on
+/// disk now, inside the folder it was indexed from — a folder the person
+/// still grants, and that folderRisk does not refuse on this machine. The
+/// desktop asks before opening a cited document, so a forged path cannot
+/// be used to open arbitrary files, nor an indexed row whose folder was
+/// taken back, nor a file a symbolic link moved out of its folder.
 export function isIndexedPath(userId: string, path: string): boolean {
-  const row = sqlite.prepare("SELECT 1 FROM documents WHERE user_id = ? AND path = ? LIMIT 1").get(userId, path);
-  return row !== undefined;
+  if (typeof path !== "string" || !path || path.includes("\0")) return false;
+  const row = sqlite
+    .prepare("SELECT f.path AS folder FROM documents d JOIN document_folders f ON f.id = d.folder_id AND f.user_id = d.user_id WHERE d.user_id = ? AND d.path = ? LIMIT 1")
+    .get(userId, path) as { folder: string } | undefined;
+  if (!row) return false;
+  let folder: string;
+  let file: string;
+  let home: string;
+  try {
+    folder = realpathSync(row.folder);
+    file = realpathSync(path);
+    home = realpathSync(homedir());
+  } catch {
+    return false;
+  }
+  if (folderRisk(folder, home, process.platform, folder === home) !== null) return false;
+  const inside = relative(folder, file);
+  if (!inside || inside.startsWith("..") || isAbsolute(inside)) return false;
+  try {
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /** Current grants and caller ownership are checked before reading index metadata. */

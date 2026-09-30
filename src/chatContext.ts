@@ -288,9 +288,12 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   // How to answer first, then who the person is — the core facts first — as
   // much as fits; the facts that did not fit stay findable when a message is
   // about them (an import brings dozens at once, 29/09/2026).
-  const users = usable.filter((memory) => memory.kind === "user");
+  // What came from the account (source « account ») is data about the
+  // person, never how to answer: with the facts, whatever its kind says.
+  const fromAccount = (memory: MemoryRow) => memory.sourceRef === "account";
+  const users = usable.filter((memory) => memory.kind === "user" || (memory.kind === "feedback" && fromAccount(memory)));
   const profileRows = [
-    ...usable.filter((memory) => memory.kind === "feedback"),
+    ...usable.filter((memory) => memory.kind === "feedback" && !fromAccount(memory)),
     ...users.filter(isCoreFact),
     ...users.filter((memory) => !isCoreFact(memory)),
   ];

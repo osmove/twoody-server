@@ -25,11 +25,20 @@ export function peerTrusted(peer: Pick<PeerRow, "computerId" | "tunnelKey">): bo
   return trustedNow(peer.computerId, peer.tunnelKey);
 }
 
-/// The peers the router may send turns to: linked, enabled — less those
-/// linked because of the roster that it no longer has (their links go
-/// within the minute, peers/index.ts; not a turn meanwhile).
+/// Whether a linked peer may take turns: a computer of the verified roster
+/// over its bound key, or one the person added from « Appareils » after
+/// comparing its code de sécurité, over that very key. A link the account
+/// alone vouches for (its listing, an old link) lends nothing.
+export function peerRoutable(peer: Pick<PeerRow, "computerId" | "tunnelKey" | "checkedTunnelKey">): boolean {
+  if (peerTrusted(peer)) return true;
+  return !!peer.checkedTunnelKey && !!peer.tunnelKey && peer.checkedTunnelKey.toLowerCase() === peer.tunnelKey.toLowerCase();
+}
+
+/// The peers the router may send turns to: linked, enabled, and routable
+/// (peerRoutable) — so not those linked because of the roster that it no
+/// longer has (their links go within the minute, peers/index.ts).
 export function routablePeers(userId: string): PeerRow[] {
-  return linkedPeers(userId).filter((peer) => peer.origin !== "mesh" || peerTrusted(peer));
+  return linkedPeers(userId).filter(peerRoutable);
 }
 
 /// The roster, looked at when it is older than its minute.

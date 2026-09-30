@@ -127,6 +127,8 @@ const auth = { "x-user-token": desktop.token };
 await app.inject({ method: "POST", url: "/providers/local", headers: auth, payload: { url: macRuntime.url, model: "gemma3:4b" } });
 
 let piComputerId = "";
+/// The Pi's tunnel key, whose code de sécurité its console shows.
+let piTunnelKey = "";
 
 test("the Pi joins the account by a code the Mac approves, and sends its status", async () => {
   await until(async () => (await piFetch("/health").catch(() => null))?.ok, 20_000, `the Pi to start (${piOutput})`);
@@ -141,6 +143,8 @@ test("the Pi joins the account by a code the Mac approves, and sends its status"
   // secret the person types on the Mac along with the code.
   const { user_code, approval_secret } = await started.json();
   const login = backend.logins.find((l) => l.user_code === user_code)!;
+  piTunnelKey = login.tunnel_public_key!;
+  assert.match(piTunnelKey, /^[0-9a-f]{64}$/);
   assert.equal(login.public_key.slice(0, 8), before.fp, "the code is the login of the server found here");
   const proof = loginApproverProof({ secret: approval_secret, userCode: user_code, approverPublicKey: mac.public, tunnelPublicKey: login.tunnel_public_key! });
   backend.approveLogin(user_code, { kind: "computer", public_key: mac.public, name: "Mac de Jimmy", proof });
@@ -163,7 +167,8 @@ test("the Pi joins the account by a code the Mac approves, and sends its status"
 });
 
 test("the Mac's server becomes the Pi's peer: requested, endorsed by the Mac, approved by the Pi, opened", async () => {
-  const asked = await app.inject({ method: "POST", url: "/api/v1/peers", headers: auth, payload: { computer_id: piComputerId } });
+  // Asked with the tunnel key whose code de sécurité the person compared.
+  const asked = await app.inject({ method: "POST", url: "/api/v1/peers", headers: auth, payload: { computer_id: piComputerId, checked_tunnel_key: piTunnelKey } });
   assert.equal(asked.statusCode, 202, asked.payload);
   const { request_id } = asked.json();
   const authorization = backend.authorizations.find((a) => String(a.id) === String(request_id))!;
@@ -192,6 +197,7 @@ test("the Mac's server becomes the Pi's peer: requested, endorsed by the Mac, ap
   await until(() => peerById(desktop.user_id, piComputerId)?.state === "linked", 10_000, `the peer to be linked (${piOutput})`);
   const peer = peerById(desktop.user_id, piComputerId)!;
   assert.equal(peer.url, piUrl);
+  assert.equal(peer.tunnelKey, piTunnelKey, "sealed to the key whose code was checked");
   assert.equal(peer.name, "Raspberry Pi");
   assert.equal(authorization.state, "consumed");
 });

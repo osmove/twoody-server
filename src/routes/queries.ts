@@ -39,7 +39,7 @@ import { beginGeneration } from "../account/inflight.js";
 import { noteModelUsed } from "../account/statusSource.js";
 import type { Purpose } from "../account/status.js";
 import { peerById, peerRequest, PeerUnavailableError, type PeerRow } from "../peers/index.js";
-import { isSelf, peerTrusted, pick, pickBackground, selfIdentity } from "../router/index.js";
+import { isSelf, peerRoutable, peerTrusted, pick, pickBackground, selfIdentity } from "../router/index.js";
 import { meshRoster } from "../vault/roster.js";
 import { meshRequester } from "../sessionTrust.js";
 import { ensureConversation, sealAnsweredTurn } from "../vault/service.js";
@@ -1045,7 +1045,7 @@ async function planRoute(userId: string, requestedModel: string | undefined, rou
       return [{ provider, answeredBy: answeredByOf(provider, "explicit") }];
     }
     const peer = peerById(userId, routing.computerId);
-    if (!peer || peer.state !== "linked") {
+    if (!peer || peer.state !== "linked" || !peerRoutable(peer)) {
       throw new ComputerUnavailableError("this computer is not linked to this one yet", selfIdentity());
     }
     const model = wanted ?? (await pick({ userId, model: null, purpose: "chat" })).find((c) => c.computerId === peer.computerId)?.model ?? null;

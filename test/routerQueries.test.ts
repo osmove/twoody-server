@@ -41,10 +41,12 @@ const desktop = (await app.inject({ method: "POST", url: "/auth/pair", payload: 
 const auth = { "x-user-token": desktop.token };
 assert.equal((await app.inject({ method: "POST", url: "/providers/local", headers: auth, payload: { url: runtime.url, model: "qwen3:8b" } })).statusCode, 201);
 
-// A peer that is paired but does not answer (nothing listens on port 9).
+// A peer that is paired but does not answer (nothing listens on port 9),
+// added from « Appareils » with its code de sécurité checked.
 const now = new Date();
+const PEER_TUNNEL_KEY = randomBytes(32).toString("hex");
 db.insert(accountPeers)
-  .values({ computerId: "77", userId: desktop.user_id, name: "Raspberry Pi", kind: "server", platform: "linux", state: "linked", url: "http://127.0.0.1:9", token: "peer-token", tunnelKey: randomBytes(32).toString("hex"), enabled: true, createdAt: now, updatedAt: now })
+  .values({ computerId: "77", userId: desktop.user_id, name: "Raspberry Pi", kind: "server", platform: "linux", state: "linked", url: "http://127.0.0.1:9", token: "peer-token", tunnelKey: PEER_TUNNEL_KEY, checkedTunnelKey: PEER_TUNNEL_KEY, enabled: true, createdAt: now, updatedAt: now })
   .run();
 const fastPeer = (models: Array<{ id: string; loaded: boolean }>, tps: Record<string, number>) =>
   setPeerStatus("77", readStatus({ app_version: "0.3.0", models, load: { cpu_pct: 5, gpu_pct: null, ram_used_pct: 30, at: null }, tps, inflight: 0, accepts: ["chat", "background"], tools: true })!);

@@ -31,7 +31,7 @@ export type PeerRow = typeof accountPeers.$inferSelect;
 export class PeerUnavailableError extends Error {
   constructor(
     message: string,
-    readonly code: "unreachable" | "busy" | "no_model" | "not_linked" | "refused" = "unreachable",
+    readonly code: "unreachable" | "busy" | "no_model" | "not_linked" | "refused" | "key_mismatch" = "unreachable",
   ) {
     super(message);
     this.name = "PeerUnavailableError";
@@ -451,7 +451,8 @@ export async function linkRosterComputers(userId: string, roster: Roster | null)
     if (peer?.requestId && peer.requestExpiresAt && peer.requestExpiresAt.getTime() > Date.now()) continue;
     if (peer && peer.state !== "linked" && peer.requestId === null && Date.now() - peer.updatedAt.getTime() < MESH_RETRY_MS && peer.origin === "mesh" && peer.error !== "left_mesh") continue;
     try {
-      await requestPeer(userId, computer.accountComputerId, { origin: "mesh" });
+      // The keys the verified binding names, never the account's listing.
+      await requestPeer(userId, computer.accountComputerId, { origin: "mesh", expectTunnelKey: computer.tunnelPublicKey, hostKey: computer.pairingPublicKey });
       asked.push(computer.accountComputerId);
     } catch {
       // Offline, or the account does not list it (yet): next change or tick.
@@ -562,25 +563,56 @@ export function forgetAccountComputers(): void {
 
 const polls = new Map<string, NodeJS.Timeout>();
 
+const TUNNEL_KEY = /^[0-9a-f]{64}$/;
+
 /// POST /peers: asks the computer `computerId` for peer access with this
 /// server's tunnel key, and waits (in the background) for its sealed answer.
 /// `requester`: the computer of the account that asks, when the session
 /// this server acts with is not one (Twoody Desktop signs in as its
 /// person) — its id and credential, which the backend checks and names the
 /// request after; sent with this one call only, kept nowhere.
+///
+/// Which computer answers is never the account's to say (a malicious
+/// account rewrites its listing, not signatures):
+///   - `checkedTunnelKey`: the tunnel key whose code de sécurité the person
+///     compared with the computer's (« Appareils »). The answer must carry
+///     it, and the link then takes turns (router/index.ts routablePeers).
+///   - `expectTunnelKey` / `hostKey`: what the vault roster's verified
+///     binding names (a link the roster asks for).
+///   - A link that works keeps its key and the pairing key its answer was
+///     opened with: a new answer must carry that same tunnel key, whatever
+///     key the account lists for the computer now.
+/// Returns this server's own tunnel key too (`public_key`): the only
+/// requester key the Desktop vouches for (twoody-desktop endorseDelegated).
 export async function requestPeer(
   userId: string,
   computerId: string,
-  options: { name?: string; requester?: { computerId: string; credential: string }; origin?: "mesh" } = {},
-): Promise<{ request_id: string; expires_at: string | null }> {
+  options: { name?: string; requester?: { computerId: string; credential: string }; origin?: "mesh"; checkedTunnelKey?: string; expectTunnelKey?: string; hostKey?: string } = {},
+): Promise<{ request_id: string; expires_at: string | null; public_key: string }> {
   const creds = accountCredentials();
   if (!creds) throw new PeerUnavailableError("this server is not linked to an account", "not_linked");
   if ((creds.computerId && creds.computerId === computerId) || options.requester?.computerId === computerId) {
     throw new PeerUnavailableError("a computer is not its own peer", "refused");
   }
+  const checked = options.checkedTunnelKey?.toLowerCase() ?? null;
+  const expectFromRoster = options.expectTunnelKey?.toLowerCase() ?? null;
+  const rosterHostKey = options.hostKey?.toLowerCase() ?? null;
+  if ((checked && !TUNNEL_KEY.test(checked)) || (expectFromRoster && !TUNNEL_KEY.test(expectFromRoster)) || (rosterHostKey && !TUNNEL_KEY.test(rosterHostKey))) {
+    throw new PeerUnavailableError("a tunnel key is 64 hexadecimal characters", "refused");
+  }
+  const existing = peerById(userId, computerId);
+  const working = existing?.state === "linked" && !!existing.tunnelKey && !!existing.token ? existing : null;
+  // The person checked another key than the one this link is sealed to:
+  // the link changed since, nothing is asked on its word.
+  if (working && checked && checked !== working.tunnelKey!.toLowerCase()) {
+    throw new PeerUnavailableError("the code de sécurité checked is not the one of this link", "key_mismatch");
+  }
   const computers = (await accountComputers({ fresh: true })) ?? [];
   const target = computers.find((c) => c.id === computerId);
   if (!target) throw new PeerUnavailableError("no such computer in the account", "not_linked");
+  // What the answer is opened with, and the tunnel key it must carry.
+  const hostKey = rosterHostKey ?? (working?.hostKey ? working.hostKey : target.public_key);
+  const expectedTunnelKey = checked ?? expectFromRoster ?? working?.tunnelKey?.toLowerCase() ?? existing?.checkedTunnelKey ?? null;
   // Inside Twoody Desktop, asking as its own computer: the Desktop's
   // device-access for this key and that computer (vault/service.ts
   // peerDeviceAccess), which the account takes only while the Desktop's
@@ -616,25 +648,31 @@ export async function requestPeer(
     state: "requested",
     requestId,
     requestExpiresAt: body.expires_at ? new Date(body.expires_at) : new Date(Date.now() + 5 * 60_000),
-    hostKey: target.public_key,
+    hostKey,
+    expectedTunnelKey,
+    ...(checked ? { checkedTunnelKey: checked } : {}),
     error: null,
     updatedAt: now,
   };
-  const existing = peerById(userId, computerId);
   if (existing) {
-    // A peer already linked keeps working until the new answer replaces it.
+    // A peer already linked keeps working until the new answer replaces it,
+    // and keeps the pairing key its answer was opened with.
     // A link asked for from « Appareils » stays one; one the roster asked
     // for becomes one when asked for from « Appareils ».
     const origin = options.origin === "mesh" && (existing.origin === "mesh" || existing.state !== "linked") ? "mesh" : options.origin === "mesh" ? existing.origin : null;
     db.update(accountPeers)
-      .set(existing.state === "linked" ? { requestId, requestExpiresAt: values.requestExpiresAt, hostKey: target.public_key, origin, updatedAt: now } : { ...values, origin })
+      .set(
+        existing.state === "linked"
+          ? { requestId, requestExpiresAt: values.requestExpiresAt, hostKey, expectedTunnelKey, ...(checked ? { checkedTunnelKey: checked } : {}), origin, updatedAt: now }
+          : { ...values, origin },
+      )
       .where(eq(accountPeers.computerId, computerId))
       .run();
   } else {
     db.insert(accountPeers).values({ computerId, ...values, origin: options.origin ?? null, createdAt: now }).run();
   }
   watchPeerRequest(userId, computerId);
-  return { request_id: requestId, expires_at: values.requestExpiresAt.toISOString() };
+  return { request_id: requestId, expires_at: values.requestExpiresAt.toISOString(), public_key: tunnelIdentity().publicKey.toString("hex") };
 }
 
 /// One look at the answer to a peer request. Exposed for tests.
@@ -674,6 +712,9 @@ export async function checkPeerRequest(userId: string, computerId: string): Prom
   const token = typeof opened.localServerToken === "string" ? opened.localServerToken : null;
   const tunnelKey = typeof opened.computerTunnelKey === "string" && /^[0-9a-f]{64}$/.test(opened.computerTunnelKey) ? opened.computerTunnelKey : null;
   if (!url || !token || !tunnelKey) return fail("unreadable_answer");
+  // Sealed to another key than the one the person checked, the roster
+  // names, or the working link has: another computer answered.
+  if (peer.expectedTunnelKey && tunnelKey !== peer.expectedTunnelKey.toLowerCase()) return fail("tunnel_key_mismatch");
   try {
     const parsed = new URL(url);
     if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) return fail("unreadable_answer");

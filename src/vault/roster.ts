@@ -46,11 +46,17 @@ export type RosterComputer = {
 };
 export type RosterPerson = { vaultDeviceId: string; label: string; signPublic: string };
 export type Roster = { userId: string; computers: Map<string, RosterComputer>; persons: Map<string, RosterPerson> };
-export type RosterInput = { userId: string; devices: VaultDevice[]; anchors: Anchor[] };
+/// `revoked`: the devices the Desktop revoked (its append-only list, handed
+/// with its keys): revoked here whatever the account says.
+export type RosterInput = { userId: string; devices: VaultDevice[]; anchors: Anchor[]; revoked?: string[] };
 export type RosterSource = () => Promise<RosterInput | null>;
 
 /// The roster the vault's own signatures vouch for. Pure.
-export function buildRoster({ userId, devices, anchors }: RosterInput): Roster {
+export function buildRoster({ userId, devices: listed, anchors, revoked = [] }: RosterInput): Roster {
+  // A device the Desktop revoked is neither walked through nor counted,
+  // even when the account shows it trusted again.
+  const held = new Set(revoked);
+  const devices = listed.map((d) => (held.has(d.id) && d.status !== "revoked" ? { ...d, status: "revoked" as const } : d));
   const byId = new Map(devices.map((d) => [d.id, d]));
   const verified = verifiedIds(userId, devices, anchors);
   const computers = new Map<string, RosterComputer>();

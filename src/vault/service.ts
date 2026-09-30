@@ -5,7 +5,7 @@ import { DATA_DIR, db, users } from "../db.js";
 import { tunnelIdentity } from "../tunnel/identity.js";
 import { accountVaultApi, createComputerVaultClient, desktopBindingOf, deviceKind, fileKeyStore, isComputer, type Anchor, type ComputerVaultApi, type ComputerVaultClient, type ComputerVaultStatus, type EventsApi, type LocalVault, type VaultDevice, type VaultState } from "./client.js";
 import { DEVICE_ACCESS_MAX_TTL_S, signDesktopBinding, signDeviceAccessV2, type DesktopBinding } from "./contracts.js";
-import { fingerprint, fromHex, toHex, VaultError } from "./crypto.js";
+import { fingerprint, fromHex, isEpoch, toHex, VaultError } from "./crypto.js";
 import { jsonFileStore, memoryStore, type VaultStore } from "./store.js";
 import { createConversationBridge, createVaultSync, type ConversationBridge, type LocalHistory, type VaultSync } from "./sync.js";
 import { sqliteHistory } from "./localHistory.js";
@@ -45,7 +45,7 @@ const FIRST_TICK_MS = 5_000;
 type Mode =
   | { kind: "off" }
   | { kind: "headless"; client: ComputerVaultClient; api: ComputerVaultApi & EventsApi; sync: VaultSync; syncStore: VaultStore & { clear(): void }; bridge: ConversationBridge | null; userId: string; accountComputerId: string; status: ComputerVaultStatus | null }
-  | { kind: "desktop"; local: LocalVault; api: EventsApi; state: () => Promise<VaultState>; sync: VaultSync; bridge: ConversationBridge | null; userId: string; computer: DesktopComputer | null; publish: PublishDesktopBinding };
+  | { kind: "desktop"; local: DesktopVault; api: EventsApi; state: () => Promise<VaultState>; sync: VaultSync; bridge: ConversationBridge | null; userId: string; computer: DesktopComputer | null; publish: PublishDesktopBinding };
 
 /// This Mac as the account knows it, handed by the Desktop with its keys.
 export type DesktopComputer = { id: string; pairingPublicKey: string };
@@ -82,8 +82,15 @@ const bytesOf = (value: unknown): Uint8Array | null => {
   return null;
 };
 
+/// The Desktop's hand-over as held here: with the vault devices it revoked
+/// (its append-only list), which stay revoked here whatever the account
+/// says (vault/roster.ts buildRoster).
+export type DesktopVault = LocalVault & { revoked: string[] };
+/// The revoked devices kept, at most (the Desktop hands its latest 256).
+const MAX_REVOKED = 256;
+
 /// Reads the Desktop's hand-over; null when it is not one (or says « none »).
-export function readVaultMessage(data: unknown): LocalVault | null {
+export function readVaultMessage(data: unknown): DesktopVault | null {
   const m = (data ?? {}) as Record<string, unknown>;
   if (m.type !== "vault" || !m.keys || typeof m.deviceId !== "string" || !m.deviceId) return null;
   const k = m.keys as Record<string, unknown>;
@@ -93,7 +100,9 @@ export function readVaultMessage(data: unknown): LocalVault | null {
   const rawEpochs = m.epochs instanceof Map ? Object.fromEntries(m.epochs) : (m.epochs ?? {});
   for (const [epoch, key] of Object.entries(rawEpochs as Record<string, unknown>)) {
     const bytes = bytesOf(key);
-    if (Number.isInteger(Number(epoch)) && Number(epoch) > 0 && bytes) epochs.set(Number(epoch), bytes);
+    const n = Number(epoch);
+    // Written as a plain number, safe and far from 2**53 (crypto.ts isEpoch).
+    if (/^[1-9][0-9]{0,9}$/.test(epoch) && isEpoch(n) && bytes) epochs.set(n, bytes);
   }
   const userId = typeof m.userId === "string" || typeof m.userId === "number" ? String(m.userId) : readAccountFile()?.account_id !== undefined ? String(readAccountFile()!.account_id) : null;
   if (!userId) return null;
@@ -105,7 +114,10 @@ export function readVaultMessage(data: unknown): LocalVault | null {
         return x && typeof x.id === "string" && x.id.length <= 64 && typeof x.sign_public === "string" && HEX32.test(x.sign_public) ? [{ id: x.id, sign_public: x.sign_public }] : [];
       }).slice(0, 8)
     : [];
-  return { userId, accountComputerId: null, deviceId: m.deviceId, keys: keys as LocalVault["keys"], epochs, anchors };
+  const revoked = Array.isArray(m.revoked)
+    ? [...new Set((m.revoked as unknown[]).filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 64))].slice(-MAX_REVOKED)
+    : [];
+  return { userId, accountComputerId: null, deviceId: m.deviceId, keys: keys as LocalVault["keys"], epochs, anchors, revoked };
 }
 
 /// The account computer the Desktop says this Mac is, with its pairing key
@@ -394,7 +406,7 @@ export async function sealAnsweredTurn(discussionId: string, ref: string | null)
 /// headless, those pinned over the tunnel; inside Twoody Desktop, the
 /// Desktop's own device and the ones it handed over. Null without a vault
 /// here. Throws what the account answered (roster.ts reads 401/404/410).
-export async function vaultRosterInput(): Promise<{ userId: string; devices: NonNullable<VaultState["devices"]>; anchors: Anchor[] } | null> {
+export async function vaultRosterInput(): Promise<{ userId: string; devices: NonNullable<VaultState["devices"]>; anchors: Anchor[]; revoked?: string[] } | null> {
   if (mode.kind === "headless") {
     const local = mode.client.readLocal();
     if (!local) return null;
@@ -408,7 +420,8 @@ export async function vaultRosterInput(): Promise<{ userId: string; devices: Non
     // This Desktop's own binding follows what the vault shows (the roster
     // looks again once it is published).
     void ensureDesktopBinding(state.devices ?? []).catch(() => undefined);
-    return { userId: mode.userId, devices: state.devices ?? [], anchors: [...self, ...local.anchors.filter((a) => a.id !== local.deviceId)] };
+    // What the Desktop revoked stays revoked here, whatever the account says.
+    return { userId: mode.userId, devices: state.devices ?? [], anchors: [...self, ...local.anchors.filter((a) => a.id !== local.deviceId)], revoked: local.revoked };
   }
   return null;
 }

@@ -338,7 +338,10 @@ test("router: trusted from the roster over the bound key, a mesh link outside it
   assert.equal(peerTrusted(peerById(user.id, MAC)!), true);
   assert.equal(peerTrusted(peerById(user.id, LISTED)!), false, "account_peers.trusted is not the roster");
   assert.equal(peerTrusted({ computerId: MAC, tunnelKey: hex() }), false, "the Mac's id under another key");
-  assert.deepEqual(routablePeers(user.id).map((p) => p.computerId).sort(), [MAC, LISTED].sort(), "the listed one still lends its models");
+  assert.deepEqual(routablePeers(user.id).map((p) => p.computerId), [MAC], "one only the account vouches for lends nothing");
+  // Added from « Appareils » with its code de sécurité checked: it lends its models.
+  db.update(accountPeers).set({ checkedTunnelKey: peerById(user.id, LISTED)!.tunnelKey }).where(eq(accountPeers.computerId, LISTED)).run();
+  assert.deepEqual(routablePeers(user.id).map((p) => p.computerId).sort(), [MAC, LISTED].sort(), "the checked one still lends its models");
 
   const computers = (await listComputers(user.id))!;
   const byId = new Map(computers.map((c) => [c.id, c]));

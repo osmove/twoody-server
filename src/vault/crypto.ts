@@ -117,12 +117,22 @@ export function approvalValid({ userId, device, approverId, approverSignPublic, 
   }
 }
 
+/// The highest epoch number a vault uses: a safe integer far from 2**53,
+/// where `n + 1 === n` would give two epoch keys the same number.
+export const MAX_EPOCH = 2 ** 31 - 1;
+
+/// Whether `epoch` is an epoch number: a safe, positive integer up to MAX_EPOCH.
+export function isEpoch(epoch: unknown): epoch is number {
+  return typeof epoch === "number" && Number.isSafeInteger(epoch) && epoch >= 1 && epoch <= MAX_EPOCH;
+}
+
 /// Wraps an epoch key for one device, signed by the device that gives it.
 export function wrapEpochKey({ epochKey, epoch, userId, to, from, random = systemRandomBytes }: {
   epochKey: Uint8Array; epoch: number; userId: string | number;
   to: { deviceId: string; encPublic: Uint8Array }; from: { deviceId: string; signPrivate: Uint8Array }; random?: Random;
 }): EpochEnvelope {
   if (!(epochKey instanceof Uint8Array) || epochKey.length !== KEY_BYTES) throw new VaultError("bad_epoch_key");
+  if (!isEpoch(epoch)) throw new VaultError("bad_epoch");
   const ephemeral = random(KEY_BYTES);
   const epk = x25519.getPublicKey(ephemeral);
   const shared = x25519.getSharedSecret(ephemeral, to.encPublic);
@@ -145,6 +155,7 @@ export function unwrapEpochKey(envelope: EpochEnvelope, { userId, device, signer
 }): Uint8Array {
   if (envelope?.v !== VAULT_VERSION) throw new VaultError("unsupported_version");
   if (String(envelope.user_id) !== String(userId) || envelope.to_device !== device.deviceId) throw new VaultError("not_for_this_device");
+  if (!isEpoch(envelope.epoch)) throw new VaultError("bad_epoch");
   const signer = signers?.get?.(envelope.from_device);
   if (!signer) throw new VaultError("untrusted_signer");
   const epk = fromHex(envelope.epk);

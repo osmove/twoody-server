@@ -27,7 +27,14 @@ import { peerTrusted } from "../router/index.js";
 //          Credential), kept nowhere here. The backend then names the
 //          request after that computer, or refuses it (403
 //          invalid_requester_credential), never takes it for a device's.
-//   PATCH  /api/v1/peers/:computer_id {enabled?, trusted?}  → 200 the peer
+//   POST   … checked_tunnel_key?: the tunnel key whose code de sécurité the
+//          person compared: the answer must carry it, and the link then
+//          takes turns out of the vault roster too (router routablePeers).
+//          202 carries public_key, this server's tunnel key: the only
+//          requester key the Desktop vouches for.
+//   PATCH  /api/v1/peers/:computer_id {enabled?, trusted?, checked_tunnel_key?}  → 200 the peer
+//          checked_tunnel_key (Desktop only): the person compared this
+//          link's code de sécurité; 409 unless it is the link's own key.
 //          trusted is still stored but no longer decides (docs/mesh-design.md
 //          §1): what the turns sent to a peer carry — memories, personal
 //          data, document excerpts — follows the vault roster; « Faire
@@ -66,7 +73,7 @@ async function requireDesktop(req: FastifyRequest, reply: FastifyReply): Promise
 /// them. Never a peer session (authenticate() refuses those here anyway),
 /// never a session given to another computer of the account, and never a
 /// firmware device's token.
-export async function requirePairedPerson(req: FastifyRequest, reply: FastifyReply): Promise<{ userId: string } | null> {
+export async function requirePairedPerson(req: FastifyRequest, reply: FastifyReply): Promise<{ userId: string; sessionId?: string } | null> {
   const auth = await requireAuth(req, reply);
   if (!auth) return null;
   if (isOwnerSession(auth.sessionId) || ownerRequest(req)) return auth;
@@ -96,6 +103,10 @@ function serialize(row: ReturnType<typeof listPeers>[number]) {
     // below: « Faire confiance » enrols the computer in the vault.
     trusted: peerTrusted(row),
     mesh: row.origin === "mesh",
+    // The key the link is sealed to, and whether the person compared its
+    // code de sécurité (a link that takes turns out of the roster).
+    tunnel_public_key: row.state === "linked" ? row.tunnelKey : null,
+    checked: !!row.checkedTunnelKey && !!row.tunnelKey && row.checkedTunnelKey === row.tunnelKey,
     url: row.url,
     request_id: row.requestId,
     error: row.error,
@@ -122,7 +133,7 @@ export async function peersRoutes(app: FastifyInstance) {
     },
   });
 
-  app.post<{ Body: { computer_id?: string | number; name?: string; requester_computer_id?: string | number; requester_credential?: string } }>("/peers", {
+  app.post<{ Body: { computer_id?: string | number; name?: string; requester_computer_id?: string | number; requester_credential?: string; checked_tunnel_key?: string } }>("/peers", {
     schema: { tags: ["providers"], summary: "Ask another computer of the account for peer access (Desktop only)" },
     handler: async (req, reply) => {
       const auth = await requireDesktop(req, reply);
@@ -146,28 +157,46 @@ export async function peersRoutes(app: FastifyInstance) {
         if (typeof credential !== "string" || !/^[A-Za-z0-9_=-]{16,200}$/.test(credential)) return reply.code(422).send({ error: "invalid requester_credential" });
         requester = { computerId: String(requesterId), credential };
       }
+      // The tunnel key whose code de sécurité the person compared: the
+      // answer must carry it (peers/index.ts requestPeer).
+      const checkedKey = req.body?.checked_tunnel_key;
+      if (checkedKey !== undefined && checkedKey !== null && (typeof checkedKey !== "string" || !/^[0-9a-f]{64}$/i.test(checkedKey))) {
+        return reply.code(422).send({ error: "invalid checked_tunnel_key" });
+      }
       try {
         const name = typeof req.body?.name === "string" && req.body.name.trim() ? req.body.name.trim() : undefined;
-        return reply.code(202).send(await requestPeer(auth.userId, String(id), { name, requester }));
+        return reply.code(202).send(await requestPeer(auth.userId, String(id), { name, requester, ...(typeof checkedKey === "string" ? { checkedTunnelKey: checkedKey.toLowerCase() } : {}) }));
       } catch (err) {
         return failure(reply, err);
       }
     },
   });
 
-  app.patch<{ Params: { id: string }; Body: { enabled?: boolean; trusted?: boolean } }>("/peers/:id", {
+  app.patch<{ Params: { id: string }; Body: { enabled?: boolean; trusted?: boolean; checked_tunnel_key?: string } }>("/peers/:id", {
     schema: { tags: ["providers"], summary: "Turn a peer on or off for the automatic choice, or trust it with this computer's person's data (Desktop or a device paired with it)" },
     handler: async (req, reply) => {
       const auth = await requirePairedPerson(req, reply);
       if (!auth) return;
       const peer = peerById(auth.userId, req.params.id);
       if (!peer) return reply.code(404).send({ error: "not_found" });
-      const { enabled, trusted } = req.body ?? {};
-      if ((enabled !== undefined && typeof enabled !== "boolean") || (trusted !== undefined && typeof trusted !== "boolean") || (enabled === undefined && trusted === undefined)) {
+      const { enabled, trusted, checked_tunnel_key: checkedKey } = req.body ?? {};
+      if (checkedKey !== undefined) {
+        // The person compared this link's code de sécurité with the
+        // computer's (Twoody Desktop only): the key must be the link's own.
+        if (!(isOwnerSession(auth.sessionId) || ownerRequest(req))) return reply.code(403).send({ error: "desktop_only" });
+        if (typeof checkedKey !== "string" || !/^[0-9a-f]{64}$/i.test(checkedKey)) return reply.code(422).send({ error: "invalid checked_tunnel_key" });
+        if (peer.state !== "linked" || !peer.tunnelKey || peer.tunnelKey.toLowerCase() !== checkedKey.toLowerCase()) return reply.code(409).send({ error: "tunnel_key_mismatch" });
+      }
+      if ((enabled !== undefined && typeof enabled !== "boolean") || (trusted !== undefined && typeof trusted !== "boolean") || (enabled === undefined && trusted === undefined && checkedKey === undefined)) {
         return reply.code(422).send({ error: "enabled and trusted, when given, must be booleans; one of them is required" });
       }
       db.update(accountPeers)
-        .set({ ...(enabled !== undefined ? { enabled } : {}), ...(trusted !== undefined ? { trusted } : {}), updatedAt: new Date() })
+        .set({
+          ...(enabled !== undefined ? { enabled } : {}),
+          ...(trusted !== undefined ? { trusted } : {}),
+          ...(checkedKey !== undefined ? { checkedTunnelKey: checkedKey.toLowerCase(), expectedTunnelKey: checkedKey.toLowerCase() } : {}),
+          updatedAt: new Date(),
+        })
         .where(eq(accountPeers.computerId, peer.computerId))
         .run();
       return reply.code(200).send(serialize(peerById(auth.userId, req.params.id)!));
