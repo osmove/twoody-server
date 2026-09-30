@@ -236,6 +236,27 @@ test("through the Pi's /tunnel: its status, and answers by name and by « Automa
   assert.ok(call.body.max_tokens <= 4096);
 });
 
+test("the Desktop reads a peer's vault identity and names itself to it through the sealed link only", async () => {
+  // The Pi is linked to no vault here: it says so, through its /tunnel
+  // (its route answers 403 pinned_channel_required to anything else).
+  const identity = await app.inject({ method: "GET", url: `/api/v1/peers/${piComputerId}/vault/identity`, headers: auth });
+  assert.equal(identity.statusCode, 404, identity.payload);
+  assert.equal(identity.json().error, "not_enrolled");
+  const anchor = await app.inject({ method: "POST", url: `/api/v1/peers/${piComputerId}/vault/anchor`, headers: auth, payload: { vault_device_id: "5b0c3c1e-8a1f-4d2e-9c7b-1f2e3d4c5b6a", sign_public: "ab".repeat(32) } });
+  assert.equal(anchor.statusCode, 404, anchor.payload);
+  assert.equal(anchor.json().error, "not_enrolled");
+  assert.equal((await app.inject({ method: "POST", url: `/api/v1/peers/${piComputerId}/vault/anchor`, headers: auth, payload: { vault_device_id: "x", sign_public: "not-a-key" } })).statusCode, 400);
+  // No link with it: nothing is asked in clear.
+  const unknown = await app.inject({ method: "GET", url: "/api/v1/peers/no-such-computer/vault/identity", headers: auth });
+  assert.equal(unknown.statusCode, 409);
+  assert.equal(unknown.json().error, "not_linked");
+  // Only the Desktop's own session.
+  const [row] = db.select().from(accountPeers).all();
+  assert.ok(row?.token);
+  const direct = await piFetch("/api/v1/peer/vault/identity", { headers: { "x-user-token": row!.token! } });
+  assert.equal(direct.status, 403, "never over plain HTTP");
+});
+
 test("a peer not trusted gets the conversation only; trusted, what this computer knows of the person", async () => {
   const now = new Date();
   db.insert(memories).values([

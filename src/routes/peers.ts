@@ -5,7 +5,7 @@ import { BackendError } from "../account/backend.js";
 import { accountPeers, authSessions, db } from "../db.js";
 import { ownerRequest } from "../localAccess.js";
 import { LocalOnlyError } from "../outbound.js";
-import { listPeers, peerById, peerStatus, PeerUnavailableError, removePeer, requestPeer } from "../peers/index.js";
+import { listPeers, peerById, peerRequest, peerStatus, PeerUnavailableError, removePeer, requestPeer } from "../peers/index.js";
 import { peerTrusted } from "../router/index.js";
 
 // The account's other computers this one sends questions to
@@ -33,6 +33,20 @@ import { peerTrusted } from "../router/index.js";
 //          data, document excerpts — follows the vault roster; « Faire
 //          confiance » enrols the computer in the encrypted history.
 //   DELETE /api/v1/peers/:computer_id
+//   GET    /api/v1/peers/:computer_id/vault/identity  (Desktop only)
+//          → {identity, pinned_tunnel_public_key}: the peer's GET
+//          /api/v1/peer/vault/identity, asked through the sealed link this
+//          server holds with it (peerRequest: its /tunnel on the LAN, else
+//          the relay), never in clear; pinned_tunnel_public_key is the key
+//          that link is sealed to. « Faire confiance à cet ordinateur » in
+//          Twoody Desktop (docs/mesh-design.md §1, lot D1): the Desktop's
+//          main process holds no tunnel of its own.
+//   POST   /api/v1/peers/:computer_id/vault/anchor {vault_device_id, sign_public}
+//          (Desktop only) → the peer's POST /api/v1/peer/vault/anchor, the
+//          same way: the Desktop names its own vault device to it before
+//          approving it.
+//          Both: 409 not_linked (no sealed link with it), 502 unreachable,
+//          else the peer's own status and error.
 
 /// The Desktop's own session — made by /auth/signup, /auth/signin or the
 /// pairing with the setup token (auth_sessions.origin « owner ») — or this
@@ -167,6 +181,61 @@ export async function peersRoutes(app: FastifyInstance) {
       if (!auth) return;
       if (!(await removePeer(auth.userId, req.params.id))) return reply.code(404).send({ error: "not_found" });
       return reply.code(204).send();
+    },
+  });
+
+  // « Faire confiance à cet ordinateur » from Twoody Desktop: the peer's
+  // vault identity and the Desktop's anchor, through the sealed link only.
+  const throughLink = async (userId: string, computerId: string, path: string, init: { method?: string; body?: string }) => {
+    const peer = peerById(userId, computerId);
+    if (!peer || peer.state !== "linked" || !peer.token || !peer.tunnelKey) return { status: 409, body: { error: "not_linked" }, tunnelKey: null };
+    try {
+      const response = await peerRequest(peer, path, {
+        ...init,
+        headers: init.body !== undefined ? { "content-type": "application/json" } : {},
+        signal: AbortSignal.timeout(10_000),
+      });
+      const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+      return { status: response.status, body: body && typeof body === "object" && !Array.isArray(body) ? body : {}, tunnelKey: peer.tunnelKey };
+    } catch (err) {
+      return { status: 502, body: { error: err instanceof PeerUnavailableError && err.code === "not_linked" ? "not_linked" : "unreachable" }, tunnelKey: null };
+    }
+  };
+  const peerError = (body: Record<string, unknown>) => ({ error: typeof body.error === "string" ? body.error.slice(0, 64) : "peer_error" });
+  // The peer's 401 (it no longer knows this computer) is not this session's.
+  const peerStatusCode = (status: number) => (status === 401 ? 403 : status);
+
+  app.get<{ Params: { id: string } }>("/peers/:id/vault/identity", {
+    schema: { tags: ["providers"], summary: "A peer's vault identity, through the sealed link with it (Desktop only)" },
+    handler: async (req, reply) => {
+      const auth = await requireDesktop(req, reply);
+      if (!auth) return;
+      const answer = await throughLink(auth.userId, req.params.id, "/api/v1/peer/vault/identity", {});
+      if (answer.status !== 200) return reply.code(peerStatusCode(answer.status)).send(peerError(answer.body));
+      return reply.send({ identity: answer.body, pinned_tunnel_public_key: answer.tunnelKey });
+    },
+  });
+
+  app.post<{ Params: { id: string }; Body: { vault_device_id: string; sign_public: string } }>("/peers/:id/vault/anchor", {
+    schema: {
+      tags: ["providers"],
+      summary: "Name this Desktop's vault device to a peer, through the sealed link with it (Desktop only)",
+      body: {
+        type: "object",
+        required: ["vault_device_id", "sign_public"],
+        properties: {
+          vault_device_id: { type: "string", minLength: 1, maxLength: 36 },
+          sign_public: { type: "string", pattern: "^[0-9a-f]{64}$" },
+        },
+      },
+    },
+    handler: async (req, reply) => {
+      const auth = await requireDesktop(req, reply);
+      if (!auth) return;
+      const body = JSON.stringify({ vault_device_id: req.body.vault_device_id, sign_public: req.body.sign_public });
+      const answer = await throughLink(auth.userId, req.params.id, "/api/v1/peer/vault/anchor", { method: "POST", body });
+      if (answer.status !== 200) return reply.code(peerStatusCode(answer.status)).send(peerError(answer.body));
+      return reply.send({ anchored: true });
     },
   });
 }
