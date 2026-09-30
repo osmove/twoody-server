@@ -1,0 +1,127 @@
+{
+  "doc": [
+    "twoody/vault/approval/v2 (docs/mesh-design.md §1). Reference: src/vault/contracts.ts (approvalV2Statement, signApprovalV2, approvalV2Valid, approvedKind).",
+    "Why: the v1 approval [v, user_id, device_id, enc_public, sign_public, approver_id] does not commit to the device's kind, so the account could strip a computer of its kind, binding and account computer and pass it off as a person-device, which may approve. v2 adds the kind and the account computer; a device's kind is read ONLY from its signed approval.",
+    "Signature scheme: the v1 approval's, unchanged: Ed25519 (RFC 8032, deterministic) by the approver's vault signing key over the canonical header — the UTF-8 bytes of the label 'twoody/vault/approval/v2', then for each field the UTF-8 bytes of String(field) prefixed by their length on 2 bytes big-endian; signature = 128 lowercase hex. Fields: [2, user_id, device_id, enc_public, sign_public, approver_id, kind, account_computer_id]; kind = 'person' | 'computer'; account_computer_id = the account_computers uuid for a computer, '' (empty) for a person. enc_public and sign_public are 64 lowercase hex.",
+    "Rules for verifiers: approvedKind tries v2 person, then v2 computer for each account computer id the account or the binding names (the signature settles which), then v1 — a v1 approval makes a person-device (legacy). A computer is one only with a v2 approval of kind computer and a valid computer-binding-v1 naming the same account computer. A device the account marks as a computer (kind, account_computer_id, binding) whose approval reads as a person is refused. Approvers sign v2 for every new approval, and never v1 for a computer.",
+    "Wire form: unchanged, {approver_id, signature} in the device's `approval`; the version and kind are found by verifying, never read from the account.",
+    "Keys: the devices of computer-binding-v1.json (test keys, SHA-256('twoody/p0/fixture/<name>'))."
+  ],
+  "label": "twoody/vault/approval/v2",
+  "devices": {
+    "iphone": {
+      "id": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01",
+      "sign_private": "a4d2b581957d9ac5459a37aea0a4a6f8af902b343284ac28c6c65ba8b020e467",
+      "sign_public": "9c434dfe00b872f9ab33b6ff59ca1b11d3729e17d5778aac1e20e71558042aaa",
+      "enc_private": "764f702d94ceed050f3d8d4ecf9cac1ad7698684b02eb04690eeed22c35cb300",
+      "enc_public": "00236f8aaa82a9e84a955c60cf882920d3f810eef0b8733fc8d1bb3ed2a5eb06"
+    },
+    "mac": {
+      "id": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02",
+      "sign_private": "ff0230fe0c4663ed050adc1ff7db50082858514423ee668a6acf0e7ca2a0c297",
+      "sign_public": "46512fd6ceaf267382e70ef51b76430058f604fbcff26920da58c014f0fd8a29",
+      "enc_private": "457f466e167709e3f33f62c5dec8b323688e70345b836db20bba2b1a787e0319",
+      "enc_public": "9ef80f0eef8e316176d14bc12fe717b842174436bc5dc4442040fe4d327b3645"
+    },
+    "pi": {
+      "id": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03",
+      "sign_private": "32e1eefa06d35cf83abe50b2eb7fcc179e340bc952a4856497fb3a3e39e38061",
+      "sign_public": "8f9b010444a159d464036102ce4d5ec637324e4a400582e32ac73fbba71b359e",
+      "enc_private": "7b4c5284d7a11a97edf537f5757c0c2c516a5d7cd8e038ad0b178dc9e3b9b0f6",
+      "enc_public": "07665403eba8d716fbc6ecf1acf21aa0ebe268d2b9fa91b1ada3e28194efa96b"
+    }
+  },
+  "computers": {
+    "mac": "8e2c4a61-3b5d-4f7e-9a1c-2d4e6f8a0b11",
+    "pi": "9f3d5b72-4c6e-4a8f-8b2d-3e5f7a9b1c22"
+  },
+  "vectors": [
+    {
+      "name": "valid person: the iPhone approves the Mac (a Desktop someone sits at) as a person-device",
+      "label": "twoody/vault/approval/v2",
+      "user_id": "42",
+      "approver": "iphone",
+      "device": "mac",
+      "kind": "person",
+      "account_computer_id": "",
+      "statement_hex": "74776f6f64792f7661756c742f617070726f76616c2f763200013200023432002432623765316433662d386535322d346339622d386636342d336131643765396232633032004039656638306630656566386533313631373664313462633132666537313762383432313734343336626335646334343432303430666534643332376233363435004034363531326664366365616632363733383265373065663531623736343330303538663630346662636666323639323064613538633031346630666438613239002431613666306332652d376434312d346238612d396535332d3266306336643861316230310006706572736f6e0000",
+      "signature": "61dd7497033c458e0e9e83fc6ca943ced03f00cdf843aa3c1dfa22f949743c72dd9a9dec6cff4d00af2353285236242fc34f14126e8206f221737232b6ae5407",
+      "expected": {
+        "valid": true,
+        "approved_kind": {
+          "kind": "person",
+          "version": 2,
+          "account_computer_id": null
+        }
+      }
+    },
+    {
+      "name": "valid computer: the iPhone approves the Pi as a computer of its account computer",
+      "label": "twoody/vault/approval/v2",
+      "user_id": "42",
+      "approver": "iphone",
+      "device": "pi",
+      "kind": "computer",
+      "account_computer_id": "9f3d5b72-4c6e-4a8f-8b2d-3e5f7a9b1c22",
+      "statement_hex": "74776f6f64792f7661756c742f617070726f76616c2f763200013200023432002433633866326534612d396636332d346461632d613037352d346232653866616333643033004030373636353430336562613864373136666263366563663161636632316161306562653236386432623966613931623161646133653238313934656661393662004038663962303130343434613135396434363430333631303263653464356563363337333234653461343030353832653332616337336662626137316233353965002431613666306332652d376434312d346238612d396535332d3266306336643861316230310008636f6d7075746572002439663364356237322d346336652d346138662d386232642d336535663761396231633232",
+      "signature": "45c9f9d09161efb6505382f7d12051f3983f27b394a3977a07951bac4b72d255a42fdca389a6c6a99aa6d0655360460823004b274ee019a58fa9497986350d0c",
+      "expected": {
+        "valid": true,
+        "approved_kind": {
+          "kind": "computer",
+          "version": 2,
+          "account_computer_id": "9f3d5b72-4c6e-4a8f-8b2d-3e5f7a9b1c22"
+        }
+      }
+    },
+    {
+      "name": "tampered kind: the Pi's computer approval passed off as a person's (kind, binding and account computer stripped)",
+      "label": "twoody/vault/approval/v2",
+      "user_id": "42",
+      "approver": "iphone",
+      "device": "pi",
+      "kind": "person",
+      "account_computer_id": "",
+      "statement_hex": "74776f6f64792f7661756c742f617070726f76616c2f763200013200023432002433633866326534612d396636332d346461632d613037352d346232653866616333643033004030373636353430336562613864373136666263366563663161636632316161306562653236386432623966613931623161646133653238313934656661393662004038663962303130343434613135396434363430333631303263653464356563363337333234653461343030353832653332616337336662626137316233353965002431613666306332652d376434312d346238612d396535332d3266306336643861316230310006706572736f6e0000",
+      "signature": "45c9f9d09161efb6505382f7d12051f3983f27b394a3977a07951bac4b72d255a42fdca389a6c6a99aa6d0655360460823004b274ee019a58fa9497986350d0c",
+      "expected": {
+        "valid": false,
+        "approved_kind": null
+      }
+    },
+    {
+      "name": "tampered account computer: the Pi's approval claimed for the Mac's account computer",
+      "label": "twoody/vault/approval/v2",
+      "user_id": "42",
+      "approver": "iphone",
+      "device": "pi",
+      "kind": "computer",
+      "account_computer_id": "8e2c4a61-3b5d-4f7e-9a1c-2d4e6f8a0b11",
+      "statement_hex": "74776f6f64792f7661756c742f617070726f76616c2f763200013200023432002433633866326534612d396636332d346461632d613037352d346232653866616333643033004030373636353430336562613864373136666263366563663161636632316161306562653236386432623966613931623161646133653238313934656661393662004038663962303130343434613135396434363430333631303263653464356563363337333234653461343030353832653332616337336662626137316233353965002431613666306332652d376434312d346238612d396535332d3266306336643861316230310008636f6d7075746572002438653263346136312d336235642d346637652d396131632d326434653666386130623131",
+      "signature": "45c9f9d09161efb6505382f7d12051f3983f27b394a3977a07951bac4b72d255a42fdca389a6c6a99aa6d0655360460823004b274ee019a58fa9497986350d0c",
+      "expected": {
+        "valid": false,
+        "approved_kind": null
+      }
+    },
+    {
+      "name": "v1 legacy: the iPhone's v1 approval of the Mac, read as a person-device",
+      "label": "twoody/vault/approval/v1",
+      "user_id": "42",
+      "approver": "iphone",
+      "device": "mac",
+      "kind": null,
+      "account_computer_id": null,
+      "statement_hex": "74776f6f64792f7661756c742f617070726f76616c2f763100013100023432002432623765316433662d386535322d346339622d386636342d336131643765396232633032004039656638306630656566386533313631373664313462633132666537313762383432313734343336626335646334343432303430666534643332376233363435004034363531326664366365616632363733383265373065663531623736343330303538663630346662636666323639323064613538633031346630666438613239002431613666306332652d376434312d346238612d396535332d326630633664386131623031",
+      "signature": "8092b6ae70b0db6e34e973d10a3a3a99efecc0c9eee1ee62234199f2dc2b2916772a2dbd9070e7d339f7dec8dd7ed30cf44180991d37d9c02528dc2fda475c0b",
+      "expected": {
+        "valid": true,
+        "approved_kind": {
+          "kind": "person",
+          "version": 1,
+          "account_computer_id": null
+        }
+      }
+    }
+  ]
+}

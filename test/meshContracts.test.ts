@@ -21,6 +21,7 @@ const fixture = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/${
 const binding = fixture("computer-binding-v1.json");
 const access = fixture("device-access-v1.json");
 const memories = fixture("memory-lww-vectors.json");
+const approvalV2 = fixture("vault-approval-v2.json");
 const EPOCH_ONE = fromHex(memories.epoch_one_key);
 
 test("computer-binding/v1: the vectors, signed like the v1 approval", () => {
@@ -50,6 +51,41 @@ test("computer-binding/v1: the vectors, signed like the v1 approval", () => {
   assert.equal(c.bindingValid({ userId: "42", binding: bound, signerSignPublic: key, signature: "zz" }), false);
   assert.equal(c.bindingValid({ userId: "42", binding: { ...bound, can_approve: "false" as unknown as boolean }, signerSignPublic: key, signature }), false);
   assert.throws(() => c.bindingStatement("42", { ...bound, pairing_public_key: "" }), /bad_binding/);
+});
+
+test("approval/v2: the vectors; the kind is read from the signature only", () => {
+  const dev = (name: string) => ({ id: approvalV2.devices[name].id, enc_public: approvalV2.devices[name].enc_public, sign_public: approvalV2.devices[name].sign_public });
+  for (const v of approvalV2.vectors) {
+    const approver = approvalV2.devices[v.approver];
+    const device = dev(v.device);
+    const key = fromHex(approver.sign_public);
+    if (v.label === c.APPROVAL_V2_LABEL) {
+      const args = { userId: v.user_id, device, approverId: approver.id, kind: v.kind, accountComputerId: v.account_computer_id };
+      assert.equal(toHex(c.approvalV2Statement(args)), v.statement_hex, v.name);
+      assert.equal(c.approvalV2Valid({ ...args, approverSignPublic: key, signature: v.signature }), v.expected.valid, v.name);
+      if (v.expected.valid) assert.equal(c.signApprovalV2({ ...args, signPrivate: fromHex(approver.sign_private) }), v.signature, v.name);
+    } else {
+      assert.equal(toHex(canonicalHeader(c.APPROVAL_V1_LABEL, [1, v.user_id, device.id, device.enc_public, device.sign_public, approver.id])), v.statement_hex, v.name);
+    }
+    // What a verifier makes of it: the account computer the vector claims
+    // is the only candidate (none for a person).
+    const kind = c.approvedKind({ userId: v.user_id, device, approverId: approver.id, approverSignPublic: key, signature: v.signature, accountComputerIds: [v.account_computer_id] });
+    assert.deepEqual(kind, v.expected.approved_kind, v.name);
+  }
+  // The Pi's computer approval is found whatever else the account names…
+  const pi = approvalV2.vectors[1];
+  const key = fromHex(approvalV2.devices.iphone.sign_public);
+  const read = (ids: string[]) => c.approvedKind({ userId: "42", device: dev("pi"), approverId: approvalV2.devices.iphone.id, approverSignPublic: key, signature: pi.signature, accountComputerIds: ids });
+  assert.equal(read([approvalV2.computers.mac, approvalV2.computers.pi])?.kind, "computer");
+  // …and is nothing once the account computer is stripped.
+  assert.equal(read([]), null);
+  // Another account, a malformed signature: refused, never thrown.
+  assert.equal(c.approvedKind({ userId: "43", device: dev("pi"), approverId: approvalV2.devices.iphone.id, approverSignPublic: key, signature: pi.signature, accountComputerIds: [approvalV2.computers.pi] }), null);
+  assert.equal(c.approvedKind({ userId: "42", device: dev("pi"), approverId: approvalV2.devices.iphone.id, approverSignPublic: key, signature: "zz", accountComputerIds: [approvalV2.computers.pi] }), null);
+  // A person has no account computer; a computer has one.
+  assert.throws(() => c.approvalV2Statement({ userId: "42", device: dev("mac"), approverId: approvalV2.devices.iphone.id, kind: "person", accountComputerId: approvalV2.computers.mac }), /bad_approval/);
+  assert.throws(() => c.approvalV2Statement({ userId: "42", device: dev("pi"), approverId: approvalV2.devices.iphone.id, kind: "computer" }), /bad_approval/);
+  assert.throws(() => c.approvalV2Statement({ userId: "42", device: dev("pi"), approverId: approvalV2.devices.iphone.id, kind: "robot" as "person" }), /bad_approval/);
 });
 
 test("device-access/v1: the vectors", () => {

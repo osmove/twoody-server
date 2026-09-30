@@ -22,7 +22,7 @@ const { writeAccountFile } = await import("../src/account/store.js");
 const { newPairingKey } = await import("../src/account/keys.js");
 const { tunnelIdentity } = await import("../src/tunnel/identity.js");
 const crypto = await import("../src/vault/crypto.js");
-const { signBinding } = await import("../src/vault/contracts.js");
+const { signApprovalV2, signBinding } = await import("../src/vault/contracts.js");
 const client = await import("../src/vault/client.js");
 const { createVaultSync } = await import("../src/vault/sync.js");
 const { memoryStore } = await import("../src/vault/store.js");
@@ -126,7 +126,8 @@ async function phoneTrusts(identity: Record<string, any>, { pin = true } = {}) {
   const device = { id: identity.vault_device_id, enc_public: identity.enc_public, sign_public: identity.sign_public };
   const bound = { vault_device_id: device.id, account_computer_id: identity.account_computer_id, tunnel_public_key: identity.tunnel_public_key, pairing_public_key: identity.pairing_public_key, can_approve: false };
   const binding = JSON.stringify({ ...bound, approver_id: phone.id, signature: signBinding({ userId: USER_ID, binding: bound, signPrivate: phone.keys.signPrivate }) });
-  await post(`vault/devices/${device.id}/approval`, { approver_id: phone.id, signature: crypto.signApproval({ userId: USER_ID, device, approverId: phone.id, signPrivate: phone.keys.signPrivate }), binding });
+  const signature = signApprovalV2({ userId: USER_ID, device, approverId: phone.id, kind: "computer", accountComputerId: identity.account_computer_id, signPrivate: phone.keys.signPrivate });
+  await post(`vault/devices/${device.id}/approval`, { approver_id: phone.id, signature, binding });
   await post("vault/envelopes", { envelopes: [...phone.epochs].map(([epoch, epochKey]) => crypto.wrapEpochKey({ epochKey, epoch, userId: USER_ID, to: { deviceId: device.id, encPublic: crypto.fromHex(device.enc_public) }, from: { deviceId: phone.id, signPrivate: phone.keys.signPrivate } })) });
 }
 
@@ -317,9 +318,41 @@ test("trust flows forward only: an approver the account invents is never reached
   // An anchor whose key the account changed counts for nothing.
   const rekeyed = devices.map((d) => (d.id === phone.id ? { ...d, sign_public: X.sign_public } : d));
   assert.equal(client.verifiedIds(USER_ID, rekeyed, piLocal.anchors).size, 0);
-  // A computer stripped of its kind, binding and account computer still
-  // needs an approval from a reached device to be reached at all (v1
-  // approvals do not commit to the kind: see the lot S1 report).
+});
+
+test("a computer stripped of its kind, binding and account computer is not a person-device (approval/v2)", async () => {
+  const devices = (await phoneApi.state()).devices!;
+  const piLocal = client.fileKeyStore(service.vaultKeysPath()).read()!;
+  const byId = new Map(devices.map((d) => [d.id, d]));
+  const piDevice = devices.find((d) => d.account_computer_id === PI && d.status !== "revoked")!;
+  assert.deepEqual(client.deviceKind(USER_ID, piDevice, byId), { kind: "computer", version: 2, account_computer_id: PI });
+  assert.deepEqual(client.deviceKind(USER_ID, byId.get(phone.id), byId), { kind: "person", version: 1, account_computer_id: null }, "a v1 approval: a person-device");
+
+  // The account strips the Pi and lists it as a person: its v2 approval
+  // says computer, so it is nothing at all — neither reached nor a signer.
+  const stripped = { ...piDevice, kind: "person" as const, account_computer_id: null, binding: null };
+  const lied = devices.map((d) => (d.id === piDevice.id ? stripped : d));
+  const liedById = new Map(lied.map((d) => [d.id, d]));
+  assert.equal(client.deviceKind(USER_ID, stripped, liedById), null);
+  assert.equal(client.mayApprove(USER_ID, stripped, liedById), false);
+  assert.ok(!client.verifiedIds(USER_ID, lied, piLocal.anchors).has(piDevice.id));
+  assert.ok(!client.trustedSigners(USER_ID, lied, piLocal.anchors).has(piDevice.id));
+  // …and so is anything the stripped Pi signs: an approval and an envelope.
+  const stranger = { id: "7c2f3e4d-5b6a-4d7e-9f80-1a2b3c4d5e6f", label: "?", enc_public: "44".repeat(32), sign_public: crypto.toHex(crypto.createDeviceKeys().signPublic), status: "trusted" as const, approved_at: "now", kind: "person" as const };
+  const piKeys = piLocal.keys;
+  const approvedByPi = { ...stranger, approval: { approver_id: piDevice.id, signature: signApprovalV2({ userId: USER_ID, device: stranger, approverId: piDevice.id, kind: "person", signPrivate: piKeys.signPrivate }) } };
+  assert.ok(!client.verifiedIds(USER_ID, [...lied, approvedByPi], piLocal.anchors).has(stranger.id));
+
+  // A computer approved v1 (no kind signed) the account still lists as a
+  // computer: not a computer (no v2), and not a person either.
+  const v1Computer = { ...piDevice, approval: { approver_id: phone.id, signature: crypto.signApproval({ userId: USER_ID, device: piDevice, approverId: phone.id, signPrivate: phone.keys.signPrivate }) } };
+  const withV1 = devices.map((d) => (d.id === piDevice.id ? v1Computer : d));
+  assert.equal(client.deviceKind(USER_ID, v1Computer, new Map(withV1.map((d) => [d.id, d]))), null);
+  assert.ok(!client.verifiedIds(USER_ID, withV1, piLocal.anchors).has(piDevice.id));
+  // A v2 computer approval whose binding names another account computer.
+  const bindingElsewhere = { ...JSON.parse(piDevice.binding as string), account_computer_id: MAC };
+  const other = devices.map((d) => (d.id === piDevice.id ? { ...piDevice, binding: JSON.stringify(bindingElsewhere) } : d));
+  assert.ok(!client.verifiedIds(USER_ID, other, piLocal.anchors).has(piDevice.id));
 });
 
 test("removed from the history, the Pi forgets what it opened and waits again", async () => {

@@ -1,6 +1,7 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { randomUUID } from "node:crypto";
 import { approvalValid, canonicalHeader, fromHex } from "../../src/vault/crypto.js";
+import { approvalV2Valid } from "../../src/vault/contracts.js";
 
 // A stand-in for twoody-backend's /api/v1/vault as lot B1 (693ac548) left
 // it, as a fetch function (setBackendFetch): person and computer devices, a
@@ -78,7 +79,11 @@ export function fakeVaultBackend({ userId, computers }: { userId: number; comput
       const approver = devices.find((d) => d.id === body.approver_id && d.status === "trusted");
       if (!approver) return [422, { error: "untrusted_giver" }];
       if (approver.kind === "computer") return [422, { error: "computer_cannot_approve" }];
-      if (!approvalValid({ userId, device, approverId: approver.id, approverSignPublic: fromHex(approver.sign_public), signature: String(body.signature) })) return [422, { error: "bad_signature" }];
+      // v1, or approval/v2 for what the device is (twoody-backend
+      // VaultDevice#approval_valid?).
+      const signed = { userId, device, approverId: approver.id, approverSignPublic: fromHex(approver.sign_public), signature: String(body.signature) };
+      const v2 = approvalV2Valid({ ...signed, kind: device.kind === "computer" ? "computer" : "person", accountComputerId: device.kind === "computer" ? device.account_computer_id : null });
+      if (!v2 && !approvalValid(signed)) return [422, { error: "bad_signature" }];
       device.approval = { approver_id: approver.id, signature: String(body.signature) };
       if (typeof body.binding === "string") {
         if (device.kind !== "computer") return [422, { error: "invalid_binding" }];

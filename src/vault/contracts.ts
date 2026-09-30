@@ -3,12 +3,14 @@ import { hkdf } from "@noble/hashes/hkdf.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { canonicalHeader, fromHex, toHex } from "../compute/sealBase.js";
+import { approvalValid } from "./crypto.js";
 
 // The shared contracts of the Twoody mesh (docs/mesh-design.md, lot P0),
 // as a reference every other lot checks itself against: backend B1, the
 // server's vault (S1–S5), Desktop (D1–D2) and the app (A1–A3). Pure
 // functions, no storage, no network, no Electron. The vectors are in
-// test/fixtures/{computer-binding-v1,device-access-v1,memory-lww-vectors}.json.
+// test/fixtures/{computer-binding-v1,device-access-v1,memory-lww-vectors,
+// vault-approval-v2}.json.
 //
 // Statements are signed exactly as the v1 vault approval
 // (twoody-desktop src/shared/vault.ts signApproval, twoody-app
@@ -82,6 +84,80 @@ export function bindingValid(args: { userId: string | number; binding: ComputerB
   } catch {
     return false;
   }
+}
+
+// ── approval/v2 ─────────────────────────────────────────────────────────
+// The v1 approval's fields plus what the device is: `kind` (person |
+// computer) and, for a computer, the account computer it is. v1 does not
+// commit to the kind, so the account could strip a computer of its kind,
+// binding and account computer and pass it off as a person-device, which
+// may approve. From here on a device's kind is read ONLY from its signed
+// approval (approvedKind): v2 says it, a v1 approval makes a person-device,
+// and a computer is one only through a v2 approval of kind computer (plus
+// a valid binding naming the same account computer: the verifier's rule).
+// Nobody signs a v1 approval for a computer any more. Same Ed25519 scheme
+// and canonical header as v1; fields [2, user_id, device_id, enc_public,
+// sign_public, approver_id, kind, account_computer_id], the last "" for a
+// person. Vectors: test/fixtures/vault-approval-v2.json.
+
+export const APPROVAL_V1_LABEL = "twoody/vault/approval/v1";
+export const APPROVAL_V2_LABEL = "twoody/vault/approval/v2";
+export const APPROVAL_V2_VERSION = 2;
+export const DEVICE_KINDS = ["person", "computer"] as const;
+export type DeviceKind = (typeof DEVICE_KINDS)[number];
+
+/// The device an approval vouches for: its id and public keys.
+export interface ApprovedDevice { id: string; enc_public: string; sign_public: string }
+
+export function approvalV2Statement(args: { userId: string | number; device: ApprovedDevice; approverId: string; kind: DeviceKind; accountComputerId?: string | null }): Uint8Array {
+  const { userId, device, approverId, kind } = args;
+  if (!(DEVICE_KINDS as readonly unknown[]).includes(kind)) throw new ContractError("bad_approval");
+  const computer = kind === "computer" ? requireId(args.accountComputerId, "bad_approval") : "";
+  if (kind === "person" && args.accountComputerId) throw new ContractError("bad_approval");
+  return canonicalHeader(APPROVAL_V2_LABEL, [
+    APPROVAL_V2_VERSION,
+    requireId(String(userId), "bad_approval"),
+    requireId(device?.id, "bad_approval"),
+    requireKey(device?.enc_public, "bad_approval"),
+    requireKey(device?.sign_public, "bad_approval"),
+    requireId(approverId, "bad_approval"),
+    kind,
+    computer,
+  ]);
+}
+
+export function signApprovalV2(args: { userId: string | number; device: ApprovedDevice; approverId: string; kind: DeviceKind; accountComputerId?: string | null; signPrivate: Uint8Array }): string {
+  return toHex(ed25519.sign(approvalV2Statement(args), args.signPrivate));
+}
+
+export function approvalV2Valid(args: { userId: string | number; device: ApprovedDevice; approverId: string; kind: DeviceKind; accountComputerId?: string | null; approverSignPublic: Uint8Array; signature: string }): boolean {
+  try {
+    return ed25519.verify(fromHex(args.signature), approvalV2Statement(args), args.approverSignPublic);
+  } catch {
+    return false;
+  }
+}
+
+export interface ApprovedKind { kind: DeviceKind; version: 1 | 2; account_computer_id: string | null }
+
+/// What a device is, as its approver signed it, or null when the signature
+/// is none of these: a v2 person, a v2 computer of one of
+/// `accountComputerIds` (what the account and the binding say it is: the
+/// signature settles which, if any), or a v1 approval (then a person).
+export function approvedKind(args: { userId: string | number; device: ApprovedDevice; approverId: string; approverSignPublic: Uint8Array; signature: string; accountComputerIds?: Array<string | null | undefined> }): ApprovedKind | null {
+  const { accountComputerIds = [], ...rest } = args;
+  if (approvalV2Valid({ ...rest, kind: "person" })) return { kind: "person", version: 2, account_computer_id: null };
+  for (const id of new Set(accountComputerIds.filter((x): x is string => typeof x === "string" && x.length > 0))) {
+    if (approvalV2Valid({ ...rest, kind: "computer", accountComputerId: id })) return { kind: "computer", version: 2, account_computer_id: id };
+  }
+  try {
+    if (approvalValid({ userId: args.userId, device: args.device, approverId: args.approverId, approverSignPublic: args.approverSignPublic, signature: args.signature })) {
+      return { kind: "person", version: 1, account_computer_id: null };
+    }
+  } catch {
+    // a malformed key or signature: none
+  }
+  return null;
 }
 
 // ── device-access/v1 ────────────────────────────────────────────────────

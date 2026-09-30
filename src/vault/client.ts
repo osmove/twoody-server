@@ -1,7 +1,7 @@
 import { backendCall, BackendError, type BackendCredentials } from "../account/backend.js";
-import { bindingValid, type ComputerBinding } from "./contracts.js";
+import { approvedKind, bindingValid, type ApprovedKind, type ComputerBinding } from "./contracts.js";
 import {
-  approvalValid, createDeviceKeys, fingerprint, fromHex, toHex, unwrapEpochKey, VaultError,
+  createDeviceKeys, fingerprint, fromHex, toHex, unwrapEpochKey, VaultError,
   type DeviceKeys, type EpochEnvelope, type Random, type SealedEvent,
 } from "./crypto.js";
 import { readJsonFile, writePrivateFile } from "./store.js";
@@ -26,6 +26,10 @@ import { rmSync } from "node:fs";
 //     member reached that way, never from a device whose binding says
 //     can_approve=false, or a computer without a binding saying it may
 //     (mayApprove). Without an anchor it takes no key at all.
+//   - What a device is (person or computer) comes only from its signed
+//     approval (approval/v2, src/vault/contracts.ts approvedKind; a v1
+//     approval makes a person-device), never from the kind the account
+//     lists: a computer stripped of its kind and binding is not a person.
 //
 // Keys live in `store` (DATA_DIR/vault.json, 0600) before the account hears
 // of the device, as on the Desktop.
@@ -105,21 +109,50 @@ export function bindingChecks(userId: string | number, device: VaultDevice, bind
 }
 
 /// Whether the account says this device is a computer (a kind, an account
-/// computer, or a binding): then only a valid binding lets it approve.
+/// computer, or a binding). Never enough to make it one (only a v2
+/// approval of kind computer does, deviceKind); enough to refuse it as a
+/// person-device: the account can only take rights away with it.
 export function isComputer(device: VaultDevice | undefined): boolean {
   return !!device && (device.kind === COMPUTER_KIND || !!device.account_computer_id || (device.binding != null && device.binding !== ""));
 }
 
-/// Whether this device may vouch for another or give it keys: a person
-/// device, or a computer whose binding — signed by a device that itself
-/// may, and that is in `verified` when given — says can_approve=true. A
-/// binding that says false settles it, whatever else is true. (fixture
-/// rules, P0)
+/// What `device` is, as its approver signed it (twoody/vault/approval/v2;
+/// a v1 approval makes a person-device), or null: no approval, an approver
+/// the roster does not have, a signature that is none of these, or a
+/// device the account marks as a computer whose approval says person (a
+/// computer is never demoted to a person-device, which may approve). The
+/// kind the account gives is never read.
+export function deviceKind(userId: string | number, device: VaultDevice | undefined, byId: Map<string, VaultDevice>): ApprovedKind | null {
+  if (!device?.approval) return null;
+  const approver = byId.get(device.approval.approver_id);
+  if (!approver) return null;
+  let approverSignPublic: Uint8Array;
+  try {
+    approverSignPublic = fromHex(approver.sign_public);
+  } catch {
+    return null;
+  }
+  const signed = approvedKind({
+    userId, device, approverId: approver.id, approverSignPublic, signature: device.approval.signature,
+    accountComputerIds: [device.account_computer_id, readBinding(device)?.account_computer_id],
+  });
+  if (!signed || (signed.kind === "person" && isComputer(device))) return null;
+  return signed;
+}
+
+/// Whether this device may vouch for another or give it keys: a
+/// person-device by its signed approval, or a computer (v2 approval of kind
+/// computer) whose binding — for the same account computer, signed by a
+/// device that itself may, and that is in `verified` when given — says
+/// can_approve=true. A binding that says false settles it, whatever else is
+/// true. (fixture rules, P0 and approval/v2)
 export function mayApprove(userId: string | number, device: VaultDevice | undefined, byId: Map<string, VaultDevice>, verified?: Set<string>, seen: Set<string> = new Set()): boolean {
   if (!device || device.status === "revoked" || seen.has(device.id)) return false;
-  if (!isComputer(device)) return true;
+  const kind = deviceKind(userId, device, byId);
+  if (!kind) return false;
+  if (kind.kind === "person") return true;
   const binding = readBinding(device);
-  if (!binding || binding.can_approve !== true) return false;
+  if (!binding || binding.can_approve !== true || binding.account_computer_id !== kind.account_computer_id) return false;
   if (verified && !verified.has(binding.approver_id)) return false;
   if (!bindingChecks(userId, device, binding, byId)) return false;
   return mayApprove(userId, byId.get(binding.approver_id), byId, verified, new Set([...seen, device.id]));
@@ -131,19 +164,21 @@ export type Anchor = { id: string; sign_public: string };
 
 /// Members this computer can vouch for, walked strictly FORWARD from its
 /// anchors: a device is reached only through an approval signed by a
-/// device already reached that may approve, and a computer only when its
-/// binding is valid and signed by a reached device too. Trust never flows
-/// back from a device to whoever the account says approved it — the
-/// account could name an approver it invented (twoody-desktop and
-/// twoody-app still walk both ways). An anchor counts only while the
-/// roster gives it the key it was pinned with, and never as a computer.
+/// device already reached that may approve, and is what that approval
+/// says (approval/v2; v1 = a person-device). A computer is reached only
+/// with a v2 approval of kind computer and a valid binding for the same
+/// account computer, signed by a reached device that may approve. Trust
+/// never flows back from a device to whoever the account says approved it
+/// — the account could name an approver it invented. An anchor counts only
+/// while the roster gives it the key it was pinned with, and never as a
+/// computer.
 export function verifiedIds(userId: string | number, devices: VaultDevice[], anchors: Anchor[]): Set<string> {
   const byId = new Map(devices.map((d) => [d.id, d]));
   const verified = new Set(
     anchors
       .filter((a) => {
         const d = byId.get(a.id);
-        return !!d && d.status !== "revoked" && d.sign_public === a.sign_public && !isComputer(d);
+        return !!d && d.status !== "revoked" && d.sign_public === a.sign_public && !isComputer(d) && deviceKind(userId, d, byId)?.kind !== "computer";
       })
       .map((a) => a.id),
   );
@@ -154,10 +189,12 @@ export function verifiedIds(userId: string | number, devices: VaultDevice[], anc
       const approver = byId.get(device.approval.approver_id);
       if (!approver || approver.id === device.id || !verified.has(approver.id)) continue;
       if (!mayApprove(userId, approver, byId, verified)) continue;
-      if (!approvalValid({ userId, device, approverId: approver.id, approverSignPublic: fromHex(approver.sign_public), signature: device.approval.signature })) continue;
-      if (isComputer(device)) {
+      const kind = deviceKind(userId, device, byId);
+      if (!kind) continue;
+      if (kind.kind === "computer") {
         const binding = readBinding(device);
-        if (!binding || !verified.has(binding.approver_id) || !bindingChecks(userId, device, binding, byId)) continue;
+        if (!binding || binding.account_computer_id !== kind.account_computer_id || !verified.has(binding.approver_id)) continue;
+        if (!bindingChecks(userId, device, binding, byId) || !mayApprove(userId, byId.get(binding.approver_id), byId, verified)) continue;
       }
       verified.add(device.id);
       changed = true;
@@ -335,8 +372,10 @@ export function createComputerVaultClient({ api, store, userId, accountComputerI
     const keys = bindingKeys?.() ?? null;
     const ours = binding.account_computer_id === accountComputerId && binding.can_approve === false
       && (!keys || (binding.tunnel_public_key === keys.tunnel_public_key && binding.pairing_public_key === keys.pairing_public_key));
+    const signed = deviceKind(user, mine, byId);
+    const approvedAsThis = signed?.kind === "computer" && signed.account_computer_id === accountComputerId;
     const verified = verifiedIds(user, devices, readLocal()?.anchors ?? []);
-    return ours && verified.has(binding.approver_id) && bindingChecks(user, mine, binding, byId) && mayApprove(user, byId.get(binding.approver_id), byId, verified) ? "valid" : "invalid";
+    return ours && approvedAsThis && verified.has(binding.approver_id) && bindingChecks(user, mine, binding, byId) && mayApprove(user, byId.get(binding.approver_id), byId, verified) ? "valid" : "invalid";
   }
 
   async function status() {
