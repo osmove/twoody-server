@@ -104,6 +104,8 @@ const { endorse } = await import("../src/account/endorsement.js");
 const { readStatus } = await import("../src/account/status.js");
 const { closeAllPeerLinks, refreshPeerStatus, peerById, setPeerHandshakeTimeouts } = await import("../src/peers/index.js");
 const { tunnelIdentity } = await import("../src/tunnel/identity.js");
+const { setRosterSource } = await import("../src/vault/roster.js");
+const { meshVault } = await import("./helpers/meshVault.js");
 
 // The whole suite runs in parallel: the Pi may take more than the LAN's
 // 2.5 s to answer its first hello.
@@ -250,7 +252,7 @@ test("a peer not trusted gets the conversation only; trusted, what this computer
   const lastPiCall = (marker: string) => JSON.stringify(piRuntime.calls.filter((c) => JSON.stringify(c.body.messages).includes(marker)).at(-1)?.body.messages ?? null);
 
   const listed = (await app.inject({ method: "GET", url: "/api/v1/peers", headers: auth })).json().peers.find((p: { computer_id: string }) => p.computer_id === piComputerId);
-  assert.equal(listed.trusted, false, "not trusted until the Desktop says so");
+  assert.equal(listed.trusted, false, "not trusted until a person device enrols it in the vault");
   const providers = (await app.inject({ method: "GET", url: "/providers", headers: auth })).json();
   assert.equal(providers.computers.find((c: { id: string }) => c.id === piComputerId).trusted, false);
   assert.equal(providers.computers[0].trusted, true, "this computer is");
@@ -264,12 +266,19 @@ test("a peer not trusted gets the conversation only; trusted, what this computer
   assert.ok(sent.includes("Parle-moi du projet Tulipe"), "the conversation goes");
   for (const secret of ["4512", "arachides", "remember about them"]) assert.ok(!sent.includes(secret), `${secret} stayed here: ${sent}`);
 
+  // The switch alone trusts nothing (docs/mesh-design.md §1): the Pi must
+  // be in the verified vault roster, bound to the tunnel key it answers with.
   const patched = await app.inject({ method: "PATCH", url: `/api/v1/peers/${piComputerId}`, headers: auth, payload: { trusted: true } });
   assert.equal(patched.statusCode, 200);
-  assert.equal(patched.json().trusted, true);
+  assert.equal(patched.json().trusted, false);
   assert.equal(patched.json().computer_id, piComputerId);
   assert.equal((await app.inject({ method: "PATCH", url: `/api/v1/peers/${piComputerId}`, headers: auth, payload: { trusted: "yes" } })).statusCode, 422);
-  assert.equal((await app.inject({ method: "GET", url: "/providers", headers: auth })).json().computers.find((c: { id: string }) => c.id === piComputerId).trusted, true);
+  const vault = meshVault();
+  const iphone = vault.person("iPhone");
+  vault.computer("Raspberry Pi", piComputerId, iphone, { tunnelKey: peerById(desktop.user_id, piComputerId)!.tunnelKey! });
+  await setRosterSource(async () => vault.input([iphone])).refresh();
+  const entry = (await app.inject({ method: "GET", url: "/providers", headers: auth })).json().computers.find((c: { id: string }) => c.id === piComputerId);
+  assert.deepEqual([entry.trusted, entry.mesh], [true, true]);
 
   const trusted = await ask("Rappelle-moi le projet Tulipe", `computer:${piComputerId}`);
   assert.equal(trusted.answered_by.trusted, true);
@@ -277,6 +286,7 @@ test("a peer not trusted gets the conversation only; trusted, what this computer
   assert.ok(given.includes("4512") && given.includes("arachides"), given);
 
   await app.inject({ method: "PATCH", url: `/api/v1/peers/${piComputerId}`, headers: auth, payload: { trusted: false } });
+  setRosterSource(null);
 });
 
 test("the Pi's peer session opens nothing but /api/v1/peer/*", async () => {

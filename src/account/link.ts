@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { authSessions, db } from "../db.js";
 import { unpairSession } from "../pairing.js";
 import { backendCall, BackendError } from "./backend.js";
@@ -323,7 +323,7 @@ export class LeaveUnconfirmedError extends Error {
 /// through it (devices and peers, account/approvals.ts) with their tunnel
 /// keys. Returns how many went.
 export function dropAccountSessions(): number {
-  const granted = db.select({ id: authSessions.id }).from(authSessions).where(eq(authSessions.origin, "account")).all();
+  const granted = db.select({ id: authSessions.id }).from(authSessions).where(inArray(authSessions.origin, ["account", "mesh"])).all();
   for (const session of granted) unpairSession(session.id);
   return granted.length;
 }

@@ -6,13 +6,16 @@ import { accountPeers, authSessions, db } from "../db.js";
 import { ownerRequest } from "../localAccess.js";
 import { LocalOnlyError } from "../outbound.js";
 import { listPeers, peerById, peerStatus, PeerUnavailableError, removePeer, requestPeer } from "../peers/index.js";
+import { peerTrusted } from "../router/index.js";
 
 // The account's other computers this one sends questions to
 // (docs/multi-computer-design.md §3) — managed by Twoody Desktop, or by the
 // owner of a headless server with the admin token; seen and switched on,
 // off or trusted (GET, PATCH) by a device paired with it too:
 //
-//   GET    /api/v1/peers                 [{computer_id, name, kind, state, enabled, trusted, url?, error?, status?, status_at?}]
+//   GET    /api/v1/peers                 [{computer_id, name, kind, state, enabled, trusted, mesh, url?, error?, status?, status_at?}]
+//          trusted: in the verified vault roster (vault/roster.ts), over its
+//          bound tunnel key; mesh: the link was asked for because of it.
 //   POST   /api/v1/peers {computer_id, name?, requester_computer_id?, requester_credential?}
 //          → 202 {request_id, expires_at}
 //          request_access (role "peer") with this server's tunnel key; the
@@ -25,9 +28,10 @@ import { listPeers, peerById, peerStatus, PeerUnavailableError, removePeer, requ
 //          request after that computer, or refuses it (403
 //          invalid_requester_credential), never takes it for a device's.
 //   PATCH  /api/v1/peers/:computer_id {enabled?, trusted?}  → 200 the peer
-//          trusted (false until set): whether the turns sent to it carry this
-//          computer's memories, personal data, document excerpts and
-//          instructions from files — without it, the conversation only.
+//          trusted is still stored but no longer decides (docs/mesh-design.md
+//          §1): what the turns sent to a peer carry — memories, personal
+//          data, document excerpts — follows the vault roster; « Faire
+//          confiance » enrols the computer in the encrypted history.
 //   DELETE /api/v1/peers/:computer_id
 
 /// The Desktop's own session — made by /auth/signup, /auth/signin or the
@@ -74,7 +78,10 @@ function serialize(row: ReturnType<typeof listPeers>[number]) {
     platform: row.platform,
     state: row.state,
     enabled: row.enabled,
-    trusted: row.trusted,
+    // The verified vault roster decides (vault/roster.ts), not the switch
+    // below: « Faire confiance » enrols the computer in the vault.
+    trusted: peerTrusted(row),
+    mesh: row.origin === "mesh",
     url: row.url,
     request_id: row.requestId,
     error: row.error,

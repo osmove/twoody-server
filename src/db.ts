@@ -68,6 +68,11 @@ export const authSessions = sqliteTable("auth_sessions", {
   /// When the account stops listing it, the session goes (peers/index.ts,
   /// revokeSessionsOfRemovedComputers). Null otherwise.
   requesterComputerId: text("requester_computer_id"),
+  /// For a session given to a phone on its signed device-access-v1 (origin
+  /// « mesh », account/approvals.ts rule 5): its vault device. When that
+  /// device leaves the verified vault roster, the session goes
+  /// (peers/index.ts). Null otherwise.
+  vaultDeviceId: text("vault_device_id"),
 });
 
 export const pairingCodes = sqliteTable("pairing_codes", {
@@ -130,6 +135,11 @@ export const accountPeers = sqliteTable("account_peers", {
   /// (memories, personal data, document excerpts, instructions from files).
   /// Off until the Desktop says otherwise: a peer gets the conversation only.
   trusted: integer("trusted", { mode: "boolean" }).notNull().default(false),
+  /// « mesh » when this computer asked for the link by itself because the
+  /// other one is in the verified vault roster (peers/index.ts): the link
+  /// goes when it leaves the roster. Null for a link asked for from
+  /// « Appareils », which stays (a computer that only lends its models).
+  origin: text("origin"),
   error: text("error"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
@@ -496,7 +506,8 @@ sqlite.exec(`
     created_at INTEGER NOT NULL,
     expires_at INTEGER,
     origin TEXT,
-    requester_computer_id TEXT
+    requester_computer_id TEXT,
+    vault_device_id TEXT
   );
 
   CREATE TABLE IF NOT EXISTS pairing_codes (
@@ -839,6 +850,7 @@ sqlite.exec(`
     tunnel_key TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
     trusted INTEGER NOT NULL DEFAULT 0,
+    origin TEXT,
     error TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
@@ -922,6 +934,15 @@ if (!sessionColumns.some((column) => column.name === "origin")) {
 
 if (!sessionColumns.some((column) => column.name === "requester_computer_id")) {
   sqlite.exec("ALTER TABLE auth_sessions ADD COLUMN requester_computer_id TEXT");
+}
+
+// The mesh (docs/mesh-design.md §1, lot S2, 30/09/2026): the vault device a
+// phone's session was given to, and the links asked for by the roster.
+if (!sessionColumns.some((column) => column.name === "vault_device_id")) {
+  sqlite.exec("ALTER TABLE auth_sessions ADD COLUMN vault_device_id TEXT");
+}
+if (!peerColumns.some((column) => column.name === "origin")) {
+  sqlite.exec("ALTER TABLE account_peers ADD COLUMN origin TEXT");
 }
 
 // Memories through the vault's « memories » stream (docs/mesh-design.md §3,

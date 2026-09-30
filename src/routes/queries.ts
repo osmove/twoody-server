@@ -36,7 +36,8 @@ import { beginGeneration } from "../account/inflight.js";
 import { noteModelUsed } from "../account/statusSource.js";
 import type { Purpose } from "../account/status.js";
 import { peerById, peerRequest, PeerUnavailableError, type PeerRow } from "../peers/index.js";
-import { isSelf, pick, pickBackground, selfIdentity } from "../router/index.js";
+import { isSelf, peerTrusted, pick, pickBackground, selfIdentity } from "../router/index.js";
+import { meshRoster } from "../vault/roster.js";
 import { sealAnsweredTurn } from "../vault/service.js";
 
 interface QueryBody {
@@ -427,9 +428,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     }
     const userContext = loadUserContext(auth.userId);
     // A computer of the account that is not trusted with what this one
-    // knows of its person (account_peers.trusted, false until the Desktop
-    // says so) is given the conversation only: no memories, no contacts or
-    // calendar, no excerpts or list of the documents, no custom prompt, no
+    // knows of its person (not in the verified vault roster,
+    // vault/roster.ts) is given the conversation only: no memories, no
+    // contacts or calendar, no excerpts or list of the documents, no custom prompt, no
     // name — and the earlier prompts as they were typed, not as they were
     // given here with their context (conversationOnly, below).
     const conversationOnlyFor = (candidate: Provider) => candidate.kind === "peer_openai" && !candidate.trusted;
@@ -882,7 +883,7 @@ export interface AnsweredBy {
   routed: "auto" | "explicit" | "fallback";
   auto: boolean;
   /// Another computer's answer only: whether it was given what this
-  /// computer knows of the person (account_peers.trusted), or the
+  /// computer knows of the person (the vault roster), or the
   /// conversation only — « sans vos mémoires ».
   trusted?: boolean;
 }
@@ -908,7 +909,9 @@ function retriable(err: unknown): boolean {
 }
 
 function peerProvider(peer: PeerRow, model: string): Provider {
-  return { kind: "peer_openai", model, baseUrl: `peer:${peer.computerId}`, computerId: peer.computerId, computerName: peer.name, userId: peer.userId, trusted: peer.trusted };
+  // Trusted: in the verified vault roster over its bound key (router
+  // peerTrusted), never account_peers.trusted.
+  return { kind: "peer_openai", model, baseUrl: `peer:${peer.computerId}`, computerId: peer.computerId, computerName: peer.name, userId: peer.userId, trusted: peerTrusted(peer) };
 }
 
 /// The computer that answered the previous turn of this conversation.
@@ -950,6 +953,8 @@ async function planRoute(userId: string, requestedModel: string | undefined, rou
     const provider = await resolveProvider(userId, requestedModel, { engine: routing.mode === "engine" });
     return [{ provider, answeredBy: answeredByOf(provider, "explicit") }];
   }
+  // The roster as of the last minute: which peer gets what is known here.
+  await meshRoster().get().catch(() => null);
   if (routing.mode === "explicit") {
     if (isSelf(routing.computerId)) {
       const provider = await resolveProvider(userId, requestedModel);
@@ -1672,7 +1677,7 @@ export function loadHistory(discussionId: string, after: string | null = null): 
 /// and to nothing else (a runtime elsewhere on the network is not this one).
 function onThisComputer(provider: Provider): boolean {
   // Another computer of the same account, when the Desktop trusted it with
-  // this computer's person's data (account_peers.trusted).
+  // this computer's person's data (the verified vault roster).
   if (provider.kind === "peer_openai") return provider.trusted;
   if (provider.kind !== "local_openai") return false;
   try {

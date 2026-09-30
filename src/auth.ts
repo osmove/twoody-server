@@ -122,13 +122,17 @@ export async function verifyPassword(
 
 /// How a session was given (db.ts, auth_sessions.origin): what the one
 /// asking cannot choose, unlike its name.
-export type SessionOrigin = "owner" | "code" | "account";
+/// « mesh »: approved through the account on the vault's own signatures
+/// (account/approvals.ts rules 4 and 5), undone when the computer or phone
+/// leaves the verified roster (peers/index.ts).
+export type SessionOrigin = "owner" | "code" | "account" | "mesh";
 
 export function createAuthSession(
   userId: string,
   clientKind = "cli",
   origin: SessionOrigin | null = null,
-  requesterComputerId: string | null = null
+  requesterComputerId: string | null = null,
+  vaultDeviceId: string | null = null
 ): { token: string; sessionId: string } {
   const token = generateToken();
   const sessionId = generateId();
@@ -143,6 +147,7 @@ export function createAuthSession(
       expiresAt: null,
       origin,
       requesterComputerId,
+      vaultDeviceId,
     })
     .run();
 

@@ -3,7 +3,7 @@ import { accountCredentials } from "../account/service.js";
 import { linkedAccount, readAccountFile } from "../account/store.js";
 import { DATA_DIR, db, users } from "../db.js";
 import { tunnelIdentity } from "../tunnel/identity.js";
-import { accountVaultApi, createComputerVaultClient, fileKeyStore, type ComputerVaultApi, type ComputerVaultClient, type ComputerVaultStatus, type EventsApi, type LocalVault } from "./client.js";
+import { accountVaultApi, createComputerVaultClient, fileKeyStore, type Anchor, type ComputerVaultApi, type ComputerVaultClient, type ComputerVaultStatus, type EventsApi, type LocalVault, type VaultState } from "./client.js";
 import { fingerprint, fromHex, toHex, VaultError } from "./crypto.js";
 import { jsonFileStore, memoryStore, type VaultStore } from "./store.js";
 import { createConversationBridge, createVaultSync, type ConversationBridge, type LocalHistory, type VaultSync } from "./sync.js";
@@ -38,7 +38,7 @@ const FIRST_TICK_MS = 5_000;
 type Mode =
   | { kind: "off" }
   | { kind: "headless"; client: ComputerVaultClient; api: ComputerVaultApi & EventsApi; sync: VaultSync; syncStore: VaultStore & { clear(): void }; bridge: ConversationBridge | null; userId: string; accountComputerId: string; status: ComputerVaultStatus | null }
-  | { kind: "desktop"; local: LocalVault; api: EventsApi; sync: VaultSync; bridge: ConversationBridge | null; userId: string };
+  | { kind: "desktop"; local: LocalVault; api: EventsApi; state: () => Promise<VaultState>; sync: VaultSync; bridge: ConversationBridge | null; userId: string };
 
 let mode: Mode = { kind: "off" };
 
@@ -86,25 +86,37 @@ export function readVaultMessage(data: unknown): LocalVault | null {
   }
   const userId = typeof m.userId === "string" || typeof m.userId === "number" ? String(m.userId) : readAccountFile()?.account_id !== undefined ? String(readAccountFile()!.account_id) : null;
   if (!userId) return null;
-  return { userId, accountComputerId: null, deviceId: m.deviceId, keys: keys as LocalVault["keys"], epochs, anchors: [] };
+  // The person devices the Desktop verified (its own walk), to start this
+  // server's roster from (vault/roster.ts): up to 8, like pinned anchors.
+  const anchors: Anchor[] = Array.isArray(m.anchors)
+    ? (m.anchors as unknown[]).flatMap((a) => {
+        const x = a as Record<string, unknown> | null;
+        return x && typeof x.id === "string" && x.id.length <= 64 && typeof x.sign_public === "string" && HEX32.test(x.sign_public) ? [{ id: x.id, sign_public: x.sign_public }] : [];
+      }).slice(0, 8)
+    : [];
+  return { userId, accountComputerId: null, deviceId: m.deviceId, keys: keys as LocalVault["keys"], epochs, anchors };
 }
 
 /// The Desktop hands its vault over (or takes it back with keys: null).
 /// Memory only. Returns whether this server now holds it.
-export function setDesktopVault(data: unknown, options: { api?: EventsApi; history?: (userId: string) => LocalHistory } = {}): boolean {
+export function setDesktopVault(data: unknown, options: { api?: EventsApi; state?: () => Promise<VaultState>; history?: (userId: string) => LocalHistory } = {}): boolean {
   const local = readVaultMessage(data);
   if (mode.kind === "headless") stopTimer();
   if (!local) {
     mode = { kind: "off" };
+    notifyVaultChange();
     return false;
   }
-  const api = options.api ?? accountVaultApi(() => {
+  const account = accountVaultApi(() => {
     const creds = accountCredentials();
     return creds ? { backendUrl: creds.backendUrl, userToken: creds.userToken, deviceToken: creds.deviceToken } : null;
   });
+  const api = options.api ?? account;
+  const state = options.state ?? (() => account.state());
   const epochKeys = () => new Map(local.epochs);
   const sync = createVaultSync({ api, epochKeys, userId: local.userId, store: memoryStore() });
-  mode = { kind: "desktop", local, api, sync, bridge: bridgeFor(sync, () => local.epochs.size > 0, options.history), userId: local.userId };
+  mode = { kind: "desktop", local, api, state, sync, bridge: bridgeFor(sync, () => local.epochs.size > 0, options.history), userId: local.userId };
+  notifyVaultChange();
   return true;
 }
 
@@ -177,6 +189,7 @@ export function startVaultService(options: { log?: (message: string) => void; ap
       if (enrolled.status !== current.status) log(`Vault: ${enrolled.status}.`);
       current.status = enrolled.status;
       const synced = enrolled.status === "trusted" && current.bridge ? await current.bridge.run() : null;
+      notifyVaultChange();
       return { status: enrolled.status, synced };
     } catch (err) {
       log(`Vault: ${err instanceof Error ? err.message : String(err)}`);
@@ -255,6 +268,44 @@ export async function ensureConversation(vaultConversationId: string, knownRefs:
 export async function sealAnsweredTurn(discussionId: string, ref: string | null) {
   if (!ref || mode.kind !== "headless" || mode.status !== "trusted" || !mode.bridge) return { sealed: false as const };
   return mode.bridge.sealOwnTurn(discussionId, ref).catch((err) => ({ sealed: false as const, reason: err instanceof VaultError ? err.code : "error" }));
+}
+
+/// What the mesh roster is built from (vault/roster.ts): the account's
+/// vault devices and the person devices this computer's trust starts from —
+/// headless, those pinned over the tunnel; inside Twoody Desktop, the
+/// Desktop's own device and the ones it handed over. Null without a vault
+/// here. Throws what the account answered (roster.ts reads 401/404/410).
+export async function vaultRosterInput(): Promise<{ userId: string; devices: NonNullable<VaultState["devices"]>; anchors: Anchor[] } | null> {
+  if (mode.kind === "headless") {
+    const local = mode.client.readLocal();
+    if (!local) return null;
+    const state = await mode.api.state();
+    return { userId: mode.userId, devices: state.devices ?? [], anchors: local.anchors };
+  }
+  if (mode.kind === "desktop") {
+    const { local } = mode;
+    const self = local.deviceId ? [{ id: local.deviceId, sign_public: toHex(local.keys.signPublic) }] : [];
+    const state = await mode.state();
+    return { userId: mode.userId, devices: state.devices ?? [], anchors: [...self, ...local.anchors.filter((a) => a.id !== local.deviceId)] };
+  }
+  return null;
+}
+
+const changeListeners = new Set<() => void>();
+function notifyVaultChange() {
+  for (const listener of changeListeners) {
+    try {
+      listener();
+    } catch {
+      // the listener's own
+    }
+  }
+}
+/// Called after each vault tick, and when the Desktop hands its vault over
+/// or takes it back: the roster looks again.
+export function onVaultChange(listener: () => void): () => void {
+  changeListeners.add(listener);
+  return () => changeListeners.delete(listener);
 }
 
 /// Tests: back to nothing.

@@ -47,6 +47,10 @@ export function pairDevice(args: {
   /// computer of the account asked: its session goes when the account stops
   /// listing it.
   requesterComputerId?: string | null;
+  /// The phone's vault device, when its signed device-access-v1 let it in
+  /// (account/approvals.ts rule 5): its session goes when that device
+  /// leaves the vault roster.
+  vaultDeviceId?: string | null;
 }): {
   token: string;
   sessionId: string;
@@ -54,7 +58,7 @@ export function pairDevice(args: {
   tunnelPublicKey?: string;
 } {
   const user = ensureLocalUser();
-  const { token, sessionId } = createAuthSession(user.id, sessionKindFor(args.role ?? "device", args.deviceName), args.origin ?? null, args.requesterComputerId ?? null);
+  const { token, sessionId } = createAuthSession(user.id, sessionKindFor(args.role ?? "device", args.deviceName), args.origin ?? null, args.requesterComputerId ?? null, args.vaultDeviceId ?? null);
   // The key swap, when the device brought one. The key goes with the
   // session: removing the device takes both.
   if (args.tunnelPublicKey) {

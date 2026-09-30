@@ -41,6 +41,10 @@ export interface FakeAuthorization {
   requester_kind?: "computer" | "device";
   requester_computer_id?: number;
   requester_name?: string;
+  /// A phone's signed device-access-v1, as request_access received it and
+  /// `pending` passes it on (docs/mesh-design.md §1 rule 5; what
+  /// twoody-backend must store and list, untouched).
+  device_access?: unknown;
 }
 
 export interface FakeLogin {
@@ -243,6 +247,7 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
           ...(a.requester_kind ? { requester_kind: a.requester_kind } : {}),
           ...(a.requester_computer_id !== undefined ? { requester_computer_id: a.requester_computer_id } : {}),
           ...(a.requester_name ? { requester_name: a.requester_name } : {}),
+          ...(a.device_access !== undefined ? { device_access: a.device_access } : {}),
         })),
       });
     }
@@ -266,6 +271,7 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
         sealed_response: null,
         expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
         endorsements: [],
+        ...(body.device_access && typeof body.device_access === "object" ? { device_access: body.device_access } : {}),
         ...(requester ? { name: requester.name, role: "peer" as const, requester_kind: "computer" as const, requester_computer_id: requester.id, requester_name: requester.name } : {}),
       };
       if (!/^[0-9a-f]{64}$/.test(a.public_key) || !a.name) return json(422, { error: "invalid_request" });

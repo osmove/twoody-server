@@ -22,7 +22,8 @@ import { setDesktopAccount, startAccountService } from "./account/service.js";
 import { ensureAccountFile, fingerprint } from "./account/store.js";
 import { startMachineSampler } from "./machineSampler.js";
 import { isFresh } from "./pairing.js";
-import { startPeerStatusPoller } from "./peers/index.js";
+import { startMeshLinks, startPeerStatusPoller } from "./peers/index.js";
+import { startRosterRefresh } from "./vault/roster.js";
 import { setDesktopVault, startVaultService } from "./vault/service.js";
 import { startMemorySync } from "./vault/memories.js";
 import { builtinAddress, initEngine, preloadBuiltin, stopEngine } from "./engine.js";
@@ -229,6 +230,11 @@ try {
   // The account's other computers this one sends questions to: their
   // status every 20 s, for the router.
   const stopPeerPoller = startPeerStatusPoller(() => db.select({ id: users.id }).from(users).all().map((u) => u.id));
+  // The mesh (docs/mesh-design.md §1): the verified vault roster, looked at
+  // every minute; links asked for to its computers, and what leaves it
+  // loses its links and sessions here.
+  const stopMeshLinks = startMeshLinks(() => db.select({ id: users.id }).from(users).all().map((u) => u.id));
+  const stopRoster = startRosterRefresh();
   const onTunnelError = (err: unknown) => app.log.debug({ err }, "tunnel");
   const announceTunnel = (service: TunnelService) => {
     const paired = service.links.length;
@@ -351,6 +357,8 @@ try {
         vaultService?.stop();
         memorySync.stop();
         stopPeerPoller();
+        stopMeshLinks();
+        stopRoster();
         sampler?.stop();
       } catch {
         // Best-effort.

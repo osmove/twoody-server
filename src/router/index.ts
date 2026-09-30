@@ -3,14 +3,39 @@ import { computerName } from "../account/link.js";
 import { accountCredentials } from "../account/service.js";
 import { buildStatus, lastLoad } from "../account/statusSource.js";
 import type { Purpose } from "../account/status.js";
-import { db, providers } from "../db.js";
+import { db, providers, sqlite, users } from "../db.js";
 import { engineRoute } from "../engine.js";
-import { accountComputers, linkedPeers, peerStatus, type PeerRow } from "../peers/index.js";
+import { accountComputers, linkedPeers, peerDocumentCounts, peerStatus, type PeerRow } from "../peers/index.js";
+import { meshRoster, rosterSnapshot, trustedNow } from "../vault/roster.js";
 import { rank, STATUS_MAX_AGE_MS, type Choice, type ComputerView } from "./score.js";
 
 // The router's view of the account's computers: this one, measured now,
 // and its peers as they last said (peers/index.ts polls them). The
 // choosing itself is score.ts.
+//
+// Which peer is trusted with what this computer knows of its person comes
+// from the verified vault roster (vault/roster.ts, docs/mesh-design.md §4),
+// never from account_peers.trusted: a computer the person devices enrolled
+// and bound, reached over the tunnel key its binding names. The others
+// lend their models, conversation only.
+
+/// Whether this peer is a computer of the roster, over its bound key (the
+/// roster as last verified; the async callers below look first).
+export function peerTrusted(peer: Pick<PeerRow, "computerId" | "tunnelKey">): boolean {
+  return trustedNow(peer.computerId, peer.tunnelKey);
+}
+
+/// The peers the router may send turns to: linked, enabled — less those
+/// linked because of the roster that it no longer has (their links go
+/// within the minute, peers/index.ts; not a turn meanwhile).
+export function routablePeers(userId: string): PeerRow[] {
+  return linkedPeers(userId).filter((peer) => peer.origin !== "mesh" || peerTrusted(peer));
+}
+
+/// The roster, looked at when it is older than its minute.
+async function freshRoster(): Promise<void> {
+  await meshRoster().get().catch(() => null);
+}
 
 export const SELF_ID = "self";
 
@@ -67,9 +92,10 @@ export function peerView(peer: PeerRow, now = Date.now()): ComputerView | null {
 }
 
 export async function computerViews(userId: string, options: { withSelf?: boolean } = {}): Promise<ComputerView[]> {
+  await freshRoster();
   const views: ComputerView[] = [];
   if (options.withSelf !== false) views.push(await selfView(userId));
-  for (const peer of linkedPeers(userId)) {
+  for (const peer of routablePeers(userId)) {
     const view = peerView(peer);
     if (view) views.push(view);
   }
@@ -97,7 +123,8 @@ export async function pickBackground(args: { userId: string; preference: unknown
   const preference = typeof args.preference === "string" ? args.preference : "auto";
   if (preference === "self") return null;
   const idle = (view: ComputerView) => view.status.inflight === 0 && (view.loads.at(-1)?.cpu_pct ?? view.status.load.cpu_pct ?? 0) < 50;
-  const trusted = new Set(linkedPeers(args.userId).filter((peer) => peer.trusted).map((peer) => peer.computerId));
+  await freshRoster();
+  const trusted = new Set(routablePeers(args.userId).filter(peerTrusted).map((peer) => peer.computerId));
   const peers = (await computerViews(args.userId, { withSelf: false })).filter((v) => trusted.has(v.id) && v.statusAgeMs < STATUS_MAX_AGE_MS && idle(v));
   const wanted = preference.startsWith("computer:") ? preference.slice("computer:".length) : null;
   if (wanted && isSelf(wanted)) return null;
@@ -119,9 +146,35 @@ export interface ComputerEntry {
   peer: boolean;
   /// Whether the turns it answers carry this computer's person's data
   /// (memories, personal data, documents). Always so for this computer;
-  /// for a peer, as the Desktop set it (false until then).
+  /// for a peer, whether it is in the verified vault roster.
   trusted: boolean;
+  /// In the verified vault roster (for this computer: whether the roster
+  /// has it too) — a member of the mesh, whose documents are searched.
+  mesh: boolean;
+  /// The default coordinator for ties (docs/mesh-design.md §3, « Préféré »):
+  /// the one the `preferred_computer` preference names when it is listed,
+  /// else this computer. Exactly one entry.
+  preferred: boolean;
+  /// Its indexed documents: this computer's own count; a mesh peer's as it
+  /// last said (GET /peer/documents/folders, every 5 min); null otherwise.
+  documents: { indexed: number } | null;
   models: Array<{ id: string; loaded: boolean; tps: number | null }>;
+}
+
+function indexedHere(userId: string): number {
+  const row = sqlite.prepare("SELECT COUNT(*) AS n FROM documents WHERE user_id = ? AND status = 'indexed'").get(userId) as { n: number } | undefined;
+  return row?.n ?? 0;
+}
+
+/// The `preferred_computer` preference: "self", "auto" or "computer:<id>".
+function preferredPreference(userId: string): string | null {
+  const [row] = db.select({ prefs: users.prefsJson }).from(users).where(eq(users.id, userId)).limit(1).all();
+  try {
+    const value = (JSON.parse(row?.prefs || "{}") as Record<string, unknown>).preferred_computer;
+    return typeof value === "string" && value.startsWith("computer:") ? value.slice("computer:".length) : null;
+  } catch {
+    return null;
+  }
 }
 
 /// /providers `computers`: this computer, then the account's others —
@@ -129,16 +182,22 @@ export interface ComputerEntry {
 /// Null when this server knows no account.
 export async function listComputers(userId: string): Promise<ComputerEntry[] | null> {
   if (!accountCredentials()) return null;
+  await freshRoster();
+  const roster = rosterSnapshot();
   const me = await selfView(userId);
   const models = (view: ComputerView) => view.status.models.map((m) => ({ id: m.id, loaded: m.loaded, tps: view.status.tps[m.id] ?? null }));
-  const out: ComputerEntry[] = [{ id: me.id, name: me.name, kind: me.kind ?? null, self: true, online: true, peer: false, trusted: true, models: models(me) }];
-  const peers = linkedPeers(userId);
+  const out: ComputerEntry[] = [
+    { id: me.id, name: me.name, kind: me.kind ?? null, self: true, online: true, peer: false, trusted: true, mesh: !!roster?.computers.has(me.id), preferred: false, documents: { indexed: indexedHere(userId) }, models: models(me) },
+  ];
+  const peers = routablePeers(userId);
   const listed = (await accountComputers()) ?? [];
   const seen = new Set<string>([me.id]);
   for (const peer of peers) {
     const view = peerView(peer);
     const listing = listed.find((c) => c.id === peer.computerId);
     seen.add(peer.computerId);
+    const trusted = peerTrusted(peer);
+    const documents = trusted ? peerDocumentCounts(peer.computerId) : null;
     out.push({
       id: peer.computerId,
       name: listing?.name ?? peer.name,
@@ -146,7 +205,10 @@ export async function listComputers(userId: string): Promise<ComputerEntry[] | n
       self: false,
       online: view ? view.statusAgeMs < STATUS_MAX_AGE_MS : false,
       peer: true,
-      trusted: peer.trusted,
+      trusted,
+      mesh: trusted,
+      preferred: false,
+      documents: documents ? { indexed: documents.indexed } : null,
       models: view ? models(view) : [],
     });
   }
@@ -161,8 +223,16 @@ export async function listComputers(userId: string): Promise<ComputerEntry[] | n
       online: computer.online,
       peer: false,
       trusted: false,
+      // In the roster but not linked yet (peers/index.ts asks): a member,
+      // not reachable from here for now.
+      mesh: !!roster?.computers.has(computer.id),
+      preferred: false,
+      documents: null,
       models: computer.status ? computer.status.models.map((m) => ({ id: m.id, loaded: m.loaded, tps: computer.status!.tps[m.id] ?? null })) : [],
     });
   }
+  const wanted = preferredPreference(userId);
+  const preferred = (wanted && out.find((c) => c.id === wanted && (c.self || c.mesh))) || out[0]!;
+  preferred.preferred = true;
   return out;
 }

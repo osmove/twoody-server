@@ -105,6 +105,13 @@ indexDoc("scan", "f-contracts", join(contracts, "scan-bail.pdf"), ["Scan du bail
 
 // ── who asks ────────────────────────────────────────────────────────────────
 
+// Who is trusted is the vault roster's business (lot S2, vault/roster.ts,
+// test/meshRoster.test.ts); here a stand-in for it: the computers in
+// `inRoster`, through the one replaceable check the routes ask.
+const inRoster = new Set<string>();
+const rosterStandIn = async (id: string) => inRoster.has(id);
+setTrustCheck(rosterStandIn);
+
 function peer(computerId: string | null, trusted: boolean | null, state = "linked") {
   const session = pairDevice({ deviceName: `Computer ${computerId}`, role: "peer", origin: "account", requesterComputerId: computerId });
   if (computerId && trusted !== null) {
@@ -113,6 +120,9 @@ function peer(computerId: string | null, trusted: boolean | null, state = "linke
       .values({ computerId, userId: user.id, name: `Computer ${computerId}`, state, trusted, enabled: true, createdAt: now, updatedAt: now })
       .onConflictDoUpdate({ target: accountPeers.computerId, set: { trusted, state, updatedAt: now } })
       .run();
+    // Removed from the account: not in the roster either.
+    if (trusted && state === "linked") inRoster.add(computerId);
+    else inRoster.delete(computerId);
   }
   return { authorization: `Bearer ${session.token}` };
 }
@@ -155,10 +165,10 @@ test("a trusted computer's peer session searches; an untrusted, removed or unkno
   assert.equal((await app.inject({ method: "POST", url: "/api/v1/peer/documents/search", payload: { q: "loyer", scope: { mode: "all" } } })).statusCode, 401);
 });
 
-test("trust is switched off: 403 from the next request on", async () => {
+test("trust is switched off (the computer leaves the roster): 403 from the next request on", async () => {
   const headers = peer("45", true);
   assert.equal((await search(headers, {})).statusCode, 200);
-  db.update(accountPeers).set({ trusted: false }).where((await import("drizzle-orm")).eq(accountPeers.computerId, "45")).run();
+  inRoster.delete("45");
   assert.equal((await search(headers, {})).statusCode, 403);
 });
 
@@ -170,7 +180,15 @@ test("the trust check is one replaceable function (lot S2 puts the vault roster 
     assert.equal((await search(headers, {})).statusCode, 200);
     assert.equal((await search(trustedPeer(), {})).statusCode, 403, "the roster, not account_peers, decides then");
   } finally {
-    setTrustCheck(null);
+    setTrustCheck(rosterStandIn);
+  }
+  // Put back, it is the verified vault roster: no vault here, nobody —
+  // whatever account_peers.trusted says.
+  setTrustCheck(null);
+  try {
+    assert.equal((await search(trustedPeer(), {})).statusCode, 403);
+  } finally {
+    setTrustCheck(rosterStandIn);
   }
 });
 

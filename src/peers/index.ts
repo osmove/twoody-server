@@ -1,10 +1,12 @@
 import { and, eq, isNotNull } from "drizzle-orm";
+import { linkedAccount } from "../account/store.js";
+import { meshRoster, onRosterChange, trustedNow, type Roster } from "../vault/roster.js";
 import { accountCredentials, type AccountCredentials } from "../account/service.js";
 import { backendCall, BackendError } from "../account/backend.js";
 import { openPairing } from "../account/pairingSeal.js";
 import { readStatus, type ComputerStatus } from "../account/status.js";
 import { computerName } from "../account/link.js";
-import { accountPeers, authSessions, db } from "../db.js";
+import { accountPeers, authSessions, db, tunnelPeers } from "../db.js";
 import { unpairSession } from "../pairing.js";
 import { KEY_BYTES, rendezvousId } from "../tunnel/channel.js";
 import { startTunnelClient, type TunnelClient } from "../tunnel/client.js";
@@ -180,6 +182,8 @@ function noteAnswer(peer: PeerRow, response: Response): Response {
   } else if (response.status === 404 || response.status === 410) {
     requestPeerSync(peer.userId);
   }
+  // The vault roster is looked at again too (vault/roster.ts).
+  if (response.status === 401 || response.status === 404 || response.status === 410) void meshRoster().refresh();
   return response;
 }
 
@@ -188,6 +192,7 @@ function noteAnswer(peer: PeerRow, response: Response): Response {
 function markPeer(computerId: string, state: "revoked" | "removed", error: string): void {
   closePeerLink(computerId);
   statuses.delete(computerId);
+  documentCounts.delete(computerId);
   const poll = polls.get(computerId);
   if (poll) clearTimeout(poll);
   polls.delete(computerId);
@@ -238,6 +243,42 @@ export async function refreshPeerStatus(peer: PeerRow): Promise<PeerStatusEntry 
   }
 }
 
+// ── a mesh peer's documents ──────────────────────────────────────────────
+
+const documentCounts = new Map<string, { indexed: number; documents: number; at: number }>();
+const DOCUMENTS_EVERY_MS = 5 * 60_000;
+
+/// How many documents a mesh peer said it has indexed (GET
+/// /peer/documents/folders, looked at every 5 min), or null.
+export function peerDocumentCounts(computerId: string): { indexed: number; documents: number; at: number } | null {
+  return documentCounts.get(computerId) ?? null;
+}
+
+/// Asks a peer of the roster for its folders' counts (names stay there).
+/// Only a roster peer: another would answer 403 anyway.
+export async function refreshPeerDocuments(peer: PeerRow): Promise<{ indexed: number; documents: number; at: number } | null> {
+  if (!trustedNow(peer.computerId, peer.tunnelKey)) {
+    documentCounts.delete(peer.computerId);
+    return null;
+  }
+  try {
+    const response = await peerRequest(peer, "/api/v1/peer/documents/folders", { signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      if (response.status === 403) documentCounts.delete(peer.computerId);
+      return documentCounts.get(peer.computerId) ?? null;
+    }
+    const body = (await response.json().catch(() => null)) as { folders?: Array<{ indexed?: unknown; documents?: unknown }> } | null;
+    if (!Array.isArray(body?.folders)) return documentCounts.get(peer.computerId) ?? null;
+    const count = (key: "indexed" | "documents") => body!.folders!.reduce((sum, f) => sum + (Number.isInteger(f?.[key]) && (f[key] as number) >= 0 ? (f[key] as number) : 0), 0);
+    const entry = { indexed: count("indexed"), documents: count("documents"), at: Date.now() };
+    documentCounts.set(peer.computerId, entry);
+    return entry;
+  } catch {
+    return documentCounts.get(peer.computerId) ?? null;
+  }
+}
+
 let poller: NodeJS.Timeout | null = null;
 let listingPoller: NodeJS.Timeout | null = null;
 
@@ -247,7 +288,13 @@ let listingPoller: NodeJS.Timeout | null = null;
 export function startPeerStatusPoller(userIds: () => string[], everyMs = 20_000): () => void {
   const tick = async () => {
     for (const userId of userIds()) {
-      await Promise.all(linkedPeers(userId).map((peer) => refreshPeerStatus(peer)));
+      await Promise.all(
+        linkedPeers(userId).map(async (peer) => {
+          await refreshPeerStatus(peer);
+          const counted = documentCounts.get(peer.computerId);
+          if (!counted || Date.now() - counted.at >= DOCUMENTS_EVERY_MS) await refreshPeerDocuments(peer);
+        }),
+      );
     }
   };
   const override = Number(process.env.TWOODY_PEER_LISTING_MS);
@@ -255,6 +302,8 @@ export function startPeerStatusPoller(userIds: () => string[], everyMs = 20_000)
   const sync = async () => {
     for (const userId of userIds()) {
       if (listPeers(userId).length > 0 || sessionsGivenToComputers().length > 0) await syncPeersWithAccount(userId).catch(() => undefined);
+      // A link the roster wanted that failed is asked for again here too.
+      await linkRosterComputers(userId, meshRoster().snapshot()).catch(() => undefined);
     }
   };
   if (poller) clearInterval(poller);
@@ -322,6 +371,105 @@ export function revokeSessionsOfRemovedComputers(listed: Set<string>): number {
     revoked += 1;
   }
   return revoked;
+}
+
+// ── the mesh: links follow the vault roster ──────────────────────────────
+// (docs/mesh-design.md §1, lot S2) Each computer of the verified roster is
+// asked for a link by this one, which the other approves by its rule 4;
+// what the roster no longer has goes within its 60 s: the « mesh » sessions
+// given here (rules 4 and 5) and the links asked for by the roster. Links
+// and sessions given otherwise (« Appareils », an endorsement, the console)
+// stay: that computer only lends its models then, conversation only.
+
+/// The « mesh » sessions given here to a computer or a phone the roster no
+/// longer has (or under another tunnel key). `roster` null: no vault here
+/// any more — all of them. Returns how many went.
+export function revokeSessionsOutsideRoster(roster: Roster | null): number {
+  const sessions = db
+    .select({ id: authSessions.id, requesterComputerId: authSessions.requesterComputerId, vaultDeviceId: authSessions.vaultDeviceId })
+    .from(authSessions)
+    .where(eq(authSessions.origin, "mesh"))
+    .all();
+  let revoked = 0;
+  for (const session of sessions) {
+    const kept = session.requesterComputerId
+      ? (() => {
+          const computer = roster?.computers.get(session.requesterComputerId);
+          if (!computer) return false;
+          const keys = db.select({ publicKey: tunnelPeers.publicKey }).from(tunnelPeers).where(eq(tunnelPeers.sessionId, session.id)).all();
+          return keys.some((k) => k.publicKey.toLowerCase() === computer.tunnelPublicKey);
+        })()
+      : !!session.vaultDeviceId && !!roster?.persons.has(session.vaultDeviceId);
+    if (kept) continue;
+    unpairSession(session.id);
+    revoked += 1;
+  }
+  return revoked;
+}
+
+/// Links this computer asked for because of the roster, to computers it no
+/// longer has: set aside (« revoked », left_mesh). Returns their ids.
+export function dropLinksOutsideRoster(userId: string, roster: Roster | null): string[] {
+  const dropped: string[] = [];
+  for (const peer of listPeers(userId)) {
+    if (peer.origin !== "mesh" || peer.state === "removed" || peer.state === "revoked") continue;
+    const computer = roster?.computers.get(peer.computerId);
+    if (computer && (peer.state !== "linked" || peer.tunnelKey === computer.tunnelPublicKey)) continue;
+    markPeer(peer.computerId, "revoked", "left_mesh");
+    dropped.push(peer.computerId);
+  }
+  return dropped;
+}
+
+const MESH_RETRY_MS = 5 * 60_000;
+
+/// Asks each computer of the roster this one has no link with for one
+/// (headless only: the account knows it is this computer by its own
+/// session; inside Twoody Desktop the Desktop asks, with its credential).
+/// A request under way is left alone; one that failed is asked again after
+/// 5 min. Returns the ids asked.
+export async function linkRosterComputers(userId: string, roster: Roster | null): Promise<string[]> {
+  const account = linkedAccount();
+  if (!roster || !account) return [];
+  const self = account.computer.id;
+  const asked: string[] = [];
+  for (const computer of roster.computers.values()) {
+    if (computer.accountComputerId === self) continue;
+    const peer = peerById(userId, computer.accountComputerId);
+    if (peer?.state === "linked" && peer.tunnelKey === computer.tunnelPublicKey) continue;
+    if (peer?.requestId && peer.requestExpiresAt && peer.requestExpiresAt.getTime() > Date.now()) continue;
+    if (peer && peer.state !== "linked" && peer.requestId === null && Date.now() - peer.updatedAt.getTime() < MESH_RETRY_MS && peer.origin === "mesh" && peer.error !== "left_mesh") continue;
+    try {
+      await requestPeer(userId, computer.accountComputerId, { origin: "mesh" });
+      asked.push(computer.accountComputerId);
+    } catch {
+      // Offline, or the account does not list it (yet): next change or tick.
+    }
+  }
+  return asked;
+}
+
+/// What a change of the roster does, for each user of this server.
+export async function followRoster(userIds: string[], roster: Roster | null): Promise<{ revoked: number; dropped: string[]; asked: string[] }> {
+  const revoked = revokeSessionsOutsideRoster(roster);
+  const dropped: string[] = [];
+  const asked: string[] = [];
+  for (const userId of userIds) {
+    dropped.push(...dropLinksOutsideRoster(userId, roster));
+    asked.push(...(await linkRosterComputers(userId, roster)));
+  }
+  return { revoked, dropped, asked };
+}
+
+let offRoster: (() => void) | null = null;
+/// The links and sessions follow the roster from now on.
+export function startMeshLinks(userIds: () => string[]): () => void {
+  offRoster?.();
+  offRoster = onRosterChange((change) => followRoster(userIds(), change.roster).then(() => undefined));
+  return () => {
+    offRoster?.();
+    offRoster = null;
+  };
 }
 
 const syncRequested = new Map<string, number>();
@@ -412,7 +560,7 @@ const polls = new Map<string, NodeJS.Timeout>();
 export async function requestPeer(
   userId: string,
   computerId: string,
-  options: { name?: string; requester?: { computerId: string; credential: string } } = {},
+  options: { name?: string; requester?: { computerId: string; credential: string }; origin?: "mesh" } = {},
 ): Promise<{ request_id: string; expires_at: string | null }> {
   const creds = accountCredentials();
   if (!creds) throw new PeerUnavailableError("this server is not linked to an account", "not_linked");
@@ -451,12 +599,15 @@ export async function requestPeer(
   const existing = peerById(userId, computerId);
   if (existing) {
     // A peer already linked keeps working until the new answer replaces it.
+    // A link asked for from « Appareils » stays one; one the roster asked
+    // for becomes one when asked for from « Appareils ».
+    const origin = options.origin === "mesh" && (existing.origin === "mesh" || existing.state !== "linked") ? "mesh" : options.origin === "mesh" ? existing.origin : null;
     db.update(accountPeers)
-      .set(existing.state === "linked" ? { requestId, requestExpiresAt: values.requestExpiresAt, hostKey: target.public_key, updatedAt: now } : values)
+      .set(existing.state === "linked" ? { requestId, requestExpiresAt: values.requestExpiresAt, hostKey: target.public_key, origin, updatedAt: now } : { ...values, origin })
       .where(eq(accountPeers.computerId, computerId))
       .run();
   } else {
-    db.insert(accountPeers).values({ computerId, ...values, createdAt: now }).run();
+    db.insert(accountPeers).values({ computerId, ...values, origin: options.origin ?? null, createdAt: now }).run();
   }
   watchPeerRequest(userId, computerId);
   return { request_id: requestId, expires_at: values.requestExpiresAt.toISOString() };

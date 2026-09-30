@@ -27,6 +27,8 @@ const { pairDevice } = await import("../src/pairing.js");
 const { setPeerStatus } = await import("../src/peers/index.js");
 const { readStatus } = await import("../src/account/status.js");
 const { eq } = await import("drizzle-orm");
+const { setRosterSource } = await import("../src/vault/roster.js");
+const { meshVault } = await import("./helpers/meshVault.js");
 
 const app = await buildApp();
 test.after(async () => {
@@ -151,7 +153,13 @@ test("« Tâches de fond »: an idle trusted peer set for it takes memory extrac
     setPeerStatus("77", readStatus({ app_version: "0.3.0", models: [{ id: "qwen3:8b", loaded: true }], load: { cpu_pct: cpu, gpu_pct: null, ram_used_pct: 30, at: null }, tps: { "qwen3:8b": 5 }, inflight, accepts: ["chat", "background"], tools: true })!);
   peerStatus(0, 10);
   assert.equal(await pickBackground({ userId: desktop.user_id, preference: "computer:77", model: "qwen3:8b" }), null, "not trusted: the work reads what is kept of the person");
+  // The switch in « Appareils » alone trusts nothing: the vault roster does.
   db.update(accountPeers).set({ trusted: true }).where(eq(accountPeers.computerId, "77")).run();
+  assert.equal(await pickBackground({ userId: desktop.user_id, preference: "computer:77", model: "qwen3:8b" }), null, "account_peers.trusted is not the roster");
+  const vault = meshVault();
+  const iphone = vault.person("iPhone");
+  vault.computer("Raspberry Pi", "77", iphone, { tunnelKey: db.select().from(accountPeers).where(eq(accountPeers.computerId, "77")).all()[0]!.tunnelKey! });
+  await setRosterSource(async () => vault.input([iphone])).refresh();
   assert.equal((await pickBackground({ userId: desktop.user_id, preference: "computer:77", model: "qwen3:8b" }))?.computerId, "77", "even slower, the chosen computer does it when idle");
   assert.equal(await pickBackground({ userId: desktop.user_id, preference: "self", model: "qwen3:8b" }), null);
   assert.equal(await pickBackground({ userId: desktop.user_id, preference: "computer:self", model: "qwen3:8b" }), null);
@@ -162,4 +170,5 @@ test("« Tâches de fond »: an idle trusted peer set for it takes memory extrac
   assert.equal(await pickBackground({ userId: desktop.user_id, preference: "computer:77", model: "qwen3:8b" }), null, "CPU over 50 %");
   setPeerStatus("77", null);
   db.update(accountPeers).set({ trusted: false }).where(eq(accountPeers.computerId, "77")).run();
+  setRosterSource(null);
 });
