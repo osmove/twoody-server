@@ -25,6 +25,7 @@ const { accountPath, linkedAccount, readAccountFile } = await import("../src/acc
 const { bonjourTxt } = await import("../src/bonjour.js");
 const { buildApp } = await import("../src/app.js");
 const { ensureLocalUser } = await import("../src/pairing.js");
+const { tunnelIdentity } = await import("../src/tunnel/identity.js");
 
 const app = await buildApp();
 test.after(async () => {
@@ -52,6 +53,7 @@ test("a code is asked for, polled while pending, slowed down, then linked once; 
   const login = backend.logins.at(-1)!;
   assert.equal(login.name, "Raspberry Pi");
   assert.equal(login.public_key, readAccountFile()!.pairing_key.pub, "the login carries the pairing key");
+  assert.equal(login.tunnel_public_key, tunnelIdentity().publicKey.toString("hex"), "and the tunnel key, whose security code the console shows");
   assert.equal(login.device_token, readAccountFile()!.device_token);
 
   await until(() => login.polls >= 2);
@@ -211,7 +213,6 @@ test("once linked, the console says which account (masked), and the network stil
 
 test("the security code: shown on the console and the admin page, from the tunnel key; never to the network", async () => {
   const { securityCode } = await import("../src/vault/contracts.js");
-  const { tunnelIdentity } = await import("../src/tunnel/identity.js");
   const code = securityCode(new Uint8Array(tunnelIdentity().publicKey));
   assert.match(code, /^[0-9A-HJKMNP-TV-Z]{5}(-[0-9A-HJKMNP-TV-Z]{5}){3}$/);
   const local = (await app.inject({ method: "GET", url: "/account/link", remoteAddress: "127.0.0.1" })).json();

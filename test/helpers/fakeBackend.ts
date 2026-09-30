@@ -53,6 +53,8 @@ export interface FakeLogin {
   name: string;
   platform: string | null;
   public_key: string;
+  /// The tunnel key the computer sent (its security code's), or null.
+  tunnel_public_key: string | null;
   device_token: string;
   state: "pending" | "approved" | "denied" | "delivered";
   expires_at: number;
@@ -162,6 +164,7 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
         name: String(body.name ?? ""),
         platform: body.platform ?? null,
         public_key: body.public_key,
+        tunnel_public_key: typeof body.tunnel_public_key === "string" ? body.tunnel_public_key : null,
         device_token: body.device_token,
         state: "pending",
         expires_at: Date.now() + (options.loginLifetimeMs ?? 600_000),

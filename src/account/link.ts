@@ -4,6 +4,7 @@ import { eq, inArray } from "drizzle-orm";
 import { authSessions, db } from "../db.js";
 import { unpairSession } from "../pairing.js";
 import { backendCall, BackendError } from "./backend.js";
+import { tunnelIdentity } from "../tunnel/identity.js";
 import {
   backendUrl,
   ensureAccountFile,
@@ -162,7 +163,17 @@ export async function startLink(options: { name?: string; fromNetwork?: boolean 
     expires_in: number;
     interval?: number;
   }>(creds, "computer_logins", {
-    body: { name: options.name ?? computerName(), platform: platformName(), public_key: file.pairing_key.pub, device_token: file.device_token },
+    // The tunnel key too: the security code its console shows is that
+    // key's (tunnel/identity.ts thisSecurityCode), and the device that
+    // approves the code derives the same one from it (GET
+    // /computer_logins/:code) to compare before approving.
+    body: {
+      name: options.name ?? computerName(),
+      platform: platformName(),
+      public_key: file.pairing_key.pub,
+      tunnel_public_key: tunnelIdentity().publicKey.toString("hex"),
+      device_token: file.device_token,
+    },
   });
   if (!body || typeof body.device_code !== "string" || typeof body.user_code !== "string") {
     throw new BackendError(502, "invalid_answer", "the backend's answer to computer_logins is not one");
