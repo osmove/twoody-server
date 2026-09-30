@@ -61,6 +61,7 @@ export function startTunnelHostLink(options: TunnelHostLinkOptions): TunnelHostL
         channel,
         localBaseUrl: options.localBaseUrl,
         onError: options.onError,
+        transport: "relay",
         send: (frame) => transport.send([frame]),
       }),
     };

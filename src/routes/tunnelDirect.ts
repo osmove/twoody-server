@@ -47,6 +47,7 @@ export async function tunnelDirectRoutes(app: FastifyInstance) {
         host = createTunnelHost({
           channel,
           localBaseUrl,
+          transport: "direct",
           send: (sealed) => {
             if (socket.readyState === socket.OPEN) socket.send(sealed);
           },

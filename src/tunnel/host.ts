@@ -33,6 +33,11 @@ export interface TunnelHostOptions {
   /// How long a request may take before it is given up on. Streamed
   /// answers are not bound by it once they have started.
   timeoutMs?: number;
+  /// What carries the frames: the account's relay, or a socket straight
+  /// to this computer on the local network (routes/tunnelDirect.ts). Said
+  /// in the marker below, for the routes whose limits depend on it (a raw
+  /// file is capped lower through the relay). Relay when unsaid.
+  transport?: "relay" | "direct";
   /// Only for tests.
   fetchImpl?: typeof fetch;
   onError?(err: unknown): void;
@@ -55,7 +60,8 @@ const HOP_HEADERS = new Set([
 
 const CHUNK_BYTES = 64 * 1024;
 
-/// Set on every request the tunnel serves, whatever the other end sent.
+/// Set on every request the tunnel serves, whatever the other end sent:
+/// "relay", or "direct" for the local network's socket.
 export const VIA_TUNNEL_HEADER = "x-twoody-via-tunnel";
 
 export interface TunnelHost {
@@ -117,7 +123,7 @@ export function createTunnelHost(options: TunnelHostOptions): TunnelHost {
       }
       // Every request from the tunnel arrives from 127.0.0.1: said so, for
       // the routes that trust this machine's own requests (localAccess.ts).
-      headers.set(VIA_TUNNEL_HEADER, "1");
+      headers.set(VIA_TUNNEL_HEADER, options.transport ?? "relay");
       const response = await fetchImpl(url, {
         method: request.method,
         headers,

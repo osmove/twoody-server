@@ -1,7 +1,8 @@
 import { sqlite } from "../db.js";
 import { buildChatMessages } from "../chatContext.js";
 import { documentAccess } from "../documents/access.js";
-import { retrieveDocuments } from "../documents/retrieval.js";
+import { retrieveDocuments, scopedFolders } from "../documents/retrieval.js";
+import { serveRawDocument } from "../peerDocuments/raw.js";
 import { relative, isAbsolute } from "node:path";
 import { indexSemantic, semanticPassages, semanticStatus, setSemantic, stopSemantic } from "../documents/semantic.js";
 import { fusePassages } from "../documents/vectorMath.js";
@@ -128,6 +129,20 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       const rows=sqlite.prepare(`SELECT page,text FROM document_chunks WHERE document_id=? AND user_id=?
         ORDER BY position,rowid LIMIT 21 OFFSET ?`).all(req.params.id,auth.userId,offset);
       reply.send({file,passages:rows.slice(0,20),next_offset:rows.length>20?offset+20:null});
+    },
+  });
+
+  // The cited file itself, for the phone or the Desktop: a person's
+  // session (not a firmware device's token), the same limits as for the
+  // account's other computers (peerDocuments/raw.ts).
+  app.get<{Params:{id:string}}>("/local_documents/files/:id/raw", {
+    schema:{tags:["documents"],summary:"The indexed file itself by opaque ID (Range; 25 MB an answer through the relay, 32 MB on the local network)",security,
+      params:{type:"object",required:["id"],properties:{id:{type:"string",minLength:1,maxLength:200}}}},
+    handler:async(req,reply)=>{
+      const auth=await requireAuth(req,reply);if(!auth)return;
+      if(!auth.sessionId)return reply.code(403).send({error:"session_required"});
+      await serveRawDocument(req,reply,{userId:auth.userId,documentId:req.params.id,folderIds:scopedFolders(auth.userId,{mode:"all"}).map(f=>f.id)});
+      return reply;
     },
   });
 

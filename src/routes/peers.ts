@@ -48,7 +48,7 @@ async function requireDesktop(req: FastifyRequest, reply: FastifyReply): Promise
 /// them. Never a peer session (authenticate() refuses those here anyway),
 /// never a session given to another computer of the account, and never a
 /// firmware device's token.
-async function requirePairedPerson(req: FastifyRequest, reply: FastifyReply): Promise<{ userId: string } | null> {
+export async function requirePairedPerson(req: FastifyRequest, reply: FastifyReply): Promise<{ userId: string } | null> {
   const auth = await requireAuth(req, reply);
   if (!auth) return null;
   if (isOwnerSession(auth.sessionId) || ownerRequest(req)) return auth;

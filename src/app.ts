@@ -42,6 +42,7 @@ import { localDocumentRoutes } from "./routes/localDocuments.js";
 import { accountLinkRoutes } from "./routes/accountLink.js";
 import { peerRoutes } from "./routes/peer.js";
 import { peersRoutes } from "./routes/peers.js";
+import { peerDocumentRoutes } from "./routes/peerDocuments.js";
 import { runtimeRoutes } from "./routes/runtime.js";
 import { requireAdminAccess } from "./adminAccess.js";
 import { requireAuth } from "./auth.js";
@@ -222,6 +223,9 @@ export async function buildApp() {
   // (/api/v1/peer/*), and those it sends questions to (/api/v1/peers).
   await app.register(peerRoutes, { prefix: "/api/v1" });
   await app.register(peersRoutes, { prefix: "/api/v1" });
+  // This computer's documents, for the account's computers it trusts
+  // (docs/mesh-design.md §2).
+  await app.register(peerDocumentRoutes, { prefix: "/api/v1" });
 
   app.get("/admin", {
     schema: {

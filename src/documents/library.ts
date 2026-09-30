@@ -283,6 +283,8 @@ export interface Passage {
   text: string;
   snippet: string;
   match?: "content" | "name" | "semantic";
+  /// For a semantic match: its cosine with the question (vectors are normalised).
+  cosine?: number;
 }
 
 const MAX_PASSAGES_PER_DOCUMENT = 3;

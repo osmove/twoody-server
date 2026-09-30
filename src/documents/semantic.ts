@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { randomBytes, createHash } from "node:crypto";
+import { endianness } from "node:os";
 import { sqlite } from "../db.js";
 import { outboundFetch } from "../outbound.js";
 import type { Passage } from "./library.js";
@@ -17,6 +18,30 @@ function reportWorker(pid: number | undefined, running: boolean) {
 }
 process.once("exit", () => stopSemantic());
 const MODEL = "qwen3-embedding-0.6b-q8-370f27d";
+/// The embedding model this computer's vectors come from: another computer
+/// compares cosines only when it is the same (docs/mesh-design.md §2).
+export const EMBED_MODEL = MODEL;
+const LITTLE_ENDIAN = endianness() === "LE";
+
+/// A stored vector (float32, little-endian, as written by indexSemantic) as
+/// a Float32Array. A view over the SQLite blob when it can be one — aligned,
+/// on a little-endian machine, which every Twoody target is — a copy otherwise.
+export function vectorView(blob: Buffer): Float32Array {
+  const length = blob.byteLength >>> 2;
+  if (LITTLE_ENDIAN && blob.byteOffset % 4 === 0) return new Float32Array(blob.buffer, blob.byteOffset, length);
+  const copy = new Float32Array(length);
+  for (let i = 0; i < length; i++) copy[i] = blob.readFloatLE(i * 4);
+  return copy;
+}
+
+/// Dot product of the question's vector with a stored one, summed in the
+/// same order and precision as the readFloatLE loop it replaces.
+export function vectorScore(query: Float32Array, blob: Buffer): number {
+  const stored = vectorView(blob);
+  let score = 0;
+  for (let i = 0; i < query.length; i++) score += query[i] * stored[i];
+  return score;
+}
 const MAX_CHUNKS = 20000;
 let child: ChildProcess | null = null;
 let address: { url: string; key: string } | null = null;
@@ -231,9 +256,10 @@ async function labelDocument(documentId: string) {
     .all(documentId, MODEL) as Array<{ vector: Buffer }>;
   if (!rows.length) return;
   const average = new Float32Array(1024);
-  for (const row of rows)
-    for (let i = 0; i < 1024; i++)
-      average[i] += row.vector.readFloatLE(i * 4) / rows.length;
+  for (const row of rows) {
+    const stored = vectorView(row.vector);
+    for (let i = 0; i < 1024; i++) average[i] += stored[i] / rows.length;
+  }
   const norm = Math.sqrt(average.reduce((sum, x) => sum + x * x, 0));
   if (!norm) return;
   const ranked = prototypes
@@ -348,9 +374,7 @@ export async function semanticPassages(
         row.vector.byteLength !== vector.byteLength
       )
         continue;
-      let score = 0;
-      for (let i = 0; i < vector.length; i++)
-        score += vector[i] * row.vector.readFloatLE(i * 4);
+      const score = vectorScore(vector, row.vector);
       if (score < 0.35) continue;
       top.push({
         document_id: row.document_id,
@@ -360,6 +384,7 @@ export async function semanticPassages(
         text: row.text,
         snippet: row.text.slice(0, 240),
         match: "semantic",
+        cosine: score,
         score,
       });
       top.sort((a, b) => b.score - a.score);
