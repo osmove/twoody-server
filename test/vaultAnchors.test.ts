@@ -99,6 +99,23 @@ test("the iPhone founds the history and approves the iPad; the Pi registers, pen
   assert.equal((await vaultService.tick()).status, "pending");
 });
 
+test("with no anchor yet, a peer (a Desktop) is told its first one comes from the iPhone or the console", async () => {
+  // A Twoody Desktop's embedded server, let in as its computer: before
+  // this Pi trusts anyone, no peer names its first anchor, and it says so.
+  const key = randomBytes(32).toString("hex");
+  const desktopPeer = pairDevice({ deviceName: "MacBook Air", tunnelPublicKey: key, role: "peer", origin: "account", requesterComputerId: MAC, approvalRule: "endorsed" });
+  const refused = await pin({ authorization: `Bearer ${desktopPeer.token}`, ...sealedFrom(key) }, phone);
+  assert.equal(refused.statusCode, 403);
+  assert.deepEqual(refused.json(), { error: "no_anchor_yet" });
+  // A device's session is refused as before: it is not told anything more.
+  const other = pairDevice({ deviceName: "iPad", tunnelPublicKey: randomBytes(32).toString("hex"), origin: "account", approvalRule: "console" });
+  const plain = await pin({ authorization: `Bearer ${other.token}`, ...sealedFrom(randomBytes(32).toString("hex")) }, phone);
+  assert.deepEqual(plain.json(), { error: "anchor_not_allowed" });
+  assert.deepEqual(anchorsOnDisk(), []);
+  db.delete(authSessions).where(eq(authSessions.id, desktopPeer.sessionId)).run();
+  db.delete(authSessions).where(eq(authSessions.id, other.sessionId)).run();
+});
+
 test("rule 1 keeps the device-access the iPhone brought: which vault device the session is", async () => {
   const request = readPending({ requests: [{ id: 91, name: "iPhone de Jimmy", public_key: phoneTunnel, expires_at: new Date(Date.now() + 60_000).toISOString(), role: "device", device_access: accessFor(phone, phoneTunnel) }] })[0]!;
   const verdict = judge(request, linkedAccount()!);
@@ -158,7 +175,8 @@ test("who may name an anchor: the owner, or the device itself through the tunnel
   ] as const) {
     const refused = await pin(headers, who);
     assert.equal(refused.statusCode, 403, why);
-    assert.equal(refused.json().error, "anchor_not_allowed", why);
+    // A peer, before any anchor: told no peer gives the first one.
+    assert.equal(refused.json().error, headers === peer.headers ? "no_anchor_yet" : "anchor_not_allowed", why);
   }
   // The iPhone, under a key it does not hold: its statement is for its own.
   assert.equal((await pin(itself.headers, phone, { sign_public: crypto.toHex(ipad.keys.signPublic) })).statusCode, 403, "another signing key");
@@ -262,7 +280,24 @@ test("a Desktop's embedded server, asking as its computer, pins the Desktop's ow
   assert.deepEqual(anchorsOnDisk(), before, "nothing pinned by a peer so far");
 
   bindAs(MAC, macTunnel);
-  const pinned = await pin(macPeer(), mac);
+  // Its statement past its day: refused, until its embedded server sends a
+  // fresh one over the same session (POST /peer/session/device-access).
+  const stale = { ...accessFor(mac, macTunnel, Math.floor(Date.now() / 1000) - 1) };
+  const staleSession = pairDevice({ deviceName: "MacBook Air", tunnelPublicKey: macTunnel, role: "peer", origin: "account", requesterComputerId: MAC, approvalRule: "endorsed", vaultDeviceId: mac.id, deviceAccessJson: JSON.stringify(stale) });
+  const staleHeaders = { authorization: `Bearer ${staleSession.token}`, ...sealedFrom(macTunnel) };
+  assert.equal((await pin(staleHeaders, mac)).statusCode, 403, "expired statement");
+  const renewPeer = (body: unknown, headers = staleHeaders) => app.inject({ method: "POST", url: "/api/v1/peer/session/device-access", headers, payload: body as Record<string, unknown> });
+  for (const [why, body, error] of [
+    ["signed by another key", { ...accessFor(mac, macTunnel), signature: accessFor(ipad, macTunnel).signature }, "not_a_person_device"],
+    ["naming another device", accessFor(phone, macTunnel), "other_vault_device"],
+    ["for another key", accessFor(mac, randomBytes(32).toString("hex")), "wrong_tunnel_key"],
+  ] as const) {
+    const res = await renewPeer(body);
+    assert.deepEqual(res.json(), { error }, why);
+  }
+  const renewed = await renewPeer(accessFor(mac, macTunnel));
+  assert.equal(renewed.statusCode, 200, renewed.body);
+  const pinned = await pin(staleHeaders, mac);
   assert.equal(pinned.statusCode, 200, pinned.body);
   assert.deepEqual(anchorsOnDisk(), [...before, mac.id]);
   // Pinned, it counts as a person the walk starts from.

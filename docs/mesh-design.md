@@ -47,9 +47,16 @@ docs/multi-computer-design.md (hub-and-spoke: a primary holds data, others lend 
   nor rule 4's, and only for a person device the walk from the anchors already held reaches — a peer never gives a
   computer its first anchor, and a device that only approves itself (one the account made up) never counts.
   `twoody-server approve` shows each request's code de sécurité (from the key it asks with) and a warning.
-- Who is the person (sessionTrust.ts meshRequester): the owner, or a rule 1/5 session whose device-access is not
-  expired, asking through the tunnel from its own key. Only they read the memories, write one, or read the
-  synchronised history (vault_id conversations); anyone else sees this computer's own conversations only (N2).
+- Who is the person (sessionTrust.ts meshRequester): the owner, or a device's session (never a peer's) holding a
+  device-access/v2 signed by a roster person device for its own tunnel key and this computer, not expired, asking
+  through the tunnel from that key — the one it came with (rule 1/5) or one it sent since: a device-access holds a
+  day at most, so the app signs a fresh one for each computer it uses before then (< 6 h left, at start/foreground,
+  on 403 person_device_required) and sends it over the sealed tunnel (POST /api/v1/session/device-access, checked
+  like rule 5, no backend). A phone paired by code/QR that is a vault person device counts that way too (Jimmy's
+  iPhone and Mac); a non-member stays limited. Only they read the memories, write one, or read the synchronised
+  history (vault_id conversations); anyone else sees this computer's own conversations only (N2). A Desktop's
+  embedded server renews its peer session's statement the same way before pinning (POST
+  /api/v1/peer/session/device-access); a peer asking to pin a computer with no anchor yet gets 403 no_anchor_yet.
 - Memory events: one stamped more than 5 min ahead of the account's stored_at (its own created_at of the event)
   never counts, whatever the clock says later (vault/contracts.ts mergeMemories, N3).
 - Revocation: vault device revoked + new epoch; DELETE /account_computers/:id revokes its vault device and marks

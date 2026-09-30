@@ -3,7 +3,9 @@ import { isOwnerSession, isPeerSessionKind, requireAuth } from "../auth.js";
 import { forwardedByProxy, isLoopbackAddress, viaTunnel } from "../adminAccess.js";
 import { linkedAccount } from "../account/store.js";
 import { fromThisMachine, ownerRequest } from "../localAccess.js";
-import { peerSessionIsDesktop, sealedFromSessionKey, sessionIsVaultDevice, sessionRow } from "../sessionTrust.js";
+import { peerSessionIsDesktop, renewDeviceAccess, sealedFromSessionKey, sessionIsVaultDevice, sessionRow } from "../sessionTrust.js";
+import { readDeviceAccess } from "../account/approvals.js";
+import { accountCredentials } from "../account/service.js";
 import { VaultError } from "../vault/crypto.js";
 import { pinVaultAnchor, vaultIdentity, vaultRosterInput } from "../vault/service.js";
 
@@ -37,10 +39,22 @@ import { pinVaultAnchor, vaultIdentity, vaultRosterInput } from "../vault/servic
 //     Only while this computer is not approved yet; a pinned anchor is
 //     never replaced nor pushed out.
 //
+//   POST /api/v1/peer/session/device-access {device-access/v2}
+//     a Twoody Desktop's embedded server renews the statement its peer
+//     session holds (sessionTrust.ts renewDeviceAccess), before naming its
+//     person device as this computer's anchor: only for the vault device
+//     the session already names, signed by that device's key as the vault
+//     lists it. Whether it then pins is peerSessionIsDesktop's, in full.
+//     → {vault_device_id, exp}
+//
 //   404 not_enrolled               no vault device yet (not linked, or no vault)
 //   403 pinned_channel_required    not through the tunnel (nor from this machine)
 //   403 anchor_not_allowed         (anchor) neither the owner nor that device
 //                                  (nor that Desktop's embedded server)
+//   403 no_anchor_yet              (anchor) a peer, while this computer trusts
+//                                  no device yet: its first anchor is named
+//                                  from the person's phone, or on its console
+//                                  (`twoody-server approve`), never by a peer
 //   409 desktop_custody            (anchor) inside Twoody Desktop, which keeps the keys
 //   409 already_approved           (anchor) this computer holds epoch keys already
 //   409 anchor_conflict            (anchor) that device is pinned with another key
@@ -74,6 +88,15 @@ async function mayPin(req: FastifyRequest, auth: { sessionId?: string }, anchor:
 
 const refuse = { error: "pinned_channel_required", message: "Only through the tunnel, so that the account cannot change these keys." };
 
+/// Whether a refused anchor came from a peer session while this computer,
+/// enrolled in the history, holds no anchor at all: what no peer can change.
+async function peerWithoutAnchor(sessionId: string | null | undefined): Promise<boolean> {
+  const row = sessionRow(sessionId);
+  if (!row || !isPeerSessionKind(row.kind) || !vaultIdentity()?.vault_device_id) return false;
+  const input = await vaultRosterInput().catch(() => null);
+  return !!input && input.anchors.length === 0;
+}
+
 export async function peerVaultRoutes(app: FastifyInstance) {
   app.get("/peer/vault/identity", {
     schema: { tags: ["providers"], summary: "This computer's vault public keys, for the device that approves it (tunnel only)" },
@@ -84,6 +107,27 @@ export async function peerVaultRoutes(app: FastifyInstance) {
       const identity = vaultIdentity();
       if (!identity?.vault_device_id) return reply.code(404).send({ error: "not_enrolled" });
       return reply.send(identity);
+    },
+  });
+
+  app.post<{ Body: unknown }>("/peer/session/device-access", {
+    schema: { tags: ["providers"], summary: "A Desktop's embedded server renews its peer session's device-access (tunnel only)" },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      if (!throughTunnel(req)) return reply.code(403).send(refuse);
+      const result = await renewDeviceAccess(req, auth.sessionId, readDeviceAccess(req.body), {
+        peer: true,
+        selfComputerId: accountCredentials()?.computerId ?? null,
+        roster: () => null,
+        listedSignKey: async (vaultDeviceId) => {
+          const input = await vaultRosterInput();
+          const device = input?.devices.find((d) => d.id === vaultDeviceId && d.status !== "revoked");
+          return input && device ? { userId: input.userId, signPublic: device.sign_public } : null;
+        },
+      });
+      if (!result.ok) return reply.code(result.status).send({ error: result.error });
+      return reply.send({ vault_device_id: result.vault_device_id, exp: result.exp });
     },
   });
 
@@ -108,6 +152,10 @@ export async function peerVaultRoutes(app: FastifyInstance) {
       const anchor = { id: req.body.vault_device_id.toLowerCase(), sign_public: req.body.sign_public };
       if (!(await mayPin(req, auth, anchor))) {
         req.log.warn({ vault_device_id: anchor.id, session: auth.sessionId ?? null }, "vault anchor refused: neither the owner nor that device");
+        // A peer (a Twoody Desktop) never gives this computer its first
+        // anchor: said as such, for the Desktop to tell the person where to
+        // start instead (« Faire confiance »).
+        if (await peerWithoutAnchor(auth.sessionId)) return reply.code(403).send({ error: "no_anchor_yet" });
         return reply.code(403).send({ error: "anchor_not_allowed" });
       }
       try {

@@ -7,6 +7,8 @@ import { ownerRequest } from "../localAccess.js";
 import { LocalOnlyError } from "../outbound.js";
 import { listPeers, peerById, peerRequest, peerStatus, PeerUnavailableError, removePeer, requestPeer } from "../peers/index.js";
 import { peerTrusted } from "../router/index.js";
+import { accountCredentials } from "../account/service.js";
+import { peerDeviceAccess } from "../vault/service.js";
 
 // The account's other computers this one sends questions to
 // (docs/multi-computer-design.md §3) — managed by Twoody Desktop, or by the
@@ -261,6 +263,13 @@ export async function peersRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireDesktop(req, reply);
       if (!auth) return;
+      // The device-access the link's session holds may be past its day
+      // (vault/contracts.ts DEVICE_ACCESS_MAX_TTL_S): a fresh one first, over
+      // the same link (routes/peerVault.ts). A computer from before it, or
+      // one refusing it, is simply asked to pin as before.
+      const self = accountCredentials()?.computerId;
+      const fresh = self ? peerDeviceAccess(req.params.id, self) : null;
+      if (fresh) await throughLink(auth.userId, req.params.id, "/api/v1/peer/session/device-access", { method: "POST", body: JSON.stringify(fresh) });
       const body = JSON.stringify({ vault_device_id: req.body.vault_device_id, sign_public: req.body.sign_public });
       const answer = await throughLink(auth.userId, req.params.id, "/api/v1/peer/vault/anchor", { method: "POST", body });
       if (answer.status !== 200) return reply.code(peerStatusCode(answer.status)).send(peerError(answer.body));

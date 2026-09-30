@@ -4,6 +4,10 @@ import { allowSecretAttempt } from "../rateLimit.js";
 import { forgetTunnelPeersOfSession } from "../tunnel/identity.js";
 import { pairDevice } from "../pairing.js";
 import { tunnelPeersChanged } from "../tunnel/index.js";
+import { readDeviceAccess } from "../account/approvals.js";
+import { accountCredentials } from "../account/service.js";
+import { renewDeviceAccess } from "../sessionTrust.js";
+import { meshRoster } from "../vault/roster.js";
 import {
   db,
   authSessions,
@@ -340,6 +344,41 @@ export async function sessionRoutes(app: FastifyInstance) {
       const { token, sessionId } = createAuthSession(userId, "cli", "code");
 
       reply.send({ token, user_id: userId, session_id: sessionId });
+    },
+  });
+
+  // POST /session/device-access — a device's fresh device-access/v2 for
+  // this computer (sessionTrust.ts renewDeviceAccess), sent over the sealed
+  // tunnel before the one its session holds expires: signed by a person
+  // device of the verified roster for the session's own tunnel key, the
+  // session is that person device for as long as it says. How a phone
+  // paired by code or QR code that is a member of the history counts as
+  // the person too. No account in between.
+  //   200 {vault_device_id, exp}
+  //   401 unauthorized
+  //   403 pinned_channel_required   not through the tunnel from the session's key
+  //       wrong_tunnel_key          the statement is for another key
+  //       not_a_person_device       not signed by a person device of the roster
+  //       peer_session_forbidden    a computer's `peer:` session
+  //   409 owner_session             the owner is the person already
+  //       other_vault_device        the session is another vault device
+  //   422 invalid_device_access     not a device-access/v2
+  //       device_access_not_usable  another computer, expired, or over a day ahead
+  app.post<{ Body: unknown }>("/session/device-access", {
+    schema: {
+      tags: ["session"],
+      summary: "Renew this device's signed device-access (tunnel only)",
+      security: [{ bearerAuth: [] }],
+    },
+    handler: async (req, reply) => {
+      const auth = await authenticate(req);
+      if (!auth) return reply.code(401).send({ error: "unauthorized" });
+      const result = await renewDeviceAccess(req, auth.sessionId, readDeviceAccess(req.body), {
+        selfComputerId: accountCredentials()?.computerId ?? null,
+        roster: () => meshRoster().get(),
+      });
+      if (!result.ok) return reply.code(result.status).send({ error: result.error });
+      return reply.send({ vault_device_id: result.vault_device_id, exp: result.exp });
     },
   });
 

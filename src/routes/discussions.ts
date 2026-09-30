@@ -19,10 +19,11 @@ import { discussionContext } from "./queries.js";
 //
 // The synchronised history (a conversation with a vault id: the person's
 // encrypted history, opened here) is only for this server's owner or one
-// of the person's own devices (sessionTrust.ts): anyone else — a household
-// member's phone, a device paired by code, one the console approved, a
-// firmware device — lists, opens, deletes and imports only this computer's
-// own conversations.
+// of the person's own devices (sessionTrust.ts, however paired, once it
+// sent a device-access its vault person device signed): anyone else — a
+// household member's phone, a device paired by code that is no member of
+// the history, one the console approved, a firmware device — lists, opens,
+// deletes and imports only this computer's own conversations.
 
 /// Whether this request may reach the synchronised history.
 export async function mayReachHistory(req: FastifyRequest, auth: { sessionId?: string }): Promise<boolean> {

@@ -39,9 +39,11 @@ const KINDS = new Set(["user", "feedback", "project", "reference"]);
 /// The memories are the person's, and every one written here goes to every
 /// computer of the vault: reading them or writing one is for this server's
 /// owner (its session, this machine) or one of the person's own devices
-/// (sessionTrust.ts) — not a household member's phone, a device paired by
-/// code, one the console approved or a firmware device. Replies 403
-/// otherwise.
+/// (sessionTrust.ts: one that sent a device-access its vault person device
+/// signed, however it was paired) — not a household member's phone, a
+/// device paired by code that is no member of the history, one the console
+/// approved or a firmware device. Replies 403 otherwise (the app then signs
+/// a fresh device-access, POST /session/device-access).
 async function requirePerson(req: FastifyRequest, reply: FastifyReply, auth: { sessionId?: string }): Promise<boolean> {
   if (ownerRequest(req) || (await isPersonOrOwner(req, auth, () => meshRoster().get()))) return true;
   reply.code(403).send({ error: "person_device_required" });

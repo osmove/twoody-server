@@ -75,7 +75,9 @@ export type Verdict =
   | { approve: true; rule: "mesh_computer" | "device_access"; vaultDeviceId?: string }
   | { approve: false; reason: "expired" | "needs_console" | "invalid" };
 
-function readDeviceAccess(raw: unknown): DeviceAccessWire | null {
+/// A device-access/v2 in its wire form, or null for anything else (a v1
+/// statement is none). Checks its shape only.
+export function readDeviceAccess(raw: unknown): DeviceAccessWire | null {
   let value = raw;
   if (typeof value === "string") {
     try {

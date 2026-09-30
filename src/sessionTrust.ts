@@ -5,7 +5,7 @@ import { isOwnerSession, isPeerSessionKind } from "./auth.js";
 import { authSessions, db, tunnelPeers } from "./db.js";
 import { TUNNEL_PEER_HEADER } from "./tunnel/host.js";
 import { desktopBindingOf, verifiedIds, type Anchor, type VaultDevice } from "./vault/client.js";
-import { deviceAccessV2Valid, type DeviceAccessV2 } from "./vault/contracts.js";
+import { deviceAccessUsable, deviceAccessV2Valid, type DeviceAccessV2 } from "./vault/contracts.js";
 import { fromHex } from "./vault/crypto.js";
 import type { Roster } from "./vault/roster.js";
 
@@ -17,20 +17,29 @@ import type { Roster } from "./vault/roster.js";
 //
 //   owner    this server's owner (auth.ts isOwnerSession: signup, signin,
 //            the setup token — the Desktop that started it);
-//   person   a session let in by rule 1 (the device that added this
-//            computer) or rule 5 (vouched for by the vault) of
-//            account/approvals.ts, carrying a device-access/v2 that its
-//            vault device signed for this session's own tunnel key — the
-//            signature checked, each time it counts, against that device's
-//            key in the verified roster (or, for an anchor, the key being
-//            pinned), and its expiry too: a statement past its `exp` no
-//            longer says who the session is. It counts only for a request
-//            that came through the tunnel from the session's own key.
+//   person   a device's session (never a `peer:` one) holding a
+//            device-access/v2 that a person device of the verified roster
+//            signed for this session's own tunnel key and this computer:
+//            the one it came with (rule 1, the device that added this
+//            computer, or rule 5, vouched for by the vault, of
+//            account/approvals.ts), or a fresh one it sent since over the
+//            tunnel (renewDeviceAccess below) — which is how a phone
+//            paired by code or QR code (Jimmy's iPhone with his Mac) that
+//            is a member of the history counts too. The signature is
+//            checked, each time it counts, against that device's key in
+//            the verified roster, and its expiry too: a statement past its
+//            `exp` no longer says who the session is (the app signs a new
+//            one before, POST /session/device-access). It counts only for
+//            a request that came through the tunnel from the session's
+//            own key.
 //
-// Anyone else — a device paired by code, a household member's phone
-// endorsed by a pinned approver (rule 2), one the console approved, a
-// firmware device's token, another computer's `peer:` session — is none of
-// these.
+// Anyone else — a device paired by code that is no member of the history,
+// a household member's phone endorsed by a pinned approver (rule 2), one
+// the console approved, a firmware device's token, another computer's
+// `peer:` session — is none of these.
+//
+// Naming this computer's vault anchor (routes/peerVault.ts) stays with
+// rules 1 and 5: a statement sent later never pins.
 //
 // One peer session may name itself as this computer's vault anchor
 // (routes/peerVault.ts), nothing else: a Twoody Desktop's embedded server,
@@ -104,9 +113,11 @@ const PERSON_RULES = new Set(["approver", "device_access"]);
 /// request it endorsed. Never the console's, nor rule 4's.
 const PEER_PIN_RULES = new Set(["approver", "endorsed"]);
 
-/// The device-access a session kept, for its own vault device and tunnel key.
-function keptAccess(row: SessionRow): (DeviceAccessV2 & { signature: string }) | null {
-  if (!row.approvalRule || !PERSON_RULES.has(row.approvalRule)) return null;
+/// The device-access a session kept, for its own vault device and tunnel
+/// key: whatever let a device's session in once it sent one
+/// (`anyRule`, who the session is), or rules 1 and 5 only (who may pin).
+function keptAccess(row: SessionRow, anyRule = false): (DeviceAccessV2 & { signature: string }) | null {
+  if (!anyRule && (!row.approvalRule || !PERSON_RULES.has(row.approvalRule))) return null;
   return keptStatement(row);
 }
 
@@ -128,11 +139,13 @@ function keptStatement(row: SessionRow, now = Date.now()): (DeviceAccessV2 & { s
 }
 
 /// Whether the session's vault device, holding `signPublic`, signed the
-/// device-access it came with (rule 1 or 5), not yet expired: the session
-/// is that device.
-export function sessionIsVaultDevice(row: SessionRow | null, userId: string | number, vaultDeviceId: string, signPublic: string): boolean {
+/// device-access it holds, not yet expired: the session is that device.
+/// By default only one it came with (rule 1 or 5), as pinning an anchor
+/// asks; `anyRule`: also one it sent since (renewDeviceAccess), as being
+/// the person asks.
+export function sessionIsVaultDevice(row: SessionRow | null, userId: string | number, vaultDeviceId: string, signPublic: string, options: { anyRule?: boolean } = {}): boolean {
   if (!row || isPeerSessionKind(row.kind) || row.requesterComputerId || row.vaultDeviceId !== vaultDeviceId) return false;
-  const access = keptAccess(row);
+  const access = keptAccess(row, options.anyRule === true);
   if (!access) return false;
   const { signature, ...stated } = access;
   try {
@@ -198,14 +211,95 @@ export function peerSessionIsDesktop(
 }
 
 /// The vault device of a person's own device session: a non-peer session
-/// of rule 1 or 5 whose device is a person-device of the verified roster
-/// that signed the session's device-access. Null otherwise.
+/// whose device is a person-device of the verified roster that signed the
+/// device-access the session holds (the one it came with, or a renewed
+/// one), not expired. Null otherwise.
 export function personDeviceOf(sessionId: string | null | undefined, roster: Roster | null): string | null {
   const row = sessionRow(sessionId);
   if (!row || !roster || isPeerSessionKind(row.kind) || row.requesterComputerId || !row.vaultDeviceId) return null;
   const person = roster.persons.get(row.vaultDeviceId);
   if (!person) return null;
-  return sessionIsVaultDevice(row, roster.userId, person.vaultDeviceId, person.signPublic) ? person.vaultDeviceId : null;
+  return sessionIsVaultDevice(row, roster.userId, person.vaultDeviceId, person.signPublic, { anyRule: true }) ? person.vaultDeviceId : null;
+}
+
+// ── renewing a session's device-access ───────────────────────────────────
+// A device-access/v2 is good for a day at most (vault/contracts.ts
+// DEVICE_ACCESS_MAX_TTL_S): a phone would stop being the person a day
+// after it signed one. It signs a fresh one for each computer it uses
+// before then and sends it here, over the sealed tunnel — no account in
+// between (POST /session/device-access, routes/session.ts). Taken only
+// when, like rule 5:
+//   - the request came through the tunnel from a key the session holds,
+//     and the statement is for that very key;
+//   - it is for this computer (`account_computer_id`), not expired, and
+//     expires within a day;
+//   - it is signed by a person device of the verified roster;
+//   - the session names no other vault device already (a session is one
+//     device, whatever it sends later).
+// A `peer:` session never becomes a person. A Twoody Desktop's embedded
+// server renews the statement its peer session holds the same way
+// (POST /peer/session/device-access, routes/peerVault.ts): only for the
+// vault device the session already names, let in by rule 1 or 2 as its
+// computer, signed by that device's key as the vault lists it — what
+// peerSessionIsDesktop checks in full whenever it counts.
+
+export type DeviceAccessRenewal = { ok: true; vault_device_id: string; exp: number } | { ok: false; status: number; error: string };
+
+const refused = (status: number, error: string): DeviceAccessRenewal => ({ ok: false, status, error });
+
+export async function renewDeviceAccess(
+  req: FastifyRequest,
+  sessionId: string | null | undefined,
+  access: (DeviceAccessV2 & { signature: string }) | null,
+  deps: {
+    selfComputerId: string | null | undefined;
+    /// A device's session: the verified roster whose persons may sign.
+    roster: () => Promise<Roster | null> | Roster | null;
+    /// A peer session: the key the vault lists for a device id, and the user.
+    listedSignKey?: (vaultDeviceId: string) => Promise<{ userId: string | number; signPublic: string } | null>;
+    peer?: boolean;
+    now?: number;
+  },
+): Promise<DeviceAccessRenewal> {
+  if (!sessionId) return refused(401, "unauthorized");
+  const row = sessionRow(sessionId);
+  if (!row) return refused(401, "unauthorized");
+  const peer = isPeerSessionKind(row.kind) || !!row.requesterComputerId;
+  if (!deps.peer && isOwnerSession(sessionId)) return refused(409, "owner_session");
+  if (peer !== (deps.peer === true)) return refused(403, peer ? "peer_session_forbidden" : "not_a_peer_session");
+  const key = tunnelPeerKey(req);
+  if (!key || !sessionTunnelKeys(row.id).includes(key)) return refused(403, "pinned_channel_required");
+  if (!access) return refused(422, "invalid_device_access");
+  if (access.tunnel_public_key !== key) return refused(403, "wrong_tunnel_key");
+  const now = deps.now ?? Date.now();
+  if (!deps.selfComputerId || !deviceAccessUsable(access, { accountComputerId: deps.selfComputerId, nowMs: now })) return refused(422, "device_access_not_usable");
+  if (row.vaultDeviceId && row.vaultDeviceId !== access.vault_device_id) return refused(409, "other_vault_device");
+  const { signature, ...stated } = access;
+  let signer: { userId: string | number; signPublic: string } | null = null;
+  if (peer) {
+    // Only the Desktop's peer session, for the device it already names.
+    if (!row.approvalRule || !PEER_PIN_RULES.has(row.approvalRule) || !row.vaultDeviceId) return refused(403, "not_a_desktop_session");
+    signer = (await deps.listedSignKey?.(access.vault_device_id).catch(() => null)) ?? null;
+  } else {
+    const roster = await Promise.resolve(deps.roster()).catch(() => null);
+    const person = roster?.persons.get(access.vault_device_id);
+    signer = roster && person ? { userId: roster.userId, signPublic: person.signPublic } : null;
+  }
+  let valid = false;
+  try {
+    valid = !!signer && deviceAccessV2Valid({ userId: signer.userId, access: stated, signerSignPublic: fromHex(signer.signPublic), signature });
+  } catch {
+    valid = false;
+  }
+  if (!valid) return refused(403, "not_a_person_device");
+  // Never shortened by an older statement sent again.
+  const kept = keptStatement(row, now);
+  if (kept && kept.vault_device_id === access.vault_device_id && kept.exp > access.exp) return { ok: true, vault_device_id: kept.vault_device_id, exp: kept.exp };
+  db.update(authSessions)
+    .set({ vaultDeviceId: access.vault_device_id, deviceAccessJson: JSON.stringify(access) })
+    .where(eq(authSessions.id, row.id))
+    .run();
+  return { ok: true, vault_device_id: access.vault_device_id, exp: access.exp };
 }
 
 /// Who asked, as another computer's audit names them: this server's owner,
@@ -231,7 +325,7 @@ export async function meshRequester(req: FastifyRequest, auth: { sessionId?: str
   if (!auth.sessionId) return null;
   const row = sessionRow(auth.sessionId);
   if (isOwnerSession(auth.sessionId)) return { id: "owner", name: nameOf(row) };
-  if (!row || isPeerSessionKind(row.kind) || !row.vaultDeviceId || !row.approvalRule || !PERSON_RULES.has(row.approvalRule)) return null;
+  if (!row || isPeerSessionKind(row.kind) || !row.vaultDeviceId) return null;
   if (!sealedFromSessionKey(req, auth.sessionId)) return null;
   const device = personDeviceOf(auth.sessionId, await Promise.resolve(roster()).catch(() => null));
   return device ? { id: `person:${device}`, name: nameOf(row) } : null;

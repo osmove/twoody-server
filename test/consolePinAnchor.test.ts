@@ -97,11 +97,12 @@ test("a peer approved on the console keeps no device-access and never pins a dev
   assert.equal(row!.vaultDeviceId, null, "no vault device for a console approval");
   assert.equal(row!.deviceAccessJson, null, "no statement kept");
 
-  // Even a console session carrying the statement (as before) may not pin.
+  // Even a console session carrying the statement (as before) may not pin
+  // (a peer, while the Pi trusts no device yet: told so, no_anchor_yet).
   const consoleSession = pairDevice({ deviceName: "MacBook Air", tunnelPublicKey: F.K, role: "peer", origin: "account", requesterComputerId: FAKE_MAC, approvalRule: "console", vaultDeviceId: F.id, deviceAccessJson: JSON.stringify(F.access) });
   const refused = await pin(consoleSession.token, F.K, { id: F.id, sign_public: F.row.sign_public });
   assert.equal(refused.statusCode, 403, refused.body);
-  assert.deepEqual(refused.json(), { error: "anchor_not_allowed" });
+  assert.deepEqual(refused.json(), { error: "no_anchor_yet" });
 
   // Nor a rule-2 or rule-4 one: F is reached from no anchor (there is none
   // yet, and F only approves itself).
