@@ -22,7 +22,7 @@ test("first turn: system prompt then the prompt", () => {
   const messages = buildChatMessages(input());
   assert.equal(messages.length, 2);
   assert.equal(messages[0].role, "system");
-  assert.match(messages[0].content, /running entirely on the user's own computer/);
+  assert.match(messages[0].content, /running entirely on the user's own computers\. This conversation stays on the user's own computers\./);
   assert.match(messages[0].content, /Today is Monday 21 September 2026\./);
   assert.match(messages[0].content, /The user's name is Camille\./);
   assert.deepEqual(messages[1], { role: "user", content: "Bonjour" });
@@ -30,7 +30,7 @@ test("first turn: system prompt then the prompt", () => {
 
 test("a cloud turn does not claim the conversation stays on the machine", () => {
   const [system] = buildChatMessages(input({ local: false }));
-  assert.doesNotMatch(system.content, /own computer|stays on that machine/);
+  assert.doesNotMatch(system.content, /own computer|stays on/);
 });
 
 test("history is replayed in order before the new prompt", () => {

@@ -2,7 +2,10 @@ import { relative, isAbsolute } from "node:path";
 import { clientOf } from "./usage.js";
 import { recordUsageEvent, type UsageEventInput } from "../usageStore.js";
 import { askedToRemember, learnFromMessage, rememberFacts } from "../memoryLearning.js";
-import { retrieveDocuments } from "../documents/retrieval.js";
+import { citationLink, localFolderIds, meshPeers, retrieveAcrossComputers } from "../documents/remote.js";
+import { contextBudget } from "./localDocuments.js";
+import { importVaultConversation } from "./discussions.js";
+import { VIA_TUNNEL_HEADER } from "../tunnel/host.js";
 import { documentAccess } from "../documents/access.js";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { requireAuth, generateId, PLACEHOLDER_USER_NAME } from "../auth.js";
@@ -38,7 +41,9 @@ import type { Purpose } from "../account/status.js";
 import { peerById, peerRequest, PeerUnavailableError, type PeerRow } from "../peers/index.js";
 import { isSelf, peerTrusted, pick, pickBackground, selfIdentity } from "../router/index.js";
 import { meshRoster } from "../vault/roster.js";
-import { sealAnsweredTurn } from "../vault/service.js";
+import { ensureConversation, sealAnsweredTurn } from "../vault/service.js";
+import { sqliteHistory } from "../vault/localHistory.js";
+import { pathlessSource } from "../vault/sync.js";
 
 interface QueryBody {
   document_access?: unknown;
@@ -64,6 +69,17 @@ interface QueryBody {
   /// syncs it (vaultSync): kept on both messages so that importing the
   /// conversation again does not add this exchange a second time.
   vault_ref?: string;
+  /// The conversation's id in the person's encrypted history (a UUID), when
+  /// the client syncs it: the question may come to any trusted computer of
+  /// the account (docs/mesh-design.md §3). With `known_refs`, the refs of
+  /// its last exchanges the client knows (up to 20; 3 are enough): one that
+  /// is not here has this computer pull the vault first (≤ 1 s).
+  vault_conversation_id?: string;
+  known_refs?: unknown;
+  /// The earlier exchanges of that conversation, inlined by the client, for
+  /// a computer that could not catch up (≤ 20 exchanges, ≤ 64 KB):
+  /// [{ref, text, reply, model?, created_at?, answered_by?, sources?}].
+  prior_turns?: unknown;
   /// The person's time zone (IANA): « demain » and the times of their
   /// events are theirs. This computer's when absent.
   time_zone?: string;
@@ -312,6 +328,20 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   const channel = parsed.channel ?? "cli";
   const model   = parsed.model ?? undefined;
 
+  // A synchronised conversation, possibly started on another device or
+  // computer: brought here first (the vault, else the turns the client
+  // inlined), so that this computer answers with its history.
+  const nested = (parsed.query ?? {}) as Record<string, unknown>;
+  const vaultConversationId = readVaultConversationId(parsed.vault_conversation_id ?? nested.vault_conversation_id);
+  const priorTurns = readPriorTurns(parsed.prior_turns ?? nested.prior_turns);
+  if (vaultConversationId === "invalid") return reply.code(422).send({ error: "invalid_vault_conversation_id" });
+  if (priorTurns === "invalid") return reply.code(422).send({ error: "invalid_prior_turns", max_turns: PRIOR_TURNS_MAX, max_bytes: PRIOR_TURNS_MAX_BYTES });
+  let caughtUp: CatchUp | null = null;
+  if (vaultConversationId) {
+    caughtUp = await catchUp(auth.userId, vaultConversationId, readKnownRefs(parsed.known_refs ?? nested.known_refs), priorTurns, parsed.discussion_id ?? null);
+    if (caughtUp.status === "deleted") return reply.code(410).send({ error: "conversation_deleted", vault_conversation_id: vaultConversationId });
+  }
+
   // Resolve / create the discussion before we open the SSE stream so
   // the `final` event can carry the discussion_id back to the client.
   // A message that names no conversation starts one, except on a voice
@@ -319,9 +349,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // discussionWindow.ts; same rule as the cloud's DiscussionResolver).
   const discussion = resolveDiscussion(
     auth.userId,
-    parsed.discussion_id ?? null,
+    caughtUp?.discussionId ?? parsed.discussion_id ?? null,
     channel,
-    readBool(parsed.force_new_discussion ?? parsed.query?.force_new_discussion, false),
+    caughtUp ? false : readBool(parsed.force_new_discussion ?? parsed.query?.force_new_discussion, false),
   );
 
   // Read the thread before the new prompt lands in it, so the history
@@ -444,21 +474,47 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // resolve the [1], [2]… the reply cites.
     // What was typed is the question; the documents joined to it are
     // already in front of the model.
+    // And, at the same time, from the documents of the person's other
+    // computers this one trusts (the verified vault roster), each waited
+    // for 1.5 s on the local network, 3 s through the relay
+    // (documents/remote.ts, docs/mesh-design.md §2). The access asked for
+    // applies to all of them; this computer's folders are the bare ids.
     const granted = listFolders(auth.userId);
-    const selected = granted.filter(folder => access.folderIds?.includes(folder.id));
-    const allowedFolders = granted.filter(folder => access.mode !== "off" && (!access.folderIds || selected.some(parent => {
+    const localIds = localFolderIds(access);
+    const selected = granted.filter(folder => localIds?.includes(folder.id));
+    const allowedFolders = granted.filter(folder => access.mode !== "off" && (!localIds || selected.some(parent => {
       const path = relative(parent.path, folder.path);
       return path === "" || (!path.startsWith("..") && !isAbsolute(path));
     })));
-    const retrieved = await retrieveDocuments(auth.userId, typedText(content), history, allowedFolders.map(folder => folder.id));
+    const retrieved = await retrieveAcrossComputers({
+      userId: auth.userId,
+      question: typedText(content),
+      history,
+      access,
+      localFolders: allowedFolders.map(folder => folder.id),
+      budgetChars: contextBudget(readWindow(parsed.context_window) ?? 32_768),
+      // A computer given the conversation only would see no excerpt.
+      remote: fullFor !== null,
+    });
     const passages = retrieved.passages;
+    // A source says which computer holds it, and is cited by the link that
+    // opens it there; never an absolute path, except this computer's own
+    // shown to its own Desktop in a conversation that is not shared.
+    const shared = !!vaultRef || !!vaultConversationId || retrieved.remote
+      || req.headers[VIA_TUNNEL_HEADER] !== undefined || clientOf(auth) !== "this-computer";
     const sources = passages.map((passage, index) => ({
       n: index + 1,
+      source_id: `${passage.computer_id}:${passage.document_id}`,
+      computer_id: passage.computer_id,
+      computer_name: passage.computer_name,
       document_id: passage.document_id,
       name: passage.name,
-      path: passage.path,
+      ...(passage.folder ? { folder: passage.folder } : {}),
+      ...(passage.rel_path ? { rel_path: passage.rel_path } : {}),
       page: passage.page,
       snippet: passage.snippet,
+      url: citationLink(passage.computer_id, passage.document_id),
+      ...(passage.local && !shared && passage.path ? { path: passage.path } : {}),
     }));
     const documentFolders = allowedFolders;
     const turn = buildChatTurn({
@@ -478,12 +534,13 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       // Whether the person granted folders at all, not this message's
       // selection: a sentence of the system prompt, which must not flip
       // with the Documents button.
-      hasDocuments: granted.length > 0,
+      hasDocuments: granted.length > 0 || meshPeers(auth.userId).length > 0,
       documentFolders,
       documentScan: indexStatus(auth.userId),
       documentFiles: retrieved.files,
       documentFileTotal: retrieved.total,
-      excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text })),
+      excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text, computer: retrieved.remote ? passage.computer_name : null })),
+      documentNote: retrieved.note,
       local: provider.kind === "local_openai" || provider.kind === "peer_openai",
       remembered,
       personal: fullFor && onThisComputer(fullFor) && access.mode !== "only" ? loadPersonalData(auth.userId) : null,
@@ -680,6 +737,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       usage,
       reasoning_ms: reasoningMs,
       answered_by:  answeredByComputer,
+      // Which of the person's computers were searched, and the ones left
+      // out (late, offline…): the client can say it.
+      documents:    { computers: retrieved.computers.map(({ computer_id, computer_name, status, passages: found }) => ({ computer_id, computer_name, status, passages: found })) },
+      ...(vaultConversationId ? { vault_conversation_id: vaultConversationId, catch_up: { status: caughtUp!.status, missing_refs: caughtUp!.missing } } : {}),
     };
     reply.raw.write(`event: final\ndata: ${JSON.stringify(finalPayload)}\n\n`);
     // What the message said in passing about the person, asked of the model
@@ -1787,4 +1848,122 @@ export function validFirstName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const name = value.trim().replace(/\s+/g, " ");
   return name && name.length <= 60 && /^[\p{L}\p{M}][\p{L}\p{M} '’.-]*$/u.test(name) ? name : null;
+}
+
+// ── a synchronised conversation, caught up (docs/mesh-design.md §3) ─────
+
+export const PRIOR_TURNS_MAX = 20;
+export const PRIOR_TURNS_MAX_BYTES = 64 * 1024;
+const VAULT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const TURN_REF = /^[\w:.-]{1,200}$/;
+
+/// The conversation's vault id: null when not given, "invalid" when not a UUID.
+export function readVaultConversationId(value: unknown): string | null | "invalid" {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string") return "invalid";
+  const id = value.trim().toLowerCase();
+  return VAULT_UUID.test(id) ? id : "invalid";
+}
+
+/// The refs of the exchanges the client knows (a JSON string in a
+/// multipart body): at most 20, the others ignored.
+export function readKnownRefs(value: unknown): string[] {
+  let list = value;
+  if (typeof value === "string") {
+    try {
+      list = JSON.parse(value);
+    } catch {
+      list = value.split(",");
+    }
+  }
+  if (!Array.isArray(list)) return [];
+  return [...new Set(list.filter((ref): ref is string => typeof ref === "string" && TURN_REF.test(ref)))].slice(-PRIOR_TURNS_MAX);
+}
+
+type PriorTurn = { ref: string; text: string; reply: string; model?: string | null; created_at?: string; answered_by?: unknown; sources?: unknown[] };
+
+/// The exchanges the client inlined: null when none, "invalid" past 20
+/// exchanges or 64 KB, or for one that is not an exchange. Their sources
+/// are taken without paths.
+export function readPriorTurns(value: unknown): PriorTurn[] | null | "invalid" {
+  if (value === undefined || value === null || value === "") return null;
+  let list = value;
+  if (typeof list === "string") {
+    if (Buffer.byteLength(list) > PRIOR_TURNS_MAX_BYTES) return "invalid";
+    try {
+      list = JSON.parse(list);
+    } catch {
+      return "invalid";
+    }
+  }
+  if (!Array.isArray(list) || list.length > PRIOR_TURNS_MAX) return "invalid";
+  if (Buffer.byteLength(JSON.stringify(list)) > PRIOR_TURNS_MAX_BYTES) return "invalid";
+  const turns: PriorTurn[] = [];
+  for (const raw of list) {
+    const t = raw as Record<string, unknown> | null;
+    if (!t || typeof t !== "object" || typeof t.ref !== "string" || !TURN_REF.test(t.ref) || typeof t.text !== "string" || typeof t.reply !== "string") return "invalid";
+    turns.push({
+      ref: t.ref,
+      text: t.text,
+      reply: t.reply,
+      ...(typeof t.model === "string" ? { model: t.model.slice(0, 200) } : {}),
+      ...(typeof t.created_at === "string" && !Number.isNaN(Date.parse(t.created_at)) ? { created_at: t.created_at } : {}),
+      ...(t.answered_by && typeof t.answered_by === "object" && !Array.isArray(t.answered_by) ? { answered_by: t.answered_by } : {}),
+      ...(Array.isArray(t.sources) ? { sources: t.sources.slice(0, 12).map((s) => pathlessSource(s, null)).filter((s): s is Record<string, unknown> => !!s) } : {}),
+    });
+  }
+  return turns;
+}
+
+type CatchUp = {
+  /// complete: every known exchange is here; prior_turns: brought from what
+  /// the client inlined; missing: some are not here (answered with what
+  /// is); deleted: the conversation was deleted on another device.
+  status: "complete" | "prior_turns" | "missing" | "deleted";
+  discussionId: string | null;
+  missing: string[];
+};
+
+/// Brings vault conversation `vaultId` here before this computer answers
+/// in it: a pull of the vault when an exchange the client knows is not here
+/// (≤ 1 s, vault/service.ts ensureConversation), else the exchanges the
+/// client inlined (idempotent import). The conversation exists here
+/// afterwards, bound to its vault id, so that this computer's turn is
+/// sealed into it (sealAnsweredTurn).
+async function catchUp(userId: string, vaultId: string, knownRefs: string[], prior: PriorTurn[] | null, localDiscussionId: string | null): Promise<CatchUp> {
+  let status: CatchUp["status"] = "missing";
+  let discussionId: string | null = null;
+  try {
+    const ensured = await ensureConversation(vaultId, knownRefs, 1_000);
+    if (ensured.status === "deleted") return { status: "deleted", discussionId: null, missing: ensured.missing };
+    discussionId = ensured.discussionId;
+    if (ensured.status === "complete") status = "complete";
+  } catch {
+    // No vault here, or it could not be read: the inlined turns, if any.
+  }
+  const history = sqliteHistory(userId);
+  // Every exchange the client knows is here already (the vault could not
+  // be asked, or had nothing newer): nothing to bring.
+  const present = history.byVaultId(vaultId);
+  if (present && knownRefs.every((ref) => present.refs.has(ref))) {
+    status = "complete";
+    discussionId = present.id;
+  }
+  discussionId ??= present?.id ?? null;
+  // A conversation of this computer's own being synchronised keeps its id.
+  const own = !discussionId && localDiscussionId && !history.vaultIdOf(localDiscussionId) ? { discussion_id: localDiscussionId } : {};
+  if (status !== "complete" && prior?.length) {
+    const imported = importVaultConversation(userId, { vault_id: vaultId, turns: prior, ...own });
+    if (!("error" in imported)) {
+      discussionId = imported.id;
+      status = "prior_turns";
+    }
+  }
+  if (!discussionId) {
+    const created = importVaultConversation(userId, { vault_id: vaultId, turns: [], ...own });
+    discussionId = "error" in created ? (history.byVaultId(vaultId)?.id ?? null) : created.id;
+  }
+  const here = history.byVaultId(vaultId)?.refs ?? new Set<string>();
+  const missing = knownRefs.filter((ref) => !here.has(ref));
+  return { status: missing.length ? "missing" : status === "missing" ? "complete" : status, discussionId, missing };
 }

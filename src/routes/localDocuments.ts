@@ -3,6 +3,7 @@ import { buildChatMessages } from "../chatContext.js";
 import { documentAccess } from "../documents/access.js";
 import { retrieveDocuments, scopedFolders } from "../documents/retrieval.js";
 import { serveRawDocument } from "../peerDocuments/raw.js";
+import { serveRemoteRaw } from "../documents/remote.js";
 import { relative, isAbsolute } from "node:path";
 import { indexSemantic, semanticPassages, semanticStatus, setSemantic, stopSemantic } from "../documents/semantic.js";
 import { fusePassages } from "../documents/vectorMath.js";
@@ -250,6 +251,27 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
       reply.send(listDocuments(auth.userId, req.query.folder_id, req.query.offset ?? 0, 100, req.query.sort));
+    },
+  });
+
+  // A cited document, twoody://doc/<computer_id>/<document_id>, for a
+  // client with no session on the computer that holds it: this computer
+  // asks that one over their sealed tunnel (documents/remote.ts), with
+  // Range; its own id serves its own file. 60 a minute per client.
+  app.get<{ Params: { computer_id: string; id: string } }>("/local_documents/remote/:computer_id/files/:id/raw", {
+    schema: {
+      tags: ["documents"],
+      summary: "A cited document, the file itself, from the computer of the account that holds it (Range)",
+      security,
+      params: { type: "object", required: ["computer_id", "id"], properties: { computer_id: { type: "string", minLength: 1, maxLength: 64 }, id: { type: "string", minLength: 1, maxLength: 64 } } },
+    },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      // A person's session, not a firmware device's token.
+      if (!auth.sessionId) return reply.code(403).send({ error: "session_required" });
+      await serveRemoteRaw(req, reply, { userId: auth.userId, client: auth.sessionId, computerId: req.params.computer_id, documentId: req.params.id });
+      return reply;
     },
   });
 

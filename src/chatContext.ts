@@ -65,6 +65,9 @@ export interface DocumentExcerpt {
   name: string;
   page: number | null;
   text: string;
+  /// The computer holding it, when the excerpts come from several of the
+  /// person's computers (documents/remote.ts).
+  computer?: string | null;
 }
 
 export interface ChatContextInput {
@@ -86,6 +89,10 @@ export interface ChatContextInput {
   /// Passages matching the current prompt, best first. Numbered from 1
   /// in the prompt; the reply cites them as [1], [2]…
   excerpts?: DocumentExcerpt[];
+  /// One line when some of the person's computers were not searched for
+  /// this message (documents/remote.ts missingNote): rides on it, never on
+  /// the system prompt.
+  documentNote?: string | null;
   /// What the conversation said before, compacted: the messages it covers
   /// are no longer in `history`.
   summary?: string | null;
@@ -313,7 +320,7 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   // The memories not in the frozen profile — learned since, or that did not
   // fit — when this message is about them.
   const matched = onlyDocuments ? null : formatMatchedMemories(usable.filter((memory) => !frozen.has(memoryLine(memory) ?? "")), current.text);
-  const context = [formatExcerpts(input.excerpts ?? []), matched, personal].filter(
+  const context = [formatExcerpts(input.excerpts ?? []), chatty ? null : input.documentNote ?? null, matched, personal].filter(
     (block): block is string => block !== null,
   );
   const folderRows: string[] = [];
@@ -425,7 +432,7 @@ function buildSystemPrompt(input: ChatContextInput, profile: string | null, stat
 
 function basePrompt(local: boolean): string {
   const identity = local
-    ? "You are Twoody, a private AI assistant running entirely on the user's own computer. This conversation stays on that machine."
+    ? "You are Twoody, a private AI assistant running entirely on the user's own computers. This conversation stays on the user's own computers."
     : "You are Twoody, a personal AI assistant.";
   return [
     identity,
@@ -560,7 +567,8 @@ function formatMatchedMemories(usable: MemoryRow[], content: string): string | n
 function formatExcerpts(excerpts: DocumentExcerpt[]): string | null {
   if (excerpts.length === 0) return null;
   const blocks = excerpts.map((excerpt, index) => {
-    const where = excerpt.page === null ? excerpt.name : `${excerpt.name}, p. ${excerpt.page}`;
+    const page = excerpt.page === null ? excerpt.name : `${excerpt.name}, p. ${excerpt.page}`;
+    const where = excerpt.computer ? `${page} (on ${excerpt.computer})` : page;
     return `[${index + 1}] ${where}\n${excerpt.text}`;
   });
   return `[Excerpts from the user's documents]\n${blocks.join("\n\n")}\n[End of excerpts]`;

@@ -125,6 +125,16 @@ function relayClient(peer: PeerRow, creds: AccountCredentials): TunnelClient {
   });
 }
 
+/// Which way the next request to this peer goes first: its LAN socket
+/// (it has an address, and that socket did not fail in the last minute),
+/// or the account's relay. The fan-out of a document search waits for a
+/// computer according to it (documents/remote.ts).
+export function peerPathHint(peer: PeerRow): "direct" | "relay" {
+  if (!peer.url) return "relay";
+  const link = links.get(peer.computerId);
+  return link && Date.now() - link.directFailedAt <= DIRECT_RETRY_MS ? "relay" : "direct";
+}
+
 export interface PeerRequestInit {
   method?: string;
   headers?: Record<string, string>;
