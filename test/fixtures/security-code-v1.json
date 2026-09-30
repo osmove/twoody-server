@@ -1,0 +1,36 @@
+{
+  "doc": [
+    "twoody/security-code/v1 — the « code de sécurité » of a computer, shown to people (twoody-server login, the server's admin page, GET /account/link on its console, Twoody Desktop, the app) to compare two screens before trusting a computer. Reference: src/vault/contracts.ts securityCode.",
+    "Derivation: digest = SHA-256( UTF-8('twoody/security-code/v1') || the computer's X25519 tunnel public key as its 32 raw bytes ). Take the first 100 bits of the digest, most significant bit first, as 20 groups of 5 bits; each is a character of Crockford's base32 alphabet '0123456789ABCDEFGHJKMNPQRSTVWXYZ' (value 0 = '0', 31 = 'Z'; no I, L, O, U). Written in 4 groups of 5 joined by '-': 'XXXXX-XXXXX-XXXXX-XXXXX' (23 characters).",
+    "Which key: the tunnel key the computer's binding names (computer-binding-v1 / desktop-binding-v1 tunnel_public_key; GET /api/v1/peer/vault/identity tunnel_public_key). The 8-hex `fp` (Bonjour, account pairing key) stays a discovery hint only.",
+    "Reading one typed by a person (optional): upper-case it, drop '-' and spaces, read O as 0 and I or L as 1 before comparing."
+  ],
+  "label": "twoody/security-code/v1",
+  "alphabet": "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
+  "vectors": [
+    {
+      "name": "the fixtures' iPhone tunnel key",
+      "tunnel_public_key": "f5680f48673699dc425cc40e773b77b4ea0655c16b5ba01e92e167dfc662be3b",
+      "sha256_hex": "a4978701bab690fb2b0d4886d9b06692be64318cfff080b88017300e38a117f6",
+      "code": "MJBRE-0DTPT-8FPAR-D923D"
+    },
+    {
+      "name": "all zeros",
+      "tunnel_public_key": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sha256_hex": "a46208a4b708230ab4eab2f2bc1fa9f3782a647b977592440db63a23228ff714",
+      "code": "MHH0H-95Q10-HGND7-APBSB"
+    },
+    {
+      "name": "all ones",
+      "tunnel_public_key": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "sha256_hex": "f4e0bf4493eba924094bfe22e3ba11463b4ac107db166c3342bec39f04ba340c",
+      "code": "YKGBY-H4KXE-MJ82A-BZRHE"
+    },
+    {
+      "name": "0x01..0x20",
+      "tunnel_public_key": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "sha256_hex": "e62c2a4d70be25f82caca55d2e264b3283de2c106c6bd607e3df6bda11631ba6",
+      "code": "WRP2M-KBGQR-JZGB5-CMNEJ"
+    }
+  ]
+}

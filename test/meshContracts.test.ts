@@ -23,6 +23,8 @@ const access = fixture("device-access-v1.json");
 const memories = fixture("memory-lww-vectors.json");
 const approvalV2 = fixture("vault-approval-v2.json");
 const desktopBinding = fixture("desktop-binding-v1.json");
+const accessV2 = fixture("device-access-v2.json");
+const codes = fixture("security-code-v1.json");
 const EPOCH_ONE = fromHex(memories.epoch_one_key);
 
 test("computer-binding/v1: the vectors, signed like the v1 approval", () => {
@@ -122,6 +124,74 @@ test("device-access/v1: the vectors", () => {
   // A binding's signature is not a device-access signature (different labels).
   const b = binding.vectors[0];
   assert.equal(c.deviceAccessValid({ userId: "42", access: { vault_device_id: b.wire.vault_device_id, tunnel_public_key: b.wire.tunnel_public_key }, signerSignPublic: fromHex(binding.devices.iphone.sign_public), signature: b.wire.signature }), false);
+});
+
+test("device-access/v2: the vectors; for one computer, until its expiry", () => {
+  assert.equal(accessV2.label, c.DEVICE_ACCESS_V2_LABEL);
+  for (const v of accessV2.vectors) {
+    const { signature, ...stated } = v.wire;
+    assert.equal(toHex(c.deviceAccessV2Statement(v.user_id, stated)), v.statement_hex, v.name);
+    assert.equal(c.deviceAccessV2Valid({ userId: v.user_id, access: stated, signerSignPublic: fromHex(accessV2.devices[v.verified_with].sign_public), signature }), v.expected.valid, v.name);
+    if (v.expected.valid) assert.equal(c.signDeviceAccessV2({ userId: v.user_id, access: stated, signPrivate: fromHex(accessV2.devices[v.signed_by].sign_private) }), signature, v.name);
+  }
+  // Neither statement passes for the other (different labels and fields).
+  const [good] = accessV2.vectors;
+  const { signature, account_computer_id: _c, exp: _e, ...v1Fields } = good.wire;
+  assert.equal(c.deviceAccessValid({ userId: "42", access: v1Fields, signerSignPublic: fromHex(accessV2.devices.iphone.sign_public), signature }), false);
+  const v1 = access.vectors[0].wire;
+  assert.equal(c.deviceAccessV2Valid({ userId: "42", access: { vault_device_id: v1.vault_device_id, tunnel_public_key: v1.tunnel_public_key, account_computer_id: good.wire.account_computer_id, exp: good.wire.exp }, signerSignPublic: fromHex(access.devices.iphone.sign_public), signature: v1.signature }), false);
+  // Usable: this computer, not expired, not more than 24 h ahead.
+  const at = (s: number) => s * 1000;
+  const here = { accountComputerId: good.wire.account_computer_id };
+  assert.equal(c.deviceAccessUsable(good.wire, { ...here, nowMs: at(good.wire.exp - 60) }), true);
+  assert.equal(c.deviceAccessUsable(good.wire, { ...here, nowMs: at(good.wire.exp) }), false, "expired");
+  assert.equal(c.deviceAccessUsable(good.wire, { ...here, nowMs: at(good.wire.exp - c.DEVICE_ACCESS_MAX_TTL_S - 1) }), false, "too far ahead");
+  assert.equal(c.deviceAccessUsable(good.wire, { accountComputerId: "8e2c4a61-3b5d-4f7e-9a1c-2d4e6f8a0b11", nowMs: at(good.wire.exp - 60) }), false, "another computer");
+  assert.throws(() => c.deviceAccessV2Statement("42", { ...good.wire, exp: 1.5 }), /bad_device_access/);
+  assert.throws(() => c.deviceAccessV2Statement("42", { ...good.wire, account_computer_id: "" }), /bad_device_access/);
+});
+
+test("security code/v1: the vectors, 100 bits of the tunnel key in Crockford base32", () => {
+  assert.equal(codes.label, c.SECURITY_CODE_LABEL);
+  assert.equal(codes.alphabet, c.CROCKFORD_BASE32);
+  for (const v of codes.vectors) {
+    assert.equal(toHex(sha256(new Uint8Array([...new TextEncoder().encode(codes.label), ...fromHex(v.tunnel_public_key)]))), v.sha256_hex, v.name);
+    assert.equal(c.securityCode(v.tunnel_public_key), v.code, v.name);
+    assert.equal(c.securityCode(fromHex(v.tunnel_public_key)), v.code, `${v.name} (bytes)`);
+    assert.equal(c.securityCode(v.tunnel_public_key.toUpperCase()), v.code, `${v.name} (upper-case hex)`);
+    assert.match(v.code, /^[0-9A-HJKMNP-TV-Z]{5}(-[0-9A-HJKMNP-TV-Z]{5}){3}$/);
+    // The first 100 bits, re-read independently.
+    let bits = BigInt(`0x${v.sha256_hex}`) >> 156n;
+    let expected = "";
+    for (let i = 0; i < 20; i++) {
+      expected = c.CROCKFORD_BASE32[Number(bits & 31n)] + expected;
+      bits >>= 5n;
+    }
+    assert.equal(v.code.replaceAll("-", ""), expected, v.name);
+  }
+  assert.throws(() => c.securityCode("abcd"), /bad_tunnel_key/);
+  assert.throws(() => c.securityCode(new Uint8Array(31)), /bad_tunnel_key/);
+  assert.notEqual(codes.vectors[0].code, codes.vectors[1].code);
+});
+
+test("memories: an event stamped too far ahead takes no part in the merge", () => {
+  const [scenario] = memories.scenarios;
+  const now = Date.parse("2026-09-30T12:00:00Z");
+  const hlc = (ms: number) => c.formatHlc({ wall: ms, counter: 0 });
+  const payload = (h: string, content: string) => ({ type: "memory", id: "0b8f1c2e-3d4a-4b5c-8d6e-7f8091a2b3c4", kind: "user", title: null, content, tags: [], source: "manual", superseded_by: null, hlc: h, device: "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01" });
+  const events = [
+    { event_id: "11111111-1111-4111-8111-111111111111", payload: payload(hlc(now - 60_000), "Habite à Paris") },
+    { event_id: "22222222-2222-4222-8222-222222222222", payload: payload(hlc(Date.parse("2099-01-01T00:00:00Z")), "Planté pour toujours") },
+    { event_id: "33333333-3333-4333-8333-333333333333", payload: payload(hlc(now + 4 * 60_000), "Dans quatre minutes") },
+  ];
+  const merged = c.mergeMemories(events, { epochOne: EPOCH_ONE, nowMs: now });
+  assert.deepEqual(merged.memories.map((m) => m.content), ["Dans quatre minutes"], "within 5 min: counted");
+  assert.deepEqual(merged.ignored, [{ event_id: "22222222-2222-4222-8222-222222222222", reason: "future_hlc" }]);
+  // A later deletion beats what was planted, once it is no longer ahead.
+  const tomb = { event_id: "44444444-4444-4444-8444-444444444444", payload: { type: "tombstone", id: events[0]!.payload.id, hlc: hlc(now + 5 * 60_000) } };
+  assert.deepEqual(c.mergeMemories([...events, tomb], { epochOne: EPOCH_ONE, nowMs: now + 10 * 60_000 }).tombstoned, [events[0]!.payload.id]);
+  // Without a clock (the vectors), as before.
+  assert.deepEqual(c.mergeMemories(scenario.events, { epochOne: EPOCH_ONE }), scenario.expected);
 });
 
 test("memories: stream id, learned ids, content hash, event ids", () => {

@@ -254,6 +254,97 @@ export function deviceAccessValid(args: { userId: string | number; access: Devic
   }
 }
 
+// ── device-access/v2 ────────────────────────────────────────────────────
+// v1 plus what it is for and until when: the account computer it lets the
+// phone into (`account_computer_id`) and an expiry (`exp`, Unix seconds).
+// A v1 statement was good for any computer of the account, forever: once
+// seen by one (or by the account) it could be replayed to another. Fields
+// [2, user_id, vault_device_id, tunnel_public_key, account_computer_id,
+// exp], same scheme and canonical header, its own label. Only v2 is
+// accepted (account/approvals.ts); nothing that took v1 was deployed.
+// Vectors: test/fixtures/device-access-v2.json.
+
+export const DEVICE_ACCESS_V2_LABEL = "twoody/vault/device-access/v2";
+export const DEVICE_ACCESS_V2_VERSION = 2;
+/// How far ahead a device-access may expire: a statement is made for one
+/// request, not kept.
+export const DEVICE_ACCESS_MAX_TTL_S = 24 * 60 * 60;
+
+export interface DeviceAccessV2 extends DeviceAccess {
+  /// The computer the phone asks to use (account_computers.id).
+  account_computer_id: string;
+  /// Unix time in seconds after which the statement is refused.
+  exp: number;
+}
+
+function requireExp(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) throw new ContractError("bad_device_access");
+  return value;
+}
+
+export function deviceAccessV2Statement(userId: string | number, access: DeviceAccessV2): Uint8Array {
+  return canonicalHeader(DEVICE_ACCESS_V2_LABEL, [
+    DEVICE_ACCESS_V2_VERSION,
+    requireId(String(userId), "bad_device_access"),
+    requireId(access?.vault_device_id, "bad_device_access"),
+    requireKey(access?.tunnel_public_key, "bad_device_access"),
+    requireId(access?.account_computer_id, "bad_device_access"),
+    requireExp(access?.exp),
+  ]);
+}
+
+export function signDeviceAccessV2(args: { userId: string | number; access: DeviceAccessV2; signPrivate: Uint8Array }): string {
+  return toHex(ed25519.sign(deviceAccessV2Statement(args.userId, args.access), args.signPrivate));
+}
+
+/// The signature alone (who said it, and what). Whether it is still valid
+/// here and now is deviceAccessUsable's.
+export function deviceAccessV2Valid(args: { userId: string | number; access: DeviceAccessV2; signerSignPublic: Uint8Array; signature: string }): boolean {
+  try {
+    return ed25519.verify(fromHex(args.signature), deviceAccessV2Statement(args.userId, args.access), args.signerSignPublic);
+  } catch {
+    return false;
+  }
+}
+
+/// Whether a device-access is for this computer and not expired (nor
+/// expiring further ahead than DEVICE_ACCESS_MAX_TTL_S), at `nowMs`.
+export function deviceAccessUsable(access: Pick<DeviceAccessV2, "account_computer_id" | "exp">, args: { accountComputerId: string; nowMs: number }): boolean {
+  const now = Math.floor(args.nowMs / 1000);
+  return access.account_computer_id === args.accountComputerId && Number.isSafeInteger(access.exp) && access.exp > now && access.exp <= now + DEVICE_ACCESS_MAX_TTL_S;
+}
+
+// ── security code/v1 ────────────────────────────────────────────────────
+// What a person compares between two screens to know a computer is the one
+// they mean (`twoody-server login`, the admin page, GET /account/link, the
+// Desktop, the app): 100 bits of SHA-256 over the label and the computer's
+// X25519 tunnel public key (32 raw bytes), in Crockford base32 (digits and
+// capitals without I, L, O, U), 4 groups of 5: « KX7Q2-M9TPA-4RH8W-ZC3NE ».
+// The 8-hex `fp` stays for Bonjour hints only: 32 bits is a hint, not a
+// check. Vectors: test/fixtures/security-code-v1.json.
+
+export const SECURITY_CODE_LABEL = "twoody/security-code/v1";
+export const CROCKFORD_BASE32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+export function securityCode(tunnelPublicKey: string | Uint8Array): string {
+  const key = typeof tunnelPublicKey === "string" ? fromHex(requireKey(tunnelPublicKey.toLowerCase(), "bad_tunnel_key")) : tunnelPublicKey;
+  if (!(key instanceof Uint8Array) || key.length !== 32) throw new ContractError("bad_tunnel_key");
+  const label = utf8(SECURITY_CODE_LABEL);
+  const input = new Uint8Array(label.length + key.length);
+  input.set(label);
+  input.set(key, label.length);
+  const digest = sha256(input);
+  let chars = "";
+  for (let i = 0; i < 20; i += 1) {
+    // Bits [5i, 5i + 5) of the digest, most significant first.
+    const bit = i * 5;
+    const byte = bit >> 3;
+    const pair = (digest[byte]! << 8) | (digest[byte + 1] ?? 0);
+    chars += CROCKFORD_BASE32[(pair >> (11 - (bit & 7))) & 31];
+  }
+  return (chars.match(/.{5}/g) as string[]).join("-");
+}
+
 // ── peer documents ──────────────────────────────────────────────────────
 // A document as the mesh names it (peer-documents-search.schema.json):
 // "<account computer id>:<local document id>", never a path.
@@ -350,6 +441,11 @@ export const HLC_PATTERN = /^[0-9]{13}-[0-9]{4}$/;
 export const HLC_MAX_COUNTER = 9999;
 /// A remote clock further ahead than this is merged but not adopted.
 export const HLC_MAX_DRIFT_MS = 60 * 60 * 1000;
+/// An event whose clock is further ahead of the reader's than this takes
+/// no part in the merge (until the reader's clock catches up): otherwise a
+/// device, or anyone holding an epoch key, could write a memory stamped in
+/// 2099 that no later edit or deletion could ever beat.
+export const HLC_MAX_FUTURE_MS = 5 * 60 * 1000;
 
 export interface Hlc { wall: number; counter: number }
 
@@ -474,18 +570,24 @@ export interface MergeResult {
   hidden_duplicates: string[];
   /// Events that take no part, by event_id: invalid, or a learned fact
   /// whose content was deleted.
-  ignored: Array<{ event_id: string; reason: "invalid" | "learned_id_mismatch" | "forbidden_hash" }>;
+  ignored: Array<{ event_id: string; reason: "invalid" | "learned_id_mismatch" | "forbidden_hash" | "future_hlc" }>;
 }
 
 /// The memories stream folded into the set of memories. Commutative and
-/// idempotent: the same events in any order give the same set.
-export function mergeMemories(input: Array<{ event_id: string; payload: unknown }>, { epochOne }: { epochOne: Uint8Array }): MergeResult {
+/// idempotent: the same events in any order give the same set. With
+/// `nowMs`, an event stamped more than HLC_MAX_FUTURE_MS ahead of it is
+/// left out (« future_hlc »).
+export function mergeMemories(input: Array<{ event_id: string; payload: unknown }>, { epochOne, nowMs }: { epochOne: Uint8Array; nowMs?: number }): MergeResult {
   const ignored: MergeResult["ignored"] = [];
   const held = new Map<string, Held>();
   for (const item of input) {
     const event = readMemoryEvent(item?.payload);
     if (!event || typeof item.event_id !== "string" || !UUID.test(item.event_id)) {
       if (typeof item?.event_id === "string") ignored.push({ event_id: item.event_id, reason: "invalid" });
+      continue;
+    }
+    if (typeof nowMs === "number" && parseHlc(event.hlc).wall > nowMs + HLC_MAX_FUTURE_MS) {
+      ignored.push({ event_id: item.event_id, reason: "future_hlc" });
       continue;
     }
     const hash = event.type === "memory" ? memoryContentHash(event.content) : null;
