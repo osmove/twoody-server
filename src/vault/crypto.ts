@@ -172,6 +172,21 @@ export function unwrapEpochKey(envelope: EpochEnvelope, { userId, device, signer
   }
 }
 
+/// Whether `envelope` was signed by the device whose Ed25519 key is
+/// `signerSignPublic`, for this account and a valid epoch number: the
+/// signature unwrapEpochKey checks, without the key to open it (an envelope
+/// wrapped for another device). Never throws.
+export function envelopeSigned(envelope: EpochEnvelope, { userId, signerSignPublic }: { userId: string | number; signerSignPublic: Uint8Array }): boolean {
+  try {
+    if (envelope?.v !== VAULT_VERSION || String(envelope.user_id) !== String(userId) || !isEpoch(envelope.epoch)) return false;
+    if (typeof envelope.to_device !== "string" || typeof envelope.from_device !== "string") return false;
+    const aad = envelopeHeader({ userId, epoch: envelope.epoch, toDevice: envelope.to_device, fromDevice: envelope.from_device, epk: fromHex(envelope.epk) });
+    return ed25519.verify(fromHex(envelope.signature), concat(aad, fromHex(envelope.nonce), fromHex(envelope.ciphertext)), signerSignPublic);
+  } catch {
+    return false;
+  }
+}
+
 export function conversationKey(epochKey: Uint8Array, conversationId: string): Uint8Array {
   return hkdf(sha256, epochKey, utf8("twoody/vault/conversation/v1"), utf8(conversationId), KEY_BYTES);
 }

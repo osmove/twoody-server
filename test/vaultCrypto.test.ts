@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import {
-  approvalValid, canonicalHeader, createDeviceKeys, createEpochKey, fromHex, openEvent, recoveryCode, recoveryDevice,
+  approvalValid, canonicalHeader, createDeviceKeys, createEpochKey, envelopeSigned, fromHex, openEvent, recoveryCode, recoveryDevice,
   recoverySecret, sealEvent, signApproval, toHex, unwrapEpochKey, wrapEpochKey,
 } from "../src/vault/crypto.js";
 import { eventIdFor } from "../src/vault/sync.js";
@@ -56,6 +56,23 @@ test("a key given with fresh randomness opens only with the right device and sig
   const secret = createEpochKey();
   const toRecovery = wrapEpochKey({ epochKey: key, epoch: 2, userId: 7, to: recoveryDevice(secret), from: phone });
   assert.deepEqual(unwrapEpochKey(toRecovery, { userId: 7, device: recoveryDevice(recoverySecret(recoveryCode(secret))), signers: new Map([["iphone", phone.signPublic]]) }), key);
+});
+
+test("an envelope's signature checks without the key that opens it", () => {
+  const pi = { deviceId: "pi", ...createDeviceKeys() };
+  const phone = { deviceId: "iphone", ...createDeviceKeys() };
+  const envelope = wrapEpochKey({ epochKey: createEpochKey(), epoch: 3, userId: 7, to: pi, from: phone });
+  assert.equal(envelopeSigned(envelope, { userId: 7, signerSignPublic: phone.signPublic }), true);
+  assert.equal(envelopeSigned(envelope, { userId: 7, signerSignPublic: createDeviceKeys().signPublic }), false);
+  assert.equal(envelopeSigned(envelope, { userId: 8, signerSignPublic: phone.signPublic }), false);
+  // Another number, recipient or version than the one signed: refused.
+  assert.equal(envelopeSigned({ ...envelope, epoch: 4 }, { userId: 7, signerSignPublic: phone.signPublic }), false);
+  assert.equal(envelopeSigned({ ...envelope, to_device: "mac" }, { userId: 7, signerSignPublic: phone.signPublic }), false);
+  assert.equal(envelopeSigned({ ...envelope, v: 2 }, { userId: 7, signerSignPublic: phone.signPublic }), false);
+  assert.equal(envelopeSigned({ ...envelope, epoch: 2 ** 53 }, { userId: 7, signerSignPublic: phone.signPublic }), false);
+  // Malformed: false, never a throw.
+  assert.equal(envelopeSigned({ ...envelope, signature: "zz" }, { userId: 7, signerSignPublic: phone.signPublic }), false);
+  assert.equal(envelopeSigned(null as never, { userId: 7, signerSignPublic: phone.signPublic }), false);
 });
 
 test("the canonical header, the approval and the event ids match the other devices'", () => {
