@@ -39,3 +39,28 @@ jobs:
       - name: Smoke test
         run: npm run smoke
         timeout-minutes: 8
+
+  # The built-in engine end to end: the pinned llama.cpp for linux-x64 from
+  # GitHub, a 1 MB test model from Hugging Face (TWOODY_MODEL_CATALOG), one
+  # question, and the runtime stopped with the server
+  # (scripts/smoke-builtin.mjs, docs/builtin-runtime-design.md §6).
+  builtin-engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Built-in engine smoke test
+        run: npm run smoke:builtin
+        timeout-minutes: 10

@@ -1,9 +1,25 @@
-# Twoody Server and a model runtime (Ollama), nothing else — for a
+# Twoody Server with its own model engine (llama.cpp, in the image) — for a
 # Raspberry Pi 5 or any Linux server, no Mac needed.
 #
 #   docker compose up -d
-#   docker compose exec ollama ollama pull qwen3.5:4b   # or a model of your choice
+#   docker compose exec twoody-server twoody-server models add Qwen3.5-4B-Q4_K_M
 #   docker compose logs twoody-server                   # the setup token for the app
+#
+# The model is downloaded once into the volume (from Hugging Face, checked
+# against its pinned SHA-256), loaded on the first question and released
+# after 30 minutes of silence. `twoody-server models list` shows the others.
+#
+# With an NVIDIA GPU, or to keep using Ollama: start its service too and
+# tell the server to answer with it —
+#
+#   docker compose --profile ollama up -d
+#   docker compose exec ollama ollama pull qwen3.5:4b
+#   docker compose exec twoody-server twoody-server config set runtime=ollama
+#
+# Upgrading from the compose file that ran Ollama as a matter of course:
+# add `--profile ollama` to keep it (its models stay in the ollama_models
+# volume); the engine « auto » answers with it while no built-in model is
+# installed.
 #
 # The image is built from this checkout. To use a published image instead,
 # replace `build: .` with `image: ghcr.io/osmove/twoody-server:latest`.
@@ -13,12 +29,19 @@ services:
     build: .
     hostname: twoody
     restart: unless-stopped
+    # An init process: llama-server and the model processes it starts are
+    # reaped and stopped with the server.
+    init: true
+    stop_grace_period: 15s
     ports:
       - "3000:3000"
     environment:
-      # Ollama's OpenAI-compatible API, on the compose network. The server
-      # lists the models Ollama holds and the apps offer them.
-      BRIDGE_LOCAL_LLM_ENDPOINT: http://ollama:11434/v1
+      # Where Ollama is, when the « ollama » profile runs (runtime=ollama,
+      # or runtime=auto with no built-in model).
+      TWOODY_OLLAMA_URL: http://ollama:11434
+      # Optional: force the engine instead of choosing it from the apps or
+      # with `twoody-server config set runtime=…`.
+      # TWOODY_RUNTIME: builtin
       # Optional: fix the setup token / pairing code instead of reading
       # them from the logs; refuse anything outside the private network.
       # TWOODY_SETUP_TOKEN: ...
@@ -29,18 +52,17 @@ services:
       # Documents the server may index, read-only. Grant /documents from
       # the app (Documents → Add a folder) once paired.
       # - /home/pi/Documents:/documents:ro
-    depends_on:
-      - ollama
     # Bonjour discovery (the app's « find on the network ») does not cross
     # Docker's bridge network, so it is off in the image and the app is
     # given the address by hand (http://<pi>.local:3000). On Linux, to be
-    # discovered: uncomment `network_mode: host`, remove `ports`, set
-    # TWOODY_BONJOUR_DISABLED: "0", and use http://127.0.0.1:11434/v1 with
-    # the ollama service published on 127.0.0.1:11434.
+    # discovered: uncomment `network_mode: host`, remove `ports` and set
+    # TWOODY_BONJOUR_DISABLED: "0" (and TWOODY_OLLAMA_URL:
+    # http://127.0.0.1:11434 with the ollama service published there).
     # network_mode: host
 
   ollama:
     image: ollama/ollama:latest
+    profiles: ["ollama"]
     restart: unless-stopped
     volumes:
       - ollama_models:/root/.ollama
@@ -48,6 +70,14 @@ services:
       # Keep the last model loaded for 30 minutes between questions: on a
       # Pi, loading a 4B model takes several seconds.
       OLLAMA_KEEP_ALIVE: 30m
+    # With an NVIDIA GPU and the NVIDIA Container Toolkit:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
     # Not published: only twoody-server talks to it. Uncomment to reach
     # it from the host (for example to pull with a local `ollama` CLI).
     # ports:

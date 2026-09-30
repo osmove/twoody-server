@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # twoody-server installer for headless Linux hosts (Raspberry Pi 4/5,
 # generic amd64/arm64 boxes). Provisions the runtime dependencies,
-# drops the systemd unit, and starts the service.
+# installs the built-in model engine (llama.cpp, pinned), drops the
+# systemd unit, and starts the service. Then:
+#   twoody-server models add Qwen3.5-4B-Q4_K_M
+#
+# Ollama is no longer installed by default: the server runs llama.cpp
+# itself. TWOODY_WITH_OLLAMA=1 installs it too (an NVIDIA GPU, or to keep
+# its models); a host that already has it keeps it.
 #
 # Usage, from a checkout on the target host:
 #   sudo bash scripts/install-linux.sh
@@ -37,11 +43,13 @@ apt-get update -y -qq
 # binding.gyp, which npm would compile on sight — several minutes on a
 # Pi, for a file the module never opens — so install scripts are skipped
 # below instead of a toolchain being installed here.
+# libgomp1: the OpenMP runtime the official amd64 llama.cpp build links
+# to (Osmove's arm64 build does without it).
 apt-get install -y -qq \
-  curl ca-certificates gnupg git \
+  curl ca-certificates gnupg git rsync \
   ripgrep ffmpeg poppler-utils \
   avahi-daemon avahi-utils libnss-mdns \
-  sqlite3
+  sqlite3 libgomp1
 
 log "Installing Node.js ${NODE_MAJOR} via NodeSource…"
 if ! command -v node >/dev/null 2>&1 || ! node -v | grep -q "^v${NODE_MAJOR}\."; then
@@ -50,9 +58,11 @@ if ! command -v node >/dev/null 2>&1 || ! node -v | grep -q "^v${NODE_MAJOR}\.";
 fi
 log "  node $(node -v) / npm $(npm -v)"
 
-log "Installing Ollama (optional local LLM backend)…"
-if ! command -v ollama >/dev/null 2>&1; then
-  curl -fsSL https://ollama.com/install.sh | sh
+if [[ "${TWOODY_WITH_OLLAMA:-0}" == "1" ]]; then
+  log "Installing Ollama (TWOODY_WITH_OLLAMA=1)…"
+  if ! command -v ollama >/dev/null 2>&1; then
+    curl -fsSL https://ollama.com/install.sh | sh
+  fi
 fi
 
 log "Preparing application directory at ${APP_DIR}…"
@@ -91,6 +101,20 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   log "  Edit ${ENV_FILE} to configure HA / folders / backend token, then restart the service."
 fi
 
+# The command, for this machine's console: twoody-server login, models add…
+ln -sf "${APP_DIR}/bin/twoody-server.mjs" /usr/local/bin/twoody-server
+
+# The built-in engine: llama.cpp for this machine, fetched from its pinned
+# host and checked against its SHA-256, into the data directory. Not
+# fatal: the server runs without it, and `twoody-server runtime install`
+# can be run again later.
+DATA_DIR="$(sed -n 's/^TWOODY_DATA_DIR=//p' "${ENV_FILE}" | tail -1)"
+DATA_DIR="${DATA_DIR:-/home/${RUN_USER}/.twoody/data}"
+log "Installing the built-in model engine (llama.cpp) into ${DATA_DIR}/runtime…"
+if ! sudo -u "${RUN_USER}" -H env TWOODY_DATA_DIR="${DATA_DIR}" node "${APP_DIR}/bin/twoody-server.mjs" runtime install; then
+  log "  Could not install it now; run: twoody-server runtime install"
+fi
+
 log "Installing systemd unit…"
 install -m 0644 -o root -g root "${APP_DIR}/scripts/twoody-server.service" "${SERVICE_FILE}"
 # Patch the unit's User= with TWOODY_USER if it differs from the
@@ -113,3 +137,6 @@ systemctl --no-pager --lines=15 status "${SERVICE_NAME}.service" || true
 
 log "Done. View live logs with:"
 log "  journalctl -u ${SERVICE_NAME}.service -f"
+log "A model for the built-in engine (once, a few GB from Hugging Face):"
+log "  twoody-server models list"
+log "  twoody-server models add Qwen3.5-4B-Q4_K_M"

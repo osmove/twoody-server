@@ -12,10 +12,16 @@ EnvironmentFile=/etc/twoody-server.env
 ExecStart=/usr/bin/node /opt/twoody-server/dist/index.js
 Restart=always
 RestartSec=5
+# The built-in model engine (llama-server, and the model process it starts)
+# runs in this unit's control group: stopping the service stops it too,
+# even if the server did not get to (docs/builtin-runtime-design.md §3).
+KillMode=control-group
+TimeoutStopSec=10
 
 # The database, the setup token and the session keys live under the
 # user's home (DATA_DIR in src/db.ts, or wherever TWOODY_DATA_DIR
-# points). Everything else this service can reach is narrowed down:
+# points), and so do the built-in engine's runtime and models
+# (DATA_DIR/runtime, DATA_DIR/models). Everything else this service can reach is narrowed down:
 # it answers HTTP, reads the folders it was given, and talks to a
 # model runtime on this machine. It has no business writing anywhere
 # else, and a bug that tried would be stopped here rather than found

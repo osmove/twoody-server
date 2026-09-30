@@ -40,13 +40,16 @@ npm run dev
 ## Without the desktop app
 
 Twoody runs without a Mac: on a Raspberry Pi 5, a NAS or any Linux
-server. The server has no model of its own (Twoody Desktop ships
-llama.cpp; standalone, run [Ollama](https://ollama.com), llama.cpp's
-`llama-server` or LM Studio next to it). Three ways to install it:
+server. The server runs its own model engine, llama.cpp's `llama-server`
+— the same pinned release and the same GGUF models as Twoody Desktop —
+installed when you ask for it and started on the first question (see
+[Model engine](#model-engine-moteur)). It can also answer with
+[Ollama](https://ollama.com), LM Studio, mlx-lm or any OpenAI-compatible
+runtime. Three ways to install it:
 
 | | Needs | Command |
 |---|---|---|
-| Docker (server + Ollama) | Docker with Compose | `docker compose up -d` — see [Docker](#docker) |
+| Docker (server with llama.cpp) | Docker with Compose | `docker compose up -d` — see [Docker](#docker) |
 | npm | Node.js 22+ | `npm install -g twoody-server`, or `npm install -g twoody` (the Twoody CLI, whose `twoody serve` runs this server) |
 | pip | Python 3.9+ and Node.js 22+ | `pip install twoody` (runs the `twoody` npm package through `npx`: `twoody serve`) |
 
@@ -54,9 +57,48 @@ The npm command:
 
 ```bash
 npm install -g twoody-server
-twoody-server --llm http://127.0.0.1:11434/v1 --data-dir ~/.twoody/data
+twoody-server runtime install                 # llama.cpp for this computer, checked against its SHA-256
+twoody-server models add Qwen3.5-4B-Q4_K_M    # 2.8 GB from Hugging Face, pinned (models list for the others)
+twoody-server --data-dir ~/.twoody/data
 twoody-server --help      # --port, --host, --data-dir, --llm, --pairing-code, --local-only
 ```
+
+### Model engine (« Moteur »)
+
+Each computer has an engine preference, kept in `runtime.json` in its data
+directory and set from the apps or here:
+
+```bash
+twoody-server config get
+twoody-server config set runtime=builtin      # or ollama, lmstudio, mlx, auto, http://host:port/v1
+twoody-server runtime status                  # which engine answers, the runtime, the models
+twoody-server models list | add <id> | rm <id>
+```
+
+- **builtin** — llama.cpp run by the server: `llama-server` in router mode
+  on `127.0.0.1` only, with a key drawn at each start, `--offline` (it
+  never fetches anything by itself), one model in memory at a time, loaded
+  on the first question and released after 30 minutes of silence
+  (`idle_minutes`), not loaded at all when it would not fit in the memory
+  available (the chat answers 507 `insufficient_memory`). The runtime is
+  `DATA_DIR/runtime/b11146-<platform>-<arch>`, the models `DATA_DIR/models`,
+  its output `DATA_DIR/runtime.log`. Linux is CPU only (no Vulkan yet); on
+  Linux arm64 it is Osmove's own Clang build of the same llama.cpp commit
+  (`scripts/build-llama-arm64.sh`), elsewhere llama.cpp's official release.
+- **ollama**, **lmstudio**, **mlx** — the runtime on its usual port
+  (Ollama: `TWOODY_OLLAMA_URL` to point elsewhere). **An NVIDIA GPU: use
+  Ollama** — there is no official llama.cpp CUDA build for Linux.
+- **custom** — any OpenAI-compatible address (`runtime=http://…/v1`).
+- **auto** (a new server's default) — the first that has a model: built-in,
+  Ollama, LM Studio, mlx-lm.
+
+A server set up before the built-in engine keeps answering as it did: on
+its first start, `BRIDGE_LOCAL_LLM_ENDPOINT` on port 11434 becomes
+`runtime=ollama`, any other address `runtime=<that address>`.
+`TWOODY_RUNTIME` forces the engine whatever the file says. The apps see
+the engine as a provider (`id: "engine"` in `/providers`) and manage it
+through `/runtime` (the person's own devices only, never another computer
+of the account).
 
 With the CLI (`npm install -g twoody` or `pip install twoody`), `twoody serve`
 (alias `twoody server [options]`) takes the same options, and `twoody setup`
@@ -174,32 +216,46 @@ LAN address or `0.0.0.0`, which anyone on the network can point at it. Use
 
 ## Docker
 
-`docker-compose.yml` runs two services: `twoody-server` (built from this
-checkout) and `ollama` (the official multi-architecture `ollama/ollama`
-image), wired together with `BRIDGE_LOCAL_LLM_ENDPOINT=http://ollama:11434/v1`.
-The same file works on a Raspberry Pi 5 (arm64) and on an amd64 server.
+`docker-compose.yml` runs one service, `twoody-server` (built from this
+checkout), with llama.cpp in its image. The same file works on a Raspberry
+Pi 5 (arm64) and on an amd64 server.
 
 ```bash
 docker compose up -d --build
-# One model to start with — qwen3.5:4b (3.4 GB), or a model of your choice
-# from https://ollama.com/library
-docker compose exec ollama ollama pull qwen3.5:4b
+# One model to start with (2.8 GB, into the data volume)
+docker compose exec twoody-server twoody-server models add Qwen3.5-4B-Q4_K_M
 # The setup token, for the app (also in the data volume, /data/setup-token)
 docker compose logs twoody-server | grep "Setup token"
 curl http://localhost:3000/health
 ```
 
+With an NVIDIA GPU, or to keep Ollama and its models, the `ollama` service
+runs under a profile:
+
+```bash
+docker compose --profile ollama up -d
+docker compose exec ollama ollama pull qwen3.5:4b
+docker compose exec twoody-server twoody-server config set runtime=ollama
+```
+
 The image (`Dockerfile`):
 
-- `linux/amd64` and `linux/arm64`, on `node:22-alpine`, about 70 MB
-  compressed; no compiler, no model.
+- `linux/amd64` and `linux/arm64`, on `node:22-trixie-slim` (glibc, which
+  llama.cpp's Linux builds need); no compiler, no model;
+- carries the pinned `llama-server` for its architecture in
+  `/opt/twoody/runtime` (`TWOODY_RUNTIME_DIR`), checked against its
+  SHA-256 at build time — the build fails if it or a CPU variant it loads
+  misses a library (`ldd`); the compose file runs it with `init: true` so
+  the runtime is reaped and stopped with the server;
 - runs as the unprivileged `node` user (uid 1000);
 - keeps everything in the `/data` volume: the SQLite database, the setup
-  token and the documents index (`TWOODY_DATA_DIR=/data`), and under
+  token, the documents index (`TWOODY_DATA_DIR=/data`), the models
+  (`/data/models`) and the engine preference (`/data/runtime.json`), and under
   `/data/home` the bridge device id, compute keys and whisper models;
 - has a `HEALTHCHECK` on `GET /health`;
 - starts `twoody-server`, so its options work as the command:
-  `docker run ghcr.io/osmove/twoody-server --help`.
+  `docker run ghcr.io/osmove/twoody-server --help`, and has the command
+  for `docker exec` (`twoody-server models add …`).
 
 To give the server documents, mount them read-only (for example
 `/home/pi/Documents:/documents:ro`, commented in the compose file) and
@@ -229,41 +285,55 @@ A published image replaces `build: .` with
 
 ### Raspberry Pi 5: what to expect
 
-- **Hardware**: a Raspberry Pi 5 with 16 GB (8 GB works with the small
-  models), the active cooler (generation holds the four cores at 100 %),
-  and preferably an NVMe SSD rather than a microSD card: a model is read
-  from disk every time it loads.
+- **Hardware**: a Raspberry Pi 5 with 16 GB (8 GB works with the 4B
+  model), the active cooler (generation holds the cores at 100 %), and
+  preferably an NVMe SSD rather than a microSD card: a model is read from
+  disk every time it loads.
 - **System**: a 64-bit OS — Raspberry Pi OS (64-bit, Bookworm or later) or
-  Ubuntu Server 24.04 arm64. A 32-bit system cannot run Ollama.
+  Ubuntu Server 24.04 arm64.
 - **Then either** Docker with Compose (`curl -fsSL https://get.docker.com | sh`,
   which also brings buildx) and the [Docker](#docker) setup, **or**
-  Node.js 22 with Ollama installed natively (below).
+  Node.js 22 natively (below), then:
 
-Ollama supports arm64 natively: `curl -fsSL https://ollama.com/install.sh | sh`
-installs it as a systemd service listening on `127.0.0.1:11434`, and the
-`ollama/ollama` image is multi-architecture. The Pi has no GPU Ollama can
-use, so everything runs on the CPU, and speed is set by memory bandwidth.
+```bash
+twoody-server runtime install                 # llama.cpp, ~9 MB
+twoody-server models add Qwen3.5-4B-Q4_K_M    # 2.8 GB
+```
 
-Models that fit in 16 GB, with rough generation speeds on a Pi 5 CPU (our
-estimates, order of magnitude only — measure on your own board):
+The built-in engine on a Pi is Osmove's own build of llama.cpp (Clang,
+every ARM CPU generation chosen at run time, so a Pi 4 runs it too; no
+OpenMP): the official arm64 build read prompts at 0.73× Ollama's speed on a
+Pi 5, this one as fast as Ollama. It runs with the settings measured best
+on a Pi 5 — 3 threads writing and 4 reading (`cores − 1`, `cores`),
+batches of 128 tokens, the model read into memory rather than mapped
+(`--load-mode none`: 3.8–4.1 GB in use instead of 6.1 GB) and an 8k
+context. `config set threads=… ctx=…` changes them.
 
-| Ollama tag | Download | Memory in use | Generation |
-|------------|----------|---------------|------------|
-| `qwen3.5:0.8b` | 1.0 GB | ~2 GB | 10–20 tokens/s |
-| `qwen3.5:2b` | 2.7 GB | ~4 GB | 5–10 tokens/s |
-| `qwen3.5:4b` | 3.4 GB | ~5 GB | 2–5 tokens/s |
-| `qwen3.5:9b` | 6.6 GB | ~9 GB | 1–2 tokens/s |
+Everything runs on the CPU, and speed is set by memory bandwidth. Measured
+on a Pi 5 (16 GB, microSD card), Qwen3.5 4B Q4_K_M, reasoning off
+(30/09/2026):
 
-(Qwen 3.5 downloads include a vision encoder, hence sizes above the
-usual Q4 figure.) Be honest with yourself about the numbers: a 4B model
-at Q4 writes **a few tokens per second**, a short answer takes 10–30
+| | |
+|---|---|
+| Reading the prompt | ~22 tokens/s |
+| Writing | ~3.8 tokens/s |
+| First question after a start | ~13 s to the first word (7 s of it loading the model) |
+| Next questions | ~1.2–1.6 s to the first word (the conversation's start is kept in cache) |
+| Memory in use | ~3.7 GB |
+
+Be honest with yourself about the numbers: a short answer takes several
 seconds, and reading a long prompt (documents, a long conversation) adds
 more before the first word — tens of prompt tokens per second, not
-thousands. Qwen 3.5 thinks before it answers by default, and that
-thinking is generated at the same speed. For quick replies prefer 2B–4B; the
-9B is for when quality matters more than time. `/local_llm/catalog`
-(used by the apps' model picker) lists smaller Qwen 2.5 / Llama 3.2 tags
-as well.
+thousands. The first question after a start or after 30 minutes of
+silence also loads the model (a few seconds from an SSD, more from a
+microSD card). The 9B (`models add Qwen3.5-9B-Q4_K_M`, 16 GB boards) is
+for when quality matters more than time.
+
+Ollama remains an option (`runtime=ollama`): `curl -fsSL
+https://ollama.com/install.sh | sh` installs it as a service on
+`127.0.0.1:11434`. A Pi set up with Ollama before the built-in engine keeps
+using it until you switch (`config set runtime=builtin`, then `models add`;
+the apps may offer to remove Ollama's models, never on their own).
 
 ### Pairing a phone with a server without a Mac
 
@@ -319,21 +389,24 @@ the computer of the account that will write it fastest (and says which).
 
 ### systemd unit (npm install)
 
-After `sudo npm install -g twoody-server` (Node 22 from NodeSource) and
-Ollama's installer, `/etc/systemd/system/twoody-server.service`:
+After `sudo npm install -g twoody-server` (Node 22 from NodeSource),
+`/etc/systemd/system/twoody-server.service`:
 
 ```ini
 [Unit]
 Description=Twoody Server
-After=network-online.target ollama.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 User=pi
 EnvironmentFile=-/etc/twoody-server.env
-ExecStart=/usr/bin/twoody-server --data-dir /home/pi/.twoody/data --llm http://127.0.0.1:11434/v1
+ExecStart=/usr/bin/twoody-server --data-dir /home/pi/.twoody/data
 Restart=always
 RestartSec=5
+# The built-in engine runs in the unit's control group: stopped with it.
+KillMode=control-group
+TimeoutStopSec=10
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
@@ -348,7 +421,8 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload
 sudo systemctl enable --now twoody-server
 journalctl -u twoody-server -f          # the setup token is printed here
-ollama pull qwen3.5:4b                  # or a model of your choice
+twoody-server --data-dir /home/pi/.twoody/data runtime install
+twoody-server --data-dir /home/pi/.twoody/data models add Qwen3.5-4B-Q4_K_M
 ```
 
 (`which twoody-server` gives the path if npm's prefix is not `/usr`.
@@ -359,9 +433,12 @@ ollama pull qwen3.5:4b                  # or a model of your choice
 
 For a headless install from a checkout of this repository (Raspberry Pi
 4/5, generic amd64/arm64 box), use the bundled bootstrap script. It installs Node 22, ripgrep, ffmpeg,
-poppler-utils, avahi-daemon, Ollama, copies the repo to
-`/opt/twoody-server`, builds prod deps (compiles `better-sqlite3` for
-the target architecture), and registers a systemd unit.
+poppler-utils, avahi-daemon, copies the repo to `/opt/twoody-server`,
+installs the production dependencies (`better-sqlite3`'s prebuilt
+binary, nothing compiled), links the `twoody-server` command, installs the
+built-in engine (`twoody-server runtime install`) and registers a systemd
+unit. Then `twoody-server models add Qwen3.5-4B-Q4_K_M`.
+`TWOODY_WITH_OLLAMA=1` installs Ollama too.
 
 ```bash
 # On the target host, from a fresh checkout:
@@ -487,9 +564,10 @@ The in-memory Bridge queue is good enough for Phase 1 developer preview.
 Moving task state to SQLite or Redis is the next durability step before a
 stable v1 contract.
 
-`/queries` is local-first: configure a local OpenAI-compatible provider, or set
-`BRIDGE_LOCAL_LLM_ENDPOINT` for the legacy local endpoint. Cloud keys are only
-used when `TWOODY_CLOUD_FALLBACK_ENABLED=true`.
+`/queries` is local-first: a stored local OpenAI-compatible provider, else
+this computer's engine ([Model engine](#model-engine-moteur)), else
+`BRIDGE_LOCAL_LLM_ENDPOINT`. Cloud keys are only used when
+`TWOODY_CLOUD_FALLBACK_ENABLED=true`.
 
 `TWOODY_LOCAL_ONLY=1` goes further: the server refuses every outbound call to
 a host that is not this machine or a private-network address, whatever else is
@@ -497,7 +575,11 @@ configured. Cloud fallback, `/realtime_sessions`, Spotify and an upstream
 bridge backend are all off, `/devices/llm_keys` returns no keys, and
 `/capabilities` and `/deployment` report `local_only: true` so clients can show
 it. Downloading a model through Ollama is unaffected (Ollama makes that call,
-and it carries no user content).
+and it carries no user content). So are the downloads the person asks for
+for the built-in engine (`runtime install`, `models add`, the apps'
+« Modèles »): to their pinned hosts only (GitHub's release hosts or
+downloads.twoody.com for the runtime, Hugging Face for the models), checked
+against their SHA-256, and said in the log.
 
 Bridge pollers can declare capabilities with `X-Bridge-Capabilities`, using a
 comma-separated or JSON array value such as `document-provider,local-llm-provider`.

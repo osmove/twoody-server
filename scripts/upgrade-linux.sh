@@ -50,6 +50,7 @@ npm run build
 log "Rsyncing dist/ + package metadata to ${TARGET}:${REMOTE_PATH}/"
 rsync -az --delete \
   --exclude '.DS_Store' \
+  bin \
   dist \
   package.json \
   package-lock.json \
@@ -71,6 +72,17 @@ if [[ -z "$LAST_LOCK_HASH" || "$LOCAL_LOCK_HASH" != "$LAST_LOCK_HASH" ]]; then
   ssh "$TARGET" "echo '${LOCAL_LOCK_HASH}' > ${REMOTE_PATH}/.last-lock-hash"
 else
   log "package-lock.json unchanged, skipping npm ci"
+fi
+
+# A new llama.cpp tag is a new runtime folder: installed before the
+# restart, so the server finds it. Not fatal (the server runs without it).
+log "Built-in model engine: twoody-server runtime install on ${TARGET}"
+ssh "$TARGET" "cd ${REMOTE_PATH} && node bin/twoody-server.mjs runtime install" || log "  (not installed now; run twoody-server runtime install there)"
+
+# The unit is not replaced here (install-linux.sh adapts it to its host):
+# say when this checkout's differs from the one installed.
+if ! ssh "$TARGET" "diff -q ${REMOTE_PATH}/scripts/twoody-server.service /etc/systemd/system/${SERVICE}" >/dev/null 2>&1; then
+  log "Note: scripts/twoody-server.service changed (KillMode=control-group, TimeoutStopSec=10 for the built-in engine); re-run install-linux.sh there to apply it."
 fi
 
 log "Restarting ${SERVICE}…"
