@@ -22,7 +22,7 @@ const ASKED = /^(?:(?:est-ce que\s+)?(?:tu\s+peux|peux-tu|pourrais-tu)\s+)?(?:re
 /// What the person asked to be remembered, as they said it; null when the
 /// message asks nothing of the kind.
 export function askedToRemember(text: string): string | null {
-  const trimmed = text.trim();
+  const trimmed = straightQuotes(text).trim();
   const match = ASKED.exec(trimmed);
   if (!match || match[0].length === 0) return null;
   const fact = trimmed.slice(match[0].length).replace(/[.!\s]+$/, "").trim();
@@ -30,12 +30,19 @@ export function askedToRemember(text: string): string | null {
 }
 
 // First-person statements that are usually lasting facts about someone.
-const PERSONAL = /\b(?:je m'appelle|mon nom est|j'habite|je vis [àa]|je travaille|je suis (?:n[ée]e?|m[ée]decin|avocat|ing[ée]nieur|d[ée]veloppeur|consultant|[ée]tudiant|professeur|mari[ée]e?|c[ée]libataire|v[ée]g[ée]tarien|allergique)|j'ai \d+ ans|mes enfants|ma femme|mon mari|ma fille|mon fils|mon (?:chien|chat)|je pr[ée]f[èe]re|je d[ée]teste|j'adore|my name is|i live in|i work (?:at|for|as)|i am (?:a|an) |i'm (?:a|an) |my (?:wife|husband|son|daughter|kids|dog|cat)|i prefer|i'm allergic)\b/i;
+const PERSONAL = /\b(?:je m'appelle|mon nom est|mon pr[ée]nom|j'habite|je vis [àa]|je travaille|je suis originaire|mon anniversaire|je suis (?:n[ée]e?|m[ée]decin|avocat|ing[ée]nieur|d[ée]veloppeur|consultant|[ée]tudiant|professeur|mari[ée]e?|c[ée]libataire|v[ée]g[ée]tarien|allergique)|j'ai \d+ ans|mes enfants|ma femme|mon mari|ma fille|mon fils|ma compagne|mon compagnon|mes parents|ma m[èe]re|mon p[èe]re|ma s(?:œ|oe)ur|mon fr[èe]re|mon entreprise|ma soci[ée]t[ée]|mon (?:chien|chat)|je pr[ée]f[èe]re|je d[ée]teste|j'adore|my name is|i live in|i work (?:at|for|as)|i am (?:a|an) |i'm (?:a|an) |my (?:wife|husband|son|daughter|kids|dog|cat)|i prefer|i'm allergic)\b/i;
 
 /// Whether a message says something lasting about the person, worth asking
 /// the model about.
 export function saysSomethingPersonal(text: string): boolean {
-  return text.length <= 2000 && PERSONAL.test(text);
+  return text.length <= 2000 && PERSONAL.test(straightQuotes(text));
+}
+
+/// « j’habite », as a phone types it, is « j'habite »: the iPhone's
+/// keyboard writes the curly apostrophe, and none of its messages matched
+/// (30/09/2026).
+function straightQuotes(text: string): string {
+  return text.replace(/[’‘ʼ]/g, "'");
 }
 
 /// The request the answering model gets, once its answer is written.

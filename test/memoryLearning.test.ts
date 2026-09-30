@@ -44,3 +44,11 @@ test("an explicit request is kept without the model", async () => {
   assert.equal(added, 1);
   assert.ok(kept().includes("Je préfère le thé au café"));
 });
+
+test("a phone's curly apostrophe is an apostrophe: « j’habite », « n’oublie pas »", () => {
+  assert.equal(saysSomethingPersonal("Tu sais, j’habite à Antony depuis cinq ans"), true);
+  assert.equal(saysSomethingPersonal("Je m’appelle Jimmy"), true);
+  assert.equal(saysSomethingPersonal("Mon anniversaire est le 12 mars"), true);
+  assert.equal(askedToRemember("N’oublie pas que je suis végétarien"), "Je suis végétarien");
+  assert.equal(saysSomethingPersonal("Quel âge j’ai ?"), false);
+});
