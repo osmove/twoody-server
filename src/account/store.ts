@@ -8,7 +8,8 @@ import { HEX_KEY, newPairingKey } from "./keys.js";
 // computers (docs/multi-computer-design.md §2, Server).
 //
 //   {backend_url, account_id, account_label, user_token, device_token,
-//    computer:{id, credential}, pairing_key:{priv, pub}, approvers:[…]}
+//    computer:{id, credential}, bridge_device_id, pairing_key:{priv, pub},
+//    approvers:[…]}
 //
 // Written with mode 0600, like the tunnel identity: the user token and the
 // computer credential are the account's, and the pairing key is what the
@@ -37,10 +38,19 @@ export interface AccountFile {
   user_token?: string;
   device_token: string;
   computer?: { id: string; credential: string; name?: string };
+  /// The bridge device this computer lends its models through
+  /// (X-Bridge-Device-Id, and bridge_device_uuid in its heartbeat): its
+  /// own, made when it links (link.ts) and gone when it leaves. Never the
+  /// machine's ~/.twoody-server/bridge-device-id, which every install of
+  /// twoody-server on the machine shares: the account binds a bridge id to
+  /// one computer only, so a second install sending it was refused.
+  bridge_device_id?: string;
   pairing_key: { priv: string; pub: string };
   approvers: Approver[];
   linked_at?: string;
 }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface LinkedAccount extends AccountFile {
   backend_url: string;
@@ -76,6 +86,7 @@ function valid(raw: unknown): AccountFile | null {
     ...(computer && (typeof computer.id === "string" || typeof computer.id === "number") && typeof computer.credential === "string"
       ? { computer: { id: String(computer.id), credential: computer.credential, ...(typeof computer.name === "string" ? { name: computer.name } : {}) } }
       : {}),
+    ...(typeof file.bridge_device_id === "string" && UUID.test(file.bridge_device_id) ? { bridge_device_id: file.bridge_device_id.toLowerCase() } : {}),
     pairing_key: { priv: key.priv, pub: key.pub },
     approvers,
     ...(typeof file.linked_at === "string" ? { linked_at: file.linked_at } : {}),
@@ -142,6 +153,20 @@ export function linkedAccount(file: AccountFile | null = readAccountFile()): Lin
     device_token: (envUserToken && process.env.TWOODY_DEVICE_TOKEN?.trim()) || file.device_token,
     computer: file.computer,
   };
+}
+
+/// Gives a linked account.json its own bridge device id, when it has none
+/// yet (a file linked before this id existed): the one the account already
+/// bound to this computer (`boundId`, its host_id in the account's listing)
+/// when there is one, so a server that worked goes on under the same id;
+/// otherwise a fresh one. Returns the id, or null when not linked.
+export function ensureBridgeDeviceId(boundId: string | null = null): string | null {
+  const file = readAccountFile();
+  if (!file?.computer) return null;
+  if (file.bridge_device_id) return file.bridge_device_id;
+  const id = boundId && UUID.test(boundId) ? boundId.toLowerCase() : randomUUID();
+  writeAccountFile({ ...file, bridge_device_id: id });
+  return id;
 }
 
 /// Eight hex characters of the pairing key: what Bonjour advertises and

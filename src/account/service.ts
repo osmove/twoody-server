@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { deriveCapabilities, readBridgeClientEnv, startBridgeClient, type BridgeClientHandle } from "../bridgeClient.js";
 import { isPrivateUrl, LOCAL_ONLY } from "../outbound.js";
 import { runningTunnel, startTunnelService, type TunnelService } from "../tunnel/index.js";
@@ -5,7 +8,7 @@ import { startApprovalLoop, type ApprovalLoop } from "./approvals.js";
 import { backendCall, BackendError } from "./backend.js";
 import { linkState, onLinkChanged, unlinkRemoved } from "./link.js";
 import { buildStatus } from "./statusSource.js";
-import { linkedAccount, type LinkedAccount } from "./store.js";
+import { accountPath, ensureBridgeDeviceId, linkedAccount, type LinkedAccount } from "./store.js";
 
 // What a server linked to an account does, once linked
 // (docs/multi-computer-design.md §2):
@@ -74,6 +77,43 @@ export function revokedByAccount(err: unknown): err is BackendError {
   return (err.status === 403 && err.code === "computer_revoked") || (err.status === 401 && (err.code === "session_revoked" || err.code === "session_expired"));
 }
 
+/// This linked server's own bridge device id (account.json). A file linked
+/// before it had one gets it here: the id the account already bound to this
+/// computer (its host_id), so a server that worked keeps it, or a fresh one
+/// — never the machine's ~/.twoody-server/bridge-device-id as such, which
+/// another install on the machine may hold. Null when the account could not
+/// be asked (tried again on the next beat).
+export async function ownBridgeDeviceId(account: LinkedAccount): Promise<string | null> {
+  if (account.bridge_device_id) return account.bridge_device_id;
+  let bound: string | null = null;
+  try {
+    const { body } = await backendCall<{ computers?: Array<{ id?: unknown; host_id?: unknown }> }>(
+      { backendUrl: account.backend_url, userToken: account.user_token, deviceToken: account.device_token },
+      "account_computers",
+      { timeoutMs: 8_000 },
+    );
+    const own = body?.computers?.find((c) => String(c.id) === account.computer.id);
+    bound = typeof own?.host_id === "string" ? own.host_id : null;
+  } catch {
+    return null;
+  }
+  return ensureBridgeDeviceId(bound);
+}
+
+/// Where the keys of sealed shared turns go for this bridge device: beside
+/// account.json, this install's own; the machine-wide file only for the id
+/// that file was made with (a server that kept it), so its guests need not
+/// verify it again.
+export function computeKeysPathFor(deviceId: string): string {
+  const legacy = join(homedir(), ".twoody-server");
+  try {
+    if (readFileSync(join(legacy, "bridge-device-id"), "utf8").trim().toLowerCase() === deviceId.toLowerCase()) return join(legacy, "compute-keys.json");
+  } catch {
+    // No machine-wide id: nothing to keep.
+  }
+  return join(dirname(accountPath()), "compute-keys.json");
+}
+
 export interface AccountService {
   stop(): void;
   /// One heartbeat now (tests).
@@ -91,7 +131,41 @@ export function startAccountService(options: {
   let bridge: BridgeClientHandle | null = null;
   let tunnel: TunnelService | null = null;
   let bridgeDeviceUuid: string | null = null;
+  let bridgeWanted: boolean | null = null;
+  let bridgeStarting: Promise<void> | null = null;
   let stopped = false;
+
+  // The bridge, under this server's own bridge device id. Started with the
+  // loops, or on a later beat when the account could not be asked then.
+  const startBridge = (account: LinkedAccount): Promise<void> => {
+    if (bridge || stopped) return Promise.resolve();
+    bridgeStarting ??= (async () => {
+      if (bridgeWanted === null) {
+        // In local-only mode the backend has to be on the private network
+        // for the bridge (which carries turns out).
+        const allowed = !LOCAL_ONLY || (await isPrivateUrl(account.backend_url));
+        bridgeWanted = !readBridgeClientEnv() && allowed && process.env.TWOODY_ACCOUNT_BRIDGE !== "0";
+      }
+      if (!bridgeWanted) return;
+      const deviceId = await ownBridgeDeviceId(account);
+      if (!deviceId || bridge || stopped || linkedAccount()?.computer.id !== account.computer.id) return;
+      bridge = startBridgeClient({
+        backendUrl: account.backend_url,
+        userToken: account.user_token,
+        deviceToken: account.device_token,
+        homeAssistantUrl: (process.env.HOME_ASSISTANT_URL ?? "").replace(/\/+$/, ""),
+        homeAssistantToken: process.env.HOME_ASSISTANT_TOKEN ?? "",
+        deviceNickname: account.computer.name,
+        deviceId,
+        computeKeysPath: computeKeysPathFor(deviceId),
+        capabilities: deriveCapabilities(),
+      });
+      bridgeDeviceUuid = bridge.deviceId;
+    })().finally(() => {
+      bridgeStarting = null;
+    });
+    return bridgeStarting;
+  };
 
   // Two refusals in a row and this server leaves the account on its side
   // too: a single one could be a backend's bad second, and linking again
@@ -103,15 +177,23 @@ export function startAccountService(options: {
   const heartbeat = async () => {
     const account = linkedAccount();
     if (!account) return;
+    if (!bridge && bridgeWanted !== false) await startBridge(account);
     try {
-      await backendCall(
+      const { body } = await backendCall<{ bridge?: unknown } | null>(
         { backendUrl: account.backend_url, userToken: account.user_token, deviceToken: account.device_token, credential: account.computer.credential },
         `account_computers/${encodeURIComponent(account.computer.id)}/heartbeat`,
         { body: { status: await buildStatus(), platform: process.platform === "darwin" ? "macos" : process.platform, ...(bridgeDeviceUuid ? { bridge_device_uuid: bridgeDeviceUuid } : {}) } },
       );
       refusals = 0;
       credentialRefusalSaid = false;
-      bridgeRefusalSaid = null;
+      // The beat counted, but the account did not bind this bridge device
+      // (twoody-backend 3f67b510: 200 {bridge: "bridge_device_taken" |
+      // "bridge_device_mismatch"}): said once, its bridge polls are refused.
+      const bridgeRefusal = typeof body?.bridge === "string" && body.bridge.startsWith("bridge_device_") ? body.bridge : null;
+      if (bridgeRefusal && bridgeRefusalSaid !== bridgeRefusal) {
+        options.log?.(`The Twoody account keeps this server online but does not let it lend its models under bridge device ${(bridgeDeviceUuid ?? "").slice(0, 8)}… (${bridgeRefusal}): reset it from Twoody's « Appareils », or remove the computer that holds it.`);
+      }
+      bridgeRefusalSaid = bridgeRefusal;
     } catch (err) {
       if (!revokedByAccount(err)) {
         // Anything else — the backend down, a proxy in the way, an error
@@ -149,23 +231,8 @@ export function startAccountService(options: {
     heartbeatTimer ??= setInterval(() => void heartbeat(), everyMs);
     heartbeatTimer.unref();
     approvals ??= startApprovalLoop({ log: options.log });
-
-    // In local-only mode the backend has to be on the private network for
-    // the bridge (which carries turns out); the tunnel's frames are sealed.
-    const allowed = !LOCAL_ONLY || (await isPrivateUrl(account.backend_url));
-    if (!bridge && !readBridgeClientEnv() && allowed && process.env.TWOODY_ACCOUNT_BRIDGE !== "0") {
-      const capabilities = deriveCapabilities();
-      bridge = startBridgeClient({
-        backendUrl: account.backend_url,
-        userToken: account.user_token,
-        deviceToken: account.device_token,
-        homeAssistantUrl: (process.env.HOME_ASSISTANT_URL ?? "").replace(/\/+$/, ""),
-        homeAssistantToken: process.env.HOME_ASSISTANT_TOKEN ?? "",
-        deviceNickname: account.computer.name,
-        capabilities,
-      });
-      bridgeDeviceUuid = bridge.deviceId;
-    }
+    await startBridge(account);
+    // The tunnel's frames are sealed: local-only mode does not hold it back.
     if (!tunnel && !runningTunnel() && process.env.TWOODY_ACCOUNT_TUNNEL !== "0") {
       tunnel = startTunnelService({
         backendUrl: account.backend_url,
@@ -186,6 +253,7 @@ export function startAccountService(options: {
     bridge?.stop();
     bridge = null;
     bridgeDeviceUuid = null;
+    bridgeWanted = null;
     tunnel?.stop();
     tunnel = null;
   };

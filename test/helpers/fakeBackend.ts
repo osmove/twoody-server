@@ -20,6 +20,9 @@ export interface FakeComputer {
   status: unknown;
   last_seen_at: string | null;
   heartbeats: number;
+  /// The bridge device bound to it by its heartbeat (host_id), as
+  /// twoody-backend binds it: once, and never an id another computer holds.
+  bridge_device_uuid: string | null;
 }
 
 export interface FakeAuthorization {
@@ -65,6 +68,8 @@ export interface FakeBackend {
   calls: string[];
   /// The X-Device-Token each call carried ("" when none), in step with `calls`.
   deviceTokens: string[];
+  /// The X-Bridge-Device-Id each call carried ("" when none), in step with `calls`.
+  bridgeDeviceIds: string[];
   /// Added to an approved login's poll answer (e.g. {account: {email}}).
   pollExtras: Record<string, unknown>;
   /// "METHOD /path" → the status to answer instead (until deleted), or the
@@ -99,6 +104,7 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
   const logins: FakeLogin[] = [];
   const calls: string[] = [];
   const deviceTokens: string[] = [];
+  const bridgeDeviceIds: string[] = [];
   const pollExtras: Record<string, unknown> = {};
   const forced = new Map<string, number | { status: number; body?: unknown; html?: string }>();
   let nextId = 40;
@@ -111,7 +117,7 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
     online: c.last_seen_at !== null && Date.now() - Date.parse(c.last_seen_at) < 90_000,
     kind: c.kind,
     platform: c.platform,
-    host_id: null,
+    host_id: c.bridge_device_uuid,
     last_seen_at: c.last_seen_at,
     approval: c.kind === "server" ? "delegated" : "host",
     approver_keys: c.approver_keys,
@@ -123,6 +129,7 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
     const path = url.pathname.replace(/^\/api\/v1/, "");
     calls.push(`${req.method} ${path}`);
     deviceTokens.push(String(req.headers["x-device-token"] ?? ""));
+    bridgeDeviceIds.push(String(req.headers["x-bridge-device-id"] ?? ""));
     const json = (status: number, body?: unknown) => {
       res.writeHead(status, { "content-type": "application/json" });
       res.end(body === undefined ? "" : JSON.stringify(body));
@@ -213,6 +220,13 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
       computer.heartbeats += 1;
       if (body.status) computer.status = body.status;
       if (body.platform) computer.platform = body.platform;
+      // A refused bridge id keeps the beat (twoody-backend 3f67b510).
+      const uuid = typeof body.bridge_device_uuid === "string" ? body.bridge_device_uuid.toLowerCase() : null;
+      if (uuid && computer.bridge_device_uuid !== uuid) {
+        if (computer.bridge_device_uuid) return json(200, { bridge: "bridge_device_mismatch" });
+        if (computers.some((c) => c !== computer && c.bridge_device_uuid === uuid)) return json(200, { bridge: "bridge_device_taken" });
+        computer.bridge_device_uuid = uuid;
+      }
       return json(204);
     }
     if (req.method === "GET" && sub === "/pending") {
@@ -309,6 +323,7 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
       status: null,
       last_seen_at: new Date().toISOString(),
       heartbeats: 0,
+      bridge_device_uuid: null,
     };
     computers.push(computer);
     return computer;
@@ -322,6 +337,7 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
     logins,
     calls,
     deviceTokens,
+    bridgeDeviceIds,
     pollExtras,
     forced,
     addComputer,

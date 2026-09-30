@@ -19,7 +19,9 @@
 // so a worker that borrows an app's session must send both.
 // Identity: X-Bridge-Device-Id (a stable UUID persisted under
 // ~/.twoody-server/bridge-device-id so a restart keeps the same row in
-// the backend's devices table).
+// the backend's devices table). A server linked to an account passes its
+// own instead (account.json bridge_device_id, account/store.ts), so two
+// installs on one machine never send the same id.
 // Heartbeat: a worker that serves `llm_infer` also sends
 // X-Bridge-Heartbeat on every poll — the models its runtimes hold, the
 // one in use, the machine's memory. That list is what lets the apps
@@ -72,7 +74,7 @@ export function bridgeDeviceRefusal(status: number, body: string): string | null
 function explainDeviceRefusal(code: string, deviceId: string): string {
   switch (code) {
     case "bridge_device_mismatch":
-      return `the account has another bridge device on record for this computer (this one is ${deviceId.slice(0, 8)}…). Reset it from Twoody's « Appareils » (reset_bridge_device), or restore the old ~/.twoody-server/bridge-device-id.`;
+      return `the account has another bridge device on record for this computer (this one is ${deviceId.slice(0, 8)}…). Reset it from Twoody's « Appareils » (reset_bridge_device), or restore the old bridge device id.`;
     case "bridge_device_taken":
       return `bridge device ${deviceId.slice(0, 8)}… is already held by another computer or another account. Remove the other computer from the account, or give this one a new bridge-device-id.`;
     default:
@@ -138,6 +140,9 @@ export interface BridgeClientOptions {
   homeAssistantToken: string;
   deviceNickname?: string;
   deviceIdPath?: string;
+  /// The bridge device id to use, instead of the one kept at deviceIdPath
+  /// (a linked server's own, from account.json).
+  deviceId?: string;
   /// Where the keys of sealed shared turns are kept (default: next to the
   /// device id, compute-keys.json).
   computeKeysPath?: string;
@@ -242,7 +247,7 @@ export function deviceOsName(platform: string = process.platform): string {
 }
 
 export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle {
-  const deviceId = resolveDeviceId(opts.deviceIdPath);
+  const deviceId = opts.deviceId ?? resolveDeviceId(opts.deviceIdPath);
   const nickname = asciiHeaderValue(opts.deviceNickname ?? "twoody-server") || "twoody-server";
   const servesLlm = opts.capabilities?.includes("local-llm-provider") ?? false;
   let stopped = false;

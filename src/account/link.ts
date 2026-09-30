@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { eq } from "drizzle-orm";
 import { authSessions, db } from "../db.js";
@@ -302,6 +303,9 @@ function completeLink(file: AccountFile, answer: PollAnswer): void {
     ...(accountLabel(answer) ? { account_label: accountLabel(answer)! } : {}),
     user_token: answer.user_token,
     computer: { id: String(computerId), credential: answer.credential, ...(answer.computer?.name ? { name: answer.computer.name } : {}) },
+    // A new computer in the account: its own bridge device, never an id
+    // another install on this machine (or this one, linked before) used.
+    bridge_device_id: randomUUID(),
     approvers,
     linked_at: new Date().toISOString(),
   });
