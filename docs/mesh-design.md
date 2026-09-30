@@ -24,6 +24,13 @@ docs/multi-computer-design.md (hub-and-spoke: a primary holds data, others lend 
 - « Faire confiance à cet ordinateur » per computer: ON = enrol + wrap epoch keys + binding; OFF = revoke + rotate.
   Household/shared computers stay untrusted (lend models, conversation only).
 - Only person-devices approve: clients refuse approvals/envelopes from a device whose binding says can_approve=false.
+- A Twoody Desktop stays a person-device (it approves) and names its own computer: `twoody/vault/desktop-binding/v1`
+  = [v, user_id, vault_device_id, account_computer_id, tunnel_public_key, pairing_public_key], signed by its OWN
+  vault key (test/fixtures/desktop-binding-v1.json), stored as vault_devices.desktop_binding, never in `binding`. It
+  counts only on a device the forward walk verified as a person by its signed approval, so it adds no power that
+  device lacked; the backend cannot forge, alter or move it, only withhold it. The roster then keys that Desktop by
+  account computer + tunnel key like any computer (can_approve true). Its embedded server signs and publishes it
+  with the handed keys and the account computer the Desktop hands over (src/vault/service.ts ensureDesktopBinding).
 - Roster derived, not stored: each computer verifies GET /vault (devices, approvals, bindings) in
   src/vault/roster.ts, cached 60 s, refreshed on 401/404/410. Serving side: requester_computer_id in the verified
   roster ⇒ may reach /peer/documents/* and /peer/vault/*.

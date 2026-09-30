@@ -35,6 +35,7 @@ const { followRoster, peerById, setPeerStatus, startMeshLinks } = await import("
 const { listComputers, peerTrusted, pickBackground, routablePeers } = await import("../src/router/index.js");
 const { readStatus } = await import("../src/account/status.js");
 const { eq } = await import("drizzle-orm");
+const c = await import("../src/vault/contracts.js");
 
 const USER = "7";
 const hex = () => randomBytes(32).toString("hex");
@@ -114,6 +115,57 @@ test("refused: a forged or self-made binding, one by a computer, a stripped kind
   }
   // An anchor pinned with another key than the account now gives it.
   assert.equal(buildRoster({ ...read, anchors: [{ id: phone.id, sign_public: hex() }] }).computers.size, 0);
+});
+
+test("a Desktop is a mesh computer by its own desktop-binding and stays a person device; forged, moved, a Pi's, unverified or twinned ones do not count", () => {
+  const v = meshVault(USER);
+  const phone = v.person("iPhone");
+  const air = v.desktop("MacBook Air", "air", phone);
+  // A Desktop approved by the other Desktop: both person devices.
+  const mini = v.desktop("Mac mini", "mini", air);
+  const pi = v.computer("Raspberry Pi", "pi", phone);
+  const forged = v.desktop("Signed by the phone", "forged", phone, { signer: phone });
+  const tampered = v.desktop("Tampered", "tampered", phone);
+  tampered.desktop_binding = JSON.stringify({ ...JSON.parse(tampered.desktop_binding as string), tunnel_public_key: hex() });
+  // The Pi names itself a Desktop: its signature checks, it is a computer by its approval.
+  const piSelf = v.computer("Pi 2", "pi2", phone);
+  const piBinding = { vault_device_id: piSelf.id, account_computer_id: "pi2-desktop", tunnel_public_key: hex(), pairing_public_key: hex() };
+  piSelf.desktop_binding = JSON.stringify({ ...piBinding, signature: c.signDesktopBinding({ userId: USER, binding: piBinding, signPrivate: piSelf.keys.signPrivate }) });
+  const intruder = v.person("Intruder");
+  const intruderDesk = v.desktop("Intruder's Desktop", "intruder-desk", intruder);
+  // The Air's binding carried by another device.
+  const ipad = v.person("iPad", phone);
+  ipad.desktop_binding = air.desktop_binding;
+  // One account computer, a Desktop's and a computer's binding: neither.
+  v.desktop("Twin Desktop", "twin", phone);
+  v.computer("Twin computer", "twin", phone);
+  const revoked = v.desktop("Revoked", "revoked", phone);
+  revoked.status = "revoked";
+  // The account moves a Desktop's binding into `binding`: it now reads as a
+  // computer, which may not approve — and is no computer either.
+  const moved = v.desktop("Moved", "moved", phone);
+  const read = v.input([phone]);
+  Object.assign(read.devices.find((d) => d.id === moved.id)!, { binding: moved.desktop_binding, desktop_binding: null });
+
+  const roster = buildRoster(read);
+  assert.deepEqual([...roster.computers.keys()].sort(), ["air", "mini", "pi", "pi2"], "never pi2-desktop");
+  assert.equal(roster.computers.get("pi2")!.via, "computer");
+  const a = roster.computers.get("air")!;
+  assert.deepEqual([a.vaultDeviceId, a.tunnelPublicKey, a.canApprove, a.via], [air.id, air.tunnelKey, true, "desktop"]);
+  assert.equal(roster.computers.get("mini")!.tunnelPublicKey, mini.tunnelKey);
+  assert.equal(roster.computers.get("pi")!.via, "computer");
+  assert.ok(roster.persons.has(air.id) && roster.persons.has(mini.id) && roster.persons.has(ipad.id), "Desktops stay person devices");
+  assert.ok(!roster.persons.has(pi.id) && !roster.persons.has(piSelf.id) && !roster.persons.has(moved.id));
+  for (const d of [forged, tampered, intruderDesk, revoked, moved]) {
+    assert.ok(![...roster.computers.values()].some((x) => x.vaultDeviceId === d.id), d.label);
+  }
+  assert.ok(![...roster.computers.values()].some((x) => x.vaultDeviceId === ipad.id));
+  // Rule 4 for a Desktop: its bound tunnel key only.
+  const request = (key: string) => ({ id: 1, name: "Mac mini", public_key: key, expires_at: new Date(Date.now() + 60_000).toISOString(), role: "peer", requester_computer_id: "mini" });
+  assert.deepEqual(judgeMesh(request(mini.tunnelKey) as never, roster, { selfComputerId: "air" }), { approve: true, rule: "mesh_computer" });
+  assert.equal(judgeMesh(request(hex()) as never, roster, { selfComputerId: "air" }), null);
+  // Without the phone as anchor, the Desktops are nobody.
+  assert.equal(buildRoster(v.input([])).computers.size, 0);
 });
 
 test("cached 60 s, asked again at most every 10 s for a computer it lacks; 401 empties it, an unreachable account keeps it", async () => {

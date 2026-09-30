@@ -1,0 +1,164 @@
+{
+  "doc": [
+    "twoody/vault/desktop-binding/v1 (docs/mesh-design.md §1, « Desktops in the mesh »). Reference: src/vault/contracts.ts (signDesktopBinding, desktopBindingValid).",
+    "A Twoody Desktop is a person-device of the vault and a computer of the account: it says which account computer it is, and the tunnel and pairing keys its embedded server is reached by, signed by ITS OWN vault signing key (the private half of its vault_devices.sign_public). Verified with that device's sign_public as the verifier's own forward walk verified it (never a key the binding brings).",
+    "Canonical header: UTF-8 bytes of the label 'twoody/vault/desktop-binding/v1' (no separator), then for each field in order: the UTF-8 bytes of String(field), prefixed by their byte length as 2 bytes big-endian. Fields: [v, user_id, vault_device_id, account_computer_id, tunnel_public_key, pairing_public_key]. Encodings as computer-binding-v1.json (v = '1', user id in decimal, uuids lowercase dashed, keys 64 lowercase hex). Ed25519 (RFC 8032, deterministic); signature 128 lowercase hex.",
+    "Wire form (what the backend stores as vault_devices.desktop_binding, a JSON string, and returns in GET /vault): {vault_device_id, account_computer_id, tunnel_public_key, pairing_public_key, signature}, exactly these five. The signer is the device itself: there is no approver_id. Only a person device carries one; the `binding` field stays a computer's (a desktop-binding there would make the Desktop read as a computer, which may not approve).",
+    "Rules for verifiers (twoody-server src/vault/client.ts desktopBindingOf, roster.ts): counts only on a trusted device verified by the forward walk, a person-device by its signed approval (approval/v2 person or v1) that the account does not mark as a computer; vault_device_id must be that device's id; the signature must check with its sign_public. Such a Desktop is a mesh computer keyed by account_computer_id (tunnel_public_key is the key its sessions and links must carry) and stays a person-device (may approve). Two devices naming the same account computer (two desktop-bindings, or one and a computer's binding): neither counts.",
+    "Keys: the devices and computers of computer-binding-v1.json (private halves SHA-256('twoody/p0/fixture/<name>'))."
+  ],
+  "label": "twoody/vault/desktop-binding/v1",
+  "devices": {
+    "iphone": {
+      "id": "1a6f0c2e-7d41-4b8a-9e53-2f0c6d8a1b01",
+      "sign_private": "a4d2b581957d9ac5459a37aea0a4a6f8af902b343284ac28c6c65ba8b020e467",
+      "sign_public": "9c434dfe00b872f9ab33b6ff59ca1b11d3729e17d5778aac1e20e71558042aaa",
+      "enc_private": "764f702d94ceed050f3d8d4ecf9cac1ad7698684b02eb04690eeed22c35cb300",
+      "enc_public": "00236f8aaa82a9e84a955c60cf882920d3f810eef0b8733fc8d1bb3ed2a5eb06"
+    },
+    "mac": {
+      "id": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02",
+      "sign_private": "ff0230fe0c4663ed050adc1ff7db50082858514423ee668a6acf0e7ca2a0c297",
+      "sign_public": "46512fd6ceaf267382e70ef51b76430058f604fbcff26920da58c014f0fd8a29",
+      "enc_private": "457f466e167709e3f33f62c5dec8b323688e70345b836db20bba2b1a787e0319",
+      "enc_public": "9ef80f0eef8e316176d14bc12fe717b842174436bc5dc4442040fe4d327b3645"
+    },
+    "pi": {
+      "id": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03",
+      "sign_private": "32e1eefa06d35cf83abe50b2eb7fcc179e340bc952a4856497fb3a3e39e38061",
+      "sign_public": "8f9b010444a159d464036102ce4d5ec637324e4a400582e32ac73fbba71b359e",
+      "enc_private": "7b4c5284d7a11a97edf537f5757c0c2c516a5d7cd8e038ad0b178dc9e3b9b0f6",
+      "enc_public": "07665403eba8d716fbc6ecf1acf21aa0ebe268d2b9fa91b1ada3e28194efa96b"
+    }
+  },
+  "computers": {
+    "mac": {
+      "account_computer_id": "8e2c4a61-3b5d-4f7e-9a1c-2d4e6f8a0b11",
+      "tunnel": {
+        "private_hex": "792316695fe7727c8d8356ba118917b5fcb0576ba08b1c188f7f8e35db5bd4d0",
+        "public": "06310d22976ac23ac3c16002e22e5749f48a106b3588d3a8e7f5162aeb2b5224"
+      },
+      "pairing": {
+        "private_hex": "fb098d17aa90fdf5548d34c8fd23181392918ce786bd078cae27e9e292201d91",
+        "public": "1c8d3330db39804601015ddb7b94135bb07f39aa8e765becc837919812a05121"
+      }
+    },
+    "pi": {
+      "account_computer_id": "9f3d5b72-4c6e-4a8f-8b2d-3e5f7a9b1c22",
+      "tunnel": {
+        "private_hex": "e8a18dfbb3b592e49cd2a2779199443cd4a074229cc52c6273a2cc23efc4f94d",
+        "public": "918db729b935ee5c12da2937485f4b1954a51327f923495ce57f83b1ea72d409"
+      },
+      "pairing": {
+        "private_hex": "492050f2e5881220d9e7553f58cd3dc6e18a03a41077cfe755570aaa0b35aa1a",
+        "public": "12562fe5449cf26dc53e7e0dffef4a1ad96a70dfd6a6ebd1cb5c0e5ea3ee9938"
+      }
+    }
+  },
+  "vectors": [
+    {
+      "name": "the Mac's Desktop names itself: signed by its own vault key",
+      "user_id": "42",
+      "wire": {
+        "vault_device_id": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02",
+        "account_computer_id": "8e2c4a61-3b5d-4f7e-9a1c-2d4e6f8a0b11",
+        "tunnel_public_key": "06310d22976ac23ac3c16002e22e5749f48a106b3588d3a8e7f5162aeb2b5224",
+        "pairing_public_key": "1c8d3330db39804601015ddb7b94135bb07f39aa8e765becc837919812a05121",
+        "signature": "23e75f0fe68097d24ae1d4ffc274251823b1d1728c38a7860caf6f2513680222db76521e18ddfb21b7d89f72b5c94292e1a2d20cff89d3ec25ab09f6fd206e0c"
+      },
+      "signed_by": "mac",
+      "verified_with": "mac",
+      "statement_hex": "74776f6f64792f7661756c742f6465736b746f702d62696e64696e672f763100013100023432002432623765316433662d386535322d346339622d386636342d336131643765396232633032002438653263346136312d336235642d346637652d396131632d326434653666386130623131004030363331306432323937366163323361633363313630303265323265353734396634386131303662333538386433613865376635313632616562326235323234004031633864333333306462333938303436303130313564646237623934313335626230376633396161386537363562656363383337393139383132613035313231",
+      "expected": {
+        "valid": true,
+        "roster": "counts: a verified person-device"
+      }
+    },
+    {
+      "name": "tampered: another tunnel key",
+      "user_id": "42",
+      "wire": {
+        "vault_device_id": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02",
+        "account_computer_id": "8e2c4a61-3b5d-4f7e-9a1c-2d4e6f8a0b11",
+        "tunnel_public_key": "918db729b935ee5c12da2937485f4b1954a51327f923495ce57f83b1ea72d409",
+        "pairing_public_key": "1c8d3330db39804601015ddb7b94135bb07f39aa8e765becc837919812a05121",
+        "signature": "23e75f0fe68097d24ae1d4ffc274251823b1d1728c38a7860caf6f2513680222db76521e18ddfb21b7d89f72b5c94292e1a2d20cff89d3ec25ab09f6fd206e0c"
+      },
+      "signed_by": "mac",
+      "verified_with": "mac",
+      "statement_hex": "74776f6f64792f7661756c742f6465736b746f702d62696e64696e672f763100013100023432002432623765316433662d386535322d346339622d386636342d336131643765396232633032002438653263346136312d336235642d346637652d396131632d326434653666386130623131004039313864623732396239333565653563313264613239333734383566346231393534613531333237663932333439356365353766383362316561373264343039004031633864333333306462333938303436303130313564646237623934313335626230376633396161386537363562656363383337393139383132613035313231",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "name": "tampered: another account computer (the Pi's)",
+      "user_id": "42",
+      "wire": {
+        "vault_device_id": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02",
+        "account_computer_id": "9f3d5b72-4c6e-4a8f-8b2d-3e5f7a9b1c22",
+        "tunnel_public_key": "06310d22976ac23ac3c16002e22e5749f48a106b3588d3a8e7f5162aeb2b5224",
+        "pairing_public_key": "1c8d3330db39804601015ddb7b94135bb07f39aa8e765becc837919812a05121",
+        "signature": "23e75f0fe68097d24ae1d4ffc274251823b1d1728c38a7860caf6f2513680222db76521e18ddfb21b7d89f72b5c94292e1a2d20cff89d3ec25ab09f6fd206e0c"
+      },
+      "signed_by": "mac",
+      "verified_with": "mac",
+      "statement_hex": "74776f6f64792f7661756c742f6465736b746f702d62696e64696e672f763100013100023432002432623765316433662d386535322d346339622d386636342d336131643765396232633032002439663364356237322d346336652d346138662d386232642d336535663761396231633232004030363331306432323937366163323361633363313630303265323265353734396634386131303662333538386433613865376635313632616562326235323234004031633864333333306462333938303436303130313564646237623934313335626230376633396161386537363562656363383337393139383132613035313231",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "name": "signed by another device (the iPhone) for the Mac's vault device",
+      "user_id": "42",
+      "wire": {
+        "vault_device_id": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02",
+        "account_computer_id": "8e2c4a61-3b5d-4f7e-9a1c-2d4e6f8a0b11",
+        "tunnel_public_key": "06310d22976ac23ac3c16002e22e5749f48a106b3588d3a8e7f5162aeb2b5224",
+        "pairing_public_key": "1c8d3330db39804601015ddb7b94135bb07f39aa8e765becc837919812a05121",
+        "signature": "804e00e18f32f901a984eafc6e6cd0ae639977e1e2b90943e4cc6f8688abf6f6ffd26270a9b25f982b9d480940ff8f2ba2161bb634daf91b2a2fa7f8d3ef890a"
+      },
+      "signed_by": "iphone",
+      "verified_with": "mac",
+      "statement_hex": "74776f6f64792f7661756c742f6465736b746f702d62696e64696e672f763100013100023432002432623765316433662d386535322d346339622d386636342d336131643765396232633032002438653263346136312d336235642d346637652d396131632d326434653666386130623131004030363331306432323937366163323361633363313630303265323265353734396634386131303662333538386433613865376635313632616562326235323234004031633864333333306462333938303436303130313564646237623934313335626230376633396161386537363562656363383337393139383132613035313231",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "name": "a computer-binding signature passed off as a desktop-binding",
+      "user_id": "42",
+      "wire": {
+        "vault_device_id": "2b7e1d3f-8e52-4c9b-8f64-3a1d7e9b2c02",
+        "account_computer_id": "8e2c4a61-3b5d-4f7e-9a1c-2d4e6f8a0b11",
+        "tunnel_public_key": "06310d22976ac23ac3c16002e22e5749f48a106b3588d3a8e7f5162aeb2b5224",
+        "pairing_public_key": "1c8d3330db39804601015ddb7b94135bb07f39aa8e765becc837919812a05121",
+        "signature": "9c8285c13517650f8d0287349e3d7a4fc935bd2dc9252ff9f32910e56fcf84c0ee610259a3f5ee4c15f9e38bbef3f1af6fb6f0282340646c7413023a2f322706"
+      },
+      "signed_by": "iphone (computer-binding/v1)",
+      "verified_with": "mac",
+      "statement_hex": "74776f6f64792f7661756c742f6465736b746f702d62696e64696e672f763100013100023432002432623765316433662d386535322d346339622d386636342d336131643765396232633032002438653263346136312d336235642d346637652d396131632d326434653666386130623131004030363331306432323937366163323361633363313630303265323265353734396634386131303662333538386433613865376635313632616562326235323234004031633864333333306462333938303436303130313564646237623934313335626230376633396161386537363562656363383337393139383132613035313231",
+      "expected": {
+        "valid": false
+      }
+    },
+    {
+      "name": "the Pi names itself: the signature checks, but the Pi is a computer by its signed approval",
+      "user_id": "42",
+      "wire": {
+        "vault_device_id": "3c8f2e4a-9f63-4dac-a075-4b2e8fac3d03",
+        "account_computer_id": "9f3d5b72-4c6e-4a8f-8b2d-3e5f7a9b1c22",
+        "tunnel_public_key": "918db729b935ee5c12da2937485f4b1954a51327f923495ce57f83b1ea72d409",
+        "pairing_public_key": "12562fe5449cf26dc53e7e0dffef4a1ad96a70dfd6a6ebd1cb5c0e5ea3ee9938",
+        "signature": "10df2a88ffa4ddabe4bc1ce164da43dbe9f12035de2945772b0c73212530e7e0a149fef017dfb6df9e8d5d6bb1a6ee28f9ff1906b3ef61480fabb31b2c0e5700"
+      },
+      "signed_by": "pi",
+      "verified_with": "pi",
+      "statement_hex": "74776f6f64792f7661756c742f6465736b746f702d62696e64696e672f763100013100023432002433633866326534612d396636332d346461632d613037352d346232653866616333643033002439663364356237322d346336652d346138662d386232642d336535663761396231633232004039313864623732396239333565653563313264613239333734383566346231393534613531333237663932333439356365353766383362316561373264343039004031323536326665353434396366323664633533653765306466666566346131616439366137306466643661366562643163623563306535656133656539393338",
+      "expected": {
+        "valid": true,
+        "roster": "refused: only a person-device's desktop-binding counts"
+      }
+    }
+  ]
+}

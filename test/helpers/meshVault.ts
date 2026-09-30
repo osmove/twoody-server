@@ -1,12 +1,13 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { signApprovalV2, signBinding, signDeviceAccess } from "../../src/vault/contracts.js";
+import { signApprovalV2, signBinding, signDesktopBinding, signDeviceAccess } from "../../src/vault/contracts.js";
 import { createDeviceKeys, signApproval, toHex, type DeviceKeys } from "../../src/vault/crypto.js";
 import type { Anchor, VaultDevice } from "../../src/vault/client.js";
 
 // A vault as GET /vault returns it, signed like the real one (approval/v2,
-// computer-binding-v1), for the mesh roster's tests (lot S2): the iPhone
-// founds it and is this computer's anchor; it approves and binds the
-// account's computers; each computer has a tunnel key of its own.
+// computer-binding-v1, desktop-binding-v1), for the mesh roster's tests
+// (lot S2): the iPhone founds it and is this computer's anchor; it approves
+// and binds the account's computers; a Twoody Desktop is a person device
+// that binds itself; each computer has a tunnel key of its own.
 
 export type MeshDevice = VaultDevice & { keys: DeviceKeys };
 
@@ -56,6 +57,17 @@ export function meshVault(userId: string | number = "42") {
     return Object.assign(device, { tunnelKey });
   }
 
+  /// A Twoody Desktop: a person device approved by `approver` (v2 person)
+  /// that names its account computer itself (desktop-binding-v1, signed by
+  /// its own key, or by `signer` to forge one).
+  function desktop(label: string, accountComputerId: string, approver: MeshDevice, options: { tunnelKey?: string; pairingKey?: string; signer?: MeshDevice } = {}) {
+    const device = person(label, approver);
+    const tunnelKey = options.tunnelKey ?? randomBytes(32).toString("hex");
+    const binding = { vault_device_id: device.id, account_computer_id: accountComputerId, tunnel_public_key: tunnelKey, pairing_public_key: options.pairingKey ?? randomBytes(32).toString("hex") };
+    device.desktop_binding = JSON.stringify({ ...binding, signature: signDesktopBinding({ userId: user, binding, signPrivate: (options.signer ?? device).keys.signPrivate }) });
+    return Object.assign(device, { tunnelKey });
+  }
+
   /// A phone's device-access-v1 for `tunnelKey`, signed by `signer`.
   function deviceAccess(signer: MeshDevice, tunnelKey: string) {
     const access = { vault_device_id: signer.id, tunnel_public_key: tunnelKey };
@@ -68,6 +80,7 @@ export function meshVault(userId: string | number = "42") {
     devices,
     person,
     computer,
+    desktop,
     deviceAccess,
     anchorOf,
     /// What the roster reads: the devices as the account lists them (no keys).

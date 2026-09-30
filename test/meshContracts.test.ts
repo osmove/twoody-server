@@ -22,6 +22,7 @@ const binding = fixture("computer-binding-v1.json");
 const access = fixture("device-access-v1.json");
 const memories = fixture("memory-lww-vectors.json");
 const approvalV2 = fixture("vault-approval-v2.json");
+const desktopBinding = fixture("desktop-binding-v1.json");
 const EPOCH_ONE = fromHex(memories.epoch_one_key);
 
 test("computer-binding/v1: the vectors, signed like the v1 approval", () => {
@@ -51,6 +52,29 @@ test("computer-binding/v1: the vectors, signed like the v1 approval", () => {
   assert.equal(c.bindingValid({ userId: "42", binding: bound, signerSignPublic: key, signature: "zz" }), false);
   assert.equal(c.bindingValid({ userId: "42", binding: { ...bound, can_approve: "false" as unknown as boolean }, signerSignPublic: key, signature }), false);
   assert.throws(() => c.bindingStatement("42", { ...bound, pairing_public_key: "" }), /bad_binding/);
+});
+
+test("desktop-binding/v1: the vectors, signed by the Desktop's own vault key", () => {
+  assert.equal(desktopBinding.label, c.DESKTOP_BINDING_LABEL);
+  for (const [name, device] of Object.entries<{ sign_private: string; sign_public: string }>(desktopBinding.devices)) {
+    assert.equal(toHex(ed25519.getPublicKey(fromHex(device.sign_private))), device.sign_public, name);
+  }
+  for (const v of desktopBinding.vectors) {
+    const { signature, ...bound } = v.wire;
+    assert.deepEqual(Object.keys(v.wire).sort(), ["account_computer_id", "pairing_public_key", "signature", "tunnel_public_key", "vault_device_id"], v.name);
+    assert.equal(toHex(c.desktopBindingStatement(v.user_id, bound)), v.statement_hex, v.name);
+    const deviceSignPublic = fromHex(desktopBinding.devices[v.verified_with].sign_public);
+    assert.equal(c.desktopBindingValid({ userId: v.user_id, binding: bound, deviceSignPublic, signature }), v.expected.valid, v.name);
+    if (v.expected.valid) assert.equal(c.signDesktopBinding({ userId: Number(v.user_id), binding: bound, signPrivate: fromHex(desktopBinding.devices[v.signed_by].sign_private) }), signature, v.name);
+  }
+  // The same fields under the computer-binding label are another statement.
+  const mac = desktopBinding.vectors[0].wire;
+  const { signature, ...bound } = mac;
+  assert.notEqual(toHex(c.desktopBindingStatement("42", bound)), toHex(c.bindingStatement("42", { ...bound, can_approve: true })));
+  const key = fromHex(desktopBinding.devices.mac.sign_public);
+  assert.equal(c.desktopBindingValid({ userId: "43", binding: bound, deviceSignPublic: key, signature }), false, "another account");
+  assert.equal(c.desktopBindingValid({ userId: "42", binding: bound, deviceSignPublic: key, signature: "zz" }), false);
+  assert.throws(() => c.desktopBindingStatement("42", { ...bound, tunnel_public_key: bound.tunnel_public_key.toUpperCase() }), /bad_desktop_binding/);
 });
 
 test("approval/v2: the vectors; the kind is read from the signature only", () => {

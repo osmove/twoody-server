@@ -1,5 +1,5 @@
 import { BackendError } from "../account/backend.js";
-import { bindingChecks, deviceKind, mayApprove, readBinding, verifiedIds, type Anchor, type VaultDevice } from "./client.js";
+import { bindingChecks, desktopBindingOf, deviceKind, mayApprove, readBinding, verifiedIds, type Anchor, type VaultDevice } from "./client.js";
 import { onVaultChange, vaultRosterInput } from "./service.js";
 
 // The verified mesh roster (docs/mesh-design.md §1, lot S2): which of the
@@ -14,8 +14,13 @@ import { onVaultChange, vaultRosterInput } from "./service.js";
 //              the account lists) with a valid binding for that same account
 //              computer (tunnel_public_key, pairing_public_key), signed by a
 //              verified device that may approve. Keyed by account computer
-//              id. Two devices binding the same account computer: neither
-//              counts.
+//              id. A Twoody Desktop counts too: a verified, trusted
+//              person-device (by its signed approval) carrying a valid
+//              desktop-binding-v1 — signed by its own vault key, naming its
+//              account computer and its embedded server's tunnel key
+//              (client.ts desktopBindingOf) — with canApprove true: it is
+//              the person's machine. Two devices binding the same account
+//              computer (either way): neither counts.
 //   persons    verified, trusted devices that may approve (a person
 //              device, or a computer whose binding says can_approve=true,
 //              the Desktop): whose device-access-v1 lets a phone in
@@ -35,6 +40,9 @@ export type RosterComputer = {
   tunnelPublicKey: string;
   pairingPublicKey: string;
   canApprove: boolean;
+  /// "desktop": a person-device that bound itself (desktop-binding-v1);
+  /// "computer": bound by a person-device (computer-binding-v1).
+  via: "computer" | "desktop";
 };
 export type RosterPerson = { vaultDeviceId: string; label: string; signPublic: string };
 export type Roster = { userId: string; computers: Map<string, RosterComputer>; persons: Map<string, RosterPerson> };
@@ -48,6 +56,15 @@ export function buildRoster({ userId, devices, anchors }: RosterInput): Roster {
   const computers = new Map<string, RosterComputer>();
   const persons = new Map<string, RosterPerson>();
   const clashing = new Set<string>();
+  const add = (computer: RosterComputer) => {
+    const id = computer.accountComputerId;
+    if (computers.has(id) || clashing.has(id)) {
+      computers.delete(id);
+      clashing.add(id);
+      return;
+    }
+    computers.set(id, computer);
+  };
   for (const device of devices) {
     if (device.status !== "trusted" || !verified.has(device.id)) continue;
     const approver = (binding: { approver_id: string }) => byId.get(binding.approver_id);
@@ -58,21 +75,31 @@ export function buildRoster({ userId, devices, anchors }: RosterInput): Roster {
       if (!binding || binding.account_computer_id !== kind.account_computer_id) continue;
       if (!verified.has(binding.approver_id) || !bindingChecks(userId, device, binding, byId)) continue;
       if (!mayApprove(userId, approver(binding), byId, verified)) continue;
-      if (computers.has(binding.account_computer_id) || clashing.has(binding.account_computer_id)) {
-        computers.delete(binding.account_computer_id);
-        clashing.add(binding.account_computer_id);
-        continue;
-      }
-      computers.set(binding.account_computer_id, {
+      add({
         accountComputerId: binding.account_computer_id,
         vaultDeviceId: device.id,
         label: device.label,
         tunnelPublicKey: binding.tunnel_public_key,
         pairingPublicKey: binding.pairing_public_key,
         canApprove: binding.can_approve,
+        via: "computer",
       });
     }
-    if (mayApprove(userId, device, byId, verified)) persons.set(device.id, { vaultDeviceId: device.id, label: device.label, signPublic: device.sign_public });
+    const person = mayApprove(userId, device, byId, verified);
+    if (person) persons.set(device.id, { vaultDeviceId: device.id, label: device.label, signPublic: device.sign_public });
+    // A Desktop: a person-device of the walk that says which computer it is.
+    const desktop = person && kind.kind === "person" ? desktopBindingOf(userId, device, byId) : null;
+    if (desktop) {
+      add({
+        accountComputerId: desktop.account_computer_id,
+        vaultDeviceId: device.id,
+        label: device.label,
+        tunnelPublicKey: desktop.tunnel_public_key,
+        pairingPublicKey: desktop.pairing_public_key,
+        canApprove: true,
+        via: "desktop",
+      });
+    }
   }
   return { userId, computers, persons };
 }

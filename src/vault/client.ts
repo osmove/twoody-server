@@ -1,5 +1,5 @@
 import { backendCall, BackendError, type BackendCredentials } from "../account/backend.js";
-import { approvedKind, bindingValid, type ApprovedKind, type ComputerBinding } from "./contracts.js";
+import { approvedKind, bindingValid, desktopBindingValid, type ApprovedKind, type ComputerBinding, type DesktopBinding } from "./contracts.js";
 import {
   createDeviceKeys, fingerprint, fromHex, toHex, unwrapEpochKey, VaultError,
   type DeviceKeys, type EpochEnvelope, type Random, type SealedEvent,
@@ -39,6 +39,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /// A binding as the account returns it (docs of test/fixtures/computer-binding-v1.json, « Wire form »).
 export type WireBinding = ComputerBinding & { approver_id: string; signature: string };
+/// A Desktop's own desktop-binding as the account returns it (test/fixtures/desktop-binding-v1.json).
+export type WireDesktopBinding = DesktopBinding & { signature: string };
 
 export type VaultDevice = {
   id: string; label: string; enc_public: string; sign_public: string; status: "pending" | "trusted" | "revoked";
@@ -50,6 +52,8 @@ export type VaultDevice = {
   account_computer_id?: string | null;
   /// The signed computer-binding-v1, as stored: a JSON string (or already parsed).
   binding?: string | WireBinding | null;
+  /// A person-device's own desktop-binding-v1 (a Twoody Desktop), as stored.
+  desktop_binding?: string | WireDesktopBinding | null;
 };
 
 export type VaultState = { devices?: VaultDevice[]; epoch?: number; needs_rotation?: boolean };
@@ -61,6 +65,12 @@ export type ComputerVaultApi = {
   state(): Promise<VaultState>;
   createDevice(body: { label: string; enc_public: string; sign_public: string; kind: "computer"; account_computer_id: string }): Promise<{ device: VaultDevice; founding?: boolean }>;
   envelopes(deviceId: string): Promise<{ envelopes?: EpochEnvelope[] }>;
+};
+
+/// A Desktop publishes its own desktop-binding-v1 (POST
+/// /vault/devices/:id/desktop_binding, the JSON of its wire form).
+export type DesktopBindingApi = {
+  publishDesktopBinding(deviceId: string, desktopBinding: string): Promise<unknown>;
 };
 
 export type EventsPage = { events?: Array<SealedEvent & { seq: number; stream?: string }>; next_after?: number | null };
@@ -105,6 +115,49 @@ export function bindingChecks(userId: string | number, device: VaultDevice, bind
     return bindingValid({ userId, binding: bound, signerSignPublic: fromHex(approver.sign_public), signature });
   } catch {
     return false;
+  }
+}
+
+/// A Desktop's desktop-binding, read; null when it has none or it is not
+/// one (exactly its five fields, keys and signature as lowercase hex).
+export function readDesktopBinding(device: Pick<VaultDevice, "desktop_binding"> | null | undefined): WireDesktopBinding | null {
+  let raw: unknown = device?.desktop_binding;
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "string") {
+    if (raw.length > 1024) return null;
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const b = raw as Record<string, unknown>;
+  const keys = ["account_computer_id", "pairing_public_key", "signature", "tunnel_public_key", "vault_device_id"];
+  if (Object.keys(b).sort().join(",") !== keys.join(",") || keys.some((key) => typeof b[key] !== "string")) return null;
+  const [account_computer_id, pairing_public_key, signature, tunnel_public_key, vault_device_id] = keys.map((key) => b[key] as string);
+  if (!/^[0-9a-f]{64}$/.test(tunnel_public_key!) || !/^[0-9a-f]{64}$/.test(pairing_public_key!) || !/^[0-9a-f]{128}$/.test(signature!)) return null;
+  if (!vault_device_id || vault_device_id.length > 200 || !account_computer_id || account_computer_id.length > 200) return null;
+  return { vault_device_id: vault_device_id!, account_computer_id: account_computer_id!, tunnel_public_key: tunnel_public_key!, pairing_public_key: pairing_public_key!, signature: signature! };
+}
+
+/// The account computer a Desktop says it is (desktop-binding-v1, signed
+/// by its own vault key), or null. Only for a live person-device by its
+/// signed approval that the account does not mark as a computer (a Pi
+/// cannot promote itself), naming that very device, whose own key checks
+/// the signature. Whether the device is verified is the caller's walk
+/// (verifiedIds): the binding adds nothing to who the device is, only
+/// which computer of the account it runs as.
+export function desktopBindingOf(userId: string | number, device: VaultDevice | undefined, byId: Map<string, VaultDevice>): WireDesktopBinding | null {
+  if (!device || device.status !== "trusted" || isComputer(device)) return null;
+  const binding = readDesktopBinding(device);
+  if (!binding || binding.vault_device_id !== device.id) return null;
+  if (deviceKind(userId, device, byId)?.kind !== "person") return null;
+  const { signature, ...bound } = binding;
+  try {
+    return desktopBindingValid({ userId, binding: bound, deviceSignPublic: fromHex(device.sign_public), signature }) ? binding : null;
+  } catch {
+    return null;
   }
 }
 
@@ -308,7 +361,7 @@ export function memoryKeyStore(initial: LocalVault | null = null): KeyStore {
 /// twoody-desktop's accountApi, over this server's backendCall (the
 /// headless computer's own session, or the Desktop's). 409 (some event ids
 /// clash) and 422 invalid_event are answers about a batch, not failures.
-export function accountVaultApi(creds: () => BackendCredentials | null): ComputerVaultApi & EventsApi {
+export function accountVaultApi(creds: () => BackendCredentials | null): ComputerVaultApi & EventsApi & DesktopBindingApi {
   const call = async <T>(path: string, body?: unknown, timeoutMs = 15_000): Promise<T> => {
     const c = creds();
     if (!c) throw new VaultError("not_linked");
@@ -318,6 +371,7 @@ export function accountVaultApi(creds: () => BackendCredentials | null): Compute
     state: () => call("vault"),
     createDevice: (body) => call("vault/devices", body),
     envelopes: (deviceId) => call(`vault/envelopes?device_id=${encodeURIComponent(deviceId)}`),
+    publishDesktopBinding: (deviceId, desktopBinding) => call(`vault/devices/${encodeURIComponent(deviceId)}/desktop_binding`, { desktop_binding: desktopBinding }),
     postEvents: async (events) => {
       try {
         return await call("vault/events", { events }, 30_000);

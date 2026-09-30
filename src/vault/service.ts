@@ -3,7 +3,8 @@ import { accountCredentials } from "../account/service.js";
 import { linkedAccount, readAccountFile } from "../account/store.js";
 import { DATA_DIR, db, users } from "../db.js";
 import { tunnelIdentity } from "../tunnel/identity.js";
-import { accountVaultApi, createComputerVaultClient, fileKeyStore, type Anchor, type ComputerVaultApi, type ComputerVaultClient, type ComputerVaultStatus, type EventsApi, type LocalVault, type VaultState } from "./client.js";
+import { accountVaultApi, createComputerVaultClient, desktopBindingOf, deviceKind, fileKeyStore, isComputer, type Anchor, type ComputerVaultApi, type ComputerVaultClient, type ComputerVaultStatus, type EventsApi, type LocalVault, type VaultDevice, type VaultState } from "./client.js";
+import { signDesktopBinding, type DesktopBinding } from "./contracts.js";
 import { fingerprint, fromHex, toHex, VaultError } from "./crypto.js";
 import { jsonFileStore, memoryStore, type VaultStore } from "./store.js";
 import { createConversationBridge, createVaultSync, type ConversationBridge, type LocalHistory, type VaultSync } from "./sync.js";
@@ -25,7 +26,13 @@ import { sqliteHistory } from "./localHistory.js";
 //             itself. The Desktop's main process already syncs and imports
 //             (twoody-desktop src/shared/vaultConversations.ts), so here the
 //             vault only answers catch-up (ensureConversation) and gives S5
-//             the epoch keys.
+//             the epoch keys. With the hand-over comes this Mac's account
+//             computer ({id, pairing_public_key}): the server signs, with
+//             the handed vault key, the Desktop's own desktop-binding-v1
+//             (that account computer, reached by this server's tunnel key)
+//             and publishes it when the account has none or another one —
+//             the mesh then counts this Desktop as one of its computers
+//             (vault/roster.ts), and it stays a person-device.
 //
 // What other lots use: vaultIdentity() (GET /api/v1/peer/vault/identity),
 // pinVaultAnchor() (POST /api/v1/peer/vault/anchor),
@@ -38,7 +45,11 @@ const FIRST_TICK_MS = 5_000;
 type Mode =
   | { kind: "off" }
   | { kind: "headless"; client: ComputerVaultClient; api: ComputerVaultApi & EventsApi; sync: VaultSync; syncStore: VaultStore & { clear(): void }; bridge: ConversationBridge | null; userId: string; accountComputerId: string; status: ComputerVaultStatus | null }
-  | { kind: "desktop"; local: LocalVault; api: EventsApi; state: () => Promise<VaultState>; sync: VaultSync; bridge: ConversationBridge | null; userId: string };
+  | { kind: "desktop"; local: LocalVault; api: EventsApi; state: () => Promise<VaultState>; sync: VaultSync; bridge: ConversationBridge | null; userId: string; computer: DesktopComputer | null; publish: PublishDesktopBinding };
+
+/// This Mac as the account knows it, handed by the Desktop with its keys.
+export type DesktopComputer = { id: string; pairingPublicKey: string };
+export type PublishDesktopBinding = (deviceId: string, desktopBinding: string) => Promise<unknown>;
 
 let mode: Mode = { kind: "off" };
 
@@ -97,9 +108,20 @@ export function readVaultMessage(data: unknown): LocalVault | null {
   return { userId, accountComputerId: null, deviceId: m.deviceId, keys: keys as LocalVault["keys"], epochs, anchors };
 }
 
+/// The account computer the Desktop says this Mac is, with its pairing key
+/// ({computer: {id, pairing_public_key}} in the hand-over); null without one.
+export function readDesktopComputer(data: unknown): DesktopComputer | null {
+  const c = ((data ?? {}) as Record<string, unknown>).computer as Record<string, unknown> | null | undefined;
+  if (!c || typeof c !== "object") return null;
+  const id = typeof c.id === "string" || typeof c.id === "number" ? String(c.id) : "";
+  const pairing = typeof c.pairing_public_key === "string" ? c.pairing_public_key.toLowerCase() : "";
+  if (!id || id.length > 64 || !/^[A-Za-z0-9-]+$/.test(id) || !HEX32.test(pairing)) return null;
+  return { id, pairingPublicKey: pairing };
+}
+
 /// The Desktop hands its vault over (or takes it back with keys: null).
 /// Memory only. Returns whether this server now holds it.
-export function setDesktopVault(data: unknown, options: { api?: EventsApi; state?: () => Promise<VaultState>; history?: (userId: string) => LocalHistory } = {}): boolean {
+export function setDesktopVault(data: unknown, options: { api?: EventsApi; state?: () => Promise<VaultState>; history?: (userId: string) => LocalHistory; publish?: PublishDesktopBinding } = {}): boolean {
   const local = readVaultMessage(data);
   if (mode.kind === "headless") stopTimer();
   if (!local) {
@@ -115,9 +137,68 @@ export function setDesktopVault(data: unknown, options: { api?: EventsApi; state
   const state = options.state ?? (() => account.state());
   const epochKeys = () => new Map(local.epochs);
   const sync = createVaultSync({ api, epochKeys, userId: local.userId, store: memoryStore() });
-  mode = { kind: "desktop", local, api, state, sync, bridge: bridgeFor(sync, () => local.epochs.size > 0, options.history), userId: local.userId };
+  const publish = options.publish ?? ((deviceId: string, binding: string) => account.publishDesktopBinding(deviceId, binding));
+  mode = { kind: "desktop", local, api, state, sync, bridge: bridgeFor(sync, () => local.epochs.size > 0, options.history), userId: local.userId, computer: readDesktopComputer(data), publish };
+  desktopBindingTried = null;
   notifyVaultChange();
   return true;
+}
+
+// ── the Desktop's desktop-binding ────────────────────────────────────────
+
+/// The last binding asked for and when it failed: not asked again for 5 min.
+let desktopBindingTried: { key: string; at: number } | null = null;
+let desktopBindingRunning: Promise<unknown> | null = null;
+const DESKTOP_BINDING_RETRY_MS = 5 * 60_000;
+
+/// This Desktop's own binding, as it must read: its vault device, its
+/// account computer and pairing key (handed), this server's tunnel key.
+function wantedDesktopBinding(): DesktopBinding | null {
+  if (mode.kind !== "desktop" || !mode.computer || !mode.local.deviceId) return null;
+  // The account message names another computer for this server: neither is said.
+  const named = accountCredentials()?.computerId;
+  if (named && named !== mode.computer.id) return null;
+  let tunnel: string;
+  try {
+    tunnel = tunnelIdentity().publicKey.toString("hex");
+  } catch {
+    return null;
+  }
+  return { vault_device_id: mode.local.deviceId, account_computer_id: mode.computer.id, tunnel_public_key: tunnel, pairing_public_key: mode.computer.pairingPublicKey };
+}
+
+/// Inside Twoody Desktop: signs (with the handed vault key) and publishes
+/// this Desktop's desktop-binding when the account shows none, or one that
+/// says something else (new tunnel key, another account computer) — only
+/// once this device is a trusted person-device holding epoch keys. Called
+/// with the devices each time the roster looks (every minute at most).
+export async function ensureDesktopBinding(devices: VaultDevice[], now = Date.now()): Promise<"published" | "current" | "skipped" | "failed"> {
+  if (mode.kind !== "desktop" || mode.local.epochs.size === 0) return "skipped";
+  const wanted = wantedDesktopBinding();
+  if (!wanted) return "skipped";
+  const { local, userId, publish } = mode;
+  const byId = new Map(devices.map((d) => [d.id, d]));
+  const mine = byId.get(wanted.vault_device_id);
+  if (!mine || mine.status !== "trusted" || mine.sign_public !== toHex(local.keys.signPublic) || isComputer(mine)) return "skipped";
+  if (deviceKind(userId, mine, byId)?.kind !== "person") return "skipped";
+  const current = desktopBindingOf(userId, mine, byId);
+  if (current && current.account_computer_id === wanted.account_computer_id && current.tunnel_public_key === wanted.tunnel_public_key && current.pairing_public_key === wanted.pairing_public_key) return "current";
+  const key = JSON.stringify(wanted);
+  if (desktopBindingRunning) return "skipped";
+  if (desktopBindingTried?.key === key && now - desktopBindingTried.at < DESKTOP_BINDING_RETRY_MS) return "skipped";
+  const wire = { ...wanted, signature: signDesktopBinding({ userId, binding: wanted, signPrivate: local.keys.signPrivate }) };
+  desktopBindingRunning = publish(wanted.vault_device_id, JSON.stringify(wire));
+  try {
+    await desktopBindingRunning;
+    desktopBindingTried = null;
+    notifyVaultChange();
+    return "published";
+  } catch {
+    desktopBindingTried = { key, at: now };
+    return "failed";
+  } finally {
+    desktopBindingRunning = null;
+  }
 }
 
 // ── headless mode ────────────────────────────────────────────────────────
@@ -286,6 +367,9 @@ export async function vaultRosterInput(): Promise<{ userId: string; devices: Non
     const { local } = mode;
     const self = local.deviceId ? [{ id: local.deviceId, sign_public: toHex(local.keys.signPublic) }] : [];
     const state = await mode.state();
+    // This Desktop's own binding follows what the vault shows (the roster
+    // looks again once it is published).
+    void ensureDesktopBinding(state.devices ?? []).catch(() => undefined);
     return { userId: mode.userId, devices: state.devices ?? [], anchors: [...self, ...local.anchors.filter((a) => a.id !== local.deviceId)] };
   }
   return null;
@@ -312,4 +396,5 @@ export function onVaultChange(listener: () => void): () => void {
 export function resetVaultForTests(): void {
   stopTimer();
   mode = { kind: "off" };
+  desktopBindingTried = null;
 }

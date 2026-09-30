@@ -9,8 +9,8 @@ import { approvalValid } from "./crypto.js";
 // as a reference every other lot checks itself against: backend B1, the
 // server's vault (S1–S5), Desktop (D1–D2) and the app (A1–A3). Pure
 // functions, no storage, no network, no Electron. The vectors are in
-// test/fixtures/{computer-binding-v1,device-access-v1,memory-lww-vectors,
-// vault-approval-v2}.json.
+// test/fixtures/{computer-binding-v1,desktop-binding-v1,device-access-v1,
+// memory-lww-vectors,vault-approval-v2}.json.
 //
 // Statements are signed exactly as the v1 vault approval
 // (twoody-desktop src/shared/vault.ts signApproval, twoody-app
@@ -81,6 +81,70 @@ export function signBinding(args: { userId: string | number; binding: ComputerBi
 export function bindingValid(args: { userId: string | number; binding: ComputerBinding; signerSignPublic: Uint8Array; signature: string }): boolean {
   try {
     return ed25519.verify(fromHex(args.signature), bindingStatement(args.userId, args.binding), args.signerSignPublic);
+  } catch {
+    return false;
+  }
+}
+
+// ── desktop-binding/v1 ──────────────────────────────────────────────────
+// A Twoody Desktop is a person-device of the vault (someone sits at it: it
+// approves, gives keys) and also a computer of the account, which the mesh
+// reaches through its embedded server. It says so itself: « I, vault device
+// D, am account computer C, reached by tunnel key T, pairing key P »,
+// signed by D's OWN vault signing key. Fields [v, user_id, vault_device_id,
+// account_computer_id, tunnel_public_key, pairing_public_key], same scheme
+// and canonical header as the other statements, its own label (so no
+// other statement can be passed off as one). Vectors:
+// test/fixtures/desktop-binding-v1.json.
+//
+// Why the device's own signature is enough: a verifier counts it only for
+// a device it already verified as a person-device by walking forward from
+// its anchors (client.ts verifiedIds: a signed approval from a verified
+// person-device commits to the device's sign_public). Whoever can produce
+// that signature holds that device's private key — the device itself, the
+// same holder that could already approve any device and wrap epoch keys
+// for it; it gains nothing it did not have. The account holds no private
+// key: it cannot make one, change a field (another tunnel key, another
+// account computer), move it to another device (vault_device_id is signed
+// and must be the device carrying it), or give one to a computer (only a
+// person-device by its signed approval counts, never a Pi, which could
+// otherwise promote itself). It can withhold it (the Desktop leaves the
+// mesh: availability, not trust), or serve an older one of the same
+// device (its previous tunnel key: useless without that key's private
+// half). Two devices naming one account computer: neither counts.
+
+export const DESKTOP_BINDING_LABEL = "twoody/vault/desktop-binding/v1";
+
+export interface DesktopBinding {
+  /// The Desktop's own vault device, which signs.
+  vault_device_id: string;
+  account_computer_id: string;
+  /// X25519, its embedded server's tunnel identity.
+  tunnel_public_key: string;
+  /// X25519, its account pairing key (account_computers.public_key).
+  pairing_public_key: string;
+}
+
+export function desktopBindingStatement(userId: string | number, binding: DesktopBinding): Uint8Array {
+  return canonicalHeader(DESKTOP_BINDING_LABEL, [
+    VAULT_VERSION,
+    requireId(String(userId), "bad_desktop_binding"),
+    requireId(binding?.vault_device_id, "bad_desktop_binding"),
+    requireId(binding?.account_computer_id, "bad_desktop_binding"),
+    requireKey(binding?.tunnel_public_key, "bad_desktop_binding"),
+    requireKey(binding?.pairing_public_key, "bad_desktop_binding"),
+  ]);
+}
+
+export function signDesktopBinding(args: { userId: string | number; binding: DesktopBinding; signPrivate: Uint8Array }): string {
+  return toHex(ed25519.sign(desktopBindingStatement(args.userId, args.binding), args.signPrivate));
+}
+
+/// `deviceSignPublic`: the sign_public of the device the binding names,
+/// as the verifier's own walk verified it — never a key the binding brings.
+export function desktopBindingValid(args: { userId: string | number; binding: DesktopBinding; deviceSignPublic: Uint8Array; signature: string }): boolean {
+  try {
+    return ed25519.verify(fromHex(args.signature), desktopBindingStatement(args.userId, args.binding), args.deviceSignPublic);
   } catch {
     return false;
   }
