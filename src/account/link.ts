@@ -201,7 +201,9 @@ export async function startLink(options: { name?: string; fromNetwork?: boolean 
     secret: loginSecretFrom(new Uint8Array(randomBytes(12))),
     verificationUri: body.verification_uri,
     verificationUriComplete: body.verification_uri_complete ?? null,
-    expiresAt: new Date(Date.now() + Math.max(1, Number(body.expires_in) || 600) * 1000),
+    // The account decides how long the code lives, but never longer than
+    // 15 minutes: the login secret must not stay guessable for days.
+    expiresAt: new Date(Date.now() + Math.min(900, Math.max(1, Number(body.expires_in) || 600)) * 1000),
     intervalMs: Math.max(1, Number(body.interval) || 5) * 1000,
   };
   lastCodeExpiresAt = pending.expiresAt.getTime();
