@@ -108,7 +108,7 @@ export function claimedDeviceAccess(request: Pick<PendingRequest, "device_access
   return deviceAccessUsable(access, { accountComputerId: selfComputerId, nowMs: now }) ? access : null;
 }
 
-/// The code de sécurité of the key a request asks with (vault/contracts.ts
+/// The security code of the key a request asks with (vault/contracts.ts
 /// securityCode): what `twoody-server approve` shows, for the person to
 /// compare with the requesting device's own screen before approving — the
 /// name is only what the account says. Null for a key that is not one.

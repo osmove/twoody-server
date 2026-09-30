@@ -14,7 +14,7 @@ import { meshVault } from "./helpers/meshVault.js";
 //   - swap the computer at the end of a link that works (a « relink »),
 //     by listing another pairing key for it and answering with its own
 //     tunnel key;
-//   - pin a key other than the one whose code de sécurité the person
+//   - pin a key other than the one whose security code the person
 //     compared (« Ajouter un ordinateur » by its code);
 //   - get turns sent to a computer only its listing vouches for;
 //   - bring a device the Desktop revoked back into the roster;

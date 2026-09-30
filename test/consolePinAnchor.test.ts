@@ -14,7 +14,7 @@ import test from "node:test";
 // anchor, and F then vouched for a made-up computer (rule 4). Now: a peer
 // the console approved keeps no statement and never pins; a peer let in by
 // rule 1 or 2 pins only a device the anchors already held reach; and the
-// console shows the requester's code de sécurité with a warning.
+// console shows the requester's security code with a warning.
 
 process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-console-pin-"));
 process.env.TWOODY_BONJOUR_DISABLED = "1";
@@ -129,7 +129,7 @@ test("a peer approved on the console keeps no device-access and never pins a dev
   const asked = readPending({ requests: [{ id: 8, name: "PC", public_key: Kz, expires_at: new Date(Date.now() + 60_000).toISOString(), role: "peer", requester_computer_id: FAKE_PC }] })[0]!;
   assert.equal(judgeMesh(asked, roster, { selfComputerId: PI }), null, "no rule 4 for it");
 
-  // The console shows the key's code de sécurité and a warning, not only
+  // The console shows the key's security code and a warning, not only
   // the account's name.
   assert.equal(requestSecurityCode(request), securityCode(F.K));
   assert.match(describeRequest({ ...request, security_code: requestSecurityCode(request) }), new RegExp(`MacBook Air .*security code ${securityCode(F.K)}`));

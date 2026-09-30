@@ -149,10 +149,10 @@ export const accountPeers = sqliteTable("account_peers", {
   /// « Appareils », which stays (a computer that only lends its models).
   origin: text("origin"),
   /// The tunnel key the other computer's sealed answer must carry: the one
-  /// whose code de sécurité the person compared, or the roster's for a
+  /// whose security code the person compared, or the roster's for a
   /// link the roster asked for (peers/index.ts checkPeerRequest).
   expectedTunnelKey: text("expected_tunnel_key"),
-  /// The tunnel key whose code de sécurité the person compared with the
+  /// The tunnel key whose security code the person compared with the
   /// one the computer shows (« Appareils »): a link sealed to it may take
   /// turns even out of the vault roster (router/index.ts routablePeers).
   checkedTunnelKey: text("checked_tunnel_key"),

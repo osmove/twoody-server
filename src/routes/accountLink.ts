@@ -20,7 +20,7 @@ import { fromOtherPage } from "../webOrigin.js";
 //                               expires_at?, account_computer_id?, account?, fresh, fp, fingerprint,
 //                               security_code, last_error?}
 //                               network: {state, fp} and nothing else
-//                               security_code: this computer's code de sécurité (vault/contracts.ts
+//                               security_code: this computer's security code (vault/contracts.ts
 //                               securityCode, from its tunnel key), for the person to compare with
 //                               the one the Desktop or the app shows; fp is only Bonjour's hint;
 //                               approval_secret: the one-time secret to type with the code on the
@@ -147,7 +147,7 @@ export async function accountLinkRoutes(app: FastifyInstance) {
             requester_kind: r.requester_kind,
             requester_computer_id: r.requester_computer_id,
             public_key: r.public_key,
-            // The requesting device's code de sécurité, from the key it
+            // The requesting device's security code, from the key it
             // asks with: what the console shows, to compare with the
             // device's own screen (the name is the account's say).
             security_code: requestSecurityCode(r),

@@ -27,7 +27,7 @@ export function peerTrusted(peer: Pick<PeerRow, "computerId" | "tunnelKey">): bo
 
 /// Whether a linked peer may take turns: a computer of the verified roster
 /// over its bound key, or one the person added from « Appareils » after
-/// comparing its code de sécurité, over that very key. A link the account
+/// comparing its security code, over that very key. A link the account
 /// alone vouches for (its listing, an old link) lends nothing.
 export function peerRoutable(peer: Pick<PeerRow, "computerId" | "tunnelKey" | "checkedTunnelKey">): boolean {
   if (peerTrusted(peer)) return true;

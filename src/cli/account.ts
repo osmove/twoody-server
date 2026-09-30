@@ -54,7 +54,7 @@ function showCode(link: LinkBody): void {
   // the phone, it proves that device is the one approving (account/link.ts).
   if (link.approval_secret) console.log(`  On Twoody Desktop or the Twoody app, also enter this one-time secret (never asked for on the website):\n\n    ${link.approval_secret}\n`);
   // What the approving screen shows for this computer, to compare: its
-  // code de sécurité (from its tunnel key), never the 8-hex Bonjour hint.
+  // security code (from its tunnel key), never the 8-hex Bonjour hint.
   if (link.security_code) console.log(`  Security code of this server (check that the approving screen shows the same):\n\n    ${link.security_code}\n`);
   console.log("  Waiting for the approval… (Ctrl-C to stop)");
 }
@@ -133,7 +133,7 @@ async function login(): Promise<number> {
 type Waiting = { id: string; name: string; role: string; expires_at: string; security_code?: string | null; verdict?: { approve: boolean; reason?: string } };
 
 /// What the console says before anything is allowed: the name is only
-/// the account's say; the code de sécurité, from the key the device asks
+/// the account's say; the security code, from the key the device asks
 /// with, is what the person compares with that device's own screen.
 export const APPROVE_WARNING =
   "  Only allow a device whose own screen shows the same security code.\n" +

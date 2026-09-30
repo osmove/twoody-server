@@ -127,7 +127,7 @@ const auth = { "x-user-token": desktop.token };
 await app.inject({ method: "POST", url: "/providers/local", headers: auth, payload: { url: macRuntime.url, model: "gemma3:4b" } });
 
 let piComputerId = "";
-/// The Pi's tunnel key, whose code de sécurité its console shows.
+/// The Pi's tunnel key, whose security code its console shows.
 let piTunnelKey = "";
 
 test("the Pi joins the account by a code the Mac approves, and sends its status", async () => {
@@ -167,7 +167,7 @@ test("the Pi joins the account by a code the Mac approves, and sends its status"
 });
 
 test("the Mac's server becomes the Pi's peer: requested, endorsed by the Mac, approved by the Pi, opened", async () => {
-  // Asked with the tunnel key whose code de sécurité the person compared.
+  // Asked with the tunnel key whose security code the person compared.
   const asked = await app.inject({ method: "POST", url: "/api/v1/peers", headers: auth, payload: { computer_id: piComputerId, checked_tunnel_key: piTunnelKey } });
   assert.equal(asked.statusCode, 202, asked.payload);
   const { request_id } = asked.json();

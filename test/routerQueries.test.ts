@@ -42,7 +42,7 @@ const auth = { "x-user-token": desktop.token };
 assert.equal((await app.inject({ method: "POST", url: "/providers/local", headers: auth, payload: { url: runtime.url, model: "qwen3:8b" } })).statusCode, 201);
 
 // A peer that is paired but does not answer (nothing listens on port 9),
-// added from « Appareils » with its code de sécurité checked.
+// added from « Appareils » with its security code checked.
 const now = new Date();
 const PEER_TUNNEL_KEY = randomBytes(32).toString("hex");
 db.insert(accountPeers)

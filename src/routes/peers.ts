@@ -29,14 +29,14 @@ import { peerDeviceAccess } from "../vault/service.js";
 //          Credential), kept nowhere here. The backend then names the
 //          request after that computer, or refuses it (403
 //          invalid_requester_credential), never takes it for a device's.
-//   POST   … checked_tunnel_key?: the tunnel key whose code de sécurité the
+//   POST   … checked_tunnel_key?: the tunnel key whose security code the
 //          person compared: the answer must carry it, and the link then
 //          takes turns out of the vault roster too (router routablePeers).
 //          202 carries public_key, this server's tunnel key: the only
 //          requester key the Desktop vouches for.
 //   PATCH  /api/v1/peers/:computer_id {enabled?, trusted?, checked_tunnel_key?}  → 200 the peer
 //          checked_tunnel_key (Desktop only): the person compared this
-//          link's code de sécurité; 409 unless it is the link's own key.
+//          link's security code; 409 unless it is the link's own key.
 //          trusted is still stored but no longer decides (docs/mesh-design.md
 //          §1): what the turns sent to a peer carry — memories, personal
 //          data, document excerpts — follows the vault roster; « Faire
@@ -106,7 +106,7 @@ function serialize(row: ReturnType<typeof listPeers>[number]) {
     trusted: peerTrusted(row),
     mesh: row.origin === "mesh",
     // The key the link is sealed to, and whether the person compared its
-    // code de sécurité (a link that takes turns out of the roster).
+    // security code (a link that takes turns out of the roster).
     tunnel_public_key: row.state === "linked" ? row.tunnelKey : null,
     checked: !!row.checkedTunnelKey && !!row.tunnelKey && row.checkedTunnelKey === row.tunnelKey,
     url: row.url,
@@ -159,7 +159,7 @@ export async function peersRoutes(app: FastifyInstance) {
         if (typeof credential !== "string" || !/^[A-Za-z0-9_=-]{16,200}$/.test(credential)) return reply.code(422).send({ error: "invalid requester_credential" });
         requester = { computerId: String(requesterId), credential };
       }
-      // The tunnel key whose code de sécurité the person compared: the
+      // The tunnel key whose security code the person compared: the
       // answer must carry it (peers/index.ts requestPeer).
       const checkedKey = req.body?.checked_tunnel_key;
       if (checkedKey !== undefined && checkedKey !== null && (typeof checkedKey !== "string" || !/^[0-9a-f]{64}$/i.test(checkedKey))) {
@@ -183,7 +183,7 @@ export async function peersRoutes(app: FastifyInstance) {
       if (!peer) return reply.code(404).send({ error: "not_found" });
       const { enabled, trusted, checked_tunnel_key: checkedKey } = req.body ?? {};
       if (checkedKey !== undefined) {
-        // The person compared this link's code de sécurité with the
+        // The person compared this link's security code with the
         // computer's (Twoody Desktop only): the key must be the link's own.
         if (!(isOwnerSession(auth.sessionId) || ownerRequest(req))) return reply.code(403).send({ error: "desktop_only" });
         if (typeof checkedKey !== "string" || !/^[0-9a-f]{64}$/i.test(checkedKey)) return reply.code(422).send({ error: "invalid checked_tunnel_key" });

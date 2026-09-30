@@ -7,7 +7,7 @@ import { isThisComputersApp } from "./usage.js";
 import type { PersonalContact, PersonalEvent } from "../personalContext.js";
 
 // Contacts and Calendar of this Mac, copied into the embedded server by the
-// desktop app when the person turns them on in Capacités (29/09/2026): the
+// desktop app when the person turns them on in « Capacités » (29/09/2026): the
 // app reads them with macOS's own permission (twoody-personal-data) and
 // sends the whole set every 15 minutes. Each copy replaces the previous
 // one, row for row, and never touches a contact or an event the person

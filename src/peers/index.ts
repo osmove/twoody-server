@@ -574,7 +574,7 @@ const TUNNEL_KEY = /^[0-9a-f]{64}$/;
 ///
 /// Which computer answers is never the account's to say (a malicious
 /// account rewrites its listing, not signatures):
-///   - `checkedTunnelKey`: the tunnel key whose code de sécurité the person
+///   - `checkedTunnelKey`: the tunnel key whose security code the person
 ///     compared with the computer's (« Appareils »). The answer must carry
 ///     it, and the link then takes turns (router/index.ts routablePeers).
 ///   - `expectTunnelKey` / `hostKey`: what the vault roster's verified
