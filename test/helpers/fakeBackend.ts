@@ -5,7 +5,8 @@ import type { AddressInfo } from "node:net";
 // A small stand-in for twoody-backend's account endpoints (Lot 1 of
 // docs/multi-computer-design.md, as twoody-backend 7e6d25f9 implements
 // them): device-code logins, the account's computers, heartbeat, pending
-// requests with role and endorsements, decide / result / consume, endorse.
+// requests with role and endorsements, decide / result / consume, endorse;
+// and a Desktop naming the asking computer by its credential (5202f76b).
 // One account; the user token is `userToken`.
 
 export interface FakeComputer {
@@ -232,6 +233,15 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
       });
     }
     if (req.method === "POST" && sub === "/request_access") {
+      // Twoody Desktop names the asking computer with its credential
+      // (twoody-backend 5202f76b): it must hold, or the request is refused.
+      const requesterCredential = req.headers["x-requester-computer-credential"];
+      let requester: FakeComputer | undefined;
+      if (requesterCredential !== undefined || body.requester_computer_id !== undefined) {
+        requester = computers.find((c) => String(c.id) === String(body.requester_computer_id));
+        if (!requester || requesterCredential !== requester.credential) return json(403, { error: "invalid_requester_credential" });
+        if (requester.id === computer.id) return json(422, { error: "self_request" });
+      }
       const a: FakeAuthorization = {
         id: nextRid++,
         computer_id: computer.id,
@@ -242,6 +252,7 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
         sealed_response: null,
         expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
         endorsements: [],
+        ...(requester ? { name: requester.name, role: "peer" as const, requester_kind: "computer" as const, requester_computer_id: requester.id, requester_name: requester.name } : {}),
       };
       if (!/^[0-9a-f]{64}$/.test(a.public_key) || !a.name) return json(422, { error: "invalid_request" });
       authorizations.push(a);

@@ -157,12 +157,6 @@ test("the Pi joins the account by a code the Mac approves, and sends its status"
 });
 
 test("the Mac's server becomes the Pi's peer: requested, endorsed by the Mac, approved by the Pi, opened", async () => {
-  // What the Desktop binds a request to another Desktop to: this server's
-  // id in the account and the key its requests carry.
-  const listed = (await app.inject({ method: "GET", url: "/api/v1/peers", headers: auth })).json();
-  assert.equal(listed.computer_id, String(macComputer.id));
-  assert.equal(listed.tunnel_public_key, tunnelIdentity().publicKey.toString("hex"));
-
   const asked = await app.inject({ method: "POST", url: "/api/v1/peers", headers: auth, payload: { computer_id: piComputerId } });
   assert.equal(asked.statusCode, 202, asked.payload);
   const { request_id } = asked.json();
@@ -292,4 +286,30 @@ test("the Pi's peer session opens nothing but /api/v1/peer/*", async () => {
   for (const path of ["/api/v1/me", "/api/v1/discussions", "/api/v1/memories", "/api/v1/local_documents/folders"]) {
     assert.equal((await piFetch(path, { headers })).status, 403, path);
   }
+});
+
+test("a Desktop asks as its computer of the account, by its credential, never quietly as a device", async () => {
+  // Another Twoody Desktop of the account; the Mac's Desktop signs in as its
+  // person, and says which computer asks with that computer's credential.
+  const imac = backend.addComputer({ name: "iMac du bureau", public_key: "cd".repeat(32), kind: "desktop" });
+  const post = (payload: Record<string, unknown>) => app.inject({ method: "POST", url: "/api/v1/peers", headers: auth, payload: { computer_id: String(imac.id), ...payload } });
+
+  const count = backend.authorizations.length;
+  const wrong = await post({ requester_computer_id: String(macComputer.id), requester_credential: "not-the-mac-credential" });
+  assert.equal(wrong.statusCode, 403, wrong.payload);
+  assert.equal(wrong.json().error, "invalid_requester_credential");
+  assert.equal((await post({ requester_computer_id: String(macComputer.id) })).statusCode, 422);
+  assert.equal((await post({ requester_credential: macComputer.credential })).statusCode, 422);
+  assert.equal((await post({ requester_computer_id: String(imac.id), requester_credential: imac.credential })).statusCode, 422, "not its own peer");
+  assert.equal(backend.authorizations.length, count, "nothing reached the iMac");
+
+  const asked = await post({ requester_computer_id: String(macComputer.id), requester_credential: macComputer.credential, name: "iPhone de Jimmy" });
+  assert.equal(asked.statusCode, 202, asked.payload);
+  const authorization = backend.authorizations.find((a) => String(a.id) === String(asked.json().request_id))!;
+  assert.equal(authorization.role, "peer");
+  assert.equal(authorization.requester_kind, "computer");
+  assert.equal(authorization.requester_computer_id, macComputer.id);
+  assert.equal(authorization.name, "Mac de Jimmy", "named after the account, not the name sent");
+  assert.equal(authorization.public_key, tunnelIdentity().publicKey.toString("hex"));
+  assert.equal(peerById(desktop.user_id, String(imac.id))?.state, "requested");
 });

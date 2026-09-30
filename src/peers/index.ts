@@ -405,17 +405,34 @@ const polls = new Map<string, NodeJS.Timeout>();
 
 /// POST /peers: asks the computer `computerId` for peer access with this
 /// server's tunnel key, and waits (in the background) for its sealed answer.
-export async function requestPeer(userId: string, computerId: string, options: { name?: string } = {}): Promise<{ request_id: string; expires_at: string | null }> {
+/// `requester`: the computer of the account that asks, when the session
+/// this server acts with is not one (Twoody Desktop signs in as its
+/// person) — its id and credential, which the backend checks and names the
+/// request after; sent with this one call only, kept nowhere.
+export async function requestPeer(
+  userId: string,
+  computerId: string,
+  options: { name?: string; requester?: { computerId: string; credential: string } } = {},
+): Promise<{ request_id: string; expires_at: string | null }> {
   const creds = accountCredentials();
   if (!creds) throw new PeerUnavailableError("this server is not linked to an account", "not_linked");
-  if (creds.computerId && creds.computerId === computerId) throw new PeerUnavailableError("a computer is not its own peer", "refused");
+  if ((creds.computerId && creds.computerId === computerId) || options.requester?.computerId === computerId) {
+    throw new PeerUnavailableError("a computer is not its own peer", "refused");
+  }
   const computers = (await accountComputers({ fresh: true })) ?? [];
   const target = computers.find((c) => c.id === computerId);
   if (!target) throw new PeerUnavailableError("no such computer in the account", "not_linked");
   const { body } = await backendCall<{ id: string | number; expires_at?: string }>(
-    { backendUrl: creds.backendUrl, userToken: creds.userToken, deviceToken: creds.deviceToken },
+    { backendUrl: creds.backendUrl, userToken: creds.userToken, deviceToken: creds.deviceToken, requesterCredential: options.requester?.credential },
     `account_computers/${encodeURIComponent(computerId)}/request_access`,
-    { body: { name: (options.name ?? creds.computerName ?? computerName()).slice(0, 100), public_key: tunnelIdentity().publicKey.toString("hex"), role: "peer" } },
+    {
+      body: {
+        name: (options.name ?? creds.computerName ?? computerName()).slice(0, 100),
+        public_key: tunnelIdentity().publicKey.toString("hex"),
+        role: "peer",
+        ...(options.requester ? { requester_computer_id: options.requester.computerId } : {}),
+      },
+    },
   );
   const requestId = String(body.id);
   const now = new Date();

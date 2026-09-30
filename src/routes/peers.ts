@@ -2,29 +2,28 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { eq } from "drizzle-orm";
 import { isOwnerSession, isPeerSessionKind, requireAuth } from "../auth.js";
 import { BackendError } from "../account/backend.js";
-import { accountCredentials } from "../account/service.js";
 import { accountPeers, authSessions, db } from "../db.js";
 import { ownerRequest } from "../localAccess.js";
 import { LocalOnlyError } from "../outbound.js";
 import { listPeers, peerById, peerStatus, PeerUnavailableError, removePeer, requestPeer } from "../peers/index.js";
-import { tunnelIdentity } from "../tunnel/identity.js";
 
 // The account's other computers this one sends questions to
 // (docs/multi-computer-design.md §3) — managed by Twoody Desktop, or by the
 // owner of a headless server with the admin token; seen and switched on,
 // off or trusted (GET, PATCH) by a device paired with it too:
 //
-//   GET    /api/v1/peers                 {peers: [{computer_id, name, kind, state, enabled, trusted, url?, error?, status?, status_at?}],
-//                                         computer_id, tunnel_public_key}
-//          `computer_id` (this computer's id in the account, null when not
-//          known) and `tunnel_public_key` (the key its peer requests carry):
-//          Twoody Desktop binds its proof of a request to another Desktop to
-//          that key (twoody-desktop src/main/peerRequestProof.ts).
-//   POST   /api/v1/peers {computer_id, name?}  → 202 {request_id, expires_at}
+//   GET    /api/v1/peers                 [{computer_id, name, kind, state, enabled, trusted, url?, error?, status?, status_at?}]
+//   POST   /api/v1/peers {computer_id, name?, requester_computer_id?, requester_credential?}
+//          → 202 {request_id, expires_at}
 //          request_access (role "peer") with this server's tunnel key; the
 //          Desktop then endorses request_id (POST /account_computers/:id/
 //          authorizations/:rid/endorse) and this server picks up the sealed
-//          answer by itself.
+//          answer by itself. Twoody Desktop, which signs in as its person,
+//          says which computer of the account asks with that computer's id
+//          and credential: sent on to the backend (X-Requester-Computer-
+//          Credential), kept nowhere here. The backend then names the
+//          request after that computer, or refuses it (403
+//          invalid_requester_credential), never takes it for a device's.
 //   PATCH  /api/v1/peers/:computer_id {enabled?, trusted?}  → 200 the peer
 //          trusted (false until set): whether the turns sent to it carry this
 //          computer's memories, personal data, document excerpts and
@@ -86,6 +85,7 @@ function serialize(row: ReturnType<typeof listPeers>[number]) {
 
 function failure(reply: FastifyReply, err: unknown) {
   if (err instanceof PeerUnavailableError) return reply.code(err.code === "not_linked" ? 409 : 422).send({ error: err.code, message: err.message });
+  if (err instanceof BackendError && err.status === 403 && err.code === "invalid_requester_credential") return reply.code(403).send({ error: err.code, message: err.message });
   if (err instanceof BackendError) return reply.code(err.status === 404 ? 404 : err.status === 429 ? 429 : 502).send({ error: err.code ?? "backend_error", message: err.message });
   if (err instanceof LocalOnlyError) return reply.code(403).send({ error: "local_only", message: err.message });
   return reply.code(502).send({ error: "backend_unreachable", message: err instanceof Error ? err.message : String(err) });
@@ -97,15 +97,11 @@ export async function peersRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requirePairedPerson(req, reply);
       if (!auth) return;
-      return reply.send({
-        peers: listPeers(auth.userId).map(serialize),
-        computer_id: accountCredentials()?.computerId ?? null,
-        tunnel_public_key: tunnelIdentity().publicKey.toString("hex"),
-      });
+      return reply.send({ peers: listPeers(auth.userId).map(serialize) });
     },
   });
 
-  app.post<{ Body: { computer_id?: string | number; name?: string } }>("/peers", {
+  app.post<{ Body: { computer_id?: string | number; name?: string; requester_computer_id?: string | number; requester_credential?: string } }>("/peers", {
     schema: { tags: ["providers"], summary: "Ask another computer of the account for peer access (Desktop only)" },
     handler: async (req, reply) => {
       const auth = await requireDesktop(req, reply);
@@ -114,9 +110,24 @@ export async function peersRoutes(app: FastifyInstance) {
       if ((typeof id !== "string" && typeof id !== "number") || String(id).length === 0 || String(id).length > 64) {
         return reply.code(422).send({ error: "computer_id is required" });
       }
+      // Both or neither: a credential without its computer (or the other
+      // way round) is not quietly sent as a device's request.
+      const requesterId = req.body?.requester_computer_id;
+      const credential = req.body?.requester_credential;
+      const hasId = requesterId !== undefined && requesterId !== null;
+      const hasCredential = credential !== undefined && credential !== null;
+      if (hasId !== hasCredential) return reply.code(422).send({ error: "requester_computer_id and requester_credential go together" });
+      let requester: { computerId: string; credential: string } | undefined;
+      if (hasId) {
+        if ((typeof requesterId !== "string" && typeof requesterId !== "number") || !/^[A-Za-z0-9-]{1,64}$/.test(String(requesterId))) {
+          return reply.code(422).send({ error: "invalid requester_computer_id" });
+        }
+        if (typeof credential !== "string" || !/^[A-Za-z0-9_=-]{16,200}$/.test(credential)) return reply.code(422).send({ error: "invalid requester_credential" });
+        requester = { computerId: String(requesterId), credential };
+      }
       try {
         const name = typeof req.body?.name === "string" && req.body.name.trim() ? req.body.name.trim() : undefined;
-        return reply.code(202).send(await requestPeer(auth.userId, String(id), { name }));
+        return reply.code(202).send(await requestPeer(auth.userId, String(id), { name, requester }));
       } catch (err) {
         return failure(reply, err);
       }

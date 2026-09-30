@@ -22,6 +22,9 @@ export interface BackendCredentials {
   deviceToken?: string;
   /// The computer credential: only the host's own calls carry it.
   credential?: string;
+  /// The asking computer's credential, on request_access only, when the
+  /// session is its person's (Twoody Desktop): X-Requester-Computer-Credential.
+  requesterCredential?: string;
 }
 
 let fetchOverride: typeof fetch | null = null;
@@ -42,6 +45,7 @@ export async function backendCall<T = unknown>(
   if (creds.userToken) headers["X-User-Token"] = creds.userToken;
   if (creds.deviceToken) headers["X-Device-Token"] = creds.deviceToken;
   if (creds.credential) headers["X-Computer-Credential"] = creds.credential;
+  if (creds.requesterCredential) headers["X-Requester-Computer-Credential"] = creds.requesterCredential;
   const doFetch = fetchOverride ?? outboundFetch;
   const response = await doFetch(url, {
     method: init.method ?? (init.body !== undefined ? "POST" : "GET"),
