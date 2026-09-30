@@ -5,7 +5,7 @@ import { serveRawDocument } from "../peerDocuments/raw.js";
 import { createRateLimiter } from "../rateLimit.js";
 import { isSelf, selfIdentity } from "../router/index.js";
 import { STATUS_MAX_AGE_MS } from "../router/score.js";
-import { trustedNow } from "../vault/roster.js";
+import { rosterSnapshot, trustedNow } from "../vault/roster.js";
 import type { DocumentAccess } from "./access.js";
 import { smallTalk } from "./query.js";
 import { documentLocations, followUpQuestion, retrieveDocuments, scopedFolders } from "./retrieval.js";
@@ -392,6 +392,59 @@ export async function retrieveAcrossComputers(args: {
 }
 
 // ── a cited document of another computer, through this one ───────────────
+
+/// Another computer's documents as its Documents section shows them.
+export type ComputerFolders = {
+  computer_id: string;
+  computer_name: string;
+  /// online (it listed its folders); offline (not linked, or its status is
+  /// stale); unreachable (did not answer); refused (it does not trust this one).
+  status: "online" | "offline" | "unreachable" | "refused";
+  /// `id` is the one a document access names: "<computer_id>:<folder_id>".
+  folders: Array<{ id: string; folder_id: string; name: string; documents: number; indexed: number }>;
+  indexing: boolean;
+};
+
+const count = (value: unknown) => (Number.isInteger(value) && (value as number) >= 0 ? (value as number) : 0);
+
+/**
+ * GET /local_documents/computers: each other computer of the verified vault
+ * roster, with its granted folders (names and counts, never a path) as it
+ * lists them over the sealed tunnel (GET /peer/documents/folders), asked in
+ * parallel, each for at most `timeoutMs`. A member not linked, or whose
+ * status is stale, is listed offline without being asked.
+ */
+export async function foldersOfComputers(userId: string, timeoutMs = 4_000): Promise<ComputerFolders[]> {
+  const members = [...(rosterSnapshot()?.computers.values() ?? [])].filter((member) => !isSelf(member.accountComputerId));
+  return Promise.all(
+    members.map(async (member): Promise<ComputerFolders> => {
+      const peer = peerById(userId, member.accountComputerId);
+      const base = { computer_id: member.accountComputerId, computer_name: peer?.name || member.label, folders: [], indexing: false };
+      if (!peer || peer.state !== "linked" || !peer.enabled || !trustedNow(peer.computerId, peer.tunnelKey)) return { ...base, status: "offline" };
+      const status = peerStatus(peer.computerId);
+      if (status && Date.now() - status.at >= STATUS_MAX_AGE_MS) return { ...base, status: "offline" };
+      if ((down.get(peer.computerId) ?? 0) > Date.now()) return { ...base, status: "unreachable" };
+      try {
+        const response = await peerRequest(peer, "/api/v1/peer/documents/folders", { signal: AbortSignal.timeout(timeoutMs) });
+        if (response.status === 401 || response.status === 403) {
+          await response.body?.cancel().catch(() => undefined);
+          return { ...base, status: "refused" };
+        }
+        const body = (await response.json().catch(() => null)) as { folders?: unknown; index?: { running?: unknown } } | null;
+        if (!response.ok || !Array.isArray(body?.folders)) return { ...base, status: "unreachable" };
+        const folders = (body.folders as Array<Record<string, unknown> | null>).flatMap((raw) => {
+          const name = cleanName(raw?.name);
+          if (!raw || typeof raw.id !== "string" || !LOCAL_ID.test(raw.id) || !name) return [];
+          return [{ id: `${peer.computerId}:${raw.id}`, folder_id: raw.id, name, documents: count(raw.documents), indexed: count(raw.indexed) }];
+        });
+        return { ...base, status: "online", folders: folders.slice(0, 200), indexing: body.index?.running === true };
+      } catch (err) {
+        if (err instanceof PeerUnavailableError) down.set(peer.computerId, Date.now() + DOWN_MS);
+        return { ...base, status: "unreachable" };
+      }
+    }),
+  );
+}
 
 export const REMOTE_RAW_PER_MINUTE = 60;
 const rawLimiter = createRateLimiter({ limit: REMOTE_RAW_PER_MINUTE, windowMs: 60_000 });

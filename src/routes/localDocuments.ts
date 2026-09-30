@@ -3,7 +3,7 @@ import { buildChatMessages } from "../chatContext.js";
 import { documentAccess } from "../documents/access.js";
 import { retrieveDocuments, scopedFolders } from "../documents/retrieval.js";
 import { serveRawDocument } from "../peerDocuments/raw.js";
-import { serveRemoteRaw } from "../documents/remote.js";
+import { foldersOfComputers, serveRemoteRaw } from "../documents/remote.js";
 import { relative, isAbsolute } from "node:path";
 import { indexSemantic, semanticPassages, semanticStatus, setSemantic, stopSemantic } from "../documents/semantic.js";
 import { fusePassages } from "../documents/vectorMath.js";
@@ -251,6 +251,19 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
       reply.send(listDocuments(auth.userId, req.query.folder_id, req.query.offset ?? 0, 100, req.query.sort));
+    },
+  });
+
+  // The person's other trusted computers and their folders (names and
+  // counts), each asked through the sealed link: the Documents screen's
+  // sections, and the folders a question's document access may name
+  // ("<computer_id>:<folder_id>").
+  app.get("/local_documents/computers", {
+    schema: { tags: ["documents"], summary: "The folders of the account's other trusted computers, names and counts", security },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      reply.send({ computers: await foldersOfComputers(auth.userId) });
     },
   });
 

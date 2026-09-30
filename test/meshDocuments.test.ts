@@ -229,6 +229,26 @@ test("a cited document of the Pi opens through the Mac, with Range; outside the 
   assert.equal((await fetch(`${macUrl}/local_documents/remote/${PI}/files/pi-voiture/raw`)).status, 401);
 });
 
+test("the Documents screen lists the Pi's folders through the Mac, ids as a document access names them", async () => {
+  const listed = (await app.inject({ url: "/local_documents/computers", headers: auth })).json();
+  assert.equal(listed.computers.length, 1, JSON.stringify(listed));
+  const [piListed] = listed.computers;
+  assert.equal(piListed.computer_id, PI);
+  assert.equal(piListed.computer_name, "Raspberry Pi");
+  assert.equal(piListed.status, "online");
+  assert.ok(piListed.folders.length >= 1);
+  for (const folder of piListed.folders) {
+    assert.equal(folder.id, `${PI}:${folder.folder_id}`);
+    assert.ok(folder.indexed >= 1);
+  }
+  assert.ok(!JSON.stringify(listed).includes(docsRoot), "no path");
+  // Not in the roster: not listed.
+  await withoutPi();
+  assert.deepEqual((await app.inject({ url: "/local_documents/computers", headers: auth })).json(), { computers: [] });
+  await withPi();
+  assert.equal((await app.inject({ url: "/local_documents/computers" })).statusCode, 401);
+});
+
 test("what the fan-out adds to the time to the first token, with the Pi 20 ms and 300 ms away", async () => {
   setFanOutDeadlines({ direct: 1_500, relay: 3_000 });
   async function ttft(): Promise<number> {
