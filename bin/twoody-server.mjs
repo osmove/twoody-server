@@ -30,6 +30,15 @@ Usage: twoody-server [options]
        twoody-server logout [--force]
                                take this server out of the account (--force:
                                here too when the account does not confirm)
+       twoody-server config get [key] | config set runtime=<engine> [key=value…]
+                               this computer's engine (« Moteur »): builtin,
+                               ollama, lmstudio, mlx, auto or an http(s) address;
+                               also default_model, idle_minutes, ctx, threads
+       twoody-server runtime install [--force] | runtime status
+                               the built-in llama.cpp runtime (pinned, checked
+                               against its SHA-256), and what runs now
+       twoody-server models list | add <id> [--force] | rm <id>
+                               the models of the built-in runtime
 
 Options:
   -p, --port <port>         port to listen on (default 3000, or $PORT)
@@ -47,8 +56,10 @@ Options:
   -v, --version             print the version
   -h, --help                print this help
 
-Twoody Server has no model of its own: run Ollama, llama.cpp's llama-server
-or LM Studio next to it and point --llm at it.
+Models: \`twoody-server runtime install\`, then \`twoody-server models add
+Qwen3.5-4B-Q4_K_M\` runs llama.cpp here, started on the first question (a
+Raspberry Pi 5 included). Or run Ollama, LM Studio or another OpenAI-compatible
+runtime next to it: the engine « auto » finds it, or point --llm at it.
 
 On first start it prints a setup token; the Twoody app asks for it to create
 the account. Other settings (TWOODY_PAIRING_CODE, TWOODY_ADMIN_TOKEN, …) are
@@ -61,8 +72,16 @@ function fail(message) {
 
 const argv = process.argv.slice(2);
 const ACCOUNT_COMMANDS = new Set(["login", "approve", "logout"]);
-const command = ACCOUNT_COMMANDS.has(argv[0]) ? argv[0] : null;
-const args = command ? argv.slice(1) : argv;
+// Engine commands take their own options (--archive, --force, key=value):
+// only -p/--port and -d/--data-dir are read here, the rest is theirs.
+const RUNTIME_COMMANDS = new Set(["config", "runtime", "models"]);
+// The command is the first word, or follows -p/-d given before it
+// (twoody-server -d /srv/twoody models list).
+let at = 0;
+while (at < argv.length && /^(-p|--port|-d|--data-dir)$/.test(argv[at])) at += 2;
+while (at < argv.length && /^(--port|--data-dir)=/.test(argv[at])) at += 1;
+const command = ACCOUNT_COMMANDS.has(argv[at]) || RUNTIME_COMMANDS.has(argv[at]) ? argv[at] : null;
+const args = command ? [...argv.slice(0, at), ...argv.slice(at + 1)] : argv;
 const rest = [];
 for (let i = 0; i < args.length; i++) {
   let arg = args[i];
@@ -115,6 +134,10 @@ for (let i = 0; i < args.length; i++) {
       process.env.TWOODY_BONJOUR_DISABLED = "1";
       break;
     default:
+      if (RUNTIME_COMMANDS.has(command)) {
+        rest.push(args[i]);
+        break;
+      }
       if (command && !args[i].startsWith("-") || command && args[i] === "--deny") {
         rest.push(args[i]);
         break;
@@ -127,6 +150,11 @@ const [major] = process.versions.node.split(".").map(Number);
 if (major < 22) {
   console.error(`twoody-server needs Node.js 22 or later (this is ${process.versions.node}).`);
   process.exit(1);
+}
+
+if (command && RUNTIME_COMMANDS.has(command)) {
+  const { runRuntimeCommand } = await import(pathToFileURL(join(root, "dist", "cli", "runtime.js")).href);
+  process.exit(await runRuntimeCommand(command, rest));
 }
 
 if (command) {
