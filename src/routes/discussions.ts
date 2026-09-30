@@ -276,61 +276,96 @@ async function importDiscussion(app: FastifyInstance) {
       const vaultId = req.body.vault_id.toLowerCase();
       if (!VAULT_ID.test(vaultId)) return reply.code(422).send({ error: "invalid_vault_id" });
 
-      const run = sqlite.transaction(() => {
-        let found = sqlite.prepare("SELECT id FROM discussions WHERE user_id = ? AND vault_id = ?").get(auth.userId, vaultId) as { id: string } | undefined;
-        if (found && req.body.discussion_id && found.id !== req.body.discussion_id) return { error: "already_synchronised" as const };
-        if (!found && req.body.discussion_id) {
-          const own = sqlite.prepare("SELECT id, vault_id FROM discussions WHERE user_id = ? AND id = ?").get(auth.userId, req.body.discussion_id) as { id: string; vault_id: string | null } | undefined;
-          if (!own) return { error: "unknown_discussion" as const };
-          if (own.vault_id && own.vault_id !== vaultId) return { error: "already_synchronised" as const };
-          sqlite.prepare("UPDATE discussions SET vault_id = ? WHERE id = ?").run(vaultId, own.id);
-          found = { id: own.id };
-        }
-        const nowSeconds = Math.floor(Date.now() / 1000);
-        const id = found?.id ?? generateId();
-        if (!found) {
-          sqlite.prepare("INSERT INTO discussions (id, user_id, channel, title, created_at, last_activity_at, vault_id) VALUES (?, ?, 'vault', ?, ?, ?, ?)")
-            .run(id, auth.userId, req.body.title?.slice(0, 200) || req.body.turns[0]?.text.slice(0, 60) || null, nowSeconds, nowSeconds, vaultId);
-        } else if (req.body.title) {
-          sqlite.prepare("UPDATE discussions SET title = ? WHERE id = ?").run(req.body.title.slice(0, 200), id);
-        }
-        const known = new Set((sqlite.prepare("SELECT vault_ref FROM messages WHERE discussion_id = ? AND vault_ref IS NOT NULL").all(id) as Array<{ vault_ref: string }>).map((row) => row.vault_ref));
-        const insert = sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, provider, model, vault_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        let added = 0;
-        let latest = 0;
-        const turns = [...req.body.turns].sort((a, b) => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")));
-        const adopt = sqlite.prepare("SELECT id, rowid AS position FROM messages WHERE discussion_id = ? AND id = ? AND role = 'user' AND vault_ref IS NULL");
-        const replyAfter = sqlite.prepare("SELECT id FROM messages WHERE discussion_id = ? AND role = 'assistant' AND vault_ref IS NULL AND rowid > ? ORDER BY rowid LIMIT 1");
-        const setRef = sqlite.prepare("UPDATE messages SET vault_ref = ? WHERE id = ?");
-        for (const turn of turns) {
-          if (known.has(turn.ref)) continue;
-          // An exchange already here, now being synchronised (its ref is the
-          // question's message id): it takes the ref instead of a copy.
-          const existing = adopt.get(id, turn.ref) as { id: string; position: number } | undefined;
-          if (existing) {
-            setRef.run(turn.ref, existing.id);
-            const answer = replyAfter.get(id, existing.position) as { id: string } | undefined;
-            if (answer) setRef.run(`${turn.ref}#reply`, answer.id);
-            known.add(turn.ref);
-            continue;
-          }
-          const at = Math.floor((Date.parse(turn.created_at ?? "") || Date.now()) / 1000);
-          insert.run(generateId(), id, auth.userId, "user", turn.text, null, null, turn.ref, at);
-          insert.run(generateId(), id, auth.userId, "assistant", turn.reply, "vault", turn.model ?? null, `${turn.ref}#reply`, at);
-          known.add(turn.ref);
-          latest = Math.max(latest, at);
-          added += 1;
-        }
-        if (latest) sqlite.prepare("UPDATE discussions SET last_activity_at = MAX(last_activity_at, ?) WHERE id = ?").run(latest, id);
-        return { id, added, created: !found };
-      });
-      const result = run();
+      const result = importVaultConversation(auth.userId, { ...req.body, vault_id: vaultId });
       if ("error" in result) return reply.code(result.error === "unknown_discussion" ? 404 : 409).send({ error: result.error });
-      if (result.created) publishEvent({ kind: "discussion.created", userId: auth.userId, discussionId: result.id, title: req.body.title ?? null });
-      else if (result.added > 0) publishEvent({ kind: "discussion.touched", userId: auth.userId, discussionId: result.id, lastActivityAt: new Date().toISOString() });
       reply.send({ discussion_id: result.id, added: result.added, created: result.created });
     },
   });
+}
+
+export type ImportedTurn = {
+  ref: string; text: string; reply: string; model?: string | null; created_at?: string;
+  /// Kept with the reply when the vault carries them (src/vault/sync.ts): who
+  /// answered, and the excerpts it cited (never a path).
+  answered_by?: unknown; sources?: unknown[];
+};
+export type ImportBody = { vault_id: string; discussion_id?: string; title?: string; turns: ImportedTurn[] };
+
+/// POST /discussions/import's work, for this computer's own vault sync too
+/// (src/vault/sync.ts): the same conversation by its vault id, the same
+/// exchange by its ref, so importing again adds only what is new.
+export function importVaultConversation(userId: string, body: ImportBody): { error: "unknown_discussion" | "already_synchronised" | "invalid_vault_id" } | { id: string; added: number; created: boolean } {
+  const vaultId = body.vault_id.toLowerCase();
+  if (!VAULT_ID.test(vaultId)) return { error: "invalid_vault_id" };
+  const run = sqlite.transaction(() => {
+    let found = sqlite.prepare("SELECT id FROM discussions WHERE user_id = ? AND vault_id = ?").get(userId, vaultId) as { id: string } | undefined;
+    if (found && body.discussion_id && found.id !== body.discussion_id) return { error: "already_synchronised" as const };
+    if (!found && body.discussion_id) {
+      const own = sqlite.prepare("SELECT id, vault_id FROM discussions WHERE user_id = ? AND id = ?").get(userId, body.discussion_id) as { id: string; vault_id: string | null } | undefined;
+      if (!own) return { error: "unknown_discussion" as const };
+      if (own.vault_id && own.vault_id !== vaultId) return { error: "already_synchronised" as const };
+      sqlite.prepare("UPDATE discussions SET vault_id = ? WHERE id = ?").run(vaultId, own.id);
+      found = { id: own.id };
+    }
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const id = found?.id ?? generateId();
+    if (!found) {
+      sqlite.prepare("INSERT INTO discussions (id, user_id, channel, title, created_at, last_activity_at, vault_id) VALUES (?, ?, 'vault', ?, ?, ?, ?)")
+        .run(id, userId, body.title?.slice(0, 200) || body.turns[0]?.text.slice(0, 60) || null, nowSeconds, nowSeconds, vaultId);
+    } else if (body.title) {
+      sqlite.prepare("UPDATE discussions SET title = ? WHERE id = ?").run(body.title.slice(0, 200), id);
+    }
+    const known = new Set((sqlite.prepare("SELECT vault_ref FROM messages WHERE discussion_id = ? AND vault_ref IS NOT NULL").all(id) as Array<{ vault_ref: string }>).map((row) => row.vault_ref));
+    const insert = sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, provider, model, vault_ref, created_at, sources_json, answered_by_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    let added = 0;
+    let latest = 0;
+    const turns = [...body.turns].sort((a, b) => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")));
+    const adopt = sqlite.prepare("SELECT id, rowid AS position FROM messages WHERE discussion_id = ? AND id = ? AND role = 'user' AND vault_ref IS NULL");
+    const replyAfter = sqlite.prepare("SELECT id FROM messages WHERE discussion_id = ? AND role = 'assistant' AND vault_ref IS NULL AND rowid > ? ORDER BY rowid LIMIT 1");
+    const setRef = sqlite.prepare("UPDATE messages SET vault_ref = ? WHERE id = ?");
+    for (const turn of turns) {
+      if (known.has(turn.ref)) continue;
+      // An exchange already here, now being synchronised (its ref is the
+      // question's message id): it takes the ref instead of a copy.
+      const existing = adopt.get(id, turn.ref) as { id: string; position: number } | undefined;
+      if (existing) {
+        setRef.run(turn.ref, existing.id);
+        const answer = replyAfter.get(id, existing.position) as { id: string } | undefined;
+        if (answer) setRef.run(`${turn.ref}#reply`, answer.id);
+        known.add(turn.ref);
+        continue;
+      }
+      const at = Math.floor((Date.parse(turn.created_at ?? "") || Date.now()) / 1000);
+      const sources = Array.isArray(turn.sources) && turn.sources.length > 0 ? JSON.stringify(turn.sources.slice(0, 12)) : null;
+      const answeredBy = turn.answered_by && typeof turn.answered_by === "object" ? JSON.stringify(turn.answered_by) : null;
+      insert.run(generateId(), id, userId, "user", turn.text, null, null, turn.ref, at, null, null);
+      insert.run(generateId(), id, userId, "assistant", turn.reply, "vault", turn.model ?? null, `${turn.ref}#reply`, at, sources, answeredBy);
+      known.add(turn.ref);
+      latest = Math.max(latest, at);
+      added += 1;
+    }
+    if (latest) sqlite.prepare("UPDATE discussions SET last_activity_at = MAX(last_activity_at, ?) WHERE id = ?").run(latest, id);
+    return { id, added, created: !found };
+  });
+  const result = run();
+  if ("error" in result) return result;
+  if (result.created) publishEvent({ kind: "discussion.created", userId, discussionId: result.id, title: body.title ?? null });
+  else if (result.added > 0) publishEvent({ kind: "discussion.touched", userId, discussionId: result.id, lastActivityAt: new Date().toISOString() });
+  return result;
+}
+
+/// A conversation deleted on another device (a vault tombstone): its copy
+/// here goes, as DELETE /discussions/:id does. Returns how many went.
+export function deleteVaultConversation(userId: string, vaultId: string): number {
+  const rows = sqlite.prepare("SELECT id FROM discussions WHERE user_id = ? AND vault_id = ?").all(userId, vaultId.toLowerCase()) as Array<{ id: string }>;
+  for (const row of rows) {
+    db.transaction((tx) => {
+      tx.delete(messages).where(eq(messages.discussionId, row.id)).run();
+      tx.delete(discussions).where(eq(discussions.id, row.id)).run();
+    });
+    publishEvent({ kind: "discussion.touched", userId, discussionId: row.id, lastActivityAt: new Date().toISOString() });
+  }
+  return rows.length;
 }
 
 function parseAnsweredBy(json: string | null): unknown {

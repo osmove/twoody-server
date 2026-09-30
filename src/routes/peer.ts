@@ -12,6 +12,7 @@ import { RuntimeError } from "../builtin/index.js";
 import { recordUsageEvent } from "../usageStore.js";
 import { clientOf } from "./usage.js";
 import { withTimings } from "./queries.js";
+import { peerVaultRoutes } from "./peerVault.js";
 
 // What this computer answers to another computer of the same account
 // (docs/multi-computer-design.md §3), through the sealed tunnel:
@@ -19,6 +20,8 @@ import { withTimings } from "./queries.js";
 //   GET    /api/v1/peer/status                  the status object (account/status.ts)
 //   POST   /api/v1/peer/v1/chat/completions     OpenAI-compatible, passed to the runtime
 //   DELETE /api/v1/peer/session                 the caller forgets its session here
+//   GET    /api/v1/peer/vault/identity          this computer's vault public keys (peerVault.ts, tunnel only)
+//   POST   /api/v1/peer/vault/anchor            the person device approving it names itself (peerVault.ts)
 //
 // Errors: 404 no_model, 503 busy (1 chat + 1 background at a time), 422
 // for a request past the limits (64 messages; max_tokens is cut to 4096).
@@ -44,6 +47,8 @@ function validMessages(value: unknown): boolean {
 }
 
 export async function peerRoutes(app: FastifyInstance) {
+  await peerVaultRoutes(app);
+
   app.get("/peer/status", {
     schema: { tags: ["providers"], summary: "This computer's status, for the account's other computers" },
     handler: async (req, reply) => {

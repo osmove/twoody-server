@@ -23,6 +23,7 @@ import { ensureAccountFile, fingerprint } from "./account/store.js";
 import { startMachineSampler } from "./machineSampler.js";
 import { isFresh } from "./pairing.js";
 import { startPeerStatusPoller } from "./peers/index.js";
+import { setDesktopVault, startVaultService } from "./vault/service.js";
 import { builtinAddress, initEngine, preloadBuiltin, stopEngine } from "./engine.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -277,8 +278,14 @@ try {
     parentPort.on("message", ({ data }) => {
       const type = (data as { type?: unknown } | null)?.type;
       if (type === "account" || type === "tunnel") desktopAccount(data);
+      // The Desktop's vault keys, held in memory only (src/vault/service.ts).
+      if (type === "vault") setDesktopVault(data);
     });
   }
+  // A headless computer in an account is a member of the encrypted history
+  // once a person device approves it (docs/mesh-design.md §1): inert while
+  // it is not linked. Inside Twoody Desktop the Desktop holds the keys.
+  const vaultService = parentPort ? null : startVaultService({ log: (message) => console.log(`  ${message}`) });
   if (parentPort && process.env.TWOODY_TUNNEL === "1") {
     parentPort.on("message", ({ data }) => {
       if ((data as { type?: unknown } | null)?.type !== "tunnel") return;
@@ -336,6 +343,7 @@ try {
       try {
         bridgeClient?.stop();
         accountService.stop();
+        vaultService?.stop();
         stopPeerPoller();
         sampler?.stop();
       } catch {

@@ -37,6 +37,7 @@ import { noteModelUsed } from "../account/statusSource.js";
 import type { Purpose } from "../account/status.js";
 import { peerById, peerRequest, PeerUnavailableError, type PeerRow } from "../peers/index.js";
 import { isSelf, pick, pickBackground, selfIdentity } from "../router/index.js";
+import { sealAnsweredTurn } from "../vault/service.js";
 
 interface QueryBody {
   document_access?: unknown;
@@ -647,6 +648,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       messageId,
     });
     touchDiscussion(discussion.id);
+    // A synchronised conversation: a headless computer seals its own turn
+    // for the person's other devices (src/vault/service.ts).
+    if (vaultRef) void sealAnsweredTurn(discussion.id, vaultRef);
     publishEvent({
       kind:           "message.appended",
       userId:         auth.userId,

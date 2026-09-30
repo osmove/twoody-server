@@ -10,6 +10,9 @@ export class BackendError extends Error {
     readonly status: number,
     readonly code: string | null,
     message: string,
+    /// The answer's JSON, for callers to whom a refusal is an answer
+    /// (the vault's 409 on a batch of events, src/vault/client.ts).
+    readonly body: unknown = null,
   ) {
     super(message);
     this.name = "BackendError";
@@ -64,7 +67,7 @@ export async function backendCall<T = unknown>(
   }
   if (!response.ok) {
     const code = body && typeof body === "object" && typeof (body as { error?: unknown }).error === "string" ? (body as { error: string }).error : null;
-    throw new BackendError(response.status, code, `backend answered ${response.status}${code ? ` (${code})` : ""} to ${path}`);
+    throw new BackendError(response.status, code, `backend answered ${response.status}${code ? ` (${code})` : ""} to ${path}`, body);
   }
   return { status: response.status, body: body as T };
 }

@@ -1,0 +1,29 @@
+{
+  "_origin": "Copied from twoody-app test/fixtures/vault-vectors.json (identical in twoody-desktop test/fixtures), commit 14dd7589. Written by twoody-app test/utils/vault.test.js with seeded(7) randomness; never edit here: change it there and copy it again. test/vaultCrypto.test.ts checks this copy against the sibling checkouts when they exist.",
+  "aSignPublic": "919c6c0c2250352e83b68ca5cb38bb5dd7bcd5ea570ae8f2b35b95750cea1231",
+  "bEncPublic": "a920c38ccc9c3758d82b3945b27013f343a30b9eb0bf7256480c94191978b91b",
+  "epochKey": "0000000000400000408000004000004000000000000040000000004000000000",
+  "envelope": {
+    "v": 1,
+    "user_id": "42",
+    "epoch": 1,
+    "to_device": "mac",
+    "from_device": "iphone",
+    "epk": "56e0e70535647b8d6402000559a37a28a947675e40a542545e644e82e2de8e16",
+    "nonce": "80c000000000400040004000400000004080b90000400000",
+    "ciphertext": "da76f0840f14482c8b87ce08a2998d676d39ac9981d949a61d16f845835a8bdd6edad1b801b787139a6c383ccd464571",
+    "signature": "73af151745d0266bc2204df06480de506df78a33d10679c265e68926a624c48b0b42103eeba1ad8f2a8cb2fa71b3a08763e6a2cbb4986b0fcef2a040056a890d"
+  },
+  "event": {
+    "v": 1,
+    "user_id": "42",
+    "conversation_id": "c-1",
+    "event_id": "e-1",
+    "epoch": 1,
+    "kind": "turn",
+    "created_at": "2026-09-28T14:00Z",
+    "nonce": "40808080000000004000000000400000408080c000000000",
+    "ciphertext": "697bff10a6ff10d7434dbe10cd0d5355be977ecbf9da13c87099fb35ec8c2ee89179fde5b7dd83e907af8ac13d"
+  },
+  "recovery": "0000-0000-8000-0G40-0004-0000-8000-0000-0004-0000-0004-0000-0002-2A0"
+}
