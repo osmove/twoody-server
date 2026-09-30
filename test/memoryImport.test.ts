@@ -60,3 +60,37 @@ test("an import keeps each fact once, and the whole answer", async () => {
 
   assert.equal((await app.inject({ method: "POST", url: "/api/v1/memories/import", headers, payload: { text: "  \n- ok\n" } })).statusCode, 400);
 });
+
+test("the account's memories are taken over one each: title, kind and date kept, the known ones left out", async () => {
+  const memories = [
+    { id: 11, kind: "project", title: "Twoody", content: "Jimmy construit Twoody, un assistant IA local.", tags: ["import", "chatgpt"], created_at: "2026-04-12T09:00:00Z" },
+    { id: 12, kind: "user", title: "Antony", content: "jimmy habite a Antony", tags: [], created_at: "2026-05-01T09:00:00Z" },
+    { id: 13, kind: "bogus", title: "", content: "Jimmy préfère des réponses concises, en français", tags: null, created_at: "not a date" },
+    { id: 14, kind: "user", title: "Vide", content: "   " },
+  ];
+  const first = await app.inject({ method: "POST", url: "/api/v1/memories/import", headers, payload: { source: "account", memories } });
+  assert.equal(first.statusCode, 201);
+  const body = first.json();
+  assert.equal(body.imported, 1);
+  assert.equal(body.skipped, 2); // « Jimmy habite à Antony. » and the concise answers, imported above
+  assert.equal(body.archive_id, undefined);
+  const [row] = body.memories;
+  assert.equal(row.kind, "project");
+  assert.equal(row.title, "Twoody");
+  assert.equal(row.source, "import");
+  assert.equal(row.source_ref, "account");
+  assert.deepEqual(row.tags, ["chatgpt", "import", "account"]);
+  assert.equal(row.created_at, "2026-04-12T09:00:00.000Z");
+
+  const again = (await app.inject({ method: "POST", url: "/api/v1/memories/import", headers, payload: { source: "account", memories } })).json();
+  assert.equal(again.imported, 0);
+  assert.equal(again.skipped, 3);
+
+  const fresh = (await app.inject({ method: "POST", url: "/api/v1/memories/import", headers, payload: { source: "account", memories: [{ content: "Jimmy joue du piano, un Yamaha U1." }] } })).json();
+  assert.equal(fresh.memories[0].kind, "user");
+  assert.equal(fresh.memories[0].title, null);
+
+  assert.equal((await app.inject({ method: "POST", url: "/api/v1/memories/import", headers, payload: { source: "account", memories: [] } })).statusCode, 400);
+  const tooMany = Array.from({ length: 501 }, (_, i) => ({ content: `Fait numéro ${i}` }));
+  assert.equal((await app.inject({ method: "POST", url: "/api/v1/memories/import", headers, payload: { source: "account", memories: tooMany } })).statusCode, 413);
+});

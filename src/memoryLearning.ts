@@ -206,3 +206,51 @@ export function importMemories(userId: string, text: string, source: ImportSourc
   // Longer than a memory event may be, the whole answer usually stays here.
   return { ids, skipped, archiveId: memoryWritten(archiveId) };
 }
+
+// ── Taken over from the account ────────────────────────────────────────
+// The memories the Twoody account learned before this computer kept them
+// (twoody-backend GET /api/v1/account_memories): the iPhone or the Desktop
+// reads them there and hands them here, one memory each, title, kind and
+// date kept; the known ones left out, by the same normalisation. The
+// account forgets them afterwards, when the person says so.
+
+export interface AccountMemory {
+  kind?: unknown;
+  title?: unknown;
+  content?: unknown;
+  tags?: unknown;
+  created_at?: unknown;
+}
+
+const MEMORY_KINDS = new Set(["user", "feedback", "project", "reference"]);
+export const MAX_ACCOUNT_MEMORIES = 500;
+
+export function importAccountMemories(userId: string, items: AccountMemory[], now = new Date()) {
+  const known = new Set(
+    db.select({ content: memories.content }).from(memories)
+      .where(and(eq(memories.userId, userId), isNull(memories.supersededById)))
+      .all().map((row) => normalize(row.content)),
+  );
+  const ids: string[] = [];
+  let skipped = 0;
+  for (const item of items.slice(0, MAX_ACCOUNT_MEMORIES)) {
+    const content = typeof item?.content === "string" ? item.content.trim().slice(0, 50_000) : "";
+    const key = normalize(content);
+    if (!content || !key) continue;
+    // Known here, or forgotten here on purpose (never learned again).
+    if (known.has(key) || isForgottenFact(content)) { skipped += 1; continue; }
+    known.add(key);
+    const title = typeof item.title === "string" && item.title.trim() ? item.title.trim().slice(0, 200) : null;
+    const kind = typeof item.kind === "string" && MEMORY_KINDS.has(item.kind) ? item.kind : kindOfFact(content);
+    const tags = Array.isArray(item.tags) ? item.tags.filter((tag): tag is string => typeof tag === "string" && tag !== "import" && tag !== "account").slice(0, 20) : [];
+    const created = typeof item.created_at === "string" && !Number.isNaN(Date.parse(item.created_at)) ? new Date(item.created_at) : now;
+    const id = newMemoryId();
+    db.insert(memories).values({
+      id, userId, kind, title, content,
+      tagsJson: JSON.stringify([...tags, "import", "account"]),
+      source: "import", sourceRef: "account", createdAt: created, updatedAt: now,
+    }).run();
+    ids.push(memoryWritten(id));
+  }
+  return { ids, skipped };
+}
