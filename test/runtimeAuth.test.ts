@@ -31,3 +31,15 @@ test("configuring again replaces what was known; junk means no key", () => {
   configureRuntimeKeys(null);
   assert.deepEqual(runtimeAuthHeaders("http://127.0.0.1:2/v1"), {});
 });
+
+test("a key added by this process survives the Desktop's keys being replaced, and is loopback only", async () => {
+  const { addRuntimeKey } = await import("../src/runtimeAuth.js");
+  assert.equal(addRuntimeKey("http://127.0.0.1:47900/v1/", "mine"), true);
+  assert.equal(addRuntimeKey("http://192.168.1.20:47900/v1", "leak"), false);
+  configureRuntimeKeys({ "http://127.0.0.1:47831/v1": "desktop" });
+  assert.deepEqual(runtimeAuthHeaders("http://127.0.0.1:47900/v1"), { Authorization: "Bearer mine" });
+  assert.deepEqual(runtimeAuthHeaders("http://127.0.0.1:47831/v1"), { Authorization: "Bearer desktop" });
+  configureRuntimeKeys(null);
+  assert.deepEqual(runtimeAuthHeaders("http://127.0.0.1:47900/v1"), { Authorization: "Bearer mine" });
+  assert.deepEqual(runtimeAuthHeaders("http://192.168.1.20:47900/v1"), {});
+});

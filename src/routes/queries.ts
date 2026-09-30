@@ -27,6 +27,8 @@ import { createThinkFilter } from "../thinkFilter.js";
 import { hasIndexedDocuments, listFolders, searchPassages, indexStatus } from "../documents/library.js";
 import { LOCAL_ONLY, LocalOnlyError, outboundFetch } from "../outbound.js";
 import { probeRuntime } from "../localRuntime.js";
+import { engineRoute, isBuiltinUrl, localRuntimeReady } from "../engine.js";
+import { RuntimeError } from "../builtin/index.js";
 import { discussionTitle, typedText } from "../documentBlocks.js";
 import { loadPersonalData } from "./localSync.js";
 import { validTimeZone } from "../usagePeriods.js";
@@ -204,7 +206,7 @@ async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body:
   });
   try {
     const provider = await resolveProvider(auth.userId, req.body?.model ?? undefined);
-    if (provider.kind === "local_openai" && !(await probeRuntime(provider.baseUrl)).reachable) {
+    if (provider.kind === "local_openai" && !(await localRuntimeReady(provider.baseUrl, provider.model))) {
       throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
     }
     // The conversation as a turn gives it (the runtime reuses what it
@@ -251,6 +253,7 @@ async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body:
     const message = err instanceof Error ? err.message : "Unknown error";
     const [status, code] =
       err instanceof LocalLlmUnavailableError ? [503, "local_llm_unavailable"]
+      : err instanceof RuntimeError ? [err.status, err.code]
       : err instanceof LocalOnlyError ? [403, "local_only"]
       : [502, "provider_error"];
     return reply.code(status).send({ error: code, message });
@@ -409,7 +412,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     answeredByComputer = plan[0]!.answeredBy;
     // A runtime that is not there is said now, as an HTTP error, before
     // the reply is opened below — unless another computer can answer.
-    if (plan.length === 1 && provider.kind === "local_openai" && !(await probeRuntime(provider.baseUrl)).reachable) {
+    if (plan.length === 1 && provider.kind === "local_openai" && !(await localRuntimeReady(provider.baseUrl, provider.model))) {
       throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
     }
     const userContext = loadUserContext(auth.userId);
@@ -544,7 +547,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       timing.started = Date.now();
       const done = provider.kind === "local_openai" ? beginGeneration("chat") : () => undefined;
       try {
-        if (attempt > 0 && provider.kind === "local_openai" && !(await probeRuntime(provider.baseUrl)).reachable) {
+        if (attempt > 0 && provider.kind === "local_openai" && !(await localRuntimeReady(provider.baseUrl, provider.model))) {
           throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
         }
         if (provider.kind === "local_openai") noteModelUsed(provider.model);
@@ -738,6 +741,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       err instanceof ComputerUnavailableError ? [503, "computer_unavailable"]
       : err instanceof PeerUnavailableError ? [503, "computer_unavailable"]
       : err instanceof LocalLlmUnavailableError ? [503, "local_llm_unavailable"]
+      : err instanceof RuntimeError ? [err.status, err.code]
       : err instanceof LocalOnlyError ? [403, "local_only"]
       : [502, "provider_error"];
     // A computer chosen by name that did not answer: the error offers this
@@ -862,12 +866,15 @@ export interface AnsweredBy {
   trusted?: boolean;
 }
 
-type Routing = { mode: "legacy" } | { mode: "auto" } | { mode: "explicit"; computerId: string };
+type Routing = { mode: "legacy" } | { mode: "engine" } | { mode: "auto" } | { mode: "explicit"; computerId: string };
 
 /// `provider`: "auto" (« Automatique »), "computer:<id>" (that computer),
-/// anything else or nothing: as before — this computer's providers.
+/// "engine" (this computer's « Moteur », the provider /providers lists
+/// without storing it), anything else or nothing: as before — this
+/// computer's providers.
 export function readRouting(value: unknown): Routing {
   if (value === "auto") return { mode: "auto" };
+  if (value === "engine") return { mode: "engine" };
   if (typeof value === "string" && /^computer:[\w-]{1,64}$/.test(value)) return { mode: "explicit", computerId: value.slice("computer:".length) };
   return { mode: "legacy" };
 }
@@ -876,7 +883,7 @@ export function readRouting(value: unknown): Routing {
 const MAX_FALLBACKS = 2;
 
 function retriable(err: unknown): boolean {
-  return err instanceof PeerUnavailableError || err instanceof LocalLlmUnavailableError || (err instanceof TypeError && /fetch/i.test(err.message));
+  return err instanceof PeerUnavailableError || err instanceof LocalLlmUnavailableError || err instanceof RuntimeError || (err instanceof TypeError && /fetch/i.test(err.message));
 }
 
 function peerProvider(peer: PeerRow, model: string): Provider {
@@ -918,8 +925,8 @@ function answeredByOf(provider: Provider, routed: AnsweredBy["routed"]): Answere
 /// The providers to try for this turn, in order.
 async function planRoute(userId: string, requestedModel: string | undefined, routing: Routing, previous: string | null): Promise<PlanEntry[]> {
   const wanted = requestedModel && requestedModel !== "local" && requestedModel !== "auto" ? requestedModel : null;
-  if (routing.mode === "legacy") {
-    const provider = await resolveProvider(userId, requestedModel);
+  if (routing.mode === "legacy" || routing.mode === "engine") {
+    const provider = await resolveProvider(userId, requestedModel, { engine: routing.mode === "engine" });
     return [{ provider, answeredBy: answeredByOf(provider, "explicit") }];
   }
   if (routing.mode === "explicit") {
@@ -965,7 +972,17 @@ async function planRoute(userId: string, requestedModel: string | undefined, rou
 /// model since removed — gets the default model: sent on, a runtime could
 /// go and fetch it from the internet. "local" is what a client sends when
 /// it knows no model by name.
-async function resolveProvider(userId: string, requestedModel?: string): Promise<Provider> {
+///
+/// Without a stored local provider (a Pi, a server, a Docker container),
+/// the chat goes to the engine of this computer's « Moteur » preference
+/// (engine.ts): the built-in llama.cpp runtime, Ollama, LM Studio… — and
+/// always there when the client names the provider "engine".
+async function resolveProvider(userId: string, requestedModel?: string, options: { engine?: boolean } = {}): Promise<Provider> {
+  if (options.engine) {
+    const route = await engineRoute(requestedModel);
+    if (!route) throw new LocalLlmUnavailableError("No engine answers on this computer (twoody-server runtime status)");
+    return { kind: "local_openai", baseUrl: route.baseUrl, model: route.model };
+  }
   const configuredProviders = db
     .select()
     .from(providers)
@@ -995,8 +1012,14 @@ async function resolveProvider(userId: string, requestedModel?: string): Promise
       const probe = await probeRuntime(provider.baseUrl).catch(() => null);
       if (probe?.models?.includes(wanted)) return { kind: "local_openai", baseUrl: provider.baseUrl, model: wanted };
     }
+    // Or the engine, when it holds that model.
+    const route = await engineRoute(wanted).catch(() => null);
+    if (route?.model === wanted) return { kind: "local_openai", baseUrl: route.baseUrl, model: wanted };
     return byDefault;
   }
+
+  const route = await engineRoute(requestedModel).catch(() => null);
+  if (route) return { kind: "local_openai", baseUrl: route.baseUrl, model: route.model };
 
   if (process.env.BRIDGE_LOCAL_LLM_ENDPOINT) {
     return {
@@ -1350,6 +1373,9 @@ async function streamLocal(
   } = {},
 ): Promise<Usage | null> {
   const endpoint = baseUrl.replace(/\/$/, "");
+  // The built-in runtime is started (or found running) before it is asked;
+  // it may have stopped since the route was chosen, after its idle time.
+  if (!options.post && isBuiltinUrl(endpoint)) await localRuntimeReady(endpoint, model);
   const budget = THINKING_BUDGET[options.effort ?? "fast"];
   const timeLimit = THINKING_TIME_MS[options.effort ?? "fast"];
   const thinking = budget > 0;

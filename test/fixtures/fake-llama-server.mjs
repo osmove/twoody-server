@@ -1,4 +1,5 @@
-// Plays llama.cpp's server in router mode for test/builtinManager.test.ts.
+// Plays llama.cpp's server in router mode for test/builtinManager.test.ts
+// and test/runtimeRoutes.test.ts.
 // Copied as `llama-server` (with this Node as its interpreter) into a
 // runtime folder. Records how it was started beside itself.
 import { createServer } from "node:http";
@@ -35,7 +36,18 @@ const server = createServer((req, res) => {
   let body = "";
   req.on("data", (chunk) => (body += chunk));
   req.on("end", () => {
-    loaded = JSON.parse(body || "{}").model ?? null;
+    const json = JSON.parse(body || "{}");
+    loaded = json.model ?? null;
+    writeFileSync(join(here, `request-${Date.now()}-${Math.random().toString(36).slice(2)}.json`), JSON.stringify({ url: req.url, body: json }));
+    if (json.stream) {
+      // As llama.cpp streams: deltas, then the usage, then [DONE].
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      for (const piece of ["Bonjour ", "depuis le moteur intégré."]) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: piece } }], model: loaded })}\n\n`);
+      }
+      res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 6 } })}\n\n`);
+      return res.end("data: [DONE]\n\n");
+    }
     res.end('{"choices":[{"message":{"content":"ok"}}]}');
   });
 });

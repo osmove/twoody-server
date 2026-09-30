@@ -9,6 +9,7 @@ import { recentLoad, type LoadSample } from "../machineSampler.js";
 import { samplesSince, generationTps } from "../usageStore.js";
 import { inflight } from "./inflight.js";
 import { boundStatus, type ComputerStatus, type Purpose } from "./status.js";
+import { activeEngine, engine, engineModels } from "../engine.js";
 
 // What this computer says of itself in its heartbeat and on
 // /api/v1/peer/status: its models (and which are in memory), its load, how
@@ -34,7 +35,8 @@ function appVersion(): string {
 }
 
 /// The runtimes this computer answers with: its enabled local providers,
-/// the default first, then BRIDGE_LOCAL_LLM_ENDPOINT.
+/// the default first, then BRIDGE_LOCAL_LLM_ENDPOINT. The engine of its
+/// « Moteur » preference comes before them all (localModels).
 export function localRuntimes(userId?: string | null): Array<{ baseUrl: string; model: string | null }> {
   const rows = db
     .select()
@@ -56,7 +58,18 @@ export function localRuntimes(userId?: string | null): Array<{ baseUrl: string; 
 /// The models the runtimes hold, each with the runtime that holds it.
 export async function localModels(userId?: string | null): Promise<Array<{ id: string; baseUrl: string; loaded: boolean }>> {
   const out: Array<{ id: string; baseUrl: string; loaded: boolean }> = [];
+  // The engine first: the built-in runtime's models are the files in its
+  // folder, in memory only when it says so (never started to be asked).
+  const active = await engineModels().catch(() => null);
+  if (active) {
+    const loaded = active.loaded ?? (await loadedModels(active.baseUrl, active.models));
+    for (const id of active.models) {
+      if (!isChatModel(id) || out.some((m) => m.id === id)) continue;
+      out.push({ id, baseUrl: active.baseUrl, loaded: loaded.has(id) });
+    }
+  }
   for (const runtime of localRuntimes(userId)) {
+    if (active && runtime.baseUrl === active.baseUrl.replace(/\/+$/, "")) continue;
     const probe = await probeRuntime(runtime.baseUrl).catch(() => null);
     const listed = probe?.models ?? (runtime.model ? [runtime.model] : []);
     const loaded = await loadedModels(runtime.baseUrl, listed);
@@ -177,6 +190,7 @@ export async function buildStatus(userId?: string | null): Promise<ComputerStatu
   const models = await localModels(owner);
   const load = lastLoad(owner).at(-1) ?? null;
   const tps = measuredTps(owner);
+  const engineId = engine().managedByDesktop ? undefined : (await activeEngine().catch(() => null))?.id;
   return boundStatus({
     app_version: appVersion(),
     models: models.map((m) => ({ id: m.id, loaded: m.loaded })),
@@ -190,5 +204,6 @@ export async function buildStatus(userId?: string | null): Promise<ComputerStatu
     inflight: inflight(),
     accepts: accepts(),
     tools: process.env.TWOODY_PEER_TOOLS !== "0",
+    ...(engineId !== undefined ? { engine: engineId } : {}),
   });
 }

@@ -42,6 +42,7 @@ import { localDocumentRoutes } from "./routes/localDocuments.js";
 import { accountLinkRoutes } from "./routes/accountLink.js";
 import { peerRoutes } from "./routes/peer.js";
 import { peersRoutes } from "./routes/peers.js";
+import { runtimeRoutes } from "./routes/runtime.js";
 import { requireAdminAccess } from "./adminAccess.js";
 import { requireAuth } from "./auth.js";
 import { outboundFetch } from "./outbound.js";
@@ -180,6 +181,7 @@ export async function buildApp() {
   await app.register(tunnelDirectRoutes);
   await app.register(remoteCodeRoutes);
   await app.register(accountLinkRoutes);
+  await app.register(runtimeRoutes);
 
   // Versioned aliases for API clients migrating away from root-level
   // Rails-style paths. Health, docs, admin, MCP and WebSocket routes stay
@@ -215,6 +217,7 @@ export async function buildApp() {
   await app.register(mobileAgentRoutes, { prefix: "/api/v1" });
   await app.register(remoteCodeRoutes, { prefix: "/api/v1" });
   await app.register(accountLinkRoutes, { prefix: "/api/v1" });
+  await app.register(runtimeRoutes, { prefix: "/api/v1" });
   // The account's other computers: what this one answers them
   // (/api/v1/peer/*), and those it sends questions to (/api/v1/peers).
   await app.register(peerRoutes, { prefix: "/api/v1" });

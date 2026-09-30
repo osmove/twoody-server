@@ -150,3 +150,18 @@ test("a platform without a release is said so", async () => {
     (err) => err instanceof RuntimeFetchError && err.code === "unsupported_platform",
   );
 });
+
+test("an archive already on disk is installed only when its digest is the pinned one", async () => {
+  const root = mkdtempSync(join(work, "archive-"));
+  const goodFile = join(work, "good.tar.gz");
+  const otherFile = join(work, "other.tar.gz");
+  await assert.rejects(
+    installRuntime({ runtimeRoot: root, platform: "linux", arch: "arm64", target, archive: otherFile }),
+    (err: unknown) => err instanceof RuntimeFetchError && err.code === "checksum_mismatch",
+  );
+  assert.equal(existsSync(runtimeDir(root, "linux", "arm64")), false);
+  const installed = await installRuntime({ runtimeRoot: root, platform: "linux", arch: "arm64", target, archive: goodFile });
+  assert.equal(installed.fetched, true);
+  assert.ok(existsSync(join(installed.dir, "llama-server")));
+  assert.equal(readFileSync(join(installed.dir, "VERSION"), "utf8").trim(), RUNTIME_STAMP);
+});

@@ -4,6 +4,7 @@ import { accountCredentials } from "../account/service.js";
 import { buildStatus, lastLoad } from "../account/statusSource.js";
 import type { Purpose } from "../account/status.js";
 import { db, providers } from "../db.js";
+import { engineRoute } from "../engine.js";
 import { accountComputers, linkedPeers, peerStatus, type PeerRow } from "../peers/index.js";
 import { rank, STATUS_MAX_AGE_MS, type Choice, type ComputerView } from "./score.js";
 
@@ -24,10 +25,14 @@ export function isSelf(computerId: string): boolean {
   return computerId === SELF_ID || computerId === selfIdentity().id;
 }
 
-function defaultModel(userId: string): string | null {
+/// The model this computer answers with unless told otherwise: its default
+/// stored provider's, else its engine's (the built-in runtime's
+/// `default_model`, engine.ts).
+async function defaultModel(userId: string): Promise<string | null> {
   const rows = db.select().from(providers).where(eq(providers.userId, userId)).all().filter((p) => p.enabled);
   const chosen = rows.find((p) => p.isDefault) ?? rows[0];
-  return chosen?.model ?? null;
+  if (chosen?.model) return chosen.model;
+  return (await engineRoute(null).catch(() => null))?.model ?? null;
 }
 
 export async function selfView(userId: string): Promise<ComputerView> {
@@ -42,7 +47,7 @@ export async function selfView(userId: string): Promise<ComputerView> {
     status,
     statusAgeMs: 0,
     loads: lastLoad(userId).map((l) => ({ cpu_pct: l.cpuPct, gpu_pct: l.gpuPct })),
-    defaultModel: defaultModel(userId),
+    defaultModel: await defaultModel(userId),
   };
 }
 

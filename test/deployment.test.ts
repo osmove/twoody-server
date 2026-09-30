@@ -33,6 +33,7 @@ const NOT_FOR_A_HUMAN = new Set([
   "TWOODY_LINK_POLL_MS", // tests: how often a pending login is polled
   "TWOODY_PEER_POLL_MS", // tests: how often a peer request's answer is looked for
   "TWOODY_PEER_LISTING_MS", // tests: how often the account's computers are listed to drop removed peers
+  "TWOODY_RUNTIME_OWNER", // the Desktop sets it on the server it embeds: it runs the runtime itself
 ]);
 
 function sourceFiles(dir: string): string[] {
@@ -64,7 +65,8 @@ test("every setting a person is meant to set is written down", () => {
 test("the example does not describe settings the code stopped reading", () => {
   const read = new Set<string>();
   for (const path of sourceFiles(join(root, "src"))) {
-    for (const match of readFileSync(path, "utf8").matchAll(/process\.env\.([A-Z0-9_]+)/g)) {
+    // Also an environment handed down (src/engine.ts reads `env.TWOODY_…`).
+    for (const match of readFileSync(path, "utf8").matchAll(/\benv\.([A-Z0-9_]+)/g)) {
       read.add(match[1]);
     }
   }

@@ -19,6 +19,11 @@
   "author": "Osmove",
   "license": "BUSL-1.1",
   "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./builtin": "./dist/builtin/index.js",
+    "./package.json": "./package.json"
+  },
   "type": "module",
   "bin": {
     "twoody-server": "./bin/twoody-server.mjs"

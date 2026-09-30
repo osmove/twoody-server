@@ -48,7 +48,11 @@
       "items": { "enum": ["chat", "background"] },
       "description": "Purposes a peer may send it; empty means it takes none."
     },
-    "tools": { "type": "boolean", "description": "Its models may be called with OpenAI tools." }
+    "tools": { "type": "boolean", "description": "Its models may be called with OpenAI tools." },
+    "engine": {
+      "enum": ["builtin", "ollama", "lmstudio", "mlx", "custom", null],
+      "description": "Optional: the engine its « Moteur » preference resolves to (twoody-server docs/builtin-runtime-design.md §4), null when none answers. Readers ignore a value they do not know."
+    }
   },
   "examples": [
     {

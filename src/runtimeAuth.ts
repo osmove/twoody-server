@@ -12,6 +12,9 @@
 // for, and only attached to, a loopback address.
 
 const keys = new Map<string, string>();
+/// The keys of the runtimes this process starts itself (the built-in
+/// engine, src/engine.ts): never replaced by what the Desktop hands over.
+const own = new Map<string, string>();
 
 function normalize(baseUrl: string): string {
   return baseUrl.trim().replace(/\/+$/, "");
@@ -36,9 +39,18 @@ export function configureRuntimeKeys(entries: unknown): void {
   }
 }
 
+/// Adds the key of a runtime this process started, beside the ones it was
+/// handed (configureRuntimeKeys does not wipe it). Loopback only.
+export function addRuntimeKey(baseUrl: string, key: string): boolean {
+  if (typeof key !== "string" || !key || !isLoopback(baseUrl)) return false;
+  own.set(normalize(baseUrl), key);
+  return true;
+}
+
 /// Headers to add to a call to `baseUrl` (or to a path under it).
 export function runtimeAuthHeaders(baseUrl: string): Record<string, string> {
-  const key = keys.get(normalize(baseUrl));
+  const base = normalize(baseUrl);
+  const key = own.get(base) ?? keys.get(base);
   return key ? { Authorization: `Bearer ${key}` } : {};
 }
 

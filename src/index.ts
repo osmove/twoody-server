@@ -23,6 +23,7 @@ import { ensureAccountFile, fingerprint } from "./account/store.js";
 import { startMachineSampler } from "./machineSampler.js";
 import { isFresh } from "./pairing.js";
 import { startPeerStatusPoller } from "./peers/index.js";
+import { builtinAddress, initEngine, stopEngine } from "./engine.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -52,6 +53,21 @@ function enforceSingleUserGuard() {
 
 enforceSingleUserGuard();
 
+// The engine (« Moteur », docs/builtin-runtime-design.md): the built-in
+// llama.cpp runtime this server runs by itself — never started here, only
+// on a chat to it — and the preference that chooses it. The Desktop runs
+// its own (TWOODY_RUNTIME_OWNER=desktop, or this is its utility process).
+const desktopChild = Boolean((process as unknown as { parentPort?: unknown }).parentPort);
+const runtimeEngine = initEngine({ desktop: desktopChild, log: (line) => console.log(`  ${line}`) });
+const migrated = (() => {
+  try {
+    return runtimeEngine.prefs.migrate();
+  } catch (err) {
+    console.warn(`  Could not write ${runtimeEngine.prefs.path}: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+})();
+
 const app = await buildApp();
 const setupToken = ensureSetupToken();
 // The answers kept before usage_events existed, copied once; the machine's
@@ -75,6 +91,19 @@ try {
   console.log(`\nTwoody Server ready on http://${HOST}:${PORT}\n`);
   if (LOCAL_ONLY) {
     console.log("  Local-only mode: calls outside this machine / the private network are refused.\n");
+  }
+  if (!runtimeEngine.managedByDesktop) {
+    const { prefs, source } = runtimeEngine.prefs.read();
+    const installed = runtimeEngine.manager.available();
+    const models = installed ? await runtimeEngine.manager.installedModels() : [];
+    const described = prefs.engine === "custom" ? `custom (${prefs.custom_url ?? "no address"})` : prefs.engine;
+    console.log(`  Engine: ${described}${source === "env" ? " (TWOODY_RUNTIME)" : migrated?.written ? " (set from this server's configuration)" : ""}.`);
+    console.log(
+      installed
+        ? `  Built-in llama.cpp runtime: installed, ${models.length} model(s)${models.length ? ` (${models.join(", ")})` : ": twoody-server models add <id>"}; started on the first question.\n`
+        : "  Built-in llama.cpp runtime: not installed (twoody-server runtime install).\n",
+    );
+    if (installed) void builtinAddress().catch(() => undefined);
   }
   const admin = adminToken();
   if (!admin) {
@@ -318,6 +347,13 @@ try {
       }
       try {
         await app.close();
+      } catch {
+        // Best-effort.
+      }
+      // The built-in runtime goes with the server (a unit's KillMode and a
+      // container's init stop it too, should this not get to run).
+      try {
+        await stopEngine();
       } catch {
         // Best-effort.
       }

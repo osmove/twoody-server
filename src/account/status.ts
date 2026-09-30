@@ -14,6 +14,17 @@ export interface ComputerStatus {
   inflight: number;
   accepts: Purpose[];
   tools: boolean;
+  /// The engine its « Moteur » preference resolves to (docs/builtin-runtime-design.md
+  /// §4), null when none; absent from a computer that does not say.
+  engine?: StatusEngine | null;
+}
+
+export const STATUS_ENGINES = ["builtin", "ollama", "lmstudio", "mlx", "custom"] as const;
+export type StatusEngine = (typeof STATUS_ENGINES)[number];
+
+function readEngine(value: unknown): StatusEngine | null | undefined {
+  if (value === null) return null;
+  return typeof value === "string" && (STATUS_ENGINES as readonly string[]).includes(value) ? (value as StatusEngine) : undefined;
 }
 
 export const STATUS_MAX_BYTES = 4096;
@@ -67,6 +78,9 @@ export function readStatus(raw: unknown): ComputerStatus | null {
     accepts,
     tools: s.tools,
   };
+  // Optional, and ignored rather than refused when it is not one of ours.
+  const engine = readEngine(s.engine);
+  if (engine !== undefined) status.engine = engine;
   return Buffer.byteLength(JSON.stringify(status)) <= STATUS_MAX_BYTES ? status : null;
 }
 
@@ -97,6 +111,8 @@ export function boundStatus(status: ComputerStatus): ComputerStatus {
     accepts: status.accepts,
     tools: status.tools,
   };
+  const engine = readEngine(status.engine);
+  if (engine !== undefined) out.engine = engine;
   while (Buffer.byteLength(JSON.stringify(out)) > STATUS_MAX_BYTES && out.models.length > 0) {
     const dropped = out.models.pop()!;
     delete out.tps[dropped.id];

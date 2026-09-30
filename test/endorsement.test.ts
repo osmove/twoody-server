@@ -86,3 +86,13 @@ test("the status schema's example is a status, and the reader keeps to the schem
   assert.equal(readStatus({ ...example, models: Array.from({ length: 33 }, (_, i) => ({ id: `m${i}`, loaded: false })) }), null);
   assert.equal(readStatus("status"), null);
 });
+
+test("the engine is optional in a status: kept when it is one of ours, dropped otherwise", () => {
+  const example = schema.examples[0];
+  assert.equal(readStatus(example)!.engine, undefined);
+  assert.equal(readStatus({ ...example, engine: "builtin" })!.engine, "builtin");
+  assert.equal(readStatus({ ...example, engine: null })!.engine, null);
+  const odd = readStatus({ ...example, engine: "vllm" })!;
+  assert.ok(odd && !("engine" in odd));
+  assert.deepEqual(schema.properties.engine.enum, ["builtin", "ollama", "lmstudio", "mlx", "custom", null]);
+});

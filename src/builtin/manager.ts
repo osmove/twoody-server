@@ -29,6 +29,8 @@ import { serverBinaryName } from "./runtimeManifest.js";
 //     status() and loadedModel() never start it;
 //   - a model is not loaded where it would not fit: MemAvailable must hold
 //     its file × 1.15 plus the context's KV cache, else insufficient_memory;
+//   - on a Pi: 3 threads writing, 4 reading, batches of 128 tokens, the
+//     model read into memory (defaultThreads, platformArgs);
 //   - never left behind: stop() on SIGTERM/SIGINT (the caller's), its pid
 //     kept in runtime.pid so that a runtime that survived a crash of the
 //     server is stopped by the next start — only when its command line is
@@ -119,6 +121,7 @@ export interface RuntimeStatus {
   crashRestarts: number;
   ctx: number;
   threads: number | null;
+  threadsBatch: number | null;
   idleSeconds: number;
 }
 
@@ -149,9 +152,25 @@ export function defaultContextSize(platform: string, arch: string, totalBytes: n
   return totalBytes >= 15 * 1024 ** 3 ? 16_384 : 8_192;
 }
 
-/// Threads: every core on ARM Linux (a Pi 5: 4); elsewhere llama.cpp decides.
+/// Threads for writing: on ARM Linux one core fewer than there are (a Pi 5:
+/// 3 of 4), which leaves one to the server and the system and wrote 7 %
+/// faster on a Pi 5 than all four (30/09/2026); elsewhere llama.cpp decides.
 export function defaultThreads(platform: string, arch: string, cores: number): number | null {
+  return platform === "linux" && arch === "arm64" ? Math.max(1, cores - 1) : null;
+}
+
+/// Threads for reading the prompt: every core on ARM Linux, where reading
+/// is all arithmetic; elsewhere llama.cpp decides.
+export function defaultThreadsBatch(platform: string, arch: string, cores: number): number | null {
   return platform === "linux" && arch === "arm64" ? Math.max(1, cores) : null;
+}
+
+/// What else the runtime is given by platform. On ARM Linux (a Pi):
+/// batches of 128 tokens (-ub 128) and the model read into memory rather
+/// than mapped (--load-mode none) — on a Pi 5 with Qwen3.5 4B, 5 % faster
+/// on prompts and 3.8–4.1 GB of memory instead of 6.1 (30/09/2026).
+export function platformArgs(platform: string, arch: string): string[] {
+  return platform === "linux" && arch === "arm64" ? ["--ubatch-size", "128", "--load-mode", "none"] : [];
 }
 
 /// Memory a model needs to load: its file × 1.15, plus the KV cache of the context.
@@ -177,7 +196,9 @@ export function runtimeArgs(options: {
   modelsDir: string;
   ctx: number;
   threads: number | null;
+  threadsBatch?: number | null;
   idleSeconds: number;
+  extra?: string[];
 }): string[] {
   return [
     ...accelerationArgs(options.backend),
@@ -191,6 +212,8 @@ export function runtimeArgs(options: {
     "--parallel", "1",
     "--ctx-size", String(options.ctx),
     ...(options.threads ? ["--threads", String(options.threads)] : []),
+    ...(options.threadsBatch ? ["--threads-batch", String(options.threadsBatch)] : []),
+    ...(options.extra ?? []),
     "--sleep-idle-seconds", String(options.idleSeconds),
   ];
 }
@@ -260,9 +283,13 @@ export function createRuntimeManager(options: RuntimeManagerOptions): RuntimeMan
 
   function settings() {
     const chosen = options.settings?.() ?? {};
+    const cores = cpuCount();
+    const threads = chosen.threads ?? defaultThreads(platform, arch, cores);
+    const batch = defaultThreadsBatch(platform, arch, cores);
     return {
       ctx: chosen.ctx ?? defaultContextSize(platform, arch, totalMemory()),
-      threads: chosen.threads ?? defaultThreads(platform, arch, cpuCount()),
+      threads,
+      threadsBatch: batch !== null && threads !== null ? Math.max(batch, threads) : batch,
       idleSeconds: Math.round((chosen.idle_minutes ?? 30) * 60),
     };
   }
@@ -409,14 +436,15 @@ export function createRuntimeManager(options: RuntimeManagerOptions): RuntimeMan
 
     const port = await reservePort();
     const url = `http://127.0.0.1:${port}/v1`;
-    const { ctx, threads, idleSeconds } = settings();
+    const { ctx, threads, threadsBatch, idleSeconds } = settings();
     const childEnv = runtimeEnvironment();
 
     engine = await selectRuntimeEngine(binaryDir, platform, childEnv, cpuOnly, options.probe);
     const selected = engine;
     const output = runtimeLog(join(stateDir, "runtime.log"), apiKey);
-    output.write(`[twoody] acceleration=${selected.backend} devices=${selected.devices} cpu-fallback=${cpuOnly} ctx=${ctx} threads=${threads ?? "auto"}\n`);
-    const proc = spawn(selected.binary, runtimeArgs({ backend: selected.backend, port, modelsDir, ctx, threads, idleSeconds }), {
+    output.write(`[twoody] acceleration=${selected.backend} devices=${selected.devices} cpu-fallback=${cpuOnly} ctx=${ctx} threads=${threads ?? "auto"}/${threadsBatch ?? "auto"}\n`);
+    const extra = platformArgs(platform, arch);
+    const proc = spawn(selected.binary, runtimeArgs({ backend: selected.backend, port, modelsDir, ctx, threads, threadsBatch, idleSeconds, extra }), {
       cwd: dirname(selected.binary),
       stdio: ["ignore", "pipe", "pipe"],
       // Nothing of the server's environment is the runtime's business.
@@ -545,7 +573,7 @@ export function createRuntimeManager(options: RuntimeManagerOptions): RuntimeMan
       return manager.restart();
     },
     status() {
-      const { ctx, threads, idleSeconds } = settings();
+      const { ctx, threads, threadsBatch, idleSeconds } = settings();
       return {
         installed: existsSync(binaryPath()),
         running: Boolean(child && baseUrl),
@@ -558,6 +586,7 @@ export function createRuntimeManager(options: RuntimeManagerOptions): RuntimeMan
         crashRestarts: crashes.filter((at) => Date.now() - at < CRASH_WINDOW_MS).length,
         ctx,
         threads,
+        threadsBatch,
         idleSeconds,
       };
     },

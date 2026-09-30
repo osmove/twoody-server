@@ -4,6 +4,7 @@ import { db, providers } from "../db.js";
 import { generateId, requireAuth } from "../auth.js";
 import { offeredModels, probeRuntime } from "../localRuntime.js";
 import { listComputers } from "../router/index.js";
+import { activeEngine, engine, engineDefaultModel, engineName } from "../engine.js";
 
 type ProviderPatchBody = {
   name?: string;
@@ -41,6 +42,35 @@ function normalizeProviderUrl(value: string): string | null {
 function nonEmpty(value: string | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
+}
+
+/// This computer's engine (« Moteur », engine.ts) as a provider that is not
+/// stored: `id: "engine"`, which /queries takes as `provider: "engine"`. Its
+/// address is not given (the built-in runtime's is a loopback port with a
+/// key). Left out when the Desktop runs the runtime, when no engine is
+/// resolved, and when a stored provider already points at it.
+async function engineProvider(stored: Array<typeof providers.$inferSelect>) {
+  if (engine().managedByDesktop) return null;
+  const resolved = await activeEngine();
+  if (!resolved.id || !resolved.baseUrl) return null;
+  const base = resolved.baseUrl.replace(/\/+$/, "");
+  if (stored.some((p) => p.enabled && p.baseUrl?.replace(/\/+$/, "") === base)) return null;
+  const available = resolved.reason === "preference" || resolved.reason === "auto";
+  return {
+    id: "engine",
+    kind: "local_openai",
+    name: engineName(resolved.id),
+    engine: resolved.id,
+    stored: false,
+    base_url: null,
+    model: engineDefaultModel(resolved),
+    enabled: true,
+    is_default: !stored.some((p) => p.enabled && p.isDefault),
+    created_at: null,
+    updated_at: null,
+    status: { available, latency_ms: null, checked_at: new Date().toISOString(), reason: resolved.reason },
+    models: resolved.models,
+  };
 }
 
 export async function providerRoutes(app: FastifyInstance) {
@@ -84,7 +114,9 @@ export async function providerRoutes(app: FastifyInstance) {
       // computer (provider "computer:<id>"). Absent, the clients behave as
       // before.
       const computers = await listComputers(auth.userId).catch(() => null);
-      reply.send({ providers: serialized, ...(computers ? { auto: true, computers } : {}) });
+      const fromEngine = await engineProvider(rows).catch(() => null);
+      const listed = fromEngine ? (fromEngine.is_default ? [fromEngine, ...serialized] : [...serialized, fromEngine]) : serialized;
+      reply.send({ providers: listed, ...(computers ? { auto: true, computers } : {}) });
     },
   });
 

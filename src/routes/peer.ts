@@ -7,6 +7,8 @@ import { LocalOnlyError, outboundFetch } from "../outbound.js";
 import { unpairSession } from "../pairing.js";
 import { runtimeAuthHeaders } from "../runtimeAuth.js";
 import { runtimeSlot } from "../runtimeSlots.js";
+import { ensureBuiltin, isBuiltinUrl } from "../engine.js";
+import { RuntimeError } from "../builtin/index.js";
 import { recordUsageEvent } from "../usageStore.js";
 import { clientOf } from "./usage.js";
 import { withTimings } from "./queries.js";
@@ -82,6 +84,17 @@ export async function peerRoutes(app: FastifyInstance) {
       }
       const holder = (await localModels(auth.userId)).find((m) => m.id === model);
       if (!holder) return reply.code(404).send({ error: "no_model", message: `${model} is not on this computer` });
+      // The built-in runtime is started for it (engine.ts); a model that
+      // would not fit in memory now is refused like a busy computer.
+      if (isBuiltinUrl(holder.baseUrl)) {
+        try {
+          await ensureBuiltin(model);
+        } catch (err) {
+          if (!(err instanceof RuntimeError)) throw err;
+          const status = err.code === "insufficient_memory" ? 503 : err.status;
+          return reply.code(status).send({ error: err.code === "insufficient_memory" ? "busy" : "runtime_unavailable", message: err.message });
+        }
+      }
 
       const payload: Body = {};
       for (const field of PASSED) if (body[field] !== undefined) payload[field] = body[field];

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { createWriteStream, existsSync, promises as fs } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, promises as fs } from "node:fs";
 import { once } from "node:events";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -10,8 +10,8 @@ import {
   RUNTIME_TAG,
   isAllowedRuntimeUrl,
   keepRuntimeFile,
-  runtimeAssetUrl,
   runtimeTarget,
+  runtimeTargetUrl,
   serverBinaryName,
   type RuntimeTarget,
 } from "./runtimeManifest.js";
@@ -81,6 +81,10 @@ export interface InstallRuntimeOptions {
   url?: string;
   /// Tests: accept a plain-HTTP mirror on this computer.
   allowLoopback?: boolean;
+  /// Tests, or a computer without the internet: the archive, already on
+  /// disk, instead of a download. Still refused unless its SHA-256 is the
+  /// pinned one.
+  archive?: string;
   /// Fetch again even when an up-to-date folder is there.
   force?: boolean;
   signal?: AbortSignal;
@@ -149,7 +153,7 @@ async function install(options: InstallRuntimeOptions & { platform: string; arch
   }
   const target = options.target ?? runtimeTarget(platform, arch);
   if (!target) throw new RuntimeFetchError("unsupported_platform", `no llama.cpp release for ${platform}-${arch}`);
-  const url = options.url ?? runtimeAssetUrl(target.asset);
+  const url = options.url ?? runtimeTargetUrl(target);
 
   await fs.mkdir(runtimeRoot, { recursive: true, mode: 0o700 });
   await removeStaleStaging(runtimeRoot);
@@ -157,7 +161,12 @@ async function install(options: InstallRuntimeOptions & { platform: string; arch
   await fs.mkdir(staging, { mode: 0o700 });
   try {
     const archive = join(staging, target.asset);
-    await downloadChecked(url, archive, target, { signal, log, allowLoopback: options.allowLoopback ?? false });
+    if (options.archive) {
+      log(`[runtime] installing ${target.asset} from a file on this computer`);
+      await copyChecked(options.archive, archive, target);
+    } else {
+      await downloadChecked(url, archive, target, { signal, log, allowLoopback: options.allowLoopback ?? false });
+    }
 
     const extracted = join(staging, "extract");
     await fs.mkdir(extracted);
@@ -229,6 +238,29 @@ function extract(archive: string, into: string, platform: string): Promise<void>
       else resolve();
     });
   });
+}
+
+/// A local archive, copied into the staging folder and hashed on the way.
+async function copyChecked(source: string, path: string, target: RuntimeTarget): Promise<void> {
+  const stat = await fs.stat(source).catch(() => null);
+  if (!stat?.isFile()) throw new RuntimeFetchError("http_error", `${source}: no such file`);
+  if (stat.size > MAX_ARCHIVE_BYTES) throw new RuntimeFetchError("too_large", `${target.asset} is larger than any runtime archive`);
+  const hash = createHash("sha256");
+  const out = createWriteStream(path, { flags: "w", mode: 0o600 });
+  try {
+    for await (const chunk of createReadStream(source) as AsyncIterable<Buffer>) {
+      hash.update(chunk);
+      if (!out.write(chunk)) await once(out, "drain");
+    }
+  } finally {
+    out.end();
+    await once(out, "close").catch(() => undefined);
+  }
+  const digest = hash.digest("hex");
+  if (digest !== target.sha256) {
+    await fs.rm(path, { force: true });
+    throw new RuntimeFetchError("checksum_mismatch", `${target.asset}: SHA-256 is ${digest}, expected ${target.sha256}`);
+  }
 }
 
 function get(url: string, signal: AbortSignal): Promise<IncomingMessage> {

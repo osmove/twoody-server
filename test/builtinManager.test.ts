@@ -108,11 +108,15 @@ test("started in router mode on loopback, with the Pi's defaults and a minimal e
   assert.equal(flag(argv, "--parallel"), "1");
   assert.equal(flag(argv, "--cors-origins"), "http://twoody.invalid");
   assert.equal(flag(argv, "--ctx-size"), "8192");
-  assert.equal(flag(argv, "--threads"), "4");
+  // The Pi 5's measured best (30/09/2026): 3 threads writing, 4 reading, batches of 128, no mmap.
+  assert.equal(flag(argv, "--threads"), "3");
+  assert.equal(flag(argv, "--threads-batch"), "4");
+  assert.equal(flag(argv, "--ubatch-size"), "128");
+  assert.equal(flag(argv, "--load-mode"), "none");
   assert.equal(flag(argv, "--sleep-idle-seconds"), "1800");
   assert.ok(argv.includes("--offline") && argv.includes("--no-webui"));
   assert.deepEqual(argv.slice(0, 5), ["--device", "none", "--gpu-layers", "0", "--no-op-offload"]);
-  assert.ok(!argv.includes("--no-mmap"), "mmap stays on");
+  assert.ok(!argv.includes("--no-mmap"));
   // The key is in the environment, never on the command line; nothing else of the server's environment is.
   assert.ok(!argv.join(" ").includes(key));
   assert.equal(record.env.LLAMA_API_KEY, key);
@@ -174,6 +178,7 @@ test("idle unload and context follow the preference; elsewhere than ARM Linux, t
   assert.equal(flag(argv, "--sleep-idle-seconds"), "300");
   assert.equal(flag(argv, "--ctx-size"), "4096");
   assert.equal(flag(argv, "--threads"), "2");
+  assert.equal(flag(argv, "--threads-batch"), "4");
   await manager.stop();
 
   const x64 = setup();
@@ -182,6 +187,9 @@ test("idle unload and context follow the preference; elsewhere than ARM Linux, t
   const argv2 = x64.records()[0].argv;
   assert.equal(flag(argv2, "--ctx-size"), "16384");
   assert.equal(flag(argv2, "--threads"), undefined, "llama.cpp picks threads off a Pi");
+  assert.equal(flag(argv2, "--threads-batch"), undefined);
+  assert.equal(flag(argv2, "--ubatch-size"), undefined, "the Pi's batch size is the Pi's");
+  assert.equal(flag(argv2, "--load-mode"), undefined, "mmap stays on elsewhere");
   await other.stop();
   assert.equal(defaultContextSize("linux", "x64", 8 * GIB), 8192);
   assert.equal(defaultContextSize("darwin", "arm64", 24 * GIB), 16384);
