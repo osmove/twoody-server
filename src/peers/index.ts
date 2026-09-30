@@ -1,6 +1,7 @@
 import { and, eq, isNotNull } from "drizzle-orm";
 import { linkedAccount } from "../account/store.js";
 import { meshRoster, onRosterChange, trustedNow, type Roster } from "../vault/roster.js";
+import { peerDeviceAccess } from "../vault/service.js";
 import { accountCredentials, type AccountCredentials } from "../account/service.js";
 import { backendCall, BackendError } from "../account/backend.js";
 import { openPairing } from "../account/pairingSeal.js";
@@ -580,18 +581,31 @@ export async function requestPeer(
   const computers = (await accountComputers({ fresh: true })) ?? [];
   const target = computers.find((c) => c.id === computerId);
   if (!target) throw new PeerUnavailableError("no such computer in the account", "not_linked");
-  const { body } = await backendCall<{ id: string | number; expires_at?: string }>(
-    { backendUrl: creds.backendUrl, userToken: creds.userToken, deviceToken: creds.deviceToken, requesterCredential: options.requester?.credential },
-    `account_computers/${encodeURIComponent(computerId)}/request_access`,
-    {
-      body: {
-        name: (options.name ?? creds.computerName ?? computerName()).slice(0, 100),
-        public_key: tunnelIdentity().publicKey.toString("hex"),
-        role: "peer",
-        ...(options.requester ? { requester_computer_id: options.requester.computerId } : {}),
+  // Inside Twoody Desktop, asking as its own computer: the Desktop's
+  // device-access for this key and that computer (vault/service.ts
+  // peerDeviceAccess), which the account takes only while the Desktop's
+  // desktop-binding names this computer and key. Refused (the binding not
+  // published yet, an older account): asked again without it — the link
+  // still works, only pinning itself as that computer's anchor waits.
+  const deviceAccess = options.requester ? peerDeviceAccess(computerId, options.requester.computerId) : null;
+  const ask = (withAccess: boolean) =>
+    backendCall<{ id: string | number; expires_at?: string }>(
+      { backendUrl: creds.backendUrl, userToken: creds.userToken, deviceToken: creds.deviceToken, requesterCredential: options.requester?.credential },
+      `account_computers/${encodeURIComponent(computerId)}/request_access`,
+      {
+        body: {
+          name: (options.name ?? creds.computerName ?? computerName()).slice(0, 100),
+          public_key: tunnelIdentity().publicKey.toString("hex"),
+          role: "peer",
+          ...(options.requester ? { requester_computer_id: options.requester.computerId } : {}),
+          ...(withAccess && deviceAccess ? { device_access: deviceAccess } : {}),
+        },
       },
-    },
-  );
+    );
+  const { body } = await ask(true).catch((err) => {
+    if (deviceAccess && err instanceof BackendError && err.status === 422 && err.code === "invalid_device_access") return ask(false);
+    throw err;
+  });
   const requestId = String(body.id);
   const now = new Date();
   const values = {

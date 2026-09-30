@@ -12,7 +12,10 @@ import test from "node:test";
 // very key being pinned, asking through the tunnel from the key its session
 // holds. Never replaced, never pushed out, only before the computer is
 // approved; gone once the vault revokes that device. And the walk from them
-// takes what a device is only from a verified signer.
+// takes what a device is only from a verified signer. A peer session pins
+// only as a Twoody Desktop's embedded server: naming the Desktop's computer,
+// with a device-access/v2 by the key being pinned and that device's
+// desktop-binding naming that computer and the session's tunnel key.
 
 process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-vault-anchors-"));
 process.env.TWOODY_BONJOUR_DISABLED = "1";
@@ -25,7 +28,7 @@ const { newPairingKey } = await import("../src/account/keys.js");
 const { approveRequest, readPending, judge } = await import("../src/account/approvals.js");
 const { pairDevice } = await import("../src/pairing.js");
 const crypto = await import("../src/vault/crypto.js");
-const { signApprovalV2, signBinding, signDeviceAccessV2 } = await import("../src/vault/contracts.js");
+const { signApprovalV2, signBinding, signDesktopBinding, signDeviceAccessV2 } = await import("../src/vault/contracts.js");
 const client = await import("../src/vault/client.js");
 const service = await import("../src/vault/service.js");
 const { buildRoster } = await import("../src/vault/roster.js");
@@ -35,6 +38,9 @@ const { eq } = await import("drizzle-orm");
 
 const USER_ID = 42;
 const PI = "9f3d5b72-4c6e-4a8f-8b2d-3e5f7a9b1c22";
+const MAC = "4b7e2d19-8c3a-4f6e-9d1b-5a2c8e0f7d33";
+const MAC_MINI = "6d1f4a28-2b9c-4e7d-8a3f-1c5e9b0d2f44";
+const OTHER_PI = "7e2a5b39-3c0d-4f8e-9b4a-2d6f0c1e3a55";
 const BACKEND = "https://account.test";
 const fake = fakeVaultBackend({ userId: USER_ID, computers: [PI] });
 /// The account, plus what the approval loop's decide call needs.
@@ -171,6 +177,100 @@ test("who may name an anchor: the owner, or the device itself through the tunnel
   assert.deepEqual(anchorsOnDisk(), [phone.id, ipad.id]);
 });
 
+test("a Desktop's embedded server, asking as its computer, pins the Desktop's own person device; no other peer does", async () => {
+  // The MacBook Air: a person device the iPhone approved, trusted, whose
+  // Desktop names its computer (desktop-binding, signed by its own key)
+  // with its embedded server's tunnel key.
+  const mac = device();
+  const created = await post("vault/devices", { label: "MacBook Air", enc_public: crypto.toHex(mac.keys.encPublic), sign_public: crypto.toHex(mac.keys.signPublic) });
+  mac.id = created.device.id;
+  await post(`vault/devices/${mac.id}/approval`, { approver_id: phone.id, signature: signApprovalV2({ userId: USER_ID, device: created.device, approverId: phone.id, kind: "person", signPrivate: phone.keys.signPrivate }) });
+  await post("vault/envelopes", { envelopes: [crypto.wrapEpochKey({ epochKey, epoch: 1, userId: USER_ID, to: { deviceId: mac.id, encPublic: mac.keys.encPublic }, from: { deviceId: phone.id, signPrivate: phone.keys.signPrivate } })] });
+  const macTunnel = randomBytes(32).toString("hex");
+  const row = fake.devices.find((d) => d.id === mac.id)! as (typeof fake.devices)[number] & { desktop_binding?: string | null };
+  const bindAs = (computer: string, tunnel: string, signer = mac) => {
+    const bound = { vault_device_id: mac.id, account_computer_id: computer, tunnel_public_key: tunnel, pairing_public_key: "ab".repeat(32) };
+    row.desktop_binding = JSON.stringify({ ...bound, signature: signDesktopBinding({ userId: USER_ID, binding: bound, signPrivate: signer.keys.signPrivate }) });
+  };
+  bindAs(MAC, macTunnel);
+
+  // Its request as the Pi's approval loop reads it: a peer naming the
+  // Mac's computer, carrying the statement. Whatever let it in (here the
+  // Mac's endorsement, rule 2), the session keeps it.
+  const expires_at = new Date(Date.now() + 60_000).toISOString();
+  const request = readPending({ requests: [{ id: 93, name: "x", public_key: macTunnel, expires_at, role: "peer", requester_kind: "computer", requester_computer_id: MAC, requester_name: "MacBook Air", device_access: accessFor(mac, macTunnel) }] })[0]!;
+  assert.equal(request.role, "peer");
+  await approveRequest(linkedAccount()!, request, { approve: true, rule: "endorsed" });
+  const session = db.select().from(authSessions).where(eq(authSessions.vaultDeviceId, mac.id)).all()[0]!;
+  assert.deepEqual([session.clientKind, session.requesterComputerId, session.approvalRule], ["peer:MacBook Air", MAC, "endorsed"]);
+  assert.equal(JSON.parse(session.deviceAccessJson!).vault_device_id, mac.id);
+  // A peer naming no computer of the account keeps nothing.
+  const anonymous = readPending({ requests: [{ id: 94, name: "x", public_key: macTunnel, expires_at, role: "peer", device_access: accessFor(mac, macTunnel) }] })[0]!;
+  await approveRequest(linkedAccount()!, anonymous, { approve: true, rule: "endorsed" });
+  const kept = db.select().from(authSessions).all().at(-1)!;
+  assert.deepEqual([kept.vaultDeviceId, kept.deviceAccessJson], [null, null]);
+  db.delete(authSessions).where(eq(authSessions.id, kept.id)).run();
+
+  // The Mac's peer session, through the tunnel from its own key.
+  const peerHeaders = (sessionKey: string, extra: Parameters<typeof pairDevice>[0]) => {
+    const made = pairDevice({ ...extra, tunnelPublicKey: sessionKey });
+    return { authorization: `Bearer ${made.token}`, ...sealedFrom(sessionKey) };
+  };
+  const macPeer = (access = accessFor(mac, macTunnel), sessionKey = macTunnel, requester: string | null = MAC) =>
+    peerHeaders(sessionKey, { deviceName: "MacBook Air", role: "peer", origin: "account", requesterComputerId: requester, approvalRule: "endorsed", vaultDeviceId: access.vault_device_id, deviceAccessJson: JSON.stringify(access) });
+
+  // A Pi of the account (bound by the iPhone, a computer by its approval),
+  // asking as a peer with a statement by its own vault key and a
+  // desktop-binding it signed itself: a computer is never a Desktop.
+  const pi2 = device();
+  const pi2Tunnel = randomBytes(32).toString("hex");
+  pi2.id = randomUUID();
+  const pi2Row = { id: pi2.id, label: "Pi du bureau", enc_public: crypto.toHex(pi2.keys.encPublic), sign_public: crypto.toHex(pi2.keys.signPublic), status: "trusted" as const, approved_at: "now", approved_by_id: phone.id, approval: null as { approver_id: string; signature: string } | null, kind: "computer" as const, account_computer_id: OTHER_PI, binding: null as string | null, invite_proof: null };
+  pi2Row.approval = { approver_id: phone.id, signature: signApprovalV2({ userId: USER_ID, device: pi2Row, approverId: phone.id, kind: "computer", accountComputerId: OTHER_PI, signPrivate: phone.keys.signPrivate }) };
+  const pi2Bound = { vault_device_id: pi2.id, account_computer_id: OTHER_PI, tunnel_public_key: pi2Tunnel, pairing_public_key: "cd".repeat(32), can_approve: false };
+  pi2Row.binding = JSON.stringify({ ...pi2Bound, approver_id: phone.id, signature: signBinding({ userId: USER_ID, binding: pi2Bound, signPrivate: phone.keys.signPrivate }) });
+  const pi2Desktop = { vault_device_id: pi2.id, account_computer_id: OTHER_PI, tunnel_public_key: pi2Tunnel, pairing_public_key: "cd".repeat(32) };
+  fake.devices.push({ ...pi2Row, desktop_binding: JSON.stringify({ ...pi2Desktop, signature: signDesktopBinding({ userId: USER_ID, binding: pi2Desktop, signPrivate: pi2.keys.signPrivate }) }) } as (typeof fake.devices)[number]);
+  const piPeer = peerHeaders(pi2Tunnel, { deviceName: "Pi du bureau", role: "peer", origin: "mesh", requesterComputerId: OTHER_PI, approvalRule: "mesh_computer", vaultDeviceId: pi2.id, deviceAccessJson: JSON.stringify(accessFor(pi2, pi2Tunnel)) });
+
+  const before = anchorsOnDisk();
+  for (const [why, headers, who] of [
+    ["a Pi, however it signs itself", piPeer, pi2],
+    ["the Mac's peer naming the iPhone", macPeer(), phone],
+    ["a statement another key signed", macPeer({ ...accessFor(mac, macTunnel), signature: accessFor(ipad, macTunnel).signature }), mac],
+    ["a statement for another computer", macPeer({ ...accessFor(mac, macTunnel), account_computer_id: OTHER_PI }), mac],
+    ["a peer naming no computer of the account", macPeer(accessFor(mac, macTunnel), macTunnel, null), mac],
+    ["a peer naming another computer than the binding's", macPeer(accessFor(mac, macTunnel), macTunnel, MAC_MINI), mac],
+    ["through the tunnel of another key", { ...macPeer(), ...sealedFrom(randomBytes(32).toString("hex")) }, mac],
+  ] as const) {
+    const refused = await pin(headers, who);
+    assert.equal(refused.statusCode, 403, why);
+    assert.equal(refused.json().error, "anchor_not_allowed", why);
+  }
+  // The binding naming another computer, or another tunnel key, or not
+  // signed by the Mac's key: its peer session is nobody.
+  for (const [why, change] of [
+    ["the binding names another computer", () => bindAs(MAC_MINI, macTunnel)],
+    ["the binding names another tunnel key", () => bindAs(MAC, randomBytes(32).toString("hex"))],
+    ["the binding is signed by another key", () => bindAs(MAC, macTunnel, ipad)],
+    ["no binding", () => (row.desktop_binding = null)],
+  ] as const) {
+    change();
+    const refused = await pin(macPeer(), mac);
+    assert.equal(refused.statusCode, 403, why);
+  }
+  assert.deepEqual(anchorsOnDisk(), before, "nothing pinned by a peer so far");
+
+  bindAs(MAC, macTunnel);
+  const pinned = await pin(macPeer(), mac);
+  assert.equal(pinned.statusCode, 200, pinned.body);
+  assert.deepEqual(anchorsOnDisk(), [...before, mac.id]);
+  // Pinned, it counts as a person the walk starts from.
+  const input = await service.vaultRosterInput();
+  assert.ok(buildRoster(input!).persons.has(mac.id));
+  assert.equal(buildRoster(input!).computers.get(MAC)?.tunnelPublicKey, macTunnel, "and the Desktop, by its binding, as its computer");
+});
+
 test("a pinned anchor is never replaced nor pushed out", async () => {
   const tunnel = { ...owner, ...sealedFrom(randomBytes(32).toString("hex")) };
   const other = crypto.createDeviceKeys();
@@ -178,7 +278,7 @@ test("a pinned anchor is never replaced nor pushed out", async () => {
   assert.equal(conflict.statusCode, 409);
   assert.equal(conflict.json().error, "anchor_conflict");
   // Junk up to the limit (8): the ninth is refused, the iPhone stays first.
-  for (let i = 0; i < 6; i++) assert.equal((await pin(tunnel, { id: randomUUID(), keys: crypto.createDeviceKeys() })).statusCode, 200);
+  for (let i = 0; i < 5; i++) assert.equal((await pin(tunnel, { id: randomUUID(), keys: crypto.createDeviceKeys() })).statusCode, 200);
   const full = await pin(tunnel, { id: randomUUID(), keys: crypto.createDeviceKeys() });
   assert.equal(full.statusCode, 409);
   assert.equal(full.json().error, "too_many_anchors");

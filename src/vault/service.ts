@@ -4,7 +4,7 @@ import { linkedAccount, readAccountFile } from "../account/store.js";
 import { DATA_DIR, db, users } from "../db.js";
 import { tunnelIdentity } from "../tunnel/identity.js";
 import { accountVaultApi, createComputerVaultClient, desktopBindingOf, deviceKind, fileKeyStore, isComputer, type Anchor, type ComputerVaultApi, type ComputerVaultClient, type ComputerVaultStatus, type EventsApi, type LocalVault, type VaultDevice, type VaultState } from "./client.js";
-import { signDesktopBinding, type DesktopBinding } from "./contracts.js";
+import { DEVICE_ACCESS_MAX_TTL_S, signDesktopBinding, signDeviceAccessV2, type DesktopBinding } from "./contracts.js";
 import { fingerprint, fromHex, toHex, VaultError } from "./crypto.js";
 import { jsonFileStore, memoryStore, type VaultStore } from "./store.js";
 import { createConversationBridge, createVaultSync, type ConversationBridge, type LocalHistory, type VaultSync } from "./sync.js";
@@ -198,6 +198,43 @@ export async function ensureDesktopBinding(devices: VaultDevice[], now = Date.no
     return "failed";
   } finally {
     desktopBindingRunning = null;
+  }
+}
+
+// ── the Desktop asking another computer as its own ───────────────────────
+
+/// How long the device-access this server signs for a peer request holds:
+/// half the most a computer takes (DEVICE_ACCESS_MAX_TTL_S), so that a
+/// clock a few hours ahead here is not refused there.
+export const PEER_DEVICE_ACCESS_TTL_S = DEVICE_ACCESS_MAX_TTL_S / 2;
+
+/// Inside Twoody Desktop, when this server asks computer `targetComputerId`
+/// for a peer session as the Desktop's own computer of the account
+/// (`requesterComputerId`, the one the Desktop handed over): a
+/// device-access/v2 signed with the Desktop's vault key, for this server's
+/// tunnel key and that computer, expiring within 12 h. The computer asked
+/// then knows which person device the session is — once it checks the
+/// signature and that device's desktop-binding names this very computer
+/// and key (sessionTrust.ts peerSessionIsDesktop) — and lets it name
+/// itself as its vault anchor (« Faire confiance »). Null otherwise: no
+/// Desktop vault, no device yet, another computer asking, or the account
+/// naming another computer for this server.
+export function peerDeviceAccess(targetComputerId: string, requesterComputerId: string, now = Date.now()) {
+  if (mode.kind !== "desktop" || !mode.local.deviceId || !mode.computer || mode.computer.id !== requesterComputerId) return null;
+  const named = accountCredentials()?.computerId;
+  if (named && named !== mode.computer.id) return null;
+  if (!targetComputerId || targetComputerId === requesterComputerId) return null;
+  let tunnel: string;
+  try {
+    tunnel = tunnelIdentity().publicKey.toString("hex");
+  } catch {
+    return null;
+  }
+  const access = { vault_device_id: mode.local.deviceId, tunnel_public_key: tunnel, account_computer_id: targetComputerId, exp: Math.floor(now / 1000) + PEER_DEVICE_ACCESS_TTL_S };
+  try {
+    return { ...access, signature: signDeviceAccessV2({ userId: mode.userId, access, signPrivate: mode.local.keys.signPrivate }) };
+  } catch {
+    return null;
   }
 }
 

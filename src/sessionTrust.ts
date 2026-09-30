@@ -4,6 +4,7 @@ import { forwardedByProxy, isLoopbackAddress, viaTunnel } from "./adminAccess.js
 import { isOwnerSession, isPeerSessionKind } from "./auth.js";
 import { authSessions, db, tunnelPeers } from "./db.js";
 import { TUNNEL_PEER_HEADER } from "./tunnel/host.js";
+import { desktopBindingOf, type VaultDevice } from "./vault/client.js";
 import { deviceAccessV2Valid, type DeviceAccessV2 } from "./vault/contracts.js";
 import { fromHex } from "./vault/crypto.js";
 import type { Roster } from "./vault/roster.js";
@@ -28,6 +29,12 @@ import type { Roster } from "./vault/roster.js";
 // endorsed by a pinned approver (rule 2), one the console approved, a
 // firmware device's token, another computer's `peer:` session — is none of
 // these.
+//
+// One peer session may name itself as this computer's vault anchor
+// (routes/peerVault.ts), nothing else: a Twoody Desktop's embedded server,
+// which asks as the Desktop's computer of the account and carries a
+// device-access/v2 the Desktop's person device signed
+// (peerSessionIsDesktop below).
 
 export type SessionRow = {
   id: string;
@@ -91,7 +98,13 @@ const PERSON_RULES = new Set(["approver", "device_access"]);
 
 /// The device-access a session kept, for its own vault device and tunnel key.
 function keptAccess(row: SessionRow): (DeviceAccessV2 & { signature: string }) | null {
-  if (!row.deviceAccessJson || !row.vaultDeviceId || !row.approvalRule || !PERSON_RULES.has(row.approvalRule)) return null;
+  if (!row.approvalRule || !PERSON_RULES.has(row.approvalRule)) return null;
+  return keptStatement(row);
+}
+
+/// The device-access a session kept, whatever let it in.
+function keptStatement(row: SessionRow): (DeviceAccessV2 & { signature: string }) | null {
+  if (!row.deviceAccessJson || !row.vaultDeviceId) return null;
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(row.deviceAccessJson) as Record<string, unknown>;
@@ -108,7 +121,7 @@ function keptAccess(row: SessionRow): (DeviceAccessV2 & { signature: string }) |
 /// device-access it came with (rule 1 or 5): the session is that device.
 /// The expiry was the approval's to check; this is about who it is.
 export function sessionIsVaultDevice(row: SessionRow | null, userId: string | number, vaultDeviceId: string, signPublic: string): boolean {
-  if (!row || row.vaultDeviceId !== vaultDeviceId) return false;
+  if (!row || isPeerSessionKind(row.kind) || row.requesterComputerId || row.vaultDeviceId !== vaultDeviceId) return false;
   const access = keptAccess(row);
   if (!access) return false;
   const { signature, ...stated } = access;
@@ -117,6 +130,50 @@ export function sessionIsVaultDevice(row: SessionRow | null, userId: string | nu
   } catch {
     return false;
   }
+}
+
+/// Whether a peer session is a Twoody Desktop's embedded server, the
+/// Desktop's person device `anchor` (its id and signing key) asking as its
+/// own computer of the account — for that device to name itself as this
+/// computer's vault anchor, before this computer trusts anyone:
+///
+///   - a `peer:` session naming its requester computer (the account checked
+///     that computer's credential), that kept a device-access/v2 for this
+///     computer and one of the session's own tunnel keys, naming `anchor`
+///     and signed by `anchor`'s key;
+///   - `anchor` listed in the vault (`devices`, GET /vault) under that very
+///     key, a live person device by its own signed approval, whose
+///     desktop-binding — signed by that same key (vault/client.ts
+///     desktopBindingOf) — names the requester computer and the tunnel key
+///     the statement is for.
+///
+/// Everything rests on `anchor`'s key, the one being pinned: the account
+/// cannot forge either statement, only withhold them. A computer's own
+/// vault device (a Pi, bound by a person device) never has a desktop-
+/// binding that counts, and a peer without one — a Pi, a household's
+/// computer — is refused. Whether the anchor then counts is the walk's
+/// (vault/client.ts anchorHolds).
+export function peerSessionIsDesktop(
+  row: SessionRow | null,
+  args: { userId: string | number; selfComputerId: string; anchor: { id: string; sign_public: string }; devices: VaultDevice[] },
+): boolean {
+  if (!row || !isPeerSessionKind(row.kind) || !row.requesterComputerId || row.requesterComputerId === args.selfComputerId) return false;
+  if (row.vaultDeviceId !== args.anchor.id) return false;
+  const access = keptStatement(row);
+  if (!access || access.account_computer_id !== args.selfComputerId) return false;
+  const { signature, ...stated } = access;
+  let signed = false;
+  try {
+    signed = deviceAccessV2Valid({ userId: args.userId, access: stated, signerSignPublic: fromHex(args.anchor.sign_public), signature });
+  } catch {
+    signed = false;
+  }
+  if (!signed) return false;
+  const byId = new Map(args.devices.map((d) => [d.id, d]));
+  const device = byId.get(args.anchor.id);
+  if (!device || device.sign_public !== args.anchor.sign_public) return false;
+  const binding = desktopBindingOf(args.userId, device, byId);
+  return !!binding && binding.account_computer_id === row.requesterComputerId && binding.tunnel_public_key === access.tunnel_public_key;
 }
 
 /// The vault device of a person's own device session: a non-peer session

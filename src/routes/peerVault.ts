@@ -1,11 +1,11 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { isOwnerSession, requireAuth } from "../auth.js";
+import { isOwnerSession, isPeerSessionKind, requireAuth } from "../auth.js";
 import { forwardedByProxy, isLoopbackAddress, viaTunnel } from "../adminAccess.js";
 import { linkedAccount } from "../account/store.js";
 import { fromThisMachine, ownerRequest } from "../localAccess.js";
-import { sealedFromSessionKey, sessionIsVaultDevice, sessionRow } from "../sessionTrust.js";
+import { peerSessionIsDesktop, sealedFromSessionKey, sessionIsVaultDevice, sessionRow } from "../sessionTrust.js";
 import { VaultError } from "../vault/crypto.js";
-import { pinVaultAnchor, vaultIdentity } from "../vault/service.js";
+import { pinVaultAnchor, vaultIdentity, vaultRosterInput } from "../vault/service.js";
 
 // This computer as a member of the encrypted history (docs/mesh-design.md
 // §1, lot S1), for the person device about to approve it — over the sealed
@@ -25,13 +25,19 @@ import { pinVaultAnchor, vaultIdentity } from "../vault/service.js";
 //     token), or the very device being pinned: a session let in by rule 1
 //     or 5 (account/approvals.ts) whose device-access/v2 names that vault
 //     device and is signed by the key being pinned, asking through the
-//     tunnel from the key the session was given to (sessionTrust.ts).
+//     tunnel from the key the session was given to (sessionTrust.ts); or a
+//     Twoody Desktop's embedded server, a peer session naming the
+//     Desktop's computer, carrying the same statement by the key being
+//     pinned, that device's desktop-binding (in the vault, signed by that
+//     key) naming that computer and the session's tunnel key
+//     (sessionTrust.ts peerSessionIsDesktop). Any other peer: refused.
 //     Only while this computer is not approved yet; a pinned anchor is
 //     never replaced nor pushed out.
 //
 //   404 not_enrolled               no vault device yet (not linked, or no vault)
 //   403 pinned_channel_required    not through the tunnel (nor from this machine)
 //   403 anchor_not_allowed         (anchor) neither the owner nor that device
+//                                  (nor that Desktop's embedded server)
 //   409 desktop_custody            (anchor) inside Twoody Desktop, which keeps the keys
 //   409 already_approved           (anchor) this computer holds epoch keys already
 //   409 anchor_conflict            (anchor) that device is pinned with another key
@@ -48,13 +54,18 @@ export function throughTunnel(req: FastifyRequest): boolean {
 /// admin token), or the device being pinned itself, proved by the
 /// device-access its session carries, signed by the key being pinned, over
 /// the tunnel from that session's own key.
-function mayPin(req: FastifyRequest, auth: { sessionId?: string }, anchor: { id: string; sign_public: string }): boolean {
+async function mayPin(req: FastifyRequest, auth: { sessionId?: string }, anchor: { id: string; sign_public: string }): Promise<boolean> {
   if (isOwnerSession(auth.sessionId) || ownerRequest(req)) return true;
   if (!auth.sessionId || !sealedFromSessionKey(req, auth.sessionId)) return false;
   const row = sessionRow(auth.sessionId);
-  const userId = linkedAccount()?.account_id;
-  if (!row || userId === undefined || userId === null) return false;
-  return sessionIsVaultDevice(row, userId, anchor.id, anchor.sign_public);
+  const account = linkedAccount();
+  const userId = account?.account_id;
+  if (!row || !account || userId === undefined || userId === null) return false;
+  if (!isPeerSessionKind(row.kind)) return sessionIsVaultDevice(row, userId, anchor.id, anchor.sign_public);
+  // A Desktop asking as its computer: its person device's desktop-binding
+  // is read from the vault (signed by the key being pinned).
+  const devices = await vaultRosterInput().then((input) => input?.devices ?? [], () => []);
+  return peerSessionIsDesktop(row, { userId, selfComputerId: account.computer.id, anchor, devices });
 }
 
 const refuse = { error: "pinned_channel_required", message: "Only through the tunnel, so that the account cannot change these keys." };
@@ -91,7 +102,7 @@ export async function peerVaultRoutes(app: FastifyInstance) {
       const local = fromThisMachine(req);
       if (!throughTunnel(req) && !local) return reply.code(403).send(refuse);
       const anchor = { id: req.body.vault_device_id.toLowerCase(), sign_public: req.body.sign_public };
-      if (!mayPin(req, auth, anchor)) {
+      if (!(await mayPin(req, auth, anchor))) {
         req.log.warn({ vault_device_id: anchor.id, session: auth.sessionId ?? null }, "vault anchor refused: neither the owner nor that device");
         return reply.code(403).send({ error: "anchor_not_allowed" });
       }

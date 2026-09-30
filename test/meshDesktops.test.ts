@@ -305,3 +305,75 @@ test("one question on the Air cites the Mac mini's document and the Pi's, each u
   );
   assert.ok(!JSON.stringify(answer.sources).includes(docsRoot), "no absolute path");
 });
+
+// « Faire confiance » from a Desktop: its embedded server asks the Pi as
+// the Desktop's own computer of the account, and must be able to name the
+// Desktop's person device as the Pi's vault anchor. So it carries a
+// device-access/v2 by the Desktop's vault key, for its tunnel key and that
+// computer, which the Pi checks against the Desktop's desktop-binding
+// (sessionTrust.ts peerSessionIsDesktop). An account that refuses it (an
+// older one, or before the binding is published) gets the plain request.
+test("the Air's embedded server asks a computer as the Air, with a device-access its person device signed", async () => {
+  const { setBackendFetch } = await import("../src/account/backend.js");
+  const { requestPeer, removePeer } = await import("../src/peers/index.js");
+  const { claimedDeviceAccess, readPending } = await import("../src/account/approvals.js");
+  const { deviceAccessV2Valid } = await import("../src/vault/contracts.js");
+  const { pairDevice } = await import("../src/pairing.js");
+  const { peerSessionIsDesktop, sessionRow } = await import("../src/sessionTrust.js");
+  const NEW_PI = "5f6a7b8c-9d0e-4f1a-8b2c-3d4e5f607182";
+  const asked: Array<Record<string, any>> = [];
+  let refuseAccess = false;
+  setBackendFetch((async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+    if (url.pathname.endsWith("/account_computers")) return reply(200, { account_id: Number(USER_ID), computers: [{ id: NEW_PI, name: "Pi du bureau", public_key: "cd".repeat(32), online: true, kind: "server" }] });
+    if (url.pathname.endsWith("/request_access")) {
+      const body = JSON.parse(String(init?.body));
+      asked.push({ body, credential: new Headers(init?.headers).get("X-Requester-Computer-Credential") });
+      if (refuseAccess && body.device_access) return reply(422, { error: "invalid_device_access" });
+      return reply(201, { id: `r${asked.length}`, expires_at: new Date(Date.now() + 300_000).toISOString() });
+    }
+    return reply(200, { state: "pending" });
+  }) as typeof fetch);
+  try {
+    await requestPeer(user.id, NEW_PI, { requester: { computerId: AIR, credential: "air-credential-0123456789" } });
+    const { body, credential } = asked.at(-1)!;
+    assert.equal(credential, "air-credential-0123456789");
+    assert.deepEqual([body.role, body.requester_computer_id, body.public_key], ["peer", AIR, airTunnelKey]);
+    const access = body.device_access;
+    assert.deepEqual([access.vault_device_id, access.tunnel_public_key, access.account_computer_id], [air.id, airTunnelKey, NEW_PI]);
+    const now = Math.floor(Date.now() / 1000);
+    assert.ok(access.exp > now && access.exp <= now + 12 * 3600, "12 h at most");
+    const { signature, ...stated } = access;
+    assert.ok(deviceAccessV2Valid({ userId: USER_ID, access: stated, signerSignPublic: fromHex(air.sign_public), signature }), "signed by the Air's own vault key");
+
+    // What the Pi then does with it (its approval keeps it; its anchor
+    // route checks it against the Air's published desktop-binding): the
+    // Air may pin itself; the same session naming the Mac mini's computer
+    // may not, nor may the Mac mini's device be pinned through it.
+    const request = readPending({ requests: [{ id: "r1", name: "x", public_key: body.public_key, expires_at: new Date(Date.now() + 60_000).toISOString(), role: "peer", requester_computer_id: AIR, device_access: access }] })[0]!;
+    const kept = claimedDeviceAccess(request, NEW_PI);
+    assert.ok(kept);
+    const session = (requester: string) => sessionRow(pairDevice({ deviceName: "MacBook Air", tunnelPublicKey: airTunnelKey, role: "peer", origin: "account", requesterComputerId: requester, approvalRule: "endorsed", vaultDeviceId: kept!.vault_device_id, deviceAccessJson: JSON.stringify(kept) }).sessionId);
+    const devices = input().devices;
+    const check = (requester: string, anchor: { id: string; sign_public: string }) => peerSessionIsDesktop(session(requester), { userId: USER_ID, selfComputerId: NEW_PI, anchor, devices });
+    assert.equal(check(AIR, { id: air.id, sign_public: air.sign_public }), true);
+    assert.equal(check(MINI, { id: air.id, sign_public: air.sign_public }), false, "the Air's statement under the Mac mini's computer");
+    assert.equal(check(AIR, { id: miniDevice.id, sign_public: miniDevice.sign_public }), false, "the Mac mini's device through the Air's session");
+    assert.equal(check(PI, { id: air.id, sign_public: air.sign_public }), false, "under the Pi's computer");
+
+    // Not for another computer asking, nor refused by the account.
+    await requestPeer(user.id, NEW_PI, { requester: { computerId: MINI, credential: "mini-credential-0123456789" } });
+    assert.equal(asked.at(-1)!.body.device_access, undefined, "the handed computer only");
+    refuseAccess = true;
+    const before = asked.length;
+    await requestPeer(user.id, NEW_PI, { requester: { computerId: AIR, credential: "air-credential-0123456789" } });
+    assert.equal(asked.length, before + 2);
+    assert.ok(asked[before]!.body.device_access);
+    assert.equal(asked[before + 1]!.body.device_access, undefined, "asked again without it");
+    assert.equal(asked[before + 1]!.body.requester_computer_id, AIR);
+  } finally {
+    await removePeer(user.id, NEW_PI);
+    setBackendFetch(null);
+  }
+});

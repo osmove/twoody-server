@@ -37,6 +37,12 @@ docs/multi-computer-design.md (hub-and-spoke: a primary holds data, others lend 
 - Automatic links: approvals rule 4 (role peer + requester in roster + key = binding's tunnel key) and rule 5
   (phone signed `twoody/vault/device-access/v1` by a vault person-device). Never on the account token alone.
   src/peers/index.ts requests links to every roster member on change.
+- A Desktop pins itself as a computer's anchor (« Faire confiance ») through its embedded server's peer session:
+  requestPeer, asking as the Desktop's computer, carries a device-access/v2 signed by the handed vault key (≤12 h);
+  the backend takes it with a requester computer only when that person device's desktop-binding names that computer
+  and key; the computer lets the session pin iff the statement is signed by the key being pinned and that device's
+  desktop-binding (listed, signed by the same key) names the session's requester computer and tunnel key
+  (src/sessionTrust.ts peerSessionIsDesktop). Any other peer (a Pi, a household computer) never pins.
 - Revocation: vault device revoked + new epoch; DELETE /account_computers/:id revokes its vault device and marks
   needs_rotation (next person-device rotates); sessions/links dropped within 60 s. Already-fetched data can't be
   taken back (UI says so).

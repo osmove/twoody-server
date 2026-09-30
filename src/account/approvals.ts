@@ -245,9 +245,15 @@ export async function approveRequest(account: LinkedAccount, request: PendingReq
   const mesh = verdict?.approve === true && (verdict.rule === "mesh_computer" || verdict.rule === "device_access");
   // Rule 3 is the console's (`twoody-server approve`, no verdict). Rules 1
   // and 5 keep the device-access the requester carried: which vault device
-  // it is (checked again whenever it counts, sessionTrust.ts).
+  // it is (checked again whenever it counts, sessionTrust.ts). So does a
+  // peer naming its computer of the account, whatever let it in: a Twoody
+  // Desktop's embedded server carries its person device's statement, which
+  // counts only once that device's desktop-binding names that computer and
+  // the session's key (sessionTrust.ts peerSessionIsDesktop) — never on
+  // the rule, and never for a computer's own vault device.
   const rule = verdict?.approve === true ? verdict.rule : "console";
-  const claimed = rule === "approver" || rule === "device_access" ? claimedDeviceAccess(request, account.computer.id) : null;
+  const desktopPeer = request.role === "peer" && !!request.requester_computer_id;
+  const claimed = rule === "approver" || rule === "device_access" || desktopPeer ? claimedDeviceAccess(request, account.computer.id) : null;
   const paired = pairDevice({
     deviceName: request.name,
     tunnelPublicKey: request.public_key,
