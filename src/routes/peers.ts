@@ -2,17 +2,24 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { eq } from "drizzle-orm";
 import { isOwnerSession, isPeerSessionKind, requireAuth } from "../auth.js";
 import { BackendError } from "../account/backend.js";
+import { accountCredentials } from "../account/service.js";
 import { accountPeers, authSessions, db } from "../db.js";
 import { ownerRequest } from "../localAccess.js";
 import { LocalOnlyError } from "../outbound.js";
 import { listPeers, peerById, peerStatus, PeerUnavailableError, removePeer, requestPeer } from "../peers/index.js";
+import { tunnelIdentity } from "../tunnel/identity.js";
 
 // The account's other computers this one sends questions to
 // (docs/multi-computer-design.md §3) — managed by Twoody Desktop, or by the
 // owner of a headless server with the admin token; seen and switched on,
 // off or trusted (GET, PATCH) by a device paired with it too:
 //
-//   GET    /api/v1/peers                 [{computer_id, name, kind, state, enabled, trusted, url?, error?, status?, status_at?}]
+//   GET    /api/v1/peers                 {peers: [{computer_id, name, kind, state, enabled, trusted, url?, error?, status?, status_at?}],
+//                                         computer_id, tunnel_public_key}
+//          `computer_id` (this computer's id in the account, null when not
+//          known) and `tunnel_public_key` (the key its peer requests carry):
+//          Twoody Desktop binds its proof of a request to another Desktop to
+//          that key (twoody-desktop src/main/peerRequestProof.ts).
 //   POST   /api/v1/peers {computer_id, name?}  → 202 {request_id, expires_at}
 //          request_access (role "peer") with this server's tunnel key; the
 //          Desktop then endorses request_id (POST /account_computers/:id/
@@ -90,7 +97,11 @@ export async function peersRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requirePairedPerson(req, reply);
       if (!auth) return;
-      return reply.send({ peers: listPeers(auth.userId).map(serialize) });
+      return reply.send({
+        peers: listPeers(auth.userId).map(serialize),
+        computer_id: accountCredentials()?.computerId ?? null,
+        tunnel_public_key: tunnelIdentity().publicKey.toString("hex"),
+      });
     },
   });
 

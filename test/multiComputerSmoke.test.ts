@@ -157,6 +157,12 @@ test("the Pi joins the account by a code the Mac approves, and sends its status"
 });
 
 test("the Mac's server becomes the Pi's peer: requested, endorsed by the Mac, approved by the Pi, opened", async () => {
+  // What the Desktop binds a request to another Desktop to: this server's
+  // id in the account and the key its requests carry.
+  const listed = (await app.inject({ method: "GET", url: "/api/v1/peers", headers: auth })).json();
+  assert.equal(listed.computer_id, String(macComputer.id));
+  assert.equal(listed.tunnel_public_key, tunnelIdentity().publicKey.toString("hex"));
+
   const asked = await app.inject({ method: "POST", url: "/api/v1/peers", headers: auth, payload: { computer_id: piComputerId } });
   assert.equal(asked.statusCode, 202, asked.payload);
   const { request_id } = asked.json();

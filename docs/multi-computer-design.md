@@ -143,3 +143,12 @@ Deferred: splitting a model across computers; offloading transcription/indexing 
 - Pending requests: `requester_kind`, `requester_computer_id`, `requester_name`, `requester_computer {id, name, public_key}`. A computer (role `peer`, `requester_kind:"computer"` or a requester computer id) always gets a `peer:` session, named `requester_computer.name`. `/auth/pair` takes `requester_computer_id` too (peer session). `auth_sessions.requester_computer_id` is kept; when the account's list (5 min, or on 401/404/410) no longer has that computer, its sessions and tunnel keys go — unless the list does not name this computer itself.
 - `GET`/`PATCH /api/v1/peers`: the owner, or any non-peer session not given to a computer (the iPhone); `POST`/`DELETE` stay the Desktop's.
 - Bridge: `X-Bridge-Device-Id` on every call; 400 `bridge_device_required`, 409 `bridge_device_mismatch`/`bridge_device_taken` said once, polled again after 5 min, compute key offered again after 1 h.
+
+## 9. Two Twoody Desktops (twoody-desktop, 30/09/2026)
+A Desktop asks with the person's session, which the backend ties to no computer: its request reaches the other Desktop with `requester_kind:"device"`, no `requester_computer`, and the name it chose. Without a backend change, the asking Desktop names itself provably in that name (twoody-desktop `src/main/peerRequestProof.ts`, peer request proof v1):
+```
+key   = HKDF-SHA256(X25519(requester_priv, host_pub), salt="twoody-peer-request-v1:"+host_id, info="peer request", 32)
+msg   = "twoody-peer-request-v1\n"+requester_id+"\n"+host_id+"\n"+requester_key
+name  = "twoody-peer-v1:"+requester_id+":"+base64(HMAC-SHA256(key, msg))      (≤ 100 characters)
+```
+Pairing keys are the account computers' `public_key`; `requester_key` is the asking server's tunnel key, to which the answer is sealed. `GET /api/v1/peers` gives `computer_id` and `tunnel_public_key` for that. The asked Desktop checks the proof with its own pairing key and the requester's listed key, names it from the listing, asks its person (« L'ordinateur <A> de votre compte veut utiliser les modèles de ce Mac… », never automatic), gives a `peer:` session with `requester_computer_id`, and takes it back when the account stops listing it. A request with `role:"peer"` that names no computer, or whose proof does not hold, is denied without asking. A Desktop older than this refuses such a request unasked.
