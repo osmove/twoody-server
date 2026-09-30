@@ -55,6 +55,12 @@ import { pinVaultAnchor, vaultIdentity, vaultRosterInput } from "../vault/servic
 //                                  no device yet: its first anchor is named
 //                                  from the person's phone, or on its console
 //                                  (`twoody-server approve`), never by a peer
+//   403 approver_not_pinned        (anchor, and POST /session/device-access)
+//                                  this computer trusts no device yet and was
+//                                  linked before the one-time secret: no
+//                                  approver key is pinned, so no phone can
+//                                  name its first anchor until it is linked
+//                                  again (`twoody-server login`)
 //   409 desktop_custody            (anchor) inside Twoody Desktop, which keeps the keys
 //   409 already_approved           (anchor) this computer holds epoch keys already
 //   409 anchor_conflict            (anchor) that device is pinned with another key
@@ -93,6 +99,19 @@ const refuse = { error: "pinned_channel_required", message: "Only through the tu
 async function peerWithoutAnchor(sessionId: string | null | undefined): Promise<boolean> {
   const row = sessionRow(sessionId);
   if (!row || !isPeerSessionKind(row.kind) || !vaultIdentity()?.vault_device_id) return false;
+  const input = await vaultRosterInput().catch(() => null);
+  return !!input && input.anchors.length === 0;
+}
+
+/// Whether this computer, enrolled in the history, trusts no device yet and
+/// pinned no approver key when it was linked (a link from before the
+/// one-time secret, account/link.ts approverProved): then no device's
+/// session can name its first anchor, and only linking it again helps.
+/// Said as such (approver_not_pinned) so the phone or Desktop can tell the
+/// person, instead of a bare refusal.
+export async function approverNotPinned(): Promise<boolean> {
+  if (!vaultIdentity()?.vault_device_id) return false;
+  if ((linkedAccount()?.approvers.length ?? 0) > 0) return false;
   const input = await vaultRosterInput().catch(() => null);
   return !!input && input.anchors.length === 0;
 }
@@ -155,6 +174,7 @@ export async function peerVaultRoutes(app: FastifyInstance) {
         // A peer (a Twoody Desktop) never gives this computer its first
         // anchor: said as such, for the Desktop to tell the person where to
         // start instead (« Faire confiance »).
+        if (await approverNotPinned()) return reply.code(403).send({ error: "approver_not_pinned" });
         if (await peerWithoutAnchor(auth.sessionId)) return reply.code(403).send({ error: "no_anchor_yet" });
         return reply.code(403).send({ error: "anchor_not_allowed" });
       }

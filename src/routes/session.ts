@@ -8,6 +8,7 @@ import { readDeviceAccess } from "../account/approvals.js";
 import { accountCredentials } from "../account/service.js";
 import { renewDeviceAccess } from "../sessionTrust.js";
 import { meshRoster } from "../vault/roster.js";
+import { approverNotPinned } from "./peerVault.js";
 import {
   db,
   authSessions,
@@ -359,6 +360,9 @@ export async function sessionRoutes(app: FastifyInstance) {
   //   403 pinned_channel_required   not through the tunnel from the session's key
   //       wrong_tunnel_key          the statement is for another key
   //       not_a_person_device       not signed by a person device of the roster
+  //       approver_not_pinned       no person device in the roster yet, and
+  //                                 none can become one: linked before the
+  //                                 one-time secret (routes/peerVault.ts)
   //       peer_session_forbidden    a computer's `peer:` session
   //   409 owner_session             the owner is the person already
   //       other_vault_device        the session is another vault device
@@ -377,6 +381,7 @@ export async function sessionRoutes(app: FastifyInstance) {
         selfComputerId: accountCredentials()?.computerId ?? null,
         roster: () => meshRoster().get(),
       });
+      if (!result.ok && result.error === "not_a_person_device" && (await approverNotPinned())) return reply.code(403).send({ error: "approver_not_pinned" });
       if (!result.ok) return reply.code(result.status).send({ error: result.error });
       return reply.send({ vault_device_id: result.vault_device_id, exp: result.exp });
     },
