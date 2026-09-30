@@ -367,7 +367,18 @@ export function vaultIdentity() {
 /// (POST /api/v1/peer/vault/anchor): headless only.
 export function pinVaultAnchor(anchor: { id: string; sign_public: string }) {
   if (mode.kind !== "headless") throw new VaultError(mode.kind === "desktop" ? "desktop_custody" : "not_enrolled");
-  return mode.client.pinAnchor(anchor);
+  const result = mode.client.pinAnchor(anchor);
+  // The roster walks from the anchors: it looks again at once.
+  if (result.pinned) notifyVaultChange();
+  return result;
+}
+
+/// The person devices this headless computer pinned, read now; null inside
+/// Twoody Desktop or without vault keys here (routes/peerVault.ts, the
+/// first anchor).
+export function vaultAnchorsHeld(): Anchor[] | null {
+  if (mode.kind !== "headless") return null;
+  return mode.client.readLocal()?.anchors ?? null;
 }
 
 /// The epoch keys this computer holds now (S5).

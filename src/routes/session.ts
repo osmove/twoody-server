@@ -8,7 +8,7 @@ import { readDeviceAccess } from "../account/approvals.js";
 import { accountCredentials } from "../account/service.js";
 import { renewDeviceAccess } from "../sessionTrust.js";
 import { meshRoster } from "../vault/roster.js";
-import { approverNotPinned } from "./peerVault.js";
+import { approverNotPinned, firstAnchorRenewal } from "./peerVault.js";
 import {
   db,
   authSessions,
@@ -354,7 +354,10 @@ export async function sessionRoutes(app: FastifyInstance) {
   // device of the verified roster for the session's own tunnel key, the
   // session is that person device for as long as it says. How a phone
   // paired by code or QR code that is a member of the history counts as
-  // the person too. No account in between.
+  // the person too. No account in between. While this computer holds no
+  // anchor yet (the roster is empty), the device whose key was pinned as
+  // approver at login (rule 1) may send one signed by the vault key the
+  // account lists for it, for its first anchor (routes/peerVault.ts).
   //   200 {vault_device_id, exp}
   //   401 unauthorized
   //   403 pinned_channel_required   not through the tunnel from the session's key
@@ -380,6 +383,8 @@ export async function sessionRoutes(app: FastifyInstance) {
       const result = await renewDeviceAccess(req, auth.sessionId, readDeviceAccess(req.body), {
         selfComputerId: accountCredentials()?.computerId ?? null,
         roster: () => meshRoster().get(),
+        // Before the first anchor: the approver device's own statement.
+        firstAnchor: (row, access) => firstAnchorRenewal(req, row, access),
       });
       if (!result.ok && result.error === "not_a_person_device" && (await approverNotPinned())) return reply.code(403).send({ error: "approver_not_pinned" });
       if (!result.ok) return reply.code(result.status).send({ error: result.error });

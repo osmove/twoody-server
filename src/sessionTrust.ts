@@ -39,7 +39,8 @@ import type { Roster } from "./vault/roster.js";
 // `peer:` session — is none of these.
 //
 // Naming this computer's vault anchor (routes/peerVault.ts) stays with
-// rules 1 and 5: a statement sent later never pins.
+// rules 1 and 5: a statement sent later never pins, but for a rule 1
+// session's, which founds the first anchor (firstAnchorStatement below).
 //
 // One peer session may name itself as this computer's vault anchor
 // (routes/peerVault.ts), nothing else: a Twoody Desktop's embedded server,
@@ -222,6 +223,60 @@ export function personDeviceOf(sessionId: string | null | undefined, roster: Ros
   return sessionIsVaultDevice(row, roster.userId, person.vaultDeviceId, person.signPublic, { anyRule: true }) ? person.vaultDeviceId : null;
 }
 
+// ── the first anchor ─────────────────────────────────────────────────────
+// A computer linked with the one-time secret pinned the key of the device
+// that approved its login (account.json `approvers`, rule 1): that device
+// is the person's. But until a first anchor exists the verified roster is
+// empty, so no device-access can be checked against it, and without one
+// the anchor route refuses the device: neither could come first. So, and
+// only while this computer holds NO anchor, a session let in by rule 1
+// (`approver`, never the console's, never a `peer:` one, never the owner's)
+// asking through the tunnel from its own key — a key still pinned as an
+// approver — may bring a device-access/v2 for that very key and this
+// computer, at most a day ahead, signed by the vault key it names: the
+// session is that vault device, and that device may become the first
+// anchor (routes/peerVault.ts). Once any anchor exists, everything is
+// checked against the roster again.
+
+export type FirstAnchorArgs = {
+  userId: string | number;
+  selfComputerId: string;
+  /// account.json's pinned approver keys (lowercase hex).
+  approvers: string[];
+  /// The anchors this computer holds now; null without a headless vault.
+  anchorsHeld: Anchor[] | null;
+  access: DeviceAccessV2 & { signature: string };
+  /// The key the statement must be signed by.
+  signPublic: string;
+  now?: number;
+};
+
+export function firstAnchorStatement(req: FastifyRequest, row: SessionRow | null, args: FirstAnchorArgs): boolean {
+  if (!row || isPeerSessionKind(row.kind) || row.requesterComputerId || isOwnerSession(row.id)) return false;
+  if (row.approvalRule !== "approver") return false;
+  if (!args.anchorsHeld || args.anchorsHeld.length > 0) return false;
+  const key = tunnelPeerKey(req);
+  if (!key || !sessionTunnelKeys(row.id).includes(key)) return false;
+  if (!args.approvers.map((k) => k.toLowerCase()).includes(key)) return false;
+  const { signature, ...stated } = args.access;
+  if (stated.tunnel_public_key !== key) return false;
+  if (!deviceAccessUsable(stated, { accountComputerId: args.selfComputerId, nowMs: args.now ?? Date.now() })) return false;
+  if (row.vaultDeviceId && row.vaultDeviceId !== stated.vault_device_id) return false;
+  try {
+    return deviceAccessV2Valid({ userId: args.userId, access: stated, signerSignPublic: fromHex(args.signPublic), signature });
+  } catch {
+    return false;
+  }
+}
+
+/// The session is `access`'s vault device from now on, holding that statement.
+export function keepDeviceAccess(sessionId: string, access: DeviceAccessV2 & { signature: string }): void {
+  db.update(authSessions)
+    .set({ vaultDeviceId: access.vault_device_id, deviceAccessJson: JSON.stringify(access) })
+    .where(eq(authSessions.id, sessionId))
+    .run();
+}
+
 // ── renewing a session's device-access ───────────────────────────────────
 // A device-access/v2 is good for a day at most (vault/contracts.ts
 // DEVICE_ACCESS_MAX_TTL_S): a phone would stop being the person a day
@@ -257,6 +312,9 @@ export async function renewDeviceAccess(
     roster: () => Promise<Roster | null> | Roster | null;
     /// A peer session: the key the vault lists for a device id, and the user.
     listedSignKey?: (vaultDeviceId: string) => Promise<{ userId: string | number; signPublic: string } | null>;
+    /// A device's session, while this computer holds no anchor: whether
+    /// the statement founds its first one (firstAnchorStatement).
+    firstAnchor?: (row: SessionRow, access: DeviceAccessV2 & { signature: string }) => Promise<boolean>;
     peer?: boolean;
     now?: number;
   },
@@ -291,14 +349,12 @@ export async function renewDeviceAccess(
   } catch {
     valid = false;
   }
+  if (!valid && !peer && deps.firstAnchor) valid = await deps.firstAnchor(row, access).catch(() => false);
   if (!valid) return refused(403, "not_a_person_device");
   // Never shortened by an older statement sent again.
   const kept = keptStatement(row, now);
   if (kept && kept.vault_device_id === access.vault_device_id && kept.exp > access.exp) return { ok: true, vault_device_id: kept.vault_device_id, exp: kept.exp };
-  db.update(authSessions)
-    .set({ vaultDeviceId: access.vault_device_id, deviceAccessJson: JSON.stringify(access) })
-    .where(eq(authSessions.id, row.id))
-    .run();
+  keepDeviceAccess(row.id, access);
   return { ok: true, vault_device_id: access.vault_device_id, exp: access.exp };
 }
 

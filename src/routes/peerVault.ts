@@ -1,13 +1,14 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { isOwnerSession, isPeerSessionKind, requireAuth } from "../auth.js";
 import { forwardedByProxy, isLoopbackAddress, viaTunnel } from "../adminAccess.js";
 import { linkedAccount } from "../account/store.js";
 import { fromThisMachine, ownerRequest } from "../localAccess.js";
-import { peerSessionIsDesktop, renewDeviceAccess, sealedFromSessionKey, sessionIsVaultDevice, sessionRow } from "../sessionTrust.js";
+import { firstAnchorStatement, keepDeviceAccess, peerSessionIsDesktop, renewDeviceAccess, sealedFromSessionKey, sessionIsVaultDevice, sessionRow, type SessionRow } from "../sessionTrust.js";
 import { readDeviceAccess } from "../account/approvals.js";
 import { accountCredentials } from "../account/service.js";
 import { VaultError } from "../vault/crypto.js";
-import { pinVaultAnchor, vaultIdentity, vaultRosterInput } from "../vault/service.js";
+import { pinVaultAnchor, vaultAnchorsHeld, vaultIdentity, vaultRosterInput } from "../vault/service.js";
+import type { DeviceAccessV2 } from "../vault/contracts.js";
 
 // This computer as a member of the encrypted history (docs/mesh-design.md
 // §1, lot S1), for the person device about to approve it — over the sealed
@@ -38,6 +39,18 @@ import { pinVaultAnchor, vaultIdentity, vaultRosterInput } from "../vault/servic
 //     itself, any peer before the first anchor — refused.
 //     Only while this computer is not approved yet; a pinned anchor is
 //     never replaced nor pushed out.
+//     The first anchor (sessionTrust.ts firstAnchorStatement): while this
+//     computer holds none, the roster is empty and no device-access can be
+//     checked against it. A session let in by rule 1 (its tunnel key is a
+//     pinned approver key, proved at login with the one-time secret) may
+//     then send {vault_device_id, sign_public, device_access}: a
+//     device-access/v2 for its own tunnel key and this computer, signed
+//     by `sign_public`, naming `vault_device_id`. The anchor is pinned and
+//     the session becomes that device in one step. Or it renews its
+//     device-access first (POST /session/device-access takes it on the
+//     same terms, against the key the vault lists) and anchors after.
+//     Never a peer's, the console's or the owner's session, never once an
+//     anchor exists, never without a pinned approver key.
 //
 //   POST /api/v1/peer/session/device-access {device-access/v2}
 //     a Twoody Desktop's embedded server renews the statement its peer
@@ -92,6 +105,47 @@ async function mayPin(req: FastifyRequest, auth: { sessionId?: string }, anchor:
   return peerSessionIsDesktop(row, { userId, selfComputerId: account.computer.id, anchor, devices: input?.devices ?? [], anchors: input?.anchors ?? [] });
 }
 
+/// The first anchor, pinned together with the statement that proves the
+/// session is that device (firstAnchorStatement): all synchronous, so no
+/// other anchor can come in between the check and the pin. Null when the
+/// request does not qualify; throws what pinVaultAnchor throws.
+function pinFirstAnchor(req: FastifyRequest, row: SessionRow | null, anchor: { id: string; sign_public: string }, access: (DeviceAccessV2 & { signature: string }) | null) {
+  const account = linkedAccount();
+  if (!row || !account || account.account_id === undefined || account.account_id === null || !access || access.vault_device_id !== anchor.id) return null;
+  const ok = firstAnchorStatement(req, row, {
+    userId: account.account_id,
+    selfComputerId: account.computer.id,
+    approvers: account.approvers.map((a) => a.public_key),
+    anchorsHeld: vaultAnchorsHeld(),
+    access,
+    signPublic: anchor.sign_public,
+  });
+  if (!ok) return null;
+  const result = pinVaultAnchor(anchor);
+  keepDeviceAccess(row.id, access);
+  return result;
+}
+
+/// POST /session/device-access, while this computer holds no anchor: the
+/// statement is checked against the key the vault lists for the device it
+/// names (the anchor route checks it again against the key it pins).
+export async function firstAnchorRenewal(req: FastifyRequest, row: SessionRow, access: DeviceAccessV2 & { signature: string }): Promise<boolean> {
+  const account = linkedAccount();
+  const held = vaultAnchorsHeld();
+  if (!account || account.account_id === undefined || account.account_id === null || !held || held.length > 0 || account.approvers.length === 0) return false;
+  const input = await vaultRosterInput().catch(() => null);
+  const device = input?.devices.find((d) => d.id === access.vault_device_id && d.status !== "revoked");
+  if (!device) return false;
+  return firstAnchorStatement(req, row, {
+    userId: account.account_id,
+    selfComputerId: account.computer.id,
+    approvers: account.approvers.map((a) => a.public_key),
+    anchorsHeld: vaultAnchorsHeld(),
+    access,
+    signPublic: device.sign_public,
+  });
+}
+
 const refuse = { error: "pinned_channel_required", message: "Only through the tunnel, so that the account cannot change these keys." };
 
 /// Whether a refused anchor came from a peer session while this computer,
@@ -114,6 +168,13 @@ export async function approverNotPinned(): Promise<boolean> {
   if ((linkedAccount()?.approvers.length ?? 0) > 0) return false;
   const input = await vaultRosterInput().catch(() => null);
   return !!input && input.anchors.length === 0;
+}
+
+function sendPinError(req: FastifyRequest, reply: FastifyReply, anchor: { id: string }, err: unknown) {
+  const code = err instanceof VaultError ? err.code : "error";
+  if (code === "anchor_conflict") req.log.warn({ vault_device_id: anchor.id }, "vault anchor refused: that device is pinned with another key");
+  const status = ["desktop_custody", "already_approved", "anchor_conflict", "too_many_anchors"].includes(code) ? 409 : code === "bad_anchor" ? 422 : 404;
+  return reply.code(status).send({ error: code === "not_registered" ? "not_enrolled" : code });
 }
 
 export async function peerVaultRoutes(app: FastifyInstance) {
@@ -150,7 +211,7 @@ export async function peerVaultRoutes(app: FastifyInstance) {
     },
   });
 
-  app.post<{ Body: { vault_device_id: string; sign_public: string } }>("/peer/vault/anchor", {
+  app.post<{ Body: { vault_device_id: string; sign_public: string; device_access?: unknown } }>("/peer/vault/anchor", {
     schema: {
       tags: ["providers"],
       summary: "The person device approving this computer names itself (tunnel only)",
@@ -160,6 +221,7 @@ export async function peerVaultRoutes(app: FastifyInstance) {
         properties: {
           vault_device_id: { type: "string", maxLength: 36 },
           sign_public: { type: "string", pattern: "^[0-9a-f]{64}$" },
+          device_access: { type: "object" },
         },
       },
     },
@@ -170,6 +232,16 @@ export async function peerVaultRoutes(app: FastifyInstance) {
       if (!throughTunnel(req) && !local) return reply.code(403).send(refuse);
       const anchor = { id: req.body.vault_device_id.toLowerCase(), sign_public: req.body.sign_public };
       if (!(await mayPin(req, auth, anchor))) {
+        let first: ReturnType<typeof pinVaultAnchor> | null = null;
+        try {
+          first = req.body.device_access === undefined ? null : pinFirstAnchor(req, sessionRow(auth.sessionId), anchor, readDeviceAccess(req.body.device_access));
+        } catch (err) {
+          return sendPinError(req, reply, anchor, err);
+        }
+        if (first) {
+          req.log.info({ vault_device_id: anchor.id, session: auth.sessionId ?? null }, "vault anchor: first anchor pinned by the approver device");
+          return reply.send(first);
+        }
         req.log.warn({ vault_device_id: anchor.id, session: auth.sessionId ?? null }, "vault anchor refused: neither the owner nor that device");
         // A peer (a Twoody Desktop) never gives this computer its first
         // anchor: said as such, for the Desktop to tell the person where to
@@ -181,10 +253,7 @@ export async function peerVaultRoutes(app: FastifyInstance) {
       try {
         return reply.send(pinVaultAnchor(anchor));
       } catch (err) {
-        const code = err instanceof VaultError ? err.code : "error";
-        if (code === "anchor_conflict") req.log.warn({ vault_device_id: anchor.id }, "vault anchor refused: that device is pinned with another key");
-        const status = ["desktop_custody", "already_approved", "anchor_conflict", "too_many_anchors"].includes(code) ? 409 : code === "bad_anchor" ? 422 : 404;
-        return reply.code(status).send({ error: code === "not_registered" ? "not_enrolled" : code });
+        return sendPinError(req, reply, anchor, err);
       }
     },
   });
