@@ -280,6 +280,7 @@ async function runtime(args: string[]): Promise<number> {
 
 async function follow(read: () => Promise<any>): Promise<number> {
   let last = "";
+  let tenth = -1;
   for (;;) {
     const job = await read();
     if (!job) {
@@ -292,6 +293,11 @@ async function follow(read: () => Promise<any>): Promise<number> {
         : `  ${job.state}`;
     if (line !== last && process.stdout.isTTY) process.stdout.write(`\r${line.padEnd(72)}`);
     else if (job.state !== "downloading" && line !== last) console.log(line);
+    else if (job.state === "downloading" && Math.floor((job.received / Math.max(1, job.total)) * 10) > tenth) {
+      // Not a terminal (a log, journalctl): a line every tenth.
+      tenth = Math.floor((job.received / Math.max(1, job.total)) * 10);
+      console.log(line);
+    }
     last = line;
     if (job.state === "done") {
       if (process.stdout.isTTY) process.stdout.write("\n");

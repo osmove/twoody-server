@@ -97,7 +97,8 @@ try {
     const installed = runtimeEngine.manager.available();
     const models = installed ? await runtimeEngine.manager.installedModels() : [];
     const described = prefs.engine === "custom" ? `custom (${prefs.custom_url ?? "no address"})` : prefs.engine;
-    console.log(`  Engine: ${described}${source === "env" ? " (TWOODY_RUNTIME)" : migrated?.written ? " (set from this server's configuration)" : ""}.`);
+    const why = source === "env" ? " (TWOODY_RUNTIME)" : migrated?.written && prefs.engine !== "auto" ? " (from BRIDGE_LOCAL_LLM_ENDPOINT, kept from before the built-in engine)" : "";
+    console.log(`  Engine: ${described}${why}; twoody-server config set runtime=… changes it.`);
     console.log(
       installed
         ? `  Built-in llama.cpp runtime: installed, ${models.length} model(s)${models.length ? ` (${models.join(", ")})` : ": twoody-server models add <id>"}; started on the first question.\n`
