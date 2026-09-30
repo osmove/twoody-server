@@ -983,6 +983,12 @@ sqlite.exec(`
     value TEXT NOT NULL
   );
 `);
+// When the account stored an event (its own clock, ms): an event stamped
+// further ahead of it than the HLC allows never counts (vault/contracts.ts
+// mergeMemories).
+if (!(sqlite.prepare("PRAGMA table_info(memory_vault_events)").all() as Array<{ name: string }>).some((column) => column.name === "stored_at")) {
+  sqlite.exec("ALTER TABLE memory_vault_events ADD COLUMN stored_at INTEGER");
+}
 
 // Contacts and events copied from the Mac's own apps (29/09/2026).
 for (const [table, columns] of [

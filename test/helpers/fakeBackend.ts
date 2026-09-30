@@ -58,7 +58,7 @@ export interface FakeLogin {
   device_token: string;
   state: "pending" | "approved" | "denied" | "delivered";
   expires_at: number;
-  approver: { kind: string | null; public_key: string | null; name: string } | null;
+  approver: { kind: string | null; public_key: string | null; name: string; proof?: string | null } | null;
   computer_id: number | null;
   polls: number;
   /// Answer slow_down to the next poll (then pending as usual).
@@ -83,7 +83,7 @@ export interface FakeBackend {
   forced: Map<string, number | { status: number; body?: unknown; html?: string }>;
   /// Adds a computer as if created by the Desktop (POST /account_computers).
   addComputer(args: { name: string; public_key: string; kind?: "desktop" | "server"; approver_keys?: string[] }): FakeComputer;
-  approveLogin(userCode: string, approver?: { kind: "computer" | "phone"; public_key: string; name?: string } | null): void;
+  approveLogin(userCode: string, approver?: { kind: "computer" | "phone"; public_key: string; name?: string; proof?: string | null } | null): void;
   denyLogin(userCode: string): void;
   fetch: typeof fetch;
   close(): Promise<void>;
@@ -357,7 +357,7 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
       computer.platform = login.platform;
       login.state = "approved";
       login.computer_id = computer.id;
-      login.approver = approver ? { kind: approver.kind, public_key: approver.public_key, name: approver.name ?? "Mac de Jimmy" } : null;
+      login.approver = approver ? { kind: approver.kind, public_key: approver.public_key, name: approver.name ?? "Mac de Jimmy", proof: approver.proof ?? null } : null;
     },
     denyLogin(code) {
       const login = logins.find((l) => l.user_code === code);

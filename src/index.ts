@@ -219,7 +219,7 @@ try {
     else if (state === "unlinked") console.log("  Not linked to a Twoody account.\n");
     else if (state === "pending") {
       const view = linkView();
-      if (view.user_code) console.log(`  To add this server to your Twoody account, enter the code ${view.user_code} at ${view.verification_uri ?? "https://twoody.com/appareil"} (or in Twoody Desktop), until ${new Date(view.expires_at!).toLocaleTimeString()}.\n`);
+      if (view.user_code) console.log(`  To add this server to your Twoody account, enter the code ${view.user_code} at ${view.verification_uri ?? "https://twoody.com/appareil"} (or in Twoody Desktop, or the Twoody app, with the one-time secret ${view.approval_secret}), until ${new Date(view.expires_at!).toLocaleTimeString()}.\n`);
     }
   });
   if (linkState() === "linked") {

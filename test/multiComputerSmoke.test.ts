@@ -106,6 +106,7 @@ const { closeAllPeerLinks, refreshPeerStatus, peerById, setPeerHandshakeTimeouts
 const { tunnelIdentity } = await import("../src/tunnel/identity.js");
 const { setRosterSource } = await import("../src/vault/roster.js");
 const { meshVault } = await import("./helpers/meshVault.js");
+const { loginApproverProof } = await import("../src/vault/contracts.js");
 
 // The whole suite runs in parallel: the Pi may take more than the LAN's
 // 2.5 s to answer its first hello.
@@ -136,10 +137,13 @@ test("the Pi joins the account by a code the Mac approves, and sends its status"
 
   const started = await piFetch("/account/link", { method: "POST", body: "{}" });
   assert.equal(started.status, 201);
-  const { user_code } = await started.json();
+  // Asked from this machine: the Pi's console view, with the one-time
+  // secret the person types on the Mac along with the code.
+  const { user_code, approval_secret } = await started.json();
   const login = backend.logins.find((l) => l.user_code === user_code)!;
   assert.equal(login.public_key.slice(0, 8), before.fp, "the code is the login of the server found here");
-  backend.approveLogin(user_code, { kind: "computer", public_key: mac.public, name: "Mac de Jimmy" });
+  const proof = loginApproverProof({ secret: approval_secret, userCode: user_code, approverPublicKey: mac.public, tunnelPublicKey: login.tunnel_public_key! });
+  backend.approveLogin(user_code, { kind: "computer", public_key: mac.public, name: "Mac de Jimmy", proof });
 
   const linked = await until(async () => {
     const view = await (await piFetch("/account/link")).json();

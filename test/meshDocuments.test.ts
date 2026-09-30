@@ -283,7 +283,13 @@ test("only the owner or the person's own devices reach the Pi's documents throug
     return tunnelPeerSearch(peer, body, signal, requester);
   });
   try {
-    const headers = { "x-user-token": phone.token };
+    // Through the tunnel from the key its session holds (tunnel/host.ts
+    // stamps it): the token alone, over the network, is not the iPhone.
+    const bare = await fetch(`${macUrl}/local_documents/remote/${PI}/files/pi-voiture/raw`, { headers: { "x-user-token": phone.token } });
+    assert.equal(bare.status, 403, "the token without the tunnel from its own key");
+    const otherKey = await fetch(`${macUrl}/local_documents/remote/${PI}/files/pi-voiture/raw`, { headers: { "x-user-token": phone.token, "x-twoody-via-tunnel": "relay", "x-twoody-tunnel-peer": randomBytes(32).toString("hex") } });
+    assert.equal(otherKey.status, 403, "through the tunnel from another key");
+    const headers = { "x-user-token": phone.token, "x-twoody-via-tunnel": "relay", "x-twoody-tunnel-peer": phoneKey };
     const raw = await fetch(`${macUrl}/local_documents/remote/${PI}/files/pi-voiture/raw`, { headers });
     assert.equal(raw.status, 200, await raw.clone().text());
     const answer = final((await ask({}, headers)).payload);
@@ -296,10 +302,14 @@ test("only the owner or the person's own devices reach the Pi's documents throug
     const forger = vault.person("Forger");
     const fakeKey = randomBytes(32).toString("hex");
     const forged = pairDevice({ deviceName: "Pas l'iPhone", tunnelPublicKey: fakeKey, origin: "mesh", vaultDeviceId: iphone.id, approvalRule: "device_access", deviceAccessJson: JSON.stringify({ ...vault.deviceAccess(forger, fakeKey, MAC), vault_device_id: iphone.id }) });
-    assert.equal((await fetch(`${macUrl}/local_documents/remote/${PI}/files/pi-voiture/raw`, { headers: { "x-user-token": forged.token } })).status, 403);
+    assert.equal((await fetch(`${macUrl}/local_documents/remote/${PI}/files/pi-voiture/raw`, { headers: { "x-user-token": forged.token, "x-twoody-via-tunnel": "relay", "x-twoody-tunnel-peer": fakeKey } })).status, 403);
     // The iPhone's statement, kept by a session holding another tunnel key: not it either.
     const moved = pairDevice({ deviceName: "Autre clé", tunnelPublicKey: randomBytes(32).toString("hex"), origin: "mesh", vaultDeviceId: iphone.id, approvalRule: "device_access", deviceAccessJson: JSON.stringify(access) });
     assert.equal((await fetch(`${macUrl}/local_documents/remote/${PI}/files/pi-voiture/raw`, { headers: { "x-user-token": moved.token } })).status, 403);
+    // A statement past its expiry no longer says who the session is.
+    const lateKey = randomBytes(32).toString("hex");
+    const late = pairDevice({ deviceName: "iPhone de Jimmy", tunnelPublicKey: lateKey, origin: "mesh", vaultDeviceId: iphone.id, approvalRule: "device_access", deviceAccessJson: JSON.stringify(vault.deviceAccess(iphone, lateKey, MAC, Math.floor(Date.now() / 1000) - 1)) });
+    assert.equal((await fetch(`${macUrl}/local_documents/remote/${PI}/files/pi-voiture/raw`, { headers: { "x-user-token": late.token, "x-twoody-via-tunnel": "relay", "x-twoody-tunnel-peer": lateKey } })).status, 403, "device-access expired");
   } finally {
     setPeerSearch(null);
   }

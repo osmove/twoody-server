@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { eq, inArray } from "drizzle-orm";
 import { authSessions, db } from "../db.js";
 import { unpairSession } from "../pairing.js";
 import { backendCall, BackendError } from "./backend.js";
 import { tunnelIdentity } from "../tunnel/identity.js";
+import { loginApproverProofValid, loginSecretFrom } from "../vault/contracts.js";
 import {
   backendUrl,
   ensureAccountFile,
@@ -31,12 +32,24 @@ import {
 // over, once, the account's session for this server, its computer
 // credential and — when a device of the account approved — that device's
 // public key, pinned here as an approver (account/approvals.ts).
+//
+// Only an approver key proved out of band is pinned: with the code, the
+// console shows a one-time secret the account never sees (vault/
+// contracts.ts login-approver/v1). The person types it on the approving
+// Desktop or phone, which sends, through the account, the HMAC keyed by it
+// over its approver key, this computer's tunnel key and the code. A key
+// without that proof — one the account made up, one approved on
+// twoody.com, one from an older Desktop or app — is not pinned: its
+// requests then wait for the console (rule 3).
 
 export type LinkState = "unlinked" | "pending" | "linked";
 
 export interface PendingLogin {
   deviceCode: string;
   userCode: string;
+  /// The one-time secret shown with the code, never sent anywhere: the
+  /// approving device proves with it which approver key is its own.
+  secret: string;
   verificationUri: string;
   verificationUriComplete: string | null;
   expiresAt: Date;
@@ -49,6 +62,9 @@ export interface LinkView {
   /// « account 7 » when the backend said no more.
   account?: string;
   user_code?: string;
+  /// The one-time secret to type on the approving device with the code
+  /// (console only, like the code).
+  approval_secret?: string;
   verification_uri?: string;
   verification_uri_complete?: string | null;
   expires_at?: string;
@@ -111,6 +127,7 @@ export function linkView(): LinkView {
     return {
       state,
       user_code: pending!.userCode,
+      approval_secret: pending!.secret,
       verification_uri: pending!.verificationUri,
       verification_uri_complete: pending!.verificationUriComplete,
       expires_at: pending!.expiresAt.toISOString(),
@@ -181,6 +198,7 @@ export async function startLink(options: { name?: string; fromNetwork?: boolean 
   pending = {
     deviceCode: body.device_code,
     userCode: body.user_code,
+    secret: loginSecretFrom(new Uint8Array(randomBytes(12))),
     verificationUri: body.verification_uri,
     verificationUriComplete: body.verification_uri_complete ?? null,
     expiresAt: new Date(Date.now() + Math.max(1, Number(body.expires_in) || 600) * 1000),
@@ -224,7 +242,7 @@ type PollAnswer = {
   user_token?: string;
   computer?: { id?: string | number; name?: string; public_key?: string };
   credential?: string;
-  approver?: { kind?: string | null; public_key?: string | null; name?: string | null } | null;
+  approver?: { kind?: string | null; public_key?: string | null; name?: string | null; proof?: string | null } | null;
 };
 
 /// One poll. Exposed for tests; the timer calls it.
@@ -242,7 +260,7 @@ export async function pollOnce(): Promise<LinkState> {
     const { body } = await backendCall<PollAnswer>({ backendUrl: backendUrl(file) }, "computer_logins/poll", { body: { device_code: current.deviceCode } });
     if (pending !== current) return linkState();
     if (body?.state === "approved") {
-      completeLink(file, body);
+      completeLink(file, body, current);
       pending = null;
       lastError = null;
       stopPolling();
@@ -296,14 +314,23 @@ export function accountLabel(answer: PollAnswer): string | null {
   return answer.account_id !== undefined && answer.account_id !== null ? `account ${answer.account_id}` : null;
 }
 
-function completeLink(file: AccountFile, answer: PollAnswer): void {
+/// Whether the approver key the account hands back is the approving
+/// device's own: its proof holds for this login's secret and code and this
+/// computer's tunnel key (vault/contracts.ts loginApproverProof).
+export function approverProved(login: Pick<PendingLogin, "secret" | "userCode">, approver: PollAnswer["approver"], tunnelPublicKey: string): boolean {
+  const key = approver?.public_key;
+  if (typeof key !== "string" || !/^[0-9a-f]{64}$/.test(key)) return false;
+  return loginApproverProofValid({ secret: login.secret, userCode: login.userCode, approverPublicKey: key, tunnelPublicKey, proof: approver?.proof });
+}
+
+function completeLink(file: AccountFile, answer: PollAnswer, login: PendingLogin): void {
   const computerId = answer.computer?.id;
   if (!answer.user_token || !answer.credential || (typeof computerId !== "string" && typeof computerId !== "number")) {
     throw new BackendError(502, "invalid_answer", "the approved login lacks its credentials");
   }
   const approvers: Approver[] = [];
   const key = answer.approver?.public_key;
-  if (typeof key === "string" && /^[0-9a-f]{64}$/.test(key)) {
+  if (typeof key === "string" && /^[0-9a-f]{64}$/.test(key) && approverProved(login, answer.approver, tunnelIdentity().publicKey.toString("hex"))) {
     const kind = answer.approver?.kind === "computer" || answer.approver?.kind === "phone" ? answer.approver.kind : null;
     approvers.push({ public_key: key, kind, name: typeof answer.approver?.name === "string" ? answer.approver.name.slice(0, 100) : null });
   }

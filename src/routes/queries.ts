@@ -346,7 +346,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // device — is answered in a conversation of this computer's own, as if
   // it had named none: nothing of it reaches the vault.
   // The same who reaches the other computers' documents (documents/remote.ts).
-  const requester = await meshRequester(auth, () => meshRoster().get());
+  const requester = await meshRequester(req, auth, () => meshRoster().get());
   const vaultMember = requester !== null;
   const vaultConversationId = vaultMember ? askedVaultConversationId : null;
   const priorTurns = vaultMember ? askedPriorTurns : null;

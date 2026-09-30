@@ -35,7 +35,10 @@ POST /computer_logins/poll {device_code}
 →200 {state:"approved", account_id, user_token, computer:{id,name,public_key}, credential,
       approver:{kind:"computer"|"phone"|null, public_key|null, name}}   (once, then 410)
 GET  /computer_logins/:user_code            (user auth) → {name, platform, expires_at, fingerprint}
-POST /computer_logins/:user_code/approve    (user auth) {approver:{kind, public_key}?} → 204
+POST /computer_logins/:user_code/approve    (user auth) {approver:{kind, public_key, proof?}?} → 204
+     proof: login-approver/v1 (vault/contracts.ts), the HMAC keyed by the one-time secret the computer's console
+     shows with the code (never sent to the account) over the approver key, the computer's tunnel key and the code.
+     The computer pins the approver key the poll hands back (approver.proof with it) only when the proof holds.
 POST /computer_logins/:user_code/deny       (user auth) → 204
 ```
 Approving creates an `AccountComputer` `kind:"server"` with the Pi's `public_key`, issues an `AuthSession` `client_kind:"server"` bound (via `auth_surface_device_for`) to the Pi's device token, sets `approver_keys=[approver.public_key]`. `user_code`: 8 chars from the existing unambiguous alphabet; wrong codes limited to 10 per user per hour. `GET /appareil`: HTML sign-in + approve page like `/pair`; approving from the web pins no approver.

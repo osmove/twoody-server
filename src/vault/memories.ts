@@ -54,7 +54,7 @@ type Row = {
   id: string; user_id: string; kind: string; title: string | null; content: string; tags_json: string; source: string;
   superseded_by_id: string | null; hlc: string | null; vault_event_id: string | null; created_at: number; updated_at: number;
 };
-type LogRow = { event_id: string; stream_id: string; memory_id: string; payload_json: string; own: number; sealed_json: string | null; sent: number; seq: number | null };
+type LogRow = { event_id: string; stream_id: string; memory_id: string; payload_json: string; own: number; sealed_json: string | null; sent: number; seq: number | null; stored_at: number | null };
 
 /// A memory as the vault calls its source; « conversation » is what
 /// memoryLearning.ts writes for a learned fact.
@@ -307,10 +307,13 @@ export function createMemoryVault({ sqlite, owner, access, now = () => Date.now(
           if ((type === "tombstone") !== (event.kind === "tombstone")) continue;
           const read = readMemoryEvent(payload);
           const memoryId = typeof (payload as { id?: unknown } | null)?.id === "string" ? (payload as { id: string }).id : "";
-          // The account's copy: the one every device reads, replacing ours.
+          // The account's copy: the one every device reads, replacing ours,
+          // with when the account stored it (its own clock, not the sender's).
+          const stamp = (event as { stored_at?: unknown }).stored_at;
+          const storedAt = typeof stamp === "string" ? Date.parse(stamp) : NaN;
           sqlite.prepare(
-            "INSERT OR REPLACE INTO memory_vault_events (event_id, stream_id, memory_id, payload_json, own, sealed_json, sent, seq) VALUES (?, ?, ?, ?, 0, NULL, 1, ?)",
-          ).run(event.event_id, ctx.streamId, memoryId, JSON.stringify(payload), Number(event.seq) || null);
+            "INSERT OR REPLACE INTO memory_vault_events (event_id, stream_id, memory_id, payload_json, own, sealed_json, sent, seq, stored_at) VALUES (?, ?, ?, ?, 0, NULL, 1, ?, ?)",
+          ).run(event.event_id, ctx.streamId, memoryId, JSON.stringify(payload), Number(event.seq) || null, Number.isFinite(storedAt) ? storedAt : null);
           if (read) {
             try {
               setState("hlc", hlcReceive(getState("hlc"), read.hlc, now()));
@@ -329,8 +332,8 @@ export function createMemoryVault({ sqlite, owner, access, now = () => Date.now(
   /// The memories table made what the events say.
   function apply(ctx: Context) {
     const me = owner();
-    const log = sqlite.prepare("SELECT event_id, memory_id, payload_json FROM memory_vault_events WHERE stream_id = ?").all(ctx.streamId) as Array<Pick<LogRow, "event_id" | "memory_id" | "payload_json">>;
-    const merged = mergeMemories(log.map((r) => ({ event_id: r.event_id, payload: parse(r.payload_json) })), { epochOne: ctx.epochOne, nowMs: now() });
+    const log = sqlite.prepare("SELECT event_id, memory_id, payload_json, stored_at FROM memory_vault_events WHERE stream_id = ?").all(ctx.streamId) as Array<Pick<LogRow, "event_id" | "memory_id" | "payload_json" | "stored_at">>;
+    const merged = mergeMemories(log.map((r) => ({ event_id: r.event_id, payload: parse(r.payload_json), stored_at_ms: r.stored_at })), { epochOne: ctx.epochOne, nowMs: now() });
     const tombstoned = new Set(merged.tombstoned);
     const hashes = new Set<string>();
     for (const r of log) {

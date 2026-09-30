@@ -26,11 +26,14 @@ import { pinVaultAnchor, vaultIdentity, vaultRosterInput } from "../vault/servic
 //     or 5 (account/approvals.ts) whose device-access/v2 names that vault
 //     device and is signed by the key being pinned, asking through the
 //     tunnel from the key the session was given to (sessionTrust.ts); or a
-//     Twoody Desktop's embedded server, a peer session naming the
-//     Desktop's computer, carrying the same statement by the key being
-//     pinned, that device's desktop-binding (in the vault, signed by that
-//     key) naming that computer and the session's tunnel key
-//     (sessionTrust.ts peerSessionIsDesktop). Any other peer: refused.
+//     Twoody Desktop's embedded server, a peer session let in by rule 1 or
+//     2 naming the Desktop's computer, carrying the same statement by the
+//     key being pinned, for a person device the anchors already held
+//     reach, whose desktop-binding (in the vault, signed by that key)
+//     names that computer and the session's tunnel key (sessionTrust.ts
+//     peerSessionIsDesktop). Any other peer — one the console approved, a
+//     computer of the roster, one naming a device that only approves
+//     itself, any peer before the first anchor — refused.
 //     Only while this computer is not approved yet; a pinned anchor is
 //     never replaced nor pushed out.
 //
@@ -63,9 +66,10 @@ async function mayPin(req: FastifyRequest, auth: { sessionId?: string }, anchor:
   if (!row || !account || userId === undefined || userId === null) return false;
   if (!isPeerSessionKind(row.kind)) return sessionIsVaultDevice(row, userId, anchor.id, anchor.sign_public);
   // A Desktop asking as its computer: its person device's desktop-binding
-  // is read from the vault (signed by the key being pinned).
-  const devices = await vaultRosterInput().then((input) => input?.devices ?? [], () => []);
-  return peerSessionIsDesktop(row, { userId, selfComputerId: account.computer.id, anchor, devices });
+  // is read from the vault (signed by the key being pinned), and that
+  // device must be one the anchors already held reach.
+  const input = await vaultRosterInput().catch(() => null);
+  return peerSessionIsDesktop(row, { userId, selfComputerId: account.computer.id, anchor, devices: input?.devices ?? [], anchors: input?.anchors ?? [] });
 }
 
 const refuse = { error: "pinned_channel_required", message: "Only through the tunnel, so that the account cannot change these keys." };

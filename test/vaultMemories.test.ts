@@ -299,3 +299,32 @@ test("a conversation turn and the memories never share a stream", async () => {
 });
 
 test.after(() => service.resetVaultForTests());
+
+test("an event stamped ahead of when the account stored it never counts, even once that time comes (N3)", async () => {
+  for (const db of [sqlite, piDb.sqlite]) {
+    db.prepare("DELETE FROM memories").run();
+    db.prepare("DELETE FROM memory_vault_events").run();
+    db.prepare("DELETE FROM memory_vault_state").run();
+  }
+  fake.events.splice(0, fake.events.length);
+  const hlc = (ms: number) => contracts.formatHlc({ wall: ms, counter: 0 });
+  const memory = (id: string, content: string, at: number) => ({ type: "memory", id, kind: "user", title: null, content, tags: [], source: "manual", superseded_by: null, hlc: hlc(at), device: mac.id });
+  const planted = memory("0b8f1c2e-3d4a-4b5c-8d6e-7f8091a2b3c4", "Planté pour plus tard", Date.now() + 60 * 60_000);
+  const honest = memory("1c9f2d3e-4e5b-4c6d-9e7f-8091a2b3c4d5", "Habite à Paris", Date.now() - 60_000);
+  // A computer whose clock runs an hour ahead sends it; the account
+  // stores it now, and says when (stored_at).
+  assert.ok(macVault.enqueueRaw("55555555-5555-4555-8555-555555555555", planted));
+  assert.ok(macVault.enqueueRaw("66666666-6666-4666-8666-666666666666", honest));
+  await memoriesVault.syncMemories();
+  assert.ok(fake.events.every((e) => typeof e.stored_at === "string"));
+  // Two hours later on the Pi: the planted event is no longer ahead of
+  // now, but it was an hour ahead of the account's clock: never counted.
+  const later = createLaterPi(Date.now() + 2 * 60 * 60_000);
+  await later.sync();
+  const contents = (piDb.sqlite.prepare("SELECT content FROM memories ORDER BY content").all() as Array<{ content: string }>).map((r) => r.content);
+  assert.deepEqual(contents, ["Habite à Paris"]);
+});
+
+function createLaterPi(at: number) {
+  return memoriesVault.createMemoryVault({ sqlite: piDb.sqlite, owner: () => "pi-owner", access: piAccess, now: () => at });
+}

@@ -355,9 +355,11 @@ test("the Air's embedded server asks a computer as the Air, with a device-access
     const kept = claimedDeviceAccess(request, NEW_PI);
     assert.ok(kept);
     const session = (requester: string) => sessionRow(pairDevice({ deviceName: "MacBook Air", tunnelPublicKey: airTunnelKey, role: "peer", origin: "account", requesterComputerId: requester, approvalRule: "endorsed", vaultDeviceId: kept!.vault_device_id, deviceAccessJson: JSON.stringify(kept) }).sessionId);
-    const devices = input().devices;
-    const check = (requester: string, anchor: { id: string; sign_public: string }) => peerSessionIsDesktop(session(requester), { userId: USER_ID, selfComputerId: NEW_PI, anchor, devices });
+    const { devices, anchors } = input();
+    const check = (requester: string, anchor: { id: string; sign_public: string }, held = anchors) => peerSessionIsDesktop(session(requester), { userId: USER_ID, selfComputerId: NEW_PI, anchor, devices, anchors: held });
     assert.equal(check(AIR, { id: air.id, sign_public: air.sign_public }), true);
+    // Only for a device the anchors already held reach: never the first.
+    assert.equal(check(AIR, { id: air.id, sign_public: air.sign_public }, []), false, "no anchor held yet");
     assert.equal(check(MINI, { id: air.id, sign_public: air.sign_public }), false, "the Air's statement under the Mac mini's computer");
     assert.equal(check(AIR, { id: miniDevice.id, sign_public: miniDevice.sign_public }), false, "the Mac mini's device through the Air's session");
     assert.equal(check(PI, { id: air.id, sign_public: air.sign_public }), false, "under the Pi's computer");

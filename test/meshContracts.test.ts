@@ -190,6 +190,12 @@ test("memories: an event stamped too far ahead takes no part in the merge", () =
   // A later deletion beats what was planted, once it is no longer ahead.
   const tomb = { event_id: "44444444-4444-4444-8444-444444444444", payload: { type: "tombstone", id: events[0]!.payload.id, hlc: hlc(now + 5 * 60_000) } };
   assert.deepEqual(c.mergeMemories([...events, tomb], { epochOne: EPOCH_ONE, nowMs: now + 10 * 60_000 }).tombstoned, [events[0]!.payload.id]);
+  // Judged against when the account stored it: left out for good, even
+  // once now has caught up (N3).
+  const stored = events.map((e) => ({ ...e, stored_at_ms: now }));
+  const later = c.mergeMemories(stored, { epochOne: EPOCH_ONE, nowMs: Date.parse("2099-06-01T00:00:00Z") });
+  assert.deepEqual(later.memories.map((m) => m.content), ["Dans quatre minutes"], "the account stored it long before its stamp");
+  assert.deepEqual(later.ignored, [{ event_id: "22222222-2222-4222-8222-222222222222", reason: "future_hlc" }]);
   // Without a clock (the vectors), as before.
   assert.deepEqual(c.mergeMemories(scenario.events, { epochOne: EPOCH_ONE }), scenario.expected);
 });
@@ -314,4 +320,29 @@ test("rank table: today's router, row by row", () => {
   for (const row of table.rank) assert.deepEqual(rank(row.computers, row.ask), row.expected, row.name);
   for (const row of table.estimate) assert.equal(estimate(row.computer, row.model, row.tokens), row.expected, row.name);
   for (const row of table.prior_tps) assert.equal(priorTps(row.input), row.expected, JSON.stringify(row.input));
+});
+
+test("login-approver/v1: the vectors, a secret typed loosely, and a proof for anything else refused", () => {
+  const fixture = JSON.parse(readFileSync(new URL("./fixtures/login-approver-v1.json", import.meta.url), "utf8"));
+  for (const v of fixture.vectors) {
+    const args = { secret: v.secret, userCode: v.user_code, approverPublicKey: v.approver_public_key, tunnelPublicKey: v.tunnel_public_key };
+    assert.equal(c.loginApproverProof(args), v.proof, v.name);
+    assert.equal(c.loginApproverProofValid({ ...args, proof: v.proof }), true, v.name);
+  }
+  const first = fixture.vectors[0];
+  const args = { secret: fixture.typed.secret, userCode: fixture.typed.user_code, approverPublicKey: first.approver_public_key, tunnelPublicKey: first.tunnel_public_key };
+  assert.equal(c.loginApproverProof(args), first.proof, "lower case, spaces");
+  for (const [why, changed] of [
+    ["another approver key", { approverPublicKey: "cd".repeat(32) }],
+    ["another tunnel key", { tunnelPublicKey: "cd".repeat(32) }],
+    ["another code", { userCode: "WDJB-MJHV" }],
+    ["another secret", { secret: "K7QM-2X9P-AB3E" }],
+  ] as const) {
+    assert.equal(c.loginApproverProofValid({ ...args, ...changed, proof: first.proof }), false, why);
+  }
+  assert.equal(c.loginApproverProofValid({ ...args, proof: null }), false, "no proof");
+  assert.equal(c.readLoginSecret("K7QM-2X9P-AB3"), null, "11 characters");
+  assert.equal(c.readLoginSecret("K7QM-2X9P-AB3U"), null, "U is not in the alphabet");
+  assert.equal(c.readLoginSecret("oil0-0000-0000"), "011000000000");
+  assert.match(c.loginSecretFrom(new Uint8Array(12).fill(255)), /^[0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}$/);
 });

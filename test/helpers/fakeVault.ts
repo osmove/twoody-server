@@ -16,7 +16,9 @@ type Device = {
   kind: "person" | "computer"; account_computer_id: string | null; binding: string | null; invite_proof: null;
 };
 type Envelope = { v: number; user_id: string; epoch: number; to_device: string; from_device: string; epk: string; nonce: string; ciphertext: string; signature: string };
-type StoredEvent = { seq: number; v: 1; user_id: string; conversation_id: string; event_id: string; epoch: number; kind: string; stream: string; created_at: string; nonce: string; ciphertext: string };
+/// `stored_at`: when the account stored it, by its own clock (the
+/// backend's created_at of the row), unlike `created_at`, the sender's.
+type StoredEvent = { seq: number; v: 1; user_id: string; conversation_id: string; event_id: string; epoch: number; kind: string; stream: string; created_at: string; stored_at: string; nonce: string; ciphertext: string };
 type Session = { kind: "person" } | { kind: "server"; accountComputerId: string };
 
 const STREAM_KINDS: Record<string, string[]> = { conversations: ["turn", "title", "tombstone"], memories: ["memory", "tombstone"] };
@@ -136,7 +138,7 @@ export function fakeVaultBackend({ userId, computers }: { userId: number; comput
             else conflicts.push(e.event_id);
             continue;
           }
-          events.push({ seq: ++seq, v: 1, user_id: String(userId), conversation_id: e.conversation_id, event_id: e.event_id, epoch: e.epoch, kind: e.kind, stream, created_at: e.created_at, nonce: e.nonce, ciphertext: e.ciphertext });
+          events.push({ seq: ++seq, v: 1, user_id: String(userId), conversation_id: e.conversation_id, event_id: e.event_id, epoch: e.epoch, kind: e.kind, stream, created_at: e.created_at, stored_at: new Date().toISOString(), nonce: e.nonce, ciphertext: e.ciphertext });
           stored += 1;
         }
         return [conflicts.length ? 409 : 200, { stored, duplicates, conflicts }];

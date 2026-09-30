@@ -1,0 +1,29 @@
+{
+  "doc": [
+    "twoody/login-approver/v1 — which device approved a computer's login (`twoody-server login`), proved so that the account cannot put its own approver key in its place. Reference: src/vault/contracts.ts loginApproverProof.",
+    "The computer's console shows, with the user code, a one-time secret the account never sees: 12 characters of Crockford's base32 alphabet '0123456789ABCDEFGHJKMNPQRSTVWXYZ' (60 bits), written 'XXXX-XXXX-XXXX'. The person types (or scans) it on the approving Twoody Desktop or phone.",
+    "Reading the secret: upper-case it, drop '-' and spaces, read O as 0 and I or L as 1; it must then be 12 characters of the alphabet. Reading the user code: upper-case, O as 0, I or L as 1, keep [0-9A-Z], 8 characters, written 'XXXX-XXXX'.",
+    "proof = lowercase hex of HMAC-SHA256(key = the secret's 12 characters as UTF-8, message = canonical header of the label 'twoody/login-approver/v1' then the fields [1, user code 'XXXX-XXXX', approver public key (64 lowercase hex), the computer's tunnel public key (64 lowercase hex, GET /computer_logins/:code tunnel_public_key)]). Canonical header: the label's UTF-8 bytes, then each field as UTF-8 of String(field) prefixed by its length on two bytes, big-endian (as the vault statements).",
+    "The approving device sends it as approver.proof with POST /computer_logins/:code/approve; the account hands it back with the approved poll; the computer pins the approver key only when the proof holds for its own secret, code and tunnel key."
+  ],
+  "label": "twoody/login-approver/v1",
+  "vectors": [
+    {
+      "name": "the fixtures' iPhone approving a Pi",
+      "secret": "K7QM-2X9P-AB3D",
+      "user_code": "WDJB-MJHT",
+      "approver_public_key": "f5680f48673699dc425cc40e773b77b4ea0655c16b5ba01e92e167dfc662be3b",
+      "tunnel_public_key": "abababababababababababababababababababababababababababababababab",
+      "proof": "c1cc7f0ef183b195ee9c4d61ed62d006981d47de204d1ef4e6a133cd37b95cb4"
+    },
+    {
+      "name": "all zeros",
+      "secret": "0000-0000-0000",
+      "user_code": "0000-0000",
+      "approver_public_key": "0000000000000000000000000000000000000000000000000000000000000000",
+      "tunnel_public_key": "0000000000000000000000000000000000000000000000000000000000000000",
+      "proof": "b1de4c7505cb74c417f92a68dd73ccefc0bf89b661156621071cabce76682108"
+    }
+  ],
+  "typed": { "secret": "k7qm 2x9p ab3d", "user_code": "wdjb mjht", "same_proof_as": "the fixtures' iPhone approving a Pi" }
+}

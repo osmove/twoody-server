@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { and, desc, eq, inArray, isNull, like, or } from "drizzle-orm";
 import { db, memories } from "../db.js";
 import { requireAuth } from "../auth.js";
@@ -35,6 +35,18 @@ interface MemoryRow {
 }
 
 const KINDS = new Set(["user", "feedback", "project", "reference"]);
+
+/// The memories are the person's, and every one written here goes to every
+/// computer of the vault: reading them or writing one is for this server's
+/// owner (its session, this machine) or one of the person's own devices
+/// (sessionTrust.ts) — not a household member's phone, a device paired by
+/// code, one the console approved or a firmware device. Replies 403
+/// otherwise.
+async function requirePerson(req: FastifyRequest, reply: FastifyReply, auth: { sessionId?: string }): Promise<boolean> {
+  if (ownerRequest(req) || (await isPersonOrOwner(req, auth, () => meshRoster().get()))) return true;
+  reply.code(403).send({ error: "person_device_required" });
+  return false;
+}
 
 function serialize(row: typeof memories.$inferSelect): MemoryRow {
   let tags: string[] = [];
@@ -104,6 +116,7 @@ export async function memoryRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
       const { q, kind, include_superseded, entity_type, entity_id } = req.query;
 
       const filters = [eq(memories.userId, auth.userId)];
@@ -146,6 +159,7 @@ export async function memoryRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
       const groups = possibleDuplicates(auth.userId);
       const ids = groups.flatMap((g) => g.memory_ids);
       const rows = ids.length ? db.select().from(memories).where(inArray(memories.id, ids)).all() : [];
@@ -165,6 +179,7 @@ export async function memoryRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
       const [row] = db
         .select()
         .from(memories)
@@ -191,6 +206,7 @@ export async function memoryRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
       const body = readBody(req.body);
       const content = (body.content ?? "").trim();
       if (!content) {
@@ -231,6 +247,7 @@ export async function memoryRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
       if (req.body?.source === "account") {
         const items = Array.isArray(req.body.memories) ? (req.body.memories as AccountMemory[]) : [];
         if (items.length === 0) return reply.code(400).send({ error: "empty" });
@@ -267,6 +284,7 @@ export async function memoryRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
       const [existing] = db
         .select()
         .from(memories)
@@ -304,12 +322,9 @@ export async function memoryRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
       // A deletion goes to every computer of the vault and forbids the fact
-      // for good: only this server's owner (its session, this machine) or
-      // one of the person's own devices (sessionTrust.ts) — not a household
-      // member's phone, a device paired by code or a firmware device.
-      if (!ownerRequest(req) && !(await isPersonOrOwner(auth, () => meshRoster().get()))) {
-        return reply.code(403).send({ error: "person_device_required" });
-      }
+      // for good: only this server's owner or one of the person's own
+      // devices (requirePerson above).
+      if (!(await requirePerson(req, reply, auth))) return;
       const [existing] = db.select().from(memories).where(and(eq(memories.id, req.params.id), eq(memories.userId, auth.userId))).limit(1).all();
       const result = db
         .delete(memories)

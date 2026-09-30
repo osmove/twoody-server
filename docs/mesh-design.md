@@ -43,6 +43,15 @@ docs/multi-computer-design.md (hub-and-spoke: a primary holds data, others lend 
   and key; the computer lets the session pin iff the statement is signed by the key being pinned and that device's
   desktop-binding (listed, signed by the same key) names the session's requester computer and tunnel key
   (src/sessionTrust.ts peerSessionIsDesktop). Any other peer (a Pi, a household computer) never pins.
+  Since the final review (N1): only a peer session let in by rule 1 (approver) or 2 (endorsed), never the console's
+  nor rule 4's, and only for a person device the walk from the anchors already held reaches — a peer never gives a
+  computer its first anchor, and a device that only approves itself (one the account made up) never counts.
+  `twoody-server approve` shows each request's code de sécurité (from the key it asks with) and a warning.
+- Who is the person (sessionTrust.ts meshRequester): the owner, or a rule 1/5 session whose device-access is not
+  expired, asking through the tunnel from its own key. Only they read the memories, write one, or read the
+  synchronised history (vault_id conversations); anyone else sees this computer's own conversations only (N2).
+- Memory events: one stamped more than 5 min ahead of the account's stored_at (its own created_at of the event)
+  never counts, whatever the clock says later (vault/contracts.ts mergeMemories, N3).
 - Revocation: vault device revoked + new epoch; DELETE /account_computers/:id revokes its vault device and marks
   needs_rotation (next person-device rotates); sessions/links dropped within 60 s. Already-fetched data can't be
   taken back (UI says so).

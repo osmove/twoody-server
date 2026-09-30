@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { approveRequest, denyRequest, fetchPending, judge } from "../account/approvals.js";
+import { approveRequest, denyRequest, fetchPending, judge, requestSecurityCode } from "../account/approvals.js";
 import { BackendError } from "../account/backend.js";
 import { LeaveUnconfirmedError, LinkThrottledError, linkState, linkView, logout, startLink } from "../account/link.js";
 import { ensureAccountFile, fingerprint, linkedAccount } from "../account/store.js";
@@ -16,19 +16,22 @@ import { fromOtherPage } from "../webOrigin.js";
 // (docs/multi-computer-design.md §2). The code itself is only ever shown
 // on the computer's own console: the person types it on the Desktop.
 //
-//   GET    /account/link       console: {state, user_code?, verification_uri?, verification_uri_complete?,
+//   GET    /account/link       console: {state, user_code?, approval_secret?, verification_uri?, verification_uri_complete?,
 //                               expires_at?, account_computer_id?, account?, fresh, fp, fingerprint,
 //                               security_code, last_error?}
 //                               network: {state, fp} and nothing else
 //                               security_code: this computer's code de sécurité (vault/contracts.ts
 //                               securityCode, from its tunnel key), for the person to compare with
-//                               the one the Desktop or the app shows; fp is only Bonjour's hint
+//                               the one the Desktop or the app shows; fp is only Bonjour's hint;
+//                               approval_secret: the one-time secret to type with the code on the
+//                               approving Desktop or phone (vault/contracts.ts login-approver/v1)
 //   POST   /account/link       starts a code — or answers with the live one, never replacing it
 //                               (409 when already linked; from the network: only while fresh,
 //                               and 429 when a code was asked for too recently)
 //   DELETE /account/link       leaves the account ({…, confirmed}); 502 leave_unconfirmed when the
 //                               backend did not confirm (still linked); ?force=1 leaves here anyway
-//   GET    /account/approvals  requests waiting on this computer (console approval, rule 3)
+//   GET    /account/approvals  requests waiting on this computer (console approval, rule 3), each
+//                               with the security_code of the key it asks with
 //   POST   /account/approvals/:id {decision:"approve"|"deny"}
 //
 // POST from the network, DELETE and the approvals are otherwise this
@@ -57,6 +60,9 @@ export async function accountLinkRoutes(app: FastifyInstance) {
       ...(current.user_code
         ? {
             user_code: current.user_code,
+            // The one-time secret the approving device types with the
+            // code (account/link.ts): the console's, never the network's.
+            ...(current.approval_secret ? { approval_secret: current.approval_secret } : {}),
             verification_uri: current.verification_uri,
             verification_uri_complete: current.verification_uri_complete ?? null,
             expires_at: current.expires_at,
@@ -141,6 +147,10 @@ export async function accountLinkRoutes(app: FastifyInstance) {
             requester_kind: r.requester_kind,
             requester_computer_id: r.requester_computer_id,
             public_key: r.public_key,
+            // The requesting device's code de sécurité, from the key it
+            // asks with: what the console shows, to compare with the
+            // device's own screen (the name is the account's say).
+            security_code: requestSecurityCode(r),
             expires_at: r.expires_at,
             verdict: judge(r, account),
           })),

@@ -26,6 +26,7 @@ const { bonjourTxt } = await import("../src/bonjour.js");
 const { buildApp } = await import("../src/app.js");
 const { ensureLocalUser } = await import("../src/pairing.js");
 const { tunnelIdentity } = await import("../src/tunnel/identity.js");
+const { loginApproverProof, readLoginSecret } = await import("../src/vault/contracts.js");
 
 const app = await buildApp();
 test.after(async () => {
@@ -49,8 +50,12 @@ test("a code is asked for, polled while pending, slowed down, then linked once; 
   assert.equal(view.state, "pending");
   assert.match(view.user_code!, /^[A-Z]{4}-[A-Z]{4}$/);
   assert.equal(view.verification_uri, "https://twoody.com/appareil");
+  // The one-time secret, shown with the code and never sent to the account.
+  assert.match(view.approval_secret!, /^[0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}$/);
+  assert.ok(readLoginSecret(view.approval_secret));
 
   const login = backend.logins.at(-1)!;
+  assert.ok(!JSON.stringify(login).includes(readLoginSecret(view.approval_secret)!), "the account never sees the secret");
   assert.equal(login.name, "Raspberry Pi");
   assert.equal(login.public_key, readAccountFile()!.pairing_key.pub, "the login carries the pairing key");
   assert.equal(login.tunnel_public_key, tunnelIdentity().publicKey.toString("hex"), "and the tunnel key, whose security code the console shows");
@@ -62,7 +67,10 @@ test("a code is asked for, polled while pending, slowed down, then linked once; 
   await until(() => login.polls >= 4);
   assert.equal(linkState(), "pending", "slow_down keeps waiting");
 
-  backend.approveLogin(login.user_code, { kind: "computer", public_key: "ab".repeat(32), name: "Mac de Jimmy" });
+  // The approving Mac typed the secret: its proof binds its key to this
+  // computer's tunnel key and this code.
+  const proof = loginApproverProof({ secret: view.approval_secret!, userCode: login.user_code, approverPublicKey: "ab".repeat(32), tunnelPublicKey: tunnelIdentity().publicKey.toString("hex") });
+  backend.approveLogin(login.user_code, { kind: "computer", public_key: "ab".repeat(32), name: "Mac de Jimmy", proof });
   await until(() => linkState() === "linked");
   off();
 
@@ -86,6 +94,31 @@ test("a code is asked for, polled while pending, slowed down, then linked once; 
     body: JSON.stringify({ device_code: login.device_code }),
   });
   assert.equal(again.status, 410);
+});
+
+test("an approver key the account hands back without the console secret's proof is never pinned (H1)", async () => {
+  const tunnel = tunnelIdentity().publicKey.toString("hex");
+  const cases: Array<[string, (view: { user_code?: string; approval_secret?: string }) => string | null, string?]> = [
+    ["no proof (twoody.com, an older Desktop, or the account's own key)", () => null],
+    ["a proof made with another secret", (view) => loginApproverProof({ secret: "0000-0000-0000", userCode: view.user_code!, approverPublicKey: "cd".repeat(32), tunnelPublicKey: tunnel })],
+    ["the right secret for another tunnel key (the account swapped it)", (view) => loginApproverProof({ secret: view.approval_secret!, userCode: view.user_code!, approverPublicKey: "cd".repeat(32), tunnelPublicKey: "ef".repeat(32) })],
+    ["the right secret for another approver key (the account put its own)", (view) => loginApproverProof({ secret: view.approval_secret!, userCode: view.user_code!, approverPublicKey: "ab".repeat(32), tunnelPublicKey: tunnel })],
+  ];
+  for (const [name, proofOf] of cases) {
+    await logout({ force: true });
+    resetLinkForTests();
+    const view = await startLink({ name: "Raspberry Pi" });
+    backend.approveLogin(view.user_code!, { kind: "computer", public_key: "cd".repeat(32), name: "Mac de Jimmy", proof: proofOf(view) });
+    await until(() => linkState() === "linked");
+    assert.deepEqual(linkedAccount()!.approvers, [], name);
+  }
+  await logout({ force: true });
+  resetLinkForTests();
+  const view = await startLink({ name: "Raspberry Pi" });
+  const proof = loginApproverProof({ secret: view.approval_secret!.toLowerCase().replace(/-/g, " "), userCode: view.user_code!.toLowerCase(), approverPublicKey: "cd".repeat(32), tunnelPublicKey: tunnel });
+  backend.approveLogin(view.user_code!, { kind: "computer", public_key: "cd".repeat(32), name: "Mac de Jimmy", proof });
+  await until(() => linkState() === "linked");
+  assert.deepEqual(linkedAccount()!.approvers.map((a) => a.public_key), ["cd".repeat(32)], "typed in lower case with spaces, it still holds");
 });
 
 test("the environment's user token takes precedence over the file's", () => {

@@ -5,7 +5,7 @@ import { verifyEndorsement } from "./endorsement.js";
 import { computerName } from "./link.js";
 import { sealPairing } from "./pairingSeal.js";
 import { linkedAccount, type LinkedAccount } from "./store.js";
-import { deviceAccessUsable, deviceAccessV2Valid } from "../vault/contracts.js";
+import { deviceAccessUsable, deviceAccessV2Valid, securityCode } from "../vault/contracts.js";
 import { fromHex } from "../vault/crypto.js";
 import { meshRoster, type Roster } from "../vault/roster.js";
 
@@ -104,6 +104,18 @@ export function claimedDeviceAccess(request: Pick<PendingRequest, "device_access
   const access = request.device_access;
   if (!access || access.tunnel_public_key !== request.public_key) return null;
   return deviceAccessUsable(access, { accountComputerId: selfComputerId, nowMs: now }) ? access : null;
+}
+
+/// The code de sécurité of the key a request asks with (vault/contracts.ts
+/// securityCode): what `twoody-server approve` shows, for the person to
+/// compare with the requesting device's own screen before approving — the
+/// name is only what the account says. Null for a key that is not one.
+export function requestSecurityCode(request: Pick<PendingRequest, "public_key">): string | null {
+  try {
+    return securityCode(request.public_key);
+  } catch {
+    return null;
+  }
 }
 
 export function readPending(raw: unknown): PendingRequest[] {
@@ -246,14 +258,16 @@ export async function approveRequest(account: LinkedAccount, request: PendingReq
   // Rule 3 is the console's (`twoody-server approve`, no verdict). Rules 1
   // and 5 keep the device-access the requester carried: which vault device
   // it is (checked again whenever it counts, sessionTrust.ts). So does a
-  // peer naming its computer of the account, whatever let it in: a Twoody
-  // Desktop's embedded server carries its person device's statement, which
-  // counts only once that device's desktop-binding names that computer and
-  // the session's key (sessionTrust.ts peerSessionIsDesktop) — never on
-  // the rule, and never for a computer's own vault device.
+  // peer naming its computer of the account let in by rule 2 (endorsed by
+  // the approver key): a Twoody Desktop's embedded server carries its
+  // person device's statement, which counts only for a device the anchors
+  // already held reach, once its desktop-binding names that computer and
+  // the session's key (sessionTrust.ts peerSessionIsDesktop). Never for a
+  // peer the console let in (the person saw a name the account chose),
+  // nor for a computer of the roster (rule 4).
   const rule = verdict?.approve === true ? verdict.rule : "console";
   const desktopPeer = request.role === "peer" && !!request.requester_computer_id;
-  const claimed = rule === "approver" || rule === "device_access" || desktopPeer ? claimedDeviceAccess(request, account.computer.id) : null;
+  const claimed = rule === "approver" || rule === "device_access" || (desktopPeer && rule === "endorsed") ? claimedDeviceAccess(request, account.computer.id) : null;
   const paired = pairDevice({
     deviceName: request.name,
     tunnelPublicKey: request.public_key,
@@ -330,7 +344,7 @@ export function startApprovalLoop(options: { everyMs?: number; log?: (message: s
         }
         if (verdict.reason === "needs_console" && !announced.has(request.id)) {
           announced.add(request.id);
-          options.log?.(`"${request.name}" asks to use this server${request.role === "peer" ? " (a computer of the account)" : ""}. To allow it from here: twoody-server approve`);
+          options.log?.(`"${request.name}" asks to use this server${request.role === "peer" ? " (a computer of the account)" : ""}, security code ${requestSecurityCode(request) ?? "none"}. To allow it from here, once that device's own screen shows the same code: twoody-server approve`);
         }
         done.push({ request, verdict });
       }

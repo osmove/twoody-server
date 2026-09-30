@@ -1,6 +1,9 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { requireAuth } from "../auth.js";
+import { ownerRequest } from "../localAccess.js";
+import { isPersonOrOwner } from "../sessionTrust.js";
+import { meshRoster } from "../vault/roster.js";
 import { db, discussions, messages, sqlite } from "../db.js";
 import { generateId } from "../auth.js";
 import { publish as publishEvent } from "../events.js";
@@ -13,6 +16,19 @@ import { discussionContext } from "./queries.js";
 // inactivity-window resolver in /queries clusters short follow-ups
 // into the same discussion, same as cloud DiscussionResolver, so
 // the listing matches what the iPhone shows for cloud accounts.
+//
+// The synchronised history (a conversation with a vault id: the person's
+// encrypted history, opened here) is only for this server's owner or one
+// of the person's own devices (sessionTrust.ts): anyone else — a household
+// member's phone, a device paired by code, one the console approved, a
+// firmware device — lists, opens, deletes and imports only this computer's
+// own conversations.
+
+/// Whether this request may reach the synchronised history.
+export async function mayReachHistory(req: FastifyRequest, auth: { sessionId?: string }): Promise<boolean> {
+  return ownerRequest(req) || (await isPersonOrOwner(req, auth, () => meshRoster().get()));
+}
+
 export async function discussionRoutes(app: FastifyInstance) {
   await deleteDiscussion(app);
   await importDiscussion(app);
@@ -53,6 +69,7 @@ export async function discussionRoutes(app: FastifyInstance) {
         .from(discussions)
         .where(eq(discussions.userId, auth.userId))
         .all();
+      if (rows.some((row) => row.vaultId) && !(await mayReachHistory(req, auth))) rows = rows.filter((row) => !row.vaultId);
 
       if (queryStr) {
         // Title hits are free (already in `rows`). For body hits we
@@ -143,7 +160,7 @@ export async function discussionRoutes(app: FastifyInstance) {
         ))
         .limit(1)
         .all();
-      if (!discussion) {
+      if (!discussion || (discussion.vaultId && !(await mayReachHistory(req, auth)))) {
         return reply.code(404).send({ error: "not_found" });
       }
 
@@ -202,12 +219,12 @@ async function deleteDiscussion(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
       const owned = db
-        .select({ id: discussions.id })
+        .select({ id: discussions.id, vaultId: discussions.vaultId })
         .from(discussions)
         .where(and(eq(discussions.id, req.params.id), eq(discussions.userId, auth.userId)))
         .limit(1)
         .all();
-      if (owned.length === 0) return reply.code(404).send({ error: "not_found" });
+      if (owned.length === 0 || (owned[0]!.vaultId && !(await mayReachHistory(req, auth)))) return reply.code(404).send({ error: "not_found" });
       db.transaction((tx) => {
         tx.delete(messages).where(eq(messages.discussionId, req.params.id)).run();
         tx.delete(discussions).where(eq(discussions.id, req.params.id)).run();
@@ -273,6 +290,7 @@ async function importDiscussion(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
+      if (!(await mayReachHistory(req, auth))) return reply.code(403).send({ error: "person_device_required" });
       const vaultId = req.body.vault_id.toLowerCase();
       if (!VAULT_ID.test(vaultId)) return reply.code(422).send({ error: "invalid_vault_id" });
 

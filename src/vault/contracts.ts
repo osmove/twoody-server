@@ -345,6 +345,83 @@ export function securityCode(tunnelPublicKey: string | Uint8Array): string {
   return (chars.match(/.{5}/g) as string[]).join("-");
 }
 
+// ── login-approver/v1 ───────────────────────────────────────────────────
+// Which device approved a computer's login (`twoody-server login`), told
+// so that the account cannot put its own key in its place. Besides the
+// user code, the computer's console shows a one-time SECRET the account
+// never sees — 12 characters of Crockford's base32 (60 bits), written
+// « XXXX-XXXX-XXXX » — which the person types (or scans) on the approving
+// Desktop or phone. That device sends, with its approver key, the HMAC-
+// SHA256 keyed by the secret (the 12 characters' UTF-8 bytes, read as
+// readLoginSecret does) over the canonical header of
+// [v = 1, user code « XXXX-XXXX », approver public key, computer tunnel
+// public key] under this label, lowercase hex. The computer pins the
+// approver key the account hands back only when that proof holds for its
+// own tunnel key: an approver key the account made up, or a tunnel key it
+// swapped for the security code, fails. Vectors:
+// test/fixtures/login-approver-v1.json.
+
+export const LOGIN_APPROVER_LABEL = "twoody/login-approver/v1";
+export const LOGIN_SECRET_CHARS = 12;
+
+/// "k7qm 2x9p-ab3d" → "K7QM2X9PAB3D": upper case, no dashes nor spaces, O
+/// read as 0, I and L as 1; null unless 12 characters of the alphabet.
+export function readLoginSecret(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const chars = value.toUpperCase().replace(/[\s-]/g, "").replace(/O/g, "0").replace(/[IL]/g, "1");
+  return chars.length === LOGIN_SECRET_CHARS && [...chars].every((c) => CROCKFORD_BASE32.includes(c)) ? chars : null;
+}
+
+/// "K7QM2X9PAB3D" → "K7QM-2X9P-AB3D", as the console shows it.
+export function formatLoginSecret(secret: string): string {
+  const chars = readLoginSecret(secret);
+  if (!chars) throw new ContractError("bad_login_secret");
+  return (chars.match(/.{4}/g) as string[]).join("-");
+}
+
+/// A new secret from 12 random bytes (5 bits of each).
+export function loginSecretFrom(random: Uint8Array): string {
+  if (!(random instanceof Uint8Array) || random.length < LOGIN_SECRET_CHARS) throw new ContractError("bad_login_secret");
+  let chars = "";
+  for (let i = 0; i < LOGIN_SECRET_CHARS; i += 1) chars += CROCKFORD_BASE32[random[i]! & 31];
+  return formatLoginSecret(chars);
+}
+
+/// "wdjb mjht" → "WDJB-MJHT", O read as 0 and I or L as 1, as the account
+/// reads a typed code; null when it cannot be one.
+function readUserCode(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const chars = value.toUpperCase().replace(/O/g, "0").replace(/[IL]/g, "1").replace(/[^0-9A-Z]/g, "");
+  return chars.length === 8 ? `${chars.slice(0, 4)}-${chars.slice(4)}` : null;
+}
+
+export function loginApproverProof(args: { secret: string; userCode: string; approverPublicKey: string; tunnelPublicKey: string }): string {
+  const secret = readLoginSecret(args.secret);
+  const code = readUserCode(args.userCode);
+  if (!secret || !code) throw new ContractError("bad_login_approver");
+  const message = canonicalHeader(LOGIN_APPROVER_LABEL, [
+    1,
+    code,
+    requireKey(String(args.approverPublicKey).toLowerCase(), "bad_login_approver"),
+    requireKey(String(args.tunnelPublicKey).toLowerCase(), "bad_login_approver"),
+  ]);
+  return toHex(hmac(sha256, utf8(secret), message));
+}
+
+/// Whether `proof` is loginApproverProof of these: compared in constant time.
+export function loginApproverProofValid(args: { secret: string; userCode: string; approverPublicKey: string; tunnelPublicKey: string; proof: unknown }): boolean {
+  if (typeof args.proof !== "string" || !HEX_KEY.test(args.proof)) return false;
+  let expected: string;
+  try {
+    expected = loginApproverProof(args);
+  } catch {
+    return false;
+  }
+  let diff = 0;
+  for (let i = 0; i < expected.length; i += 1) diff |= expected.charCodeAt(i) ^ args.proof.charCodeAt(i);
+  return diff === 0;
+}
+
 // ── peer documents ──────────────────────────────────────────────────────
 // A document as the mesh names it (peer-documents-search.schema.json):
 // "<account computer id>:<local document id>", never a path.
@@ -574,10 +651,14 @@ export interface MergeResult {
 }
 
 /// The memories stream folded into the set of memories. Commutative and
-/// idempotent: the same events in any order give the same set. With
-/// `nowMs`, an event stamped more than HLC_MAX_FUTURE_MS ahead of it is
-/// left out (« future_hlc »).
-export function mergeMemories(input: Array<{ event_id: string; payload: unknown }>, { epochOne, nowMs }: { epochOne: Uint8Array; nowMs?: number }): MergeResult {
+/// idempotent: the same events in any order give the same set. An event
+/// stamped more than HLC_MAX_FUTURE_MS ahead of the moment the account
+/// stored it (`stored_at_ms`, the account's own created_at of the event
+/// row) is left out for good (« future_hlc »): whatever the clock says
+/// later, it never wins the last-writer rule. With `nowMs`, one stamped
+/// that far ahead of now is left out too (for now: an event not yet
+/// stored, or stored by an account that says when it will be).
+export function mergeMemories(input: Array<{ event_id: string; payload: unknown; stored_at_ms?: number | null }>, { epochOne, nowMs }: { epochOne: Uint8Array; nowMs?: number }): MergeResult {
   const ignored: MergeResult["ignored"] = [];
   const held = new Map<string, Held>();
   for (const item of input) {
@@ -586,7 +667,9 @@ export function mergeMemories(input: Array<{ event_id: string; payload: unknown 
       if (typeof item?.event_id === "string") ignored.push({ event_id: item.event_id, reason: "invalid" });
       continue;
     }
-    if (typeof nowMs === "number" && parseHlc(event.hlc).wall > nowMs + HLC_MAX_FUTURE_MS) {
+    const wall = parseHlc(event.hlc).wall;
+    const storedAt = typeof item.stored_at_ms === "number" && Number.isFinite(item.stored_at_ms) ? item.stored_at_ms : null;
+    if ((storedAt !== null && wall > storedAt + HLC_MAX_FUTURE_MS) || (typeof nowMs === "number" && wall > nowMs + HLC_MAX_FUTURE_MS)) {
       ignored.push({ event_id: item.event_id, reason: "future_hlc" });
       continue;
     }

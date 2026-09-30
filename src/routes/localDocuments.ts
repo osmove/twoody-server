@@ -267,7 +267,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       if (!auth) return;
       // The other computers' folders: only to the owner or the person's own
       // devices (sessionTrust.ts); anyone else sees none.
-      reply.send({ computers: await foldersOfComputers(auth.userId, undefined, await meshRequester(auth, () => meshRoster().get())) });
+      reply.send({ computers: await foldersOfComputers(auth.userId, undefined, await meshRequester(req, auth, () => meshRoster().get())) });
     },
   });
 
@@ -287,7 +287,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       if (!auth) return;
       // A person's session, not a firmware device's token.
       if (!auth.sessionId) return reply.code(403).send({ error: "session_required" });
-      const requester = await meshRequester(auth, () => meshRoster().get());
+      const requester = await meshRequester(req, auth, () => meshRoster().get());
       await serveRemoteRaw(req, reply, { userId: auth.userId, client: auth.sessionId, computerId: req.params.computer_id, documentId: req.params.id, requester });
       return reply;
     },

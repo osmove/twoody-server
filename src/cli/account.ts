@@ -15,7 +15,7 @@ function headers(): Record<string, string> {
   return { Accept: "application/json", "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
 }
 
-type LinkBody = { state: string; user_code?: string; verification_uri?: string; verification_uri_complete?: string | null; expires_at?: string; account_computer_id?: string; account?: string; last_error?: string | null; fp?: string; security_code?: string | null };
+type LinkBody = { state: string; user_code?: string; approval_secret?: string; verification_uri?: string; verification_uri_complete?: string | null; expires_at?: string; account_computer_id?: string; account?: string; last_error?: string | null; fp?: string; security_code?: string | null };
 
 /// "the Twoody account j***@gmail.com" — or "a Twoody account" when the server did not say which.
 function which(account: string | null | undefined): string {
@@ -50,6 +50,9 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 function showCode(link: LinkBody): void {
   const where = link.verification_uri_complete ?? link.verification_uri ?? "https://twoody.com/appareil";
   console.log(`\n  To add this server to your Twoody account, open\n\n    ${where}\n\n  on a device signed in to it (or Twoody Desktop, or the Twoody app), and enter the code\n\n    ${link.user_code}\n`);
+  // The one-time secret the account never sees: typed on the Desktop or
+  // the phone, it proves that device is the one approving (account/link.ts).
+  if (link.approval_secret) console.log(`  On Twoody Desktop or the Twoody app, also enter this one-time secret (never asked for on the website):\n\n    ${link.approval_secret}\n`);
   // What the approving screen shows for this computer, to compare: its
   // code de sécurité (from its tunnel key), never the 8-hex Bonjour hint.
   if (link.security_code) console.log(`  Security code of this server (check that the approving screen shows the same):\n\n    ${link.security_code}\n`);
@@ -127,14 +130,31 @@ async function login(): Promise<number> {
   }
 }
 
-type Waiting = { id: string; name: string; role: string; expires_at: string; verdict?: { approve: boolean; reason?: string } };
+type Waiting = { id: string; name: string; role: string; expires_at: string; security_code?: string | null; verdict?: { approve: boolean; reason?: string } };
+
+/// What the console says before anything is allowed: the name is only
+/// the account's say; the code de sécurité, from the key the device asks
+/// with, is what the person compares with that device's own screen.
+export const APPROVE_WARNING =
+  "  Only allow a device whose own screen shows the same security code.\n" +
+  "  The name comes from the Twoody account and proves nothing; a request you did not start yourself, refuse it.";
+
+export function describeRequest(r: Pick<Waiting, "name" | "role" | "expires_at" | "security_code">): string {
+  const code = r.security_code ? `security code ${r.security_code}` : "no security code (not a key): do not allow";
+  return `${r.name}${r.role === "peer" ? " (a computer of the account)" : ""} — ${code} — until ${new Date(r.expires_at).toLocaleTimeString()}`;
+}
 
 async function choose(requests: Waiting[], wanted: string | null): Promise<Waiting | null> {
-  if (wanted) return requests.find((r) => r.id === wanted) ?? null;
-  requests.forEach((r, i) => console.log(`  ${i + 1}. ${r.name}${r.role === "peer" ? " (a computer of the account)" : ""} — until ${new Date(r.expires_at).toLocaleTimeString()}`));
+  console.log(APPROVE_WARNING + "\n");
+  if (wanted) {
+    const found = requests.find((r) => r.id === wanted) ?? null;
+    if (found) console.log(`  ${describeRequest(found)}\n`);
+    return found;
+  }
+  requests.forEach((r, i) => console.log(`  ${i + 1}. ${describeRequest(r)}`));
   if (!process.stdin.isTTY) {
     console.log("\nRun twoody-server approve <id> to allow one:");
-    requests.forEach((r) => console.log(`  ${r.id}  ${r.name}`));
+    requests.forEach((r) => console.log(`  ${r.id}  ${r.name}  ${r.security_code ?? "-"}`));
     return null;
   }
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -174,7 +194,7 @@ async function approve(args: string[]): Promise<number> {
   }
 
   const { linkedAccount } = await import("../account/store.js");
-  const { fetchPending, approveRequest, denyRequest } = await import("../account/approvals.js");
+  const { fetchPending, approveRequest, denyRequest, requestSecurityCode } = await import("../account/approvals.js");
   const account = linkedAccount();
   if (!account) {
     console.error("This server is not linked to a Twoody account: twoody-server login");
@@ -185,7 +205,7 @@ async function approve(args: string[]): Promise<number> {
     console.log("No request is waiting.");
     return 0;
   }
-  const request = await choose(requests, wanted);
+  const request = await choose(requests.map((r) => ({ ...r, security_code: requestSecurityCode(r) })), wanted);
   if (!request) return wanted ? (console.error(`No waiting request ${wanted}.`), 1) : 0;
   const full = requests.find((r) => r.id === request.id)!;
   if (deny) await denyRequest(account, full);
