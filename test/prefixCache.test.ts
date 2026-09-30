@@ -137,5 +137,5 @@ test("30 turns with memories learned on the way: each request starts with the pr
   // on, then in the system prompt from the next cut on.
   assert.doesNotMatch(chats[5][0].content, /Léa/);
   assert.match(chats[5].at(-1)!.content, /\[Saved notes that may be relevant\][\s\S]*Sa fille s'appelle Léa/);
-  assert.match(chats.at(-1)![0].content, /What the user asked you to remember about them:[\s\S]*Sa fille s'appelle Léa/);
+  assert.match(chats.at(-1)![0].content, /What you know about the user, from their saved Memories[\s\S]*Sa fille s'appelle Léa/);
 });

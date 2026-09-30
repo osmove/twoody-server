@@ -530,6 +530,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       summaryThrough: compacted.summaryThrough,
       state: compacted.state,
       currentId: promptId,
+      discussionId: discussion.id,
       contextWindow: readWindow(parsed.context_window),
       // Whether the person granted folders at all, not this message's
       // selection: a sentence of the system prompt, which must not flip
@@ -1763,7 +1764,7 @@ function loadUserContext(userId: string): {
   }
 
   const rows = db
-    .select({ kind: memories.kind, title: memories.title, content: memories.content, tagsJson: memories.tagsJson })
+    .select({ kind: memories.kind, title: memories.title, content: memories.content, tagsJson: memories.tagsJson, sourceRef: memories.sourceRef })
     .from(memories)
     .where(and(eq(memories.userId, userId), isNull(memories.supersededById)))
     .orderBy(desc(memories.updatedAt), asc(memories.id))

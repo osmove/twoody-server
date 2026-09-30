@@ -218,10 +218,10 @@ test("a fact the user asked to remember is confirmed, not denied, from its own m
 });
 
 test("memories learned during a conversation leave the system prompt as it was (prefix cache)", () => {
-  const first = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], content: "Bonjour", currentId: "m1" }));
+  const first = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], content: "Bonjour", currentId: "m1", discussionId: "d1" }));
   assert.match(first.messages[0].content, /- Architecte à Lyon\./);
   const learned = [
-    { kind: "user", title: null, content: "Sa fille s'appelle Léa." },
+    { kind: "user", title: null, content: "Sa fille s'appelle Léa.", sourceRef: "d1" },
     { kind: "user", title: null, content: "Architecte à Lyon." },
   ];
   const second = buildChatTurn(input({
@@ -230,6 +230,7 @@ test("memories learned during a conversation leave the system prompt as it was (
     history: [{ id: "m1", role: "user", content: "Bonjour" }, { id: "m2", role: "assistant", content: "Bonjour !" }],
     content: "Quel âge a ma fille ?",
     currentId: "m3",
+    discussionId: "d1",
   }));
   assert.equal(second.messages[0].content, first.messages[0].content);
   // Still given, with the message it bears on.
@@ -352,4 +353,59 @@ test("a server with no profile knows the person by the first name the phone give
   assert.equal(validLocale("fr_CA"), "fr-CA");
   assert.equal(validLocale("<script>"), null);
   assert.match(buildChatMessages(input({ userName: validFirstName("Jimmy") }))[0].content, /The user's name is Jimmy\./);
+});
+
+test("a memory saved since the conversation started rides once on the next message; the start of the prompt does not move", () => {
+  const history = [{ id: "m1", role: "user", content: "Salut", sent: "Salut" }, { id: "m2", role: "assistant", content: "Salut !" }];
+  const first = buildChatTurn(input({ memories: [], content: "Salut", currentId: "m1", discussionId: "d1" }));
+  // Imported from another assistant in between: not said in this conversation.
+  const imported = [{ kind: "user", title: null, content: "Camille a 41 ans (septembre 2026).", sourceRef: "claude" }];
+  const second = buildChatTurn(input({ memories: imported, state: first.state, history, content: "Quel âge j’ai ?", currentId: "m3", discussionId: "d1" }));
+  assert.equal(second.messages[0].content, first.messages[0].content, "the system prompt does not move");
+  assert.deepEqual(second.messages.slice(1, 3), [{ role: "user", content: "Salut" }, { role: "assistant", content: "Salut !" }]);
+  assert.match(second.messages.at(-1)!.content, /^\[Saved in the user's Memories since this conversation started\]\n- Camille a 41 ans \(septembre 2026\)\.\n\[End of new memories\]\n\nQuel âge j’ai \?$/);
+  // The turn after: not told again, not matched again, the prefix only grows.
+  const third = buildChatTurn(input({
+    memories: imported,
+    state: second.state,
+    history: [...history, { id: "m3", role: "user", content: "Quel âge j’ai ?", sent: second.sent }, { id: "m4", role: "assistant", content: "Tu as 41 ans." }],
+    content: "Et dans cinq ans, quel âge aurai-je ?",
+    currentId: "m5",
+    discussionId: "d1",
+  }));
+  assert.deepEqual(third.messages.slice(0, 4), second.messages);
+  assert.equal(third.messages.at(-1)!.content, "Et dans cinq ans, quel âge aurai-je ?");
+});
+
+test("a state from before the new-memory notes announces nothing at once", () => {
+  const first = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], content: "Salut", currentId: "m1" }));
+  const { seen: _seen, told: _told, ...older } = first.state;
+  const second = buildChatTurn(input({
+    memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }, { kind: "project", title: null, content: "Chantier rue Mercière." }],
+    state: older,
+    history: [{ id: "m1", role: "user", content: "Salut" }, { id: "m2", role: "assistant", content: "Salut !" }],
+    content: "Bonne journée",
+    currentId: "m3",
+  }));
+  assert.equal(second.messages.at(-1)!.content, "Bonne journée");
+  assert.ok(second.state.seen && second.state.seen.length === 2);
+});
+
+test("an import of dozens of facts: the core ones (age, family, home, work) go first in the system prompt", () => {
+  const hobbies = Array.from({ length: 60 }, (_, i) => ({ kind: "user", title: null, content: `Camille aime la randonnée numéro ${i} dans les Alpes, surtout au printemps.` }));
+  const memories = [...hobbies.slice(0, 30), { kind: "user", title: null, content: "Camille a 41 ans (septembre 2026)." }, ...hobbies.slice(30)];
+  const [system] = buildChatMessages(input({ memories, contextWindow: 16_384 }));
+  assert.match(system.content, /What you know about the user, from their saved Memories[^\n]*\n- Camille a 41 ans/);
+});
+
+test("a fact that did not fit the system prompt is found by what the question asks about: « âge » finds « 41 ans »", () => {
+  const core = Array.from({ length: 80 }, (_, i) => ({ kind: "user", title: null, content: `Camille travaille avec le client numéro ${i} à Lyon depuis longtemps.` }));
+  // Longer than the room the others leave.
+  const memories = [...core, { kind: "user", title: null, content: "Camille a 41 ans (septembre 2026), et fête toujours son anniversaire au bord du lac d'Annecy avec toute sa famille." }];
+  const messages = buildChatMessages(input({ memories, content: "Quel âge j’ai ?", contextWindow: 8_192 }));
+  assert.doesNotMatch(messages[0].content, /41 ans/);
+  assert.match(messages.at(-1)!.content, /^\[Saved notes that may be relevant\]\n- Camille a 41 ans/);
+  // A short word is only itself: « âge » is not « voyage » nor « agenda ».
+  const others = buildChatMessages(input({ memories: [{ kind: "project", title: null, content: "Voyage à Rome, agenda chargé." }], content: "Quel âge j’ai ?" }));
+  assert.equal(others.at(-1)!.content, "Quel âge j’ai ?");
 });
