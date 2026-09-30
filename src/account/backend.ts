@@ -32,6 +32,18 @@ export interface BackendCredentials {
 
 let fetchOverride: typeof fetch | null = null;
 
+/// A call made for this server by another process, which holds the
+/// account's session (inside Twoody Desktop: its main process, by message,
+/// account/desktopRelay.ts). It answers null for a call it does not make:
+/// that one goes through outboundFetch as usual — and local-only mode
+/// refuses it there.
+export type BackendRelay = (call: { method: string; path: string; body?: unknown; timeoutMs: number }) => Promise<{ status: number; body: unknown }> | null;
+let relay: BackendRelay | null = null;
+
+export function setBackendRelay(next: BackendRelay | null): void {
+  relay = next;
+}
+
 /// Tests stand in for the backend's network with this.
 export function setBackendFetch(fetchImpl: typeof fetch | null): void {
   fetchOverride = fetchImpl;
@@ -42,6 +54,11 @@ export async function backendCall<T = unknown>(
   path: string,
   init: { method?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<{ status: number; body: T }> {
+  const method = init.method ?? (init.body !== undefined ? "POST" : "GET");
+  // The relay makes the call with its own session and credential: none of
+  // this server's credentials go with it.
+  const relayed = relay?.({ method, path: path.replace(/^\//, ""), body: init.body, timeoutMs: init.timeoutMs ?? 15_000 }) ?? null;
+  if (relayed) return (await relayed) as { status: number; body: T };
   const url = `${creds.backendUrl.replace(/\/+$/, "").replace(/\/api\/v1$/, "")}/api/v1/${path.replace(/^\//, "")}`;
   const headers: Record<string, string> = { Accept: "application/json" };
   if (init.body !== undefined) headers["Content-Type"] = "application/json";
@@ -51,7 +68,7 @@ export async function backendCall<T = unknown>(
   if (creds.requesterCredential) headers["X-Requester-Computer-Credential"] = creds.requesterCredential;
   const doFetch = fetchOverride ?? outboundFetch;
   const response = await doFetch(url, {
-    method: init.method ?? (init.body !== undefined ? "POST" : "GET"),
+    method,
     headers,
     body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
     signal: AbortSignal.timeout(init.timeoutMs ?? 15_000),

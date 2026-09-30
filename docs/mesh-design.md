@@ -34,6 +34,10 @@ docs/multi-computer-design.md (hub-and-spoke: a primary holds data, others lend 
   That server runs local-only (TWOODY_LOCAL_ONLY=1): its vault's account calls (GET /vault, the desktop-binding,
   events) go by message through the Desktop's main process, which sends only a binding its device signed for itself
   and its computer (src/vault/desktopAccount.ts ↔ twoody-desktop src/shared/vaultServerAccount.ts).
+  The mesh's links go the same way (src/account/desktopRelay.ts ↔ twoody-desktop src/shared/serverAccountCalls.ts):
+  GET account_computers, POST request_access, GET the authorization and POST its consume, and nothing else; the
+  Desktop adds its own computer credential to a request_access naming its own computer. The tunnel's frames keep
+  their own door (outbound.ts relayFetch).
 - Roster derived, not stored: each computer verifies GET /vault (devices, approvals, bindings) in
   src/vault/roster.ts, cached 60 s, refreshed on 401/404/410. Serving side: requester_computer_id in the verified
   roster ⇒ may reach /peer/documents/* and /peer/vault/*.

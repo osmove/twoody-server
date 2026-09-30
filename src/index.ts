@@ -25,6 +25,7 @@ import { isFresh } from "./pairing.js";
 import { startMeshLinks, startPeerStatusPoller } from "./peers/index.js";
 import { startRosterRefresh } from "./vault/roster.js";
 import { desktopVaultAccount } from "./vault/desktopAccount.js";
+import { relayAccountThroughDesktop } from "./account/desktopRelay.js";
 import { setDesktopVault, startVaultService } from "./vault/service.js";
 import { startMemorySync } from "./vault/memories.js";
 import { builtinAddress, initEngine, preloadBuiltin, stopEngine } from "./engine.js";
@@ -286,6 +287,9 @@ try {
     // The vault's calls to the account go through the Desktop, which
     // speaks to it anyway: this server stays local-only (vault/desktopAccount.ts).
     const vaultAccount = desktopVaultAccount(parentPort);
+    // And so do the mesh's: the account's computers, request_access and its
+    // answer (account/desktopRelay.ts).
+    relayAccountThroughDesktop(parentPort);
     parentPort.on("message", ({ data }) => {
       const type = (data as { type?: unknown } | null)?.type;
       if (type === "account" || type === "tunnel") desktopAccount(data);
