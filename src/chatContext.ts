@@ -106,6 +106,10 @@ export interface ChatContextInput {
   personal?: { contacts: PersonalContact[]; events: PersonalEvent[] } | null;
   /// The person's time zone (IANA), for « demain » and the times of events.
   timeZone?: string | null;
+  /// The person's language (« fr-FR »), as their app says: the answer is in
+  /// it when a message is too short or mixed to tell. Frozen with the
+  /// conversation (ContextState.locale), so the system prompt stays the same.
+  locale?: string | null;
   /// What the previous turns of this conversation froze (null: none yet).
   state?: ContextState | null;
   /// The id of the message this turn answers, already stored: the history
@@ -127,6 +131,9 @@ export interface ContextState {
   /// Whether the system prompt explains joined documents / web results.
   documents: boolean;
   web: boolean;
+  /// The person's language the system prompt names (the first a turn of
+  /// this conversation gave); null: none given.
+  locale?: string | null;
   /// The older part of the history, rendered once at the last cut (shortened
   /// messages, documents past their share named) and given as it is until
   /// the next one.
@@ -157,6 +164,7 @@ export function readContextState(json: string | null | undefined): ContextState 
       profile: typeof parsed.profile === "string" ? parsed.profile : null,
       documents: parsed.documents === true,
       web: parsed.web === true,
+      locale: typeof parsed.locale === "string" ? parsed.locale : null,
       compact: Array.isArray(parsed.compact)
         ? parsed.compact.filter((message): message is ChatMessage =>
             Boolean(message) && (message.role === "user" || message.role === "assistant") && typeof message.content === "string")
@@ -272,12 +280,17 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
       profile: onlyDocuments && previous ? previous.profile : formatMemoryList(profileRows, PROFILE_MEMORY_CHARS),
       documents: !cut && previous ? previous.documents : hasDocuments(input.content) || kept.some((message) => hasDocuments(message.content)),
       web: !cut && previous ? previous.web : hasWebResults(input.content) || kept.some((message) => hasWebResults(message.content)),
+      locale: previous?.locale ?? null,
       compact: cut ? kept.map((message) => ({ ...message })) : previous!.compact,
       liveFrom: cut ? input.currentId ?? null : previous!.liveFrom,
     };
   } else {
     state = previous!;
   }
+  // The language is frozen with the conversation: the first one given stays
+  // (a phone set to another language later does not rewrite the prompt).
+  const locale = state.locale ?? input.locale ?? null;
+  if ((state.locale ?? null) !== locale) state = { ...state, locale };
   const frozen = new Set(state.profile?.split("\n") ?? []);
 
   const result: ChatMessage[] = [{ role: "system", content: buildSystemPrompt(input, onlyDocuments ? null : state.profile, state) }, ...history!];
@@ -378,6 +391,8 @@ function buildSystemPrompt(input: ChatContextInput, profile: string | null, stat
   const sections: string[] = [];
   if (!(replaceBase && custom)) sections.push(basePrompt(input.local));
   if (custom) sections.push(custom);
+  const language = languageSentence(state.locale ?? null);
+  if (language) sections.push(language);
 
   const facts: string[] = [`Today is ${formatDay(input.now ?? new Date())}.`];
   const name = input.userName?.trim();
@@ -418,6 +433,21 @@ function basePrompt(local: boolean): string {
     "You cannot browse the web, send messages or act outside this chat, so never claim that you did.",
     "If you are unsure or lack the information, say so.",
   ].join(" ");
+}
+
+/// Which language to answer in when a message does not tell: « Hello ca
+/// va? » from a French speaker got an English answer on a Pi with no
+/// profile (30/09/2026).
+export function languageSentence(locale: string | null): string | null {
+  if (!locale) return null;
+  let name: string | undefined;
+  try {
+    name = new Intl.DisplayNames(["en"], { type: "language" }).of(locale.split("-")[0]!);
+  } catch {
+    name = undefined;
+  }
+  const language = name && name !== locale.split("-")[0] ? `${name} (${locale})` : locale;
+  return `The user's language is ${language}. When a message is short, mixed or ambiguous — a greeting, words from two languages — reply in ${name ?? language}.`;
 }
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];

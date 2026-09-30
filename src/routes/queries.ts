@@ -65,6 +65,15 @@ interface QueryBody {
   /// The person's time zone (IANA): « demain » and the times of their
   /// events are theirs. This computer's when absent.
   time_zone?: string;
+  /// The person's language (« fr-FR »), from the client's settings: the
+  /// answer is in it when a message is too short or mixed to tell (a
+  /// greeting, franglais). Frozen with the conversation (ContextState).
+  locale?: string;
+  /// The person's first name, for a computer with no profile of its own (a
+  /// Pi just set up): sent by the phone only to its own main computer or a
+  /// computer that one trusts. The profile's name wins; never given to an
+  /// untrusted peer (conversationOnly).
+  user_first_name?: string;
   // The watch + iPhone voice path nests fields under `query`. We
   // accept both flat and nested shapes so a single client codebase
   // can target either backend without case-by-case wire reshaping.
@@ -452,6 +461,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     const documentFolders = allowedFolders;
     const turn = buildChatTurn({
       ...userContext,
+      // A server with no profile (a Pi just set up) knows the person by the
+      // first name their phone gives.
+      userName: userContext.userName ?? validFirstName(parsed.user_first_name ?? (parsed.query as { user_first_name?: unknown } | undefined)?.user_first_name),
+      locale: validLocale(parsed.locale ?? (parsed.query as { locale?: unknown } | undefined)?.locale),
       documentMode: access.mode,
       history,
       content,
@@ -480,6 +493,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       if (!conversationOnlyFor(candidate)) return chatMessages;
       conversationOnly ??= buildChatTurn({
         userName: null,
+        // The language is no personal data: an untrusted peer answers in it too.
+        locale: validLocale(parsed.locale ?? (parsed.query as { locale?: unknown } | undefined)?.locale),
         prefs: { memory_enabled: false },
         memories: [],
         documentMode: access.mode === "only" ? "only" : "off",
@@ -815,6 +830,8 @@ async function parseMultipartBody(req: FastifyRequest): Promise<ParsedBody | nul
     force_new_discussion: (nested.force_new_discussion as boolean | string) ?? (fields.force_new_discussion as boolean | string),
     audio:              (nested.audio as boolean | string) ?? (fields.audio as boolean | string),
     skip_transcription: (nested.skip_transcription as boolean | string) ?? (fields.skip_transcription as boolean | string),
+    locale:             (nested.locale as string) ?? (fields.locale as string),
+    user_first_name:    (nested.user_first_name as string) ?? (fields.user_first_name as string),
     audioBuffer:        audioBuffer ?? undefined,
   };
 }
@@ -1745,4 +1762,20 @@ function touchDiscussion(id: string) {
     .set({ lastActivityAt: new Date() })
     .where(eq(discussions.id, id))
     .run();
+}
+
+/// A BCP 47 language tag as clients send it (« fr-FR », « en », « zh-Hans-CN »), or null.
+export function validLocale(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const tag = value.trim().replace(/_/g, "-");
+  return /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,3}$/.test(tag) ? tag : null;
+}
+
+/// A first name as a client sends it: letters, spaces, hyphens and
+/// apostrophes, at most 60 characters — nothing that could read as an
+/// instruction to the model. Null otherwise.
+export function validFirstName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const name = value.trim().replace(/\s+/g, " ");
+  return name && name.length <= 60 && /^[\p{L}\p{M}][\p{L}\p{M} '’.-]*$/u.test(name) ? name : null;
 }
