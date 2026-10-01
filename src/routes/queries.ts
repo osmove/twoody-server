@@ -65,6 +65,9 @@ import { noteMemoryUse, profileHints, retrieveMemories } from "../memory/retriev
 
 interface QueryBody {
   document_access?: unknown;
+  /// Images given with the message, as data URLs (PNG, JPEG, WebP, GIF):
+  /// for a model that reads them (its vision file, catalog.ts).
+  images?: unknown;
   content?: string;
   text?: string;
   channel?: string;
@@ -148,6 +151,8 @@ export async function queryRoutes(app: FastifyInstance) {
   // read ahead.
   onMemoriesChanged((userId) => scheduleWarm(userId));
   app.post("/queries", {
+    // Images come inline (data URLs, IMAGES_MAX of IMAGE_MAX_CHARS each).
+    bodyLimit: 48 * 1024 * 1024,
     schema: {
       tags: ["queries"],
       summary: "Stream a chat completion over SSE (text or multipart audio)",
@@ -318,6 +323,7 @@ async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body:
       err instanceof LocalLlmUnavailableError ? [503, "local_llm_unavailable"]
       : err instanceof RuntimeError ? [err.status, err.code]
       : err instanceof LocalOnlyError ? [403, "local_only"]
+      : err instanceof VisionUnavailableError ? [422, "vision_unavailable"]
       : [502, "provider_error"];
     return reply.code(status).send({ error: code, message });
   }
@@ -360,6 +366,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     }
   }
 
+  const images = readImages(parsed.images ?? (parsed.query as { images?: unknown } | undefined)?.images);
+  if (images === "invalid") return reply.code(422).send({ error: "invalid_images", max_images: IMAGES_MAX });
+  // An image alone is a question about it.
+  if (!content && images.length) content = IMAGE_ONLY_QUESTION;
   if (!content) {
     return reply.code(422).send({ error: transcribed ? "no_speech" : "content_or_audio_required" });
   }
@@ -431,7 +441,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     discussionId: discussion.id,
     userId:       auth.userId,
     role:         "user",
-    content,
+    // The images are given to the model once, with this message; the
+    // conversation keeps that there were some.
+    content:      images.length ? `${content}\n\n${images.map(() => IMAGE_MARK).join(" ")}` : content,
     provider:     null,
     model:        null,
     vaultRef,
@@ -876,6 +888,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
             answerNow: answerNowSignal,
             purpose: "chat",
             tools: toolsFor(provider),
+            images,
           },
         );
         break;
@@ -1051,10 +1064,13 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       : err instanceof LocalLlmUnavailableError ? [503, "local_llm_unavailable"]
       : err instanceof RuntimeError ? [err.status, err.code]
       : err instanceof LocalOnlyError ? [403, "local_only"]
+      : err instanceof VisionUnavailableError ? [422, "vision_unavailable"]
       : [502, "provider_error"];
     // A computer chosen by name that did not answer: the error offers this
     // one instead (« Répondre avec le Mac ? »), never switched silently.
-    const extra = err instanceof ComputerUnavailableError ? { fallback: { computer_id: err.fallback.id, computer_name: err.fallback.name } } : {};
+    const extra = err instanceof ComputerUnavailableError ? { fallback: { computer_id: err.fallback.id, computer_name: err.fallback.name } }
+      : err instanceof VisionUnavailableError ? { model: err.model }
+      : {};
     keepTrace("error", { error: `${code}: ${msg}` });
     if (!sseStarted) {
       return reply.code(status).send({ error: code, message: msg, ...extra });
@@ -1387,8 +1403,10 @@ async function streamFromProvider(
   temperature: number | undefined,
   onDelta: (text: string) => void,
   signal: AbortSignal,
-  options: { effort?: Effort; onReasoning?: (text: string) => void; answerNow?: AbortSignal; purpose?: Purpose; tools?: ChatTools } = {},
+  options: { effort?: Effort; onReasoning?: (text: string) => void; answerNow?: AbortSignal; purpose?: Purpose; tools?: ChatTools; images?: string[] } = {},
 ): Promise<Usage | null> {
+  // Images go to a model of the person's computers only.
+  if (options.images?.length && provider.kind !== "local_openai" && provider.kind !== "peer_openai") throw new VisionUnavailableError(null);
   switch (provider.kind) {
     case "openai":
       await streamOpenAI(chatMessages, provider.model, temperature, onDelta, signal);
@@ -1878,6 +1896,8 @@ async function streamLocal(
     /// Tools the model may call (OpenAI function tools) and what runs
     /// them: their result goes back to it, and it answers from it.
     tools?: ChatTools;
+    /// Images with the last message (data URLs).
+    images?: string[];
   } = {},
 ): Promise<Usage | null> {
   const endpoint = baseUrl.replace(/\/$/, "");
@@ -1889,7 +1909,7 @@ async function streamLocal(
   const thinking = budget > 0;
   const body = {
     model,
-    messages: chatMessages,
+    messages: withImages(chatMessages, options.images ?? []),
     stream: true,
     max_tokens: options.maxTokens ?? LOCAL_MAX_TOKENS + budget,
     ...(temperature !== undefined ? { temperature } : {}),
@@ -1968,6 +1988,12 @@ async function streamLocal(
         res = await post(body);
       }
       if (!res.ok) {
+        // A model without its vision file, given an image (llama.cpp: « image
+        // input is not supported … mmproj »).
+        if (options.images?.length) {
+          const said = await res.text().catch(() => "");
+          if (/image|mmproj|multimodal|vision/i.test(said)) throw new VisionUnavailableError(model);
+        }
         throw new LocalLlmUnavailableError(`Local LLM provider returned ${res.status}`);
       }
     }
@@ -2482,4 +2508,46 @@ async function catchUp(userId: string, vaultId: string, knownRefs: string[], pri
   const here = history.byVaultId(vaultId)?.refs ?? new Set<string>();
   const missing = knownRefs.filter((ref) => !here.has(ref));
   return { status: missing.length ? "missing" : status === "missing" ? "complete" : status, discussionId, missing };
+}
+
+// ── Images ─────────────────────────────────────────────────────────────
+// Given with a message by the paperclip (Jimmy, 01/10/2026: « il faut
+// ajouter les images, c'est important »), read by a model with its vision
+// file (catalog.ts `vision`: Qwen3.5, Gemma 4, Ministral 3).
+
+const IMAGES_MAX = 4;
+/// Some 7,5 MB of image once decoded: the app makes them smaller first.
+const IMAGE_MAX_CHARS = 10 * 1024 * 1024;
+const IMAGE_DATA_URL = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/;
+/// What a message keeps of its images, in the conversation.
+const IMAGE_MARK = "[image]";
+const IMAGE_ONLY_QUESTION = "Décris cette image.";
+
+export class VisionUnavailableError extends Error {
+  constructor(public model: string | null) {
+    super(model ? `${model} does not read images` : "images are read by a model of this computer only");
+  }
+}
+
+/// The images of a request: none, or up to IMAGES_MAX data URLs.
+export function readImages(value: unknown): string[] | "invalid" {
+  if (value === undefined || value === null) return [];
+  const list = Array.isArray(value) ? value : [value];
+  if (list.length > IMAGES_MAX) return "invalid";
+  for (const image of list) {
+    if (typeof image !== "string" || image.length > IMAGE_MAX_CHARS || !IMAGE_DATA_URL.test(image)) return "invalid";
+  }
+  return list as string[];
+}
+
+/// The last message with its images, as OpenAI-compatible servers take
+/// them (llama.cpp, LM Studio, Ollama).
+export function withImages(messages: ChatMessage[], images: string[]): Array<ChatMessage | { role: "user"; content: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> }> {
+  if (!images.length) return messages;
+  const at = messages.map((message) => message.role).lastIndexOf("user");
+  if (at < 0) return messages;
+  return messages.map((message, index) => index !== at ? message : {
+    role: "user" as const,
+    content: [{ type: "text" as const, text: message.content }, ...images.map((url) => ({ type: "image_url" as const, image_url: { url } }))],
+  });
 }

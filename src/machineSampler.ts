@@ -135,7 +135,7 @@ export function startMachineSampler(options: { everyMs?: number; record?: boolea
             cores: cpus().length || null,
             ramTotalBytes: totalmem(),
             gpuName: null,
-            os: `${platform()} ${release()} (${arch()}) — ${hostname()}`,
+            os: `${systemName()} (${arch()}) — ${hostname()}`,
           });
         }
       }
@@ -155,4 +155,12 @@ export function startMachineSampler(options: { everyMs?: number; record?: boolea
       clearInterval(timer);
     },
   };
+}
+
+/// The system as people know it: Windows 11 reports 10.0 like Windows 10,
+/// only its build (22000 and later) tells.
+function systemName(): string {
+  if (platform() !== "win32") return `${platform()} ${release()}`;
+  const build = Number(release().split(".")[2]);
+  return `Windows ${build >= 22000 ? 11 : 10} (build ${build})`;
 }

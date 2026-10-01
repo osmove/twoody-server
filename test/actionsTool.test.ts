@@ -43,7 +43,7 @@ const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
 const { buildApp } = await import("../src/app.js");
 const { ensureSetupToken } = await import("../src/auth.js");
 const { sqlite } = await import("../src/db.js");
-const { zonedInstant, resolveProject } = await import("../src/projects/actions.js");
+const { zonedInstant, resolveProject, namedDay } = await import("../src/projects/actions.js");
 const app = await buildApp();
 test.after(async () => { await app.close(); await new Promise((resolve) => server.close(resolve)); });
 const paired = await app.inject({ method: "POST", url: "/auth/pair", payload: { setup_token: ensureSetupToken()!.token, device_name: "Twoody Desktop" } });
@@ -72,9 +72,11 @@ test("« Rappelle-moi… »: a reminder, tied to the project, said under the ans
   call = null;
   assert.equal(final.actions.length, 1);
   const action = final.actions[0];
-  assert.deepEqual([action.type, action.title, action.at, action.project.title], ["reminder", "Comparer les prix du Mac mini", "2026-10-02T16:00:00.000Z", "Achat d'un Mac mini"]);
+  // The next Friday, whatever day the test runs (it failed on a Friday).
+  const friday = zonedInstant(`${namedDay("vendredi", "Europe/Paris")}T18:00`, "Europe/Paris").toISOString();
+  assert.deepEqual([action.type, action.title, action.at, action.project.title], ["reminder", "Comparer les prix du Mac mini", friday, "Achat d'un Mac mini"]);
   const row = sqlite.prepare("SELECT project_id, status, notify_at FROM reminders WHERE id = ?").get(action.id) as { project_id: string; status: string; notify_at: number };
-  assert.deepEqual([row.project_id, row.status, row.notify_at], [project.id, "active", Date.parse("2026-10-02T16:00:00Z") / 1000]);
+  assert.deepEqual([row.project_id, row.status, row.notify_at], [project.id, "active", Date.parse(friday) / 1000]);
   assert.match(final.message, /^OK: Done \(reminder/);
   assert.match(bodies.find((body) => body.tools)!.messages[0]!.content, /You can act for the user: create_reminder/);
   const opened = (await app.inject({ url: `/discussions/${final.discussion_id}`, headers })).json();
@@ -126,7 +128,8 @@ test("the day the person named wins: « vendredi » is the next Friday, « demai
   const when = new Date(final.actions[0].at);
   assert.equal(when.getUTCHours(), 16, "18:00 in Paris");
   assert.equal(new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Paris", weekday: "long" }).format(when), "Friday");
-  assert.ok(when.getTime() - Date.now() <= 7 * 86_400_000, "this Friday, not the one after");
+  // On a Friday, « vendredi » is next week's: never further.
+  assert.ok(when.getTime() - Date.now() <= 8 * 86_400_000, "this Friday, not the one after");
 });
 
 test("a model that does not call the tool when it must: its words are not shown, the usual round answers", async () => {
