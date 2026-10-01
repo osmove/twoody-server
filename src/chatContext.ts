@@ -90,6 +90,8 @@ export interface MemoryUsage {
   /// « Retiens que… » in this turn: kept (`added`) or known already, kept
   /// with the answer so that a conversation opened again still says it.
   remembered?: { content: string; added: boolean };
+  /// What the chat did on the person's say (projects/actions.ts).
+  actions?: unknown[];
 }
 
 export interface MemoryRow {
@@ -160,6 +162,9 @@ export interface ChatContextInput {
   documentTool?: boolean;
   /// The cards of the projects the message is about (projects.ts projectCards).
   projectCards?: string[];
+  /// The model may create reminders and tasks, and change a project
+  /// (projects/actions.ts), on the person's say.
+  actionTools?: boolean;
   documentFiles?: Array<{name: string; modified_at: string; chars: number; folder?: string}>;
   documentFileTotal?: number;
   documentScan?: { running: boolean; limited?: boolean };
@@ -662,6 +667,15 @@ function buildSystemPrompt(input: ChatContextInput, profile: string | null, stat
     }
   }
 
+  if (input.actionTools) {
+    sections.push(
+      "You can act for the user: create_reminder, create_task, and update_project for one of their projects. " +
+        "Only when they ask (« rappelle-moi… », « note que je dois… », « c'est acheté »), never on your own. To create or change anything, call the tool: " +
+        "never say a reminder, task or change is done unless a tool result says « Done »; then say it in one short sentence. " +
+        `Times are in their time zone. The next days: ${nextDays(input.now ?? new Date(), input.timeZone ?? null)}.`,
+    );
+  }
+
   if (input.summary?.trim()) {
     sections.push(`Summary of the earlier part of this conversation (its messages are no longer shown to you):\n${input.summary.trim()}`);
   }
@@ -978,4 +992,18 @@ function readBool(prefs: Record<string, unknown>, key: string, fallback: boolean
 function readString(prefs: Record<string, unknown>, key: string, fallback: string): string {
   const value = prefs[key];
   return typeof value === "string" ? value : fallback;
+}
+
+/// « Fri 2026-10-02, Sat 2026-10-03… »: the week ahead in the person's zone,
+/// so that « vendredi » is this one (a model alone took next week's).
+function nextDays(now: Date, timeZone: string | null): string {
+  const days: string[] = [];
+  for (let offset = 1; offset <= 7; offset += 1) {
+    const at = new Date(now.getTime() + offset * 86_400_000);
+    const options = { timeZone: timeZone ?? undefined } as const;
+    const weekday = new Intl.DateTimeFormat("en-US", { ...options, weekday: "long" }).format(at);
+    const date = new Intl.DateTimeFormat("en-CA", { ...options, year: "numeric", month: "2-digit", day: "2-digit" }).format(at);
+    days.push(`${weekday} ${date}${offset === 1 ? " (tomorrow)" : ""}`);
+  }
+  return days.join(", ");
 }

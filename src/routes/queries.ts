@@ -6,6 +6,7 @@ import { learnSoon, setLearningModel, type LearnMessages } from "../memory/learn
 import { onMemoriesChanged } from "../memory/changes.js";
 import { recordTrace, type ToolCallTrace, type TurnTrace } from "../diagnostics/traces.js";
 import { projectCards } from "../projects/projects.js";
+import { ACTION_TOOLS, askedAction, runAction, type ChatAction } from "../projects/actions.js";
 import { createHash } from "node:crypto";
 import { inflight } from "../account/inflight.js";
 import { citationLink, folderOf, localFolderIds, meshPeers, retrieveAcrossComputers, type MeshPassage, type MeshRetrieval } from "../documents/remote.js";
@@ -677,8 +678,37 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         return result;
       },
     };
+    // What the chat may do on the person's say (docs/projects-design.md P4):
+    // a reminder, a task, a project's status — said under the answer.
+    const actionsDone: ChatAction[] = [];
+    const offersDocuments = access.mode !== "off";
+    const offersActions = memoryMode === "full" && access.mode !== "only";
+    // « Rappelle-moi… », « Note que je dois… »: the model must call the tool.
+    const asked = offersActions ? askedAction(typedText(content)) : null;
+    const chatTools: ChatTools = {
+      ...(asked ? { required: true } : {}),
+      definitions: [...(offersDocuments ? [SEARCH_DOCUMENTS_TOOL] : []), ...(offersActions ? ACTION_TOOLS : [])],
+      run: async (name, args) => {
+        if (name === "search_documents") return documentTools.run(name, args);
+        const called = Date.now();
+        const traced: ToolCallTrace = { name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0 };
+        toolCallsTraced.push(traced);
+        let result: string;
+        try {
+          const action = runAction(auth.userId, name, args, validTimeZone(parsed.time_zone), new Date(), typedText(content));
+          actionsDone.push(action);
+          result = `Done (${action.type} « ${action.title} »${action.at ? `, ${action.at}` : ""}${action.project ? `, project « ${action.project.title} »` : ""}). Tell the user in one short sentence.`;
+        } catch (err) {
+          traced.error = err instanceof Error ? err.message : String(err);
+          result = `Not done: ${traced.error}. Tell the user, briefly.`;
+        }
+        traced.ms = Date.now() - called;
+        traced.result_chars = result.length;
+        return result;
+      },
+    };
     const toolsFor = (candidate: Provider): ChatTools | undefined =>
-      access.mode !== "off" && !conversationOnlyFor(candidate) && toolCapable(candidate) ? documentTools : undefined;
+      chatTools.definitions.length && !conversationOnlyFor(candidate) && toolCapable(candidate) ? chatTools : undefined;
     // The memories this message bears on (Mémoire v2, src/memory/retrieve.ts):
     // the message's vector is waited for 300 ms at most.
     const relevant = await retrieveMemories({
@@ -714,7 +744,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       hasDocuments: granted.length > 0 || meshPeers(auth.userId).length > 0,
       documentFolders,
       documentScan: indexStatus(auth.userId),
-      documentTool: !!toolsFor(provider),
+      documentTool: !!toolsFor(provider) && offersDocuments,
+      actionTools: !!toolsFor(provider) && offersActions,
       // The projects the message is about (named, or through the memories
       // given with it): their cards, with the message.
       projectCards: memoryMode === "full" ? cards.map((card) => card.card) : [],
@@ -902,7 +933,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       usage,
       client:       clientOf(auth),
       answeredBy:   answeredByComputer,
-      memory:       memoryUsed && remembered ? { ...memoryUsed, remembered: { content: remembered, added: rememberedAdded } } : memoryUsed,
+      memory:       memoryUsed && (remembered || actionsDone.length) ? { ...memoryUsed, ...(remembered ? { remembered: { content: remembered, added: rememberedAdded } } : {}), ...(actionsDone.length ? { actions: actionsDone } : {}) } : memoryUsed,
     });
     // What another computer wrote is counted there (source « peer »), not
     // as this computer's work.
@@ -957,6 +988,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       // What it was given of the memories: the footer « mémoire : 420 tokens ».
       memory:       memoryShown,
       ...(remembered ? { remembered: { content: remembered, added: rememberedAdded } } : {}),
+      // What it did on the person's say: « Rappel créé · Annuler ».
+      ...(actionsDone.length ? { actions: actionsDone } : {}),
       // Which of the person's computers were searched, and the ones left
       // out (late, offline…): the client can say it.
       documents:    {
@@ -1813,10 +1846,14 @@ function toolCapable(provider: Provider): boolean {
 export interface ChatTools {
   definitions: Array<{ type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } }>;
   run: (name: string, args: Record<string, unknown>) => Promise<string>;
+  /// The first round must call a tool (the message asked for an action).
+  required?: boolean;
 }
 
 /// Tool calls a turn may make before it answers.
 const TOOL_ROUNDS = 2;
+/// What a round that must call a tool may write: a call is short.
+const FORCED_TOOL_TOKENS = 300;
 
 async function streamLocal(
   baseUrl: string,
@@ -1901,12 +1938,35 @@ async function streamLocal(
   };
 
   try {
-    let res = await post({ ...body, ...extras });
-    if (res.status === 400 || res.status === 422) {
-      res = await post(body);
+    // An outright ask (« rappelle-moi… »): first a short, silent round that
+    // must call a tool. A model that writes on instead (2,048 tokens of a
+    // call never closed, Qwen3.5 9B, 01/10/2026) falls back to the usual one.
+    let forced: ToolCallPieces[] = [];
+    let forcedUsage: Usage | null = null;
+    if (options.tools?.required) {
+      try {
+        const attempt = await post({ ...body, ...extras, max_tokens: FORCED_TOOL_TOKENS, tool_choice: "required" });
+        if (attempt.ok) {
+          const pieces: ToolCallPieces[] = [];
+          forcedUsage = await consumeOpenAIStream(attempt, () => undefined, () => undefined, pieces);
+          forced = pieces.filter((piece) => {
+            if (!piece?.name) return false;
+            try { JSON.parse(piece.arguments || "{}"); return true; } catch { return false; }
+          });
+        }
+      } catch (err) {
+        if (signal.aborted) throw err;
+      }
     }
-    if (!res.ok) {
-      throw new LocalLlmUnavailableError(`Local LLM provider returned ${res.status}`);
+    let res: Response | null = null;
+    if (!forced.length) {
+      res = await post({ ...body, ...extras });
+      if (res.status === 400 || res.status === 422) {
+        res = await post(body);
+      }
+      if (!res.ok) {
+        throw new LocalLlmUnavailableError(`Local LLM provider returned ${res.status}`);
+      }
     }
 
     // The reasoning comes in its own field (mlx-lm, llama.cpp, LM Studio)
@@ -1942,8 +2002,8 @@ async function streamLocal(
       { once: true },
     );
     try {
-      const calls: ToolCallPieces[] = [];
-      let usage = await consumeOpenAIStream(res, filter.push, reason, options.tools ? calls : undefined);
+      const calls: ToolCallPieces[] = [...forced];
+      let usage = res ? await consumeOpenAIStream(res, filter.push, reason, options.tools ? calls : undefined) : forcedUsage;
       // The model asked for a tool (documents, at most TOOL_ROUNDS times):
       // what it returns is given back, and the model goes on from there —
       // the prompt read so far is reused, only the result is new.
@@ -1964,7 +2024,7 @@ async function streamLocal(
           ...results.map(({ id, content }) => ({ role: "tool", tool_call_id: id, content })),
         ];
         if (signal.aborted) throw new Error("aborted");
-        const next = await post({ ...body, ...extras, messages: followed, ...(round + 1 >= TOOL_ROUNDS ? { tool_choice: "none" } : {}) });
+        const next = await post({ ...body, ...extras, messages: followed, tool_choice: round + 1 >= TOOL_ROUNDS ? "none" : "auto" });
         if (!next.ok) throw new LocalLlmUnavailableError(`Local LLM provider returned ${next.status}`);
         const spent = usage?.completion_tokens ?? 0;
         usage = await consumeOpenAIStream(next, filter.push, reason, calls);
