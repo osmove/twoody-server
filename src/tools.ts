@@ -12,11 +12,15 @@ import { FOLDER_ALIAS_IDS } from "./documents/folderAliases.js";
 import { formatListing, listGrantedFiles, readListingRequest } from "./documents/fileListing.js";
 import { listFolders } from "./documents/library.js";
 import { scopedFolders } from "./documents/retrieval.js";
+import { formatConversationResults, formatMemoryResults, readDate, readLimit, searchConversations, searchMemories } from "./memory/search.js";
 
 export async function executeLocalTool(
   name: string,
   arguments_: Record<string, unknown>,
-  context: { userId: string }
+  // `person`: the call comes from this server's owner or one of the
+  // person's own devices (sessionTrust.ts) — the memories' and the
+  // conversations' searches are for them only.
+  context: { userId: string; person?: boolean }
 ) {
   switch (name) {
     case "smart_home":
@@ -32,6 +36,11 @@ export async function executeLocalTool(
       return registerStereoPair(arguments_);
     case "list_files":
       return listFiles(arguments_, context.userId);
+    case "memory_search":
+    case "search_memory":
+      return memorySearch(arguments_, context);
+    case "search_conversations":
+      return conversationSearch(arguments_, context);
     default:
       throw new Error(`Unsupported tool: ${name}`);
   }
@@ -51,6 +60,38 @@ export async function listFiles(arguments_: Record<string, unknown>, userId: str
   if (!intent) throw new Error("Invalid list_files arguments");
   const listing = await listGrantedFiles({ intent, roots: scopedFolders(userId, { mode: "all" }), granted: listFolders(userId) });
   return { ...listing, text: formatListing(listing, { ...intent, count: false }) };
+}
+
+const textArg = (args: Record<string, unknown>, ...names: string[]) => {
+  for (const name of names) if (typeof args[name] === "string" && (args[name] as string).trim()) return (args[name] as string).trim();
+  return null;
+};
+
+/// memory_search {query, entity?, limit?}: the person's memories that best
+/// match, with their scores; `text` frames them as data for a model.
+export async function memorySearch(args: Record<string, unknown>, context: { userId: string; person?: boolean }) {
+  if (!context.person) throw new Error("person_device_required");
+  const search = await searchMemories(context.userId, {
+    q: textArg(args, "query", "q"),
+    entity: textArg(args, "entity"),
+    limit: readLimit(args.limit, 8),
+    // A tool round waits for no cold embedding worker: lexical then.
+    embedTimeoutMs: 300,
+  });
+  return { ...search, text: formatMemoryResults(search) };
+}
+
+/// search_conversations {query, after?, before?, limit?}: messages of the
+/// person's conversations (never one in « Aucune »), with date and title.
+export async function conversationSearch(args: Record<string, unknown>, context: { userId: string; person?: boolean }) {
+  if (!context.person) throw new Error("person_device_required");
+  const items = searchConversations(context.userId, {
+    q: textArg(args, "query", "q"),
+    after: readDate(args.after, "after"),
+    before: readDate(args.before, "before"),
+    limit: readLimit(args.limit, 8),
+  });
+  return { items, text: formatConversationResults(items) };
 }
 
 export async function listMembers(userId: string) {

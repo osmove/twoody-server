@@ -31,6 +31,7 @@ import { localSyncRoutes } from "./routes/localSync.js";
 import { discussionRoutes } from "./routes/discussions.js";
 import { memoryRoutes } from "./routes/memories.js";
 import { entityRoutes } from "./routes/entities.js";
+import { memorySearchRoutes } from "./routes/memorySearch.js";
 import { usageRoutes } from "./routes/usage.js";
 import { noteRoutes } from "./routes/notes.js";
 import { reminderRoutes } from "./routes/reminders.js";
@@ -173,6 +174,7 @@ export async function buildApp() {
   await app.register(discussionRoutes);
   await app.register(memoryRoutes);
   await app.register(entityRoutes);
+  await app.register(memorySearchRoutes);
   await app.register(usageRoutes);
   await app.register(taskRoutes);
   await app.register(reminderRoutes);
@@ -211,6 +213,7 @@ export async function buildApp() {
   await app.register(discussionRoutes, { prefix: "/api/v1" });
   await app.register(memoryRoutes, { prefix: "/api/v1" });
   await app.register(entityRoutes, { prefix: "/api/v1" });
+  await app.register(memorySearchRoutes, { prefix: "/api/v1" });
   await app.register(usageRoutes, { prefix: "/api/v1" });
   await app.register(taskRoutes, { prefix: "/api/v1" });
   await app.register(reminderRoutes, { prefix: "/api/v1" });

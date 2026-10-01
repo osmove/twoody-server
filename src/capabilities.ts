@@ -43,7 +43,8 @@ export const BUILT_IN_CAPABILITIES: BuiltInCapabilityDef[] = [
     requires_setup: false,
     default_on:     true,
     tools: [
-      { name: "memory_search", description: "Search the user's memories by keyword or kind." },
+      { name: "memory_search", description: "Search the user's memories by meaning and keywords, or about one person or project." },
+      { name: "search_conversations", description: "Search the user's past conversations: snippets with date and title." },
       { name: "memory_create", description: "Save a new memory (title + content + tags)." },
       { name: "memory_update", description: "Edit an existing memory." },
       { name: "memory_delete", description: "Forget a specific memory." },
