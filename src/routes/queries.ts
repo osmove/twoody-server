@@ -6,7 +6,7 @@ import { learnSoon, setLearningModel, type LearnMessages } from "../memory/learn
 import { onMemoriesChanged } from "../memory/changes.js";
 import { createHash } from "node:crypto";
 import { inflight } from "../account/inflight.js";
-import { citationLink, folderOf, localFolderIds, meshPeers, retrieveAcrossComputers } from "../documents/remote.js";
+import { citationLink, folderOf, localFolderIds, meshPeers, retrieveAcrossComputers, type MeshPassage, type MeshRetrieval } from "../documents/remote.js";
 import { listingIntent } from "../documents/fileListing.js";
 import { listFilesAcrossComputers, type MeshListing } from "../documents/remoteListing.js";
 import { contextBudget } from "./localDocuments.js";
@@ -22,6 +22,7 @@ import { publish as publishEvent } from "../events.js";
 import {
   buildChatMessages,
   buildChatTurn,
+  formatExcerpts,
   memoryModeFor,
   readContextState,
   readMemoryMode,
@@ -566,9 +567,17 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
           return null;
         })
       : Promise.resolve(null);
-    const retrieved = await retrieveAcrossComputers({
+    // The documents only when the message needs them (Jimmy, 01/10/2026:
+    // « il ne faut pas lire les documents si je ne lui ai pas posé de
+    // questions sur mes documents »; 5,000 tokens of CV excerpts, 10 s
+    // before the first word, for « ai-je un projet d'achat ? »). Read now
+    // when it plainly asks about them — a file or a folder named, a
+    // listing, « Poser une question sur ce dossier », the follow-up of an
+    // answer that cited them; otherwise the model has a search_documents
+    // tool and searches when it decides to.
+    const retrieveFor = (question: string) => retrieveAcrossComputers({
       userId: auth.userId,
-      question: typedText(content),
+      question,
       history,
       access,
       localFolders: allowedFolders.map(folder => folder.id),
@@ -577,6 +586,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       remote: fullFor !== null,
       requester,
     });
+    const plainlyDocuments = access.mode === "only" || !!intent || ABOUT_DOCUMENTS.test(typedText(content)) || citedBefore(history);
+    const retrieved: MeshRetrieval = access.mode !== "off" && plainlyDocuments ? await retrieveFor(typedText(content)) : NO_DOCUMENTS;
+    // What the search_documents tool found, when the model used it.
+    let searchedByTool: MeshRetrieval | null = null;
     const listed = await listing;
     // About a named folder that was listed, or said not to be granted: the
     // excerpts and indexed files of other folders — another « Downloads »
@@ -588,7 +601,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // shown to its own Desktop in a conversation that is not shared.
     const shared = !!askedVaultRef || !!askedVaultConversationId || retrieved.remote
       || req.headers[VIA_TUNNEL_HEADER] !== undefined || clientOf(auth) !== "this-computer";
-    const sources = passages.map((passage, index) => ({
+    const sourceOf = (passage: MeshPassage, index: number) => ({
       n: index + 1,
       source_id: `${passage.computer_id}:${passage.document_id}`,
       computer_id: passage.computer_id,
@@ -601,8 +614,27 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       snippet: passage.snippet,
       url: citationLink(passage.computer_id, passage.document_id),
       ...(passage.local && !shared && passage.path ? { path: passage.path } : {}),
-    }));
+    });
+    const sources = passages.map(sourceOf);
     const documentFolders = allowedFolders;
+    const excerptOf = (passage: MeshPassage, remote: boolean) => ({ name: passage.name, page: passage.page, text: passage.text, computer: remote ? passage.computer_name : null, folder: folderOf(passage.folder, passage.rel_path) ?? null });
+    // The search_documents tool: its passages numbered after the ones given
+    // with the message, cited the same way.
+    const documentTools: ChatTools = {
+      definitions: [SEARCH_DOCUMENTS_TOOL],
+      run: async (name, args) => {
+        if (name !== "search_documents") return "No such tool.";
+        const query = typeof args.query === "string" && args.query.trim() ? args.query.trim().slice(0, 500) : typedText(content);
+        const found = await retrieveFor(query);
+        searchedByTool = found;
+        const first = sources.length;
+        sources.push(...found.passages.map((passage, index) => sourceOf(passage, first + index)));
+        return formatExcerpts(found.passages.map((passage) => excerptOf(passage, found.remote)), first + 1)
+          ?? "No passage of the user's documents matches this search.";
+      },
+    };
+    const toolsFor = (candidate: Provider): ChatTools | undefined =>
+      access.mode !== "off" && !conversationOnlyFor(candidate) && toolCapable(candidate) ? documentTools : undefined;
     // The memories this message bears on (Mémoire v2, src/memory/retrieve.ts):
     // the message's vector is waited for 300 ms at most.
     const relevant = await retrieveMemories({
@@ -636,9 +668,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       hasDocuments: granted.length > 0 || meshPeers(auth.userId).length > 0,
       documentFolders,
       documentScan: indexStatus(auth.userId),
+      documentTool: !!toolsFor(provider),
       documentFiles: listingOnly ? [] : retrieved.files,
       documentFileTotal: listingOnly ? 0 : retrieved.total,
-      excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text, computer: retrieved.remote ? passage.computer_name : null, folder: folderOf(passage.folder, passage.rel_path) ?? null })),
+      excerpts: passages.map((passage) => excerptOf(passage, retrieved.remote)),
       fileListings: listed?.blocks ?? null,
       documentNote: retrieved.note,
       local: provider.kind === "local_openai" || provider.kind === "peer_openai",
@@ -651,8 +684,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // What a new conversation would start with, kept ready in the runtime
     // (warmNewConversation): the facts of this request, and what was sent.
     if (provider.kind === "local_openai") {
-      lastTurnInputs.set(auth.userId, { input: turnInput, provider });
-      noteSystemSent(provider, chatMessages[0]?.content ?? "");
+      lastTurnInputs.set(auth.userId, { input: turnInput, provider, tools: toolsFor(provider)?.definitions ?? null });
+      noteSystemSent(provider, chatMessages[0]?.content ?? "", toolsFor(provider)?.definitions ?? null);
     }
     let conversationOnly: ChatMessage[] | null = null;
     const messagesFor = (candidate: Provider): ChatMessage[] => {
@@ -749,6 +782,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
             },
             answerNow: answerNowSignal,
             purpose: "chat",
+            tools: toolsFor(provider),
           },
         );
         break;
@@ -860,7 +894,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       // Which of the person's computers were searched, and the ones left
       // out (late, offline…): the client can say it.
       documents:    {
-        computers: retrieved.computers.map(({ computer_id, computer_name, status, passages: found }) => ({ computer_id, computer_name, status, passages: found })),
+        computers: (searchedByTool ?? retrieved).computers.map(({ computer_id, computer_name, status, passages: found }) => ({ computer_id, computer_name, status, passages: found })),
         ...(listed ? { listing: listed.computers } : {}),
       },
       ...(vaultConversationId ? { vault_conversation_id: vaultConversationId, catch_up: { status: caughtUp!.status, missing_refs: caughtUp!.missing } } : {}),
@@ -1247,7 +1281,7 @@ async function streamFromProvider(
   temperature: number | undefined,
   onDelta: (text: string) => void,
   signal: AbortSignal,
-  options: { effort?: Effort; onReasoning?: (text: string) => void; answerNow?: AbortSignal; purpose?: Purpose } = {},
+  options: { effort?: Effort; onReasoning?: (text: string) => void; answerNow?: AbortSignal; purpose?: Purpose; tools?: ChatTools } = {},
 ): Promise<Usage | null> {
   switch (provider.kind) {
     case "openai":
@@ -1297,7 +1331,7 @@ async function streamFromProvider(
 // conversation finds it ready. Built from the facts of the person's last
 // request (language, first name, time zone, window, model).
 
-const lastTurnInputs = new Map<string, { input: ChatContextInput; provider: Provider }>();
+const lastTurnInputs = new Map<string, { input: ChatContextInput; provider: Provider; tools: ChatTools["definitions"] | null }>();
 const systemsSent = new Map<string, string>();
 const warmTimers = new Map<string, NodeJS.Timeout>();
 const WARM_DELAY_MS = 4_000;
@@ -1311,12 +1345,12 @@ function digestOf(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-function noteSystemSent(provider: Provider, system: string) {
-  systemsSent.set(systemKey(provider), digestOf(system));
+function noteSystemSent(provider: Provider, system: string, tools: ChatTools["definitions"] | null) {
+  systemsSent.set(systemKey(provider), digestOf(`${system}\n${JSON.stringify(tools ?? [])}`));
 }
 
 /// The system prompt a new conversation of this person would start with now.
-export function newConversationSystem(userId: string): { system: string; provider: Provider } | null {
+export function newConversationSystem(userId: string): { system: string; provider: Provider; tools: ChatTools["definitions"] | null } | null {
   const last = lastTurnInputs.get(userId);
   if (!last) return null;
   const context = loadUserContext(userId);
@@ -1344,20 +1378,20 @@ export function newConversationSystem(userId: string): { system: string; provide
     now: new Date(),
   });
   const system = turn.messages[0];
-  return system?.role === "system" ? { system: system.content, provider: last.provider } : null;
+  return system?.role === "system" ? { system: system.content, provider: last.provider, tools: last.tools } : null;
 }
 
 /// Reads ahead what the next new conversation starts with, when it changed.
 export async function warmNewConversation(userId: string): Promise<"warmed" | "unchanged" | "busy" | "none"> {
   const next = newConversationSystem(userId);
   if (!next || next.provider.kind !== "local_openai") return "none";
-  const digest = digestOf(next.system);
-  if (systemsSent.get(systemKey(next.provider)) === digest) return "unchanged";
+  const digest_ = digestOf(`${next.system}\n${JSON.stringify(next.tools ?? [])}`);
+  if (systemsSent.get(systemKey(next.provider)) === digest_) return "unchanged";
   if (inflight() > 0) return "busy";
   const done = beginGeneration("chat");
   try {
-    await streamLocal(next.provider.baseUrl, [{ role: "system", content: next.system }, { role: "user", content: "" }], next.provider.model, 0, () => undefined, AbortSignal.timeout(120_000), { purpose: "chat", maxTokens: 1 });
-    systemsSent.set(systemKey(next.provider), digest);
+    await streamLocal(next.provider.baseUrl, [{ role: "system", content: next.system }, { role: "user", content: "" }], next.provider.model, 0, () => undefined, AbortSignal.timeout(120_000), { purpose: "chat", maxTokens: 1, ...(next.tools ? { tools: { definitions: next.tools, run: async () => "" } } : {}) });
+    systemsSent.set(systemKey(next.provider), digest_);
     return "warmed";
   } catch {
     return "none";
@@ -1658,6 +1692,60 @@ function readEffort(value: unknown): Effort {
   return value === "think" || value === "deep" ? value : "fast";
 }
 
+/// A message that plainly asks about the person's files: their documents are
+/// read with it, without waiting for the model to ask (search_documents).
+const ABOUT_DOCUMENTS = /\b(?:documents?|fichiers?|dossiers?|pdfs?|files?|folders?|contrats?|factures?|devis|bail|baux|cv|relev[ée]s?|attestations?|fiches? de paie|bulletins? de (?:paie|salaire)|rapports?|t[ée]l[ée]chargements|downloads|pi[èe]ces? jointes?)\b/i;
+
+/// The answer before this message cited the person's documents: a follow-up
+/// (« et la page 3 ? ») is about them too.
+function citedBefore(history: Array<{ role: string; sourcesJson?: string | null }>): boolean {
+  const last = [...history].reverse().find((row) => row.role === "assistant");
+  if (!last?.sourcesJson) return false;
+  try {
+    const sources = JSON.parse(last.sourcesJson);
+    return Array.isArray(sources) && sources.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+const NO_DOCUMENTS: MeshRetrieval = { passages: [], files: [], total: 0, computers: [], note: null, remote: false, timing: { local_ms: 0, remote_ms: null, total_ms: 0 } };
+
+/// The model's way into the person's documents when the message does not
+/// plainly ask about them.
+const SEARCH_DOCUMENTS_TOOL: ChatTools["definitions"][number] = {
+  type: "function",
+  function: {
+    name: "search_documents",
+    description:
+      "Search the user's own documents — the folders they granted on their computers: contracts, invoices, payslips, CVs, letters, notes, reports — " +
+      "and get the passages that match, numbered to cite like [1]. Use it when the answer may be in their files. " +
+      "Do not use it for general knowledge, small talk, or what you already know about the user.",
+    parameters: {
+      type: "object",
+      properties: { query: { type: "string", description: "What to look for, in the words the documents likely use." } },
+      required: ["query"],
+    },
+  },
+};
+
+/// Whether this model may be given tools: a llama.cpp, Ollama or LM Studio
+/// model of the person's (here or on a trusted computer); not Apple
+/// Intelligence, nor a cloud model.
+function toolCapable(provider: Provider): boolean {
+  if (provider.kind === "peer_openai") return true;
+  return provider.kind === "local_openai" && !/apple-intelligence/i.test(provider.model);
+}
+
+/// Function tools for the chat (OpenAI shape), and what runs them.
+export interface ChatTools {
+  definitions: Array<{ type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } }>;
+  run: (name: string, args: Record<string, unknown>) => Promise<string>;
+}
+
+/// Tool calls a turn may make before it answers.
+const TOOL_ROUNDS = 2;
+
 async function streamLocal(
   baseUrl: string,
   chatMessages: ChatMessage[],
@@ -1675,6 +1763,9 @@ async function streamLocal(
     post?: (payload: object, signal: AbortSignal) => Promise<Response>;
     /// At most this many tokens written (a read-ahead writes one).
     maxTokens?: number;
+    /// Tools the model may call (OpenAI function tools) and what runs
+    /// them: their result goes back to it, and it answers from it.
+    tools?: ChatTools;
   } = {},
 ): Promise<Usage | null> {
   const endpoint = baseUrl.replace(/\/$/, "");
@@ -1690,6 +1781,7 @@ async function streamLocal(
     stream: true,
     max_tokens: options.maxTokens ?? LOCAL_MAX_TOKENS + budget,
     ...(temperature !== undefined ? { temperature } : {}),
+    ...(options.tools?.definitions.length ? { tools: options.tools.definitions, tool_choice: "auto" } : {}),
   };
   // Qwen3-style models otherwise reason silently for 20-40 s before the
   // first token: reasoning is on only when the person asked for it.
@@ -1778,7 +1870,34 @@ async function streamLocal(
       { once: true },
     );
     try {
-      const usage = await consumeOpenAIStream(res, filter.push, reason);
+      const calls: ToolCallPieces[] = [];
+      let usage = await consumeOpenAIStream(res, filter.push, reason, options.tools ? calls : undefined);
+      // The model asked for a tool (documents, at most TOOL_ROUNDS times):
+      // what it returns is given back, and the model goes on from there —
+      // the prompt read so far is reused, only the result is new.
+      let followed: Array<Record<string, unknown>> = [...chatMessages];
+      for (let round = 0; options.tools && !cut && calls.length > 0 && round < TOOL_ROUNDS; round += 1) {
+        const asked = calls.splice(0).filter((call) => call.name).slice(0, 3);
+        if (asked.length === 0) break;
+        const results = [];
+        for (const [index, call] of asked.entries()) {
+          let args: Record<string, unknown> = {};
+          try { args = JSON.parse(call.arguments || "{}"); } catch { /* the tool reads what it can */ }
+          const id = call.id || `call_${round}_${index}`;
+          results.push({ id, call, content: await options.tools.run(call.name, args).catch(() => "The search failed.") });
+        }
+        followed = [
+          ...followed,
+          { role: "assistant", content: "", tool_calls: results.map(({ id, call }) => ({ id, type: "function", function: { name: call.name, arguments: call.arguments || "{}" } })) },
+          ...results.map(({ id, content }) => ({ role: "tool", tool_call_id: id, content })),
+        ];
+        if (signal.aborted) throw new Error("aborted");
+        const next = await post({ ...body, ...extras, messages: followed, ...(round + 1 >= TOOL_ROUNDS ? { tool_choice: "none" } : {}) });
+        if (!next.ok) throw new LocalLlmUnavailableError(`Local LLM provider returned ${next.status}`);
+        const spent = usage?.completion_tokens ?? 0;
+        usage = await consumeOpenAIStream(next, filter.push, reason, calls);
+        if (usage) usage = { ...usage, completion_tokens: usage.completion_tokens + spent };
+      }
       filter.flush();
       if (!cut) return usage;
     } catch (err) {
@@ -1819,10 +1938,14 @@ function systemText(chatMessages: ChatMessage[]): string {
     .join("\n\n");
 }
 
+/// A tool call the model streams, put together from its pieces.
+interface ToolCallPieces { id: string; name: string; arguments: string }
+
 async function consumeOpenAIStream(
   res: Response,
   onDelta: (t: string) => void,
   onReasoning?: (t: string) => void,
+  toolCalls?: ToolCallPieces[],
 ): Promise<Usage | null> {
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
@@ -1852,6 +1975,18 @@ async function consumeOpenAIStream(
         if (thought) onReasoning?.(thought);
         const text = delta?.content ?? "";
         if (text) onDelta(text);
+        // OpenAI's streamed tool calls: an index, then the id and name once,
+        // the arguments in pieces.
+        const calls = (delta as { tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> } | undefined)?.tool_calls;
+        if (toolCalls && Array.isArray(calls)) {
+          for (const call of calls) {
+            const index = typeof call.index === "number" ? call.index : toolCalls.length;
+            const piece = (toolCalls[index] ??= { id: "", name: "", arguments: "" });
+            if (call.id) piece.id = call.id;
+            if (call.function?.name) piece.name += call.function.name;
+            if (call.function?.arguments) piece.arguments += call.function.arguments;
+          }
+        }
         if (typeof evt.usage?.prompt_tokens === "number") {
           const cached = evt.usage.prompt_tokens_details?.cached_tokens;
           usage = {
