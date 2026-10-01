@@ -438,3 +438,24 @@ export function relinkMemories(userId: string): number {
 export function ensureLinked(userId: string) {
   if (stale.has(userId)) relinkMemories(userId);
 }
+
+/// The entity a project is known by (docs/projects-design.md §2): the one
+/// with that name or alias already, else a new one of kind « project »; its
+/// other names added. The memories naming it are linked again.
+export function projectEntity(userId: string, name: string, aliases: string[] = [], source = "manual", now = Date.now()): EntityRow {
+  const entity = sqlite.transaction(() => {
+    const norm = normaliseName(name);
+    if (!norm) throw new EntityError(422, "invalid_name");
+    const known = liveByNorm(userId, norm)
+      ?? (sqlite.prepare(
+        "SELECT e.* FROM entity_aliases a JOIN entities e ON e.id = a.entity_id WHERE e.user_id = ? AND a.norm = ? AND e.merged_into IS NULL ORDER BY e.created_at LIMIT 1",
+      ).get(userId, norm) as EntityRow | undefined);
+    const row = known ?? insertEntity(userId, { kind: "project", name: name.trim().slice(0, MAX_NAME), note: null, source }, now);
+    // A name a relation made for it (source « stub ») is a project now.
+    if (known && known.source === "stub") sqlite.prepare("UPDATE entities SET kind = 'project', source = ?, updated_at = ? WHERE id = ?").run(source, now, known.id);
+    addAliases(row, aliases.map((alias) => alias.trim()).filter((alias) => alias && alias.length <= MAX_ALIAS).slice(0, MAX_ALIASES));
+    return byId(row.id)!;
+  })();
+  markLinksStale(userId);
+  return entity;
+}

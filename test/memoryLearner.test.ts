@@ -282,3 +282,68 @@ test("« retiens que… » is kept as said: the learner does not learn it again 
   const result = await learnDiscussion(id, { ask: async () => answer(fact("Envisage l'achat d'un Mac Mini", "je réfléchis actuellement à acquérir un Mac Mini", { category: "project", confidence: 0.9 })) });
   assert.deepEqual([result!.saved, result!.proposed], [[], []]);
 });
+
+test("projects: a new one is proposed, never made on its own; a hypothesis or one already known is not", async () => {
+  const { parseProjects, judgeProjects } = learner;
+  const personLines = ["Je réfléchis à acheter un Mac mini pour faire tourner Twoody.", "Si un jour j'avais les moyens, j'achèterais une Tesla.", "On se marie en juin 2027 avec Claire-Sophie !"];
+  const projects = parseProjects(JSON.stringify({ facts: [], projects: [
+    { title: "Achat d'un Mac mini", name: "Mac mini", kind: "purchase", size: "small", status: "idea", due: null, evidence: "Je réfléchis à acheter un Mac mini", confidence: 0.8, ref: null },
+    { title: "Achat d'une Tesla", name: "Tesla", kind: "purchase", size: "large", status: "idea", due: null, evidence: "j'achèterais une Tesla", confidence: 0.6, ref: null },
+    { title: "Mariage", name: "mariage", kind: "event", size: "large", status: "active", due: "2027-06-15", evidence: "On se marie en juin 2027", confidence: 0.95, ref: "p1" },
+    { title: "Déménagement", name: "déménagement", kind: "home", size: "large", status: "active", due: null, evidence: "nous déménageons", confidence: 0.9, ref: null },
+  ] }));
+  const known = [{ ref: "p1", id: "proj-wedding", title: "Mariage", status: "active", name: "mariage" }];
+  const judged = judgeProjects(projects, { personLines, known });
+  assert.deepEqual(judged.propose.map((j) => [j.project.title, j.updates?.id ?? null]), [["Achat d'un Mac mini", null], ["Mariage", "proj-wedding"]]);
+  assert.deepEqual(judged.dropped.map((d) => [d.project.title, d.reason]), [["Achat d'une Tesla", "hypothesis"], ["Déménagement", "no_evidence"]]);
+  // Known, same status, no date: nothing to say.
+  const same = judgeProjects(parseProjects(JSON.stringify({ projects: [{ title: "Mariage", name: "mariage", status: "active", evidence: "On se marie en juin 2027", confidence: 0.9, ref: "p1" }] })), { personLines, known });
+  assert.deepEqual(same.dropped.map((d) => d.reason), ["known"]);
+});
+
+test("a project proposed by the learner, kept: it exists, knows its memories, and the conversation is about it", async () => {
+  const id = conversation([{ role: "user", content: "Je réfléchis à acheter un Mac mini, le M5 Pro avec 64 Go." }]);
+  await learnDiscussion(id, { ask: async () => JSON.stringify({
+    facts: [fact("Envisage un Mac mini M5 Pro 64 Go", "Je réfléchis à acheter un Mac mini, le M5 Pro avec 64 Go", { category: "project", confidence: 0.95 })],
+    projects: [{ title: "Achat d'un Mac mini", name: "Mac mini", kind: "purchase", size: "small", status: "idea", due: null, evidence: "Je réfléchis à acheter un Mac mini", confidence: 0.8, ref: null }],
+  }) });
+  const candidates = (await app.inject({ url: "/memories/candidates", headers })).json().candidates as Array<{ id: string; type: string; content: string; project: { kind: string } }>;
+  const proposal = candidates.find((c) => c.type === "project")!;
+  assert.equal(proposal.content, "Achat d'un Mac mini");
+  assert.equal(proposal.project.kind, "purchase");
+  assert.equal((await app.inject({ url: "/projects", headers })).json().length, 0, "not made before the person says so");
+
+  const kept = await app.inject({ method: "POST", url: `/memories/candidates/${proposal.id}/accept`, headers, payload: {} });
+  assert.equal(kept.statusCode, 200, kept.body);
+  const projectId = kept.json().project_id as string;
+  const { ensureLinked } = await import("../src/memory/entities.js");
+  ensureLinked(userId);
+  const detail = (await app.inject({ url: `/projects/${projectId}`, headers })).json().project;
+  assert.deepEqual([detail.title, detail.name, detail.kind, detail.status, detail.source], ["Achat d'un Mac mini", "Mac mini", "purchase", "idea", "learned"]);
+  assert.ok(detail.memories.some((m: { content: string }) => /M5 Pro/.test(m.content)), JSON.stringify(detail.memories));
+  assert.deepEqual(detail.conversations.map((c: { id: string }) => c.id), [id]);
+
+  // Said again: not proposed twice.
+  const again = conversation([{ role: "user", content: "Toujours sur le Mac mini, j'hésite encore." }]);
+  await learnDiscussion(again, { ask: async () => JSON.stringify({ facts: [], projects: [{ title: "Achat d'un Mac mini", name: "Mac mini", kind: "purchase", status: "idea", evidence: "Toujours sur le Mac mini", confidence: 0.8, ref: "p1" }] }) });
+  assert.equal(listCandidates(userId).filter((c) => c.type !== "fact").length, 0);
+});
+
+test("/projects: made by hand, changed, tied to a task, removed (what hung off it stays)", async () => {
+  const made = await app.inject({ method: "POST", url: "/projects", headers, payload: { project: { title: "Mariage", kind: "event", size: "large", due_at: "2027-06-15T12:00:00.000Z" } } });
+  assert.equal(made.statusCode, 201, made.body);
+  const id = made.json().project.id as string;
+  assert.equal((await app.inject({ method: "POST", url: "/projects", headers, payload: { project: { title: "" } } })).statusCode, 422);
+  assert.equal((await app.inject({ method: "PATCH", url: `/projects/${id}`, headers, payload: { project: { status: "nope" } } })).statusCode, 422);
+  const changed = (await app.inject({ method: "PATCH", url: `/projects/${id}`, headers, payload: { project: { status: "done" } } })).json().project;
+  assert.equal(changed.status, "done");
+  assert.ok(changed.done_at);
+  sqlite.prepare("INSERT INTO tasks (id, user_id, title, created_at, updated_at) VALUES ('t1', ?, 'Réserver la salle', ?, ?)").run(userId, 1, 1);
+  const linked = (await app.inject({ method: "POST", url: `/projects/${id}/link`, headers, payload: { task_id: "t1" } })).json().project;
+  assert.deepEqual(linked.tasks.map((t: { title: string }) => t.title), ["Réserver la salle"]);
+  assert.equal(linked.counts.tasks_open, 1);
+  assert.equal((await app.inject({ method: "POST", url: `/projects/${id}/link`, headers, payload: { task_id: "nope" } })).statusCode, 404);
+  assert.equal((await app.inject({ method: "DELETE", url: `/projects/${id}`, headers })).statusCode, 204);
+  assert.equal((sqlite.prepare("SELECT project_id FROM tasks WHERE id = 't1'").get() as { project_id: string | null }).project_id, null);
+  assert.equal((await app.inject({ url: "/projects" })).statusCode, 401);
+});

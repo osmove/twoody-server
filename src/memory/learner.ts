@@ -5,9 +5,10 @@ import { inflight } from "../account/inflight.js";
 import { typedText } from "../documentBlocks.js";
 import { normaliseMemoryContent } from "../vault/contracts.js";
 import { isForgottenFact, learnedFactId, memoryWritten } from "../vault/memories.js";
-import { firstPerson, memoryWords } from "./rank.js";
+import { firstPerson, memoryWords, sameWord } from "./rank.js";
 import { askedToRemember } from "../memoryLearning.js";
 import { recordTrace } from "../diagnostics/traces.js";
+import { createProject, knownProjects, updateProject } from "../projects/projects.js";
 
 // What Twoody learns from a conversation, once it is over (Mémoire v2, L6,
 // docs/memory-v2-design.md §4). Jimmy, 01/10/2026: learn from everything
@@ -55,7 +56,10 @@ const KINDS = new Set(["user", "feedback", "project"]);
 const SENSITIVE_TEXT = /\b(?:maladie|malade|diagnosti\w*|traitement|m[ée]dicament\w*|cancer|diab[èe]t\w*|d[ée]pression|enceinte|grossesse|th[ée]rapie|psychiatr\w*|hospitalis\w*|handicap\w*|salaire|dettes?|cr[ée]dit|emprunt|revenus?|d[ée]couvert|imp[ôo]ts?|religion|religieu\w*|croyant|pratiquant|vote|votes|parti politique|orientation sexuelle|homosexu\w*|bisexu\w*|proc[èe]s|condamn\w*|plainte|casier|num[ée]ro de s[ée]curit[ée] sociale|passeport|iban|carte bancaire|code pin|mot de passe|illness|diagnos\w*|medication|pregnan\w*|therapy|salary|debts?|loan|income|religio\w*|lawsuit|convicted|passport|password|social security)\b/i;
 const STREET = /\b\d{1,4}\s*(?:bis|ter)?,?\s+(?:rue|avenue|av\.|boulevard|bd|all[ée]e|impasse|chemin|place|quai|street|st\.|road|rd\.|avenue)\b/i;
 // The person was not sure, or imagined it.
-const HEDGING = /\b(?:je crois|je pense|il me semble|peut-[êe]tre|probablement|sans doute|je ne sais (?:pas|plus)|si j'avais|si j'[ée]tais|j'aimerais|je voudrais|on verra|i think|i guess|maybe|probably|perhaps|not sure|if i had|if i were|i'd like|i would like)\b/i;
+const HEDGING = /\b(?:je crois|je pense|il me semble|peut-[êe]tre|probablement|sans doute|je ne sais (?:pas|plus)|si j'avais|si j'[ée]tais|si un jour|un jour peut|j'aimerais|je voudrais|j'\w+erais|je \w+erais|on verra|i think|i guess|maybe|probably|perhaps|not sure|if i had|if i were|i'd like|i would like|someday|one day)\b/i;
+
+// A wish or a hypothesis, not something under way.
+const HYPOTHESIS = /\b(?:si un jour|un jour peut|si j'avais|si j'[ée]tais|si (?:je|j'|on) (?:gagne|avai)|j'\w+erais|je \w+erais|on \w+erait|j'aimerais|je voudrais|je r[êe]ve|someday|one day|if i had|if i were|i would|i'd love)\b/i;
 
 export type LearnMessages = Array<{ role: "system" | "user"; content: string }>;
 /// Runs the learning prompt on a model (src/routes/queries.ts gives it).
@@ -82,9 +86,10 @@ export interface KnownMemory {
   text: string;
 }
 
-export function learningPrompt(lines: Array<{ role: "person" | "assistant"; content: string }>, known: KnownMemory[]): LearnMessages {
+export function learningPrompt(lines: Array<{ role: "person" | "assistant"; content: string }>, known: KnownMemory[], projects: KnownProject[] = []): LearnMessages {
   const transcript = lines.map((line) => `${line.role === "person" ? "PERSON" : "ASSISTANT"}: ${line.content}`).join("\n");
   const knownText = known.length ? known.map((memory) => `${memory.ref}: ${memory.text}`).join("\n") : "(none)";
+  const projectsText = projects.length ? projects.map((project) => `${project.ref}: ${project.title} (${project.status})`).join("\n") : "(none)";
   return [
     {
       role: "system",
@@ -103,10 +108,15 @@ export function learningPrompt(lines: Array<{ role: "person" | "assistant"; cont
         "- kind: \"feedback\" for how to answer, \"project\" for something they work on, else \"user\".\n" +
         `- category: one of ${[...CATEGORIES].join(", ")} (health, finances, religion, politics, sexuality, legal, ids — identity or account numbers — and address — their precise home address — are sensitive).\n` +
         "- confidence: 0 to 1, how sure you are the person said it about themselves and it will still be true in months.\n" +
-        "Answer with JSON only: {\"facts\":[{\"text\":\"…\",\"kind\":\"user\",\"category\":\"…\",\"confidence\":0.9,\"evidence\":\"…\",\"supersedes\":null}]}. " +
-        "Most conversations hold nothing to remember: then {\"facts\":[]}.",
+        "Projects: also list what the person is working towards over days or months — a purchase (a house, a car, a Mac mini), a wedding, a move, a trip, a job search, a renovation, a project at work — " +
+        "only when the PERSON says they are doing or planning it themselves, not someone else's, not a mere wish or hypothesis. " +
+        "title: a short name in their language (« Achat d'un Mac mini »); name: how they call it in a sentence (« Mac mini »); kind: one of purchase, event, home, travel, work, health, learning, admin, other; " +
+        "size: \"large\" for months of effort or a big budget, else \"small\"; status: idea, active, paused, done or dropped; due: a date YYYY-MM-DD if they say one, else null; evidence and confidence as for facts. " +
+        "When it is one of PROJECTS, set \"ref\" to its ref and give it only if its status or due date changes. A project never replaces the facts: still list in facts what the person said about it.\n" +
+        "Answer with JSON only: {\"facts\":[{\"text\":\"…\",\"kind\":\"user\",\"category\":\"…\",\"confidence\":0.9,\"evidence\":\"…\",\"supersedes\":null}],\"projects\":[{\"title\":\"…\",\"name\":\"…\",\"kind\":\"purchase\",\"size\":\"small\",\"status\":\"idea\",\"due\":null,\"evidence\":\"…\",\"confidence\":0.8,\"ref\":null}]}. " +
+        "Most conversations hold nothing to remember: then {\"facts\":[],\"projects\":[]}.",
     },
-    { role: "user", content: `KNOWN:\n${knownText}\n\nCONVERSATION:\n${transcript}` },
+    { role: "user", content: `KNOWN:\n${knownText}\n\nPROJECTS:\n${projectsText}\n\nCONVERSATION:\n${transcript}` },
   ];
 }
 
@@ -138,6 +148,108 @@ export function parseLearning(answer: string): LearnedFact[] {
       evidence: typeof fact!.evidence === "string" ? fact!.evidence : "",
       supersedes: typeof fact!.supersedes === "string" && fact!.supersedes.trim() ? fact!.supersedes.trim() : null,
     });
+  }
+  return out;
+}
+
+export interface KnownProject {
+  ref: string;
+  id: string;
+  title: string;
+  status: string;
+  name: string | null;
+}
+
+export interface LearnedProject {
+  title: string;
+  name: string;
+  kind: string;
+  size: "small" | "large";
+  status: "idea" | "active" | "paused" | "done" | "dropped";
+  due: string | null;
+  evidence: string;
+  confidence: number;
+  ref: string | null;
+}
+
+const PROJECT_KINDS_LEARNED = new Set(["purchase", "event", "home", "travel", "work", "health", "learning", "admin", "other"]);
+const PROJECT_STATUSES_LEARNED = new Set(["idea", "active", "paused", "done", "dropped"]);
+
+/// The projects of the model's answer (docs/projects-design.md §3).
+export function parseProjects(answer: string): LearnedProject[] {
+  const text = answer.replace(/<think>[\s\S]*?(?:<\/think>|$)/g, "").replace(/```(?:json)?/g, "");
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return [];
+  }
+  const projects = (parsed as { projects?: unknown })?.projects;
+  if (!Array.isArray(projects)) return [];
+  const out: LearnedProject[] = [];
+  for (const raw of projects.slice(0, 4)) {
+    const project = raw as Record<string, unknown> | null;
+    const title = typeof project?.title === "string" ? project.title.trim().replace(/\s+/g, " ") : "";
+    if (title.length < 3 || title.length > 120) continue;
+    const name = typeof project!.name === "string" && project!.name.trim() ? project!.name.trim().slice(0, 80) : title;
+    const confidence = typeof project!.confidence === "number" ? project!.confidence : Number(project!.confidence);
+    const due = typeof project!.due === "string" && /^\d{4}-\d{2}-\d{2}$/.test(project!.due) && !Number.isNaN(Date.parse(project!.due)) ? project!.due : null;
+    out.push({
+      title: title.charAt(0).toUpperCase() + title.slice(1),
+      name,
+      kind: typeof project!.kind === "string" && PROJECT_KINDS_LEARNED.has(project!.kind) ? project!.kind : "other",
+      size: project!.size === "large" ? "large" : "small",
+      status: typeof project!.status === "string" && PROJECT_STATUSES_LEARNED.has(project!.status) ? (project!.status as LearnedProject["status"]) : "active",
+      due,
+      evidence: typeof project!.evidence === "string" ? project!.evidence : "",
+      confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : 0.6,
+      ref: typeof project!.ref === "string" && project!.ref.trim() ? project!.ref.trim() : null,
+    });
+  }
+  return out;
+}
+
+export interface JudgedProject {
+  project: LearnedProject;
+  confidence: number;
+  /// A known project it changes (its status or due date), else a new one.
+  updates: KnownProject | null;
+}
+
+/// What becomes of each project the model gave: always proposed, never
+/// made on its own (docs/projects-design.md §3); dropped without the
+/// person's words, hedged below PROPOSE_AT, or the same as a known one.
+export function judgeProjects(projects: LearnedProject[], context: { personLines: string[]; known: KnownProject[]; refused?: ReadonlySet<string> }): { propose: JudgedProject[]; dropped: Array<{ project: LearnedProject; reason: string }> } {
+  const out: { propose: JudgedProject[]; dropped: Array<{ project: LearnedProject; reason: string }> } = { propose: [], dropped: [] };
+  const seen = new Set<string>();
+  for (const project of projects) {
+    const key = normaliseMemoryContent(project.title);
+    if (!key || seen.has(key)) { out.dropped.push({ project, reason: "repeated" }); continue; }
+    seen.add(key);
+    const found = evidenceFound(project.evidence, context.personLines);
+    if (!found) { out.dropped.push({ project, reason: "no_evidence" }); continue; }
+    // A wish or a hypothesis (« si un jour… j'achèterais ») is no project.
+    if (HYPOTHESIS.test(found.around)) { out.dropped.push({ project, reason: "hypothesis" }); continue; }
+    let confidence = project.confidence;
+    if (firstPerson(project.evidence)) confidence += 0.1;
+    if (HEDGING.test(found.around)) confidence -= 0.3;
+    confidence = Math.round(Math.min(1, Math.max(0, confidence)) * 100) / 100;
+    if (confidence < PROPOSE_AT) { out.dropped.push({ project, reason: "unsure" }); continue; }
+    const byRef = project.ref ? context.known.find((known) => known.ref === project.ref) ?? null : null;
+    const byName = context.known.find((known) =>
+      [known.title, known.name].some((name) => name && (normaliseMemoryContent(name) === key || normaliseMemoryContent(name) === normaliseMemoryContent(project.name) || overlap(name, project.title) >= 0.6))) ?? null;
+    const updates = byRef ?? byName;
+    if (updates) {
+      // Known, and nothing changes: nothing to propose.
+      if (project.status === updates.status && !project.due) { out.dropped.push({ project, reason: "known" }); continue; }
+    } else if (context.refused?.has(`project:${key}`)) {
+      out.dropped.push({ project, reason: "refused" });
+      continue;
+    }
+    out.propose.push({ project, confidence, updates });
   }
   return out;
 }
@@ -193,6 +305,22 @@ function fromAssistant(text: string, personLines: string[], assistantLines: stri
   });
 }
 
+/// A word of the fact the person never wrote and a known memory holds
+/// (« A un chien nommé Pixel » from « Pixel a renversé mon verre » and the
+/// known « Le chien de Mathieu s'appelle Pixel »): what is already known,
+/// said again.
+function fromKnown(text: string, personLines: string[], known: KnownMemory[]): boolean {
+  if (!known.length) return false;
+  const said = memoryWords(personLines.join(" "));
+  const knownWords = memoryWords(known.map((memory) => memory.text).join(" "));
+  // Names aside (the person's own, « Mathieu », is in every memory), and
+  // short words (« fait »): what describes.
+  const names = new Set((text.match(/\p{Lu}[\p{L}'-]+/gu) ?? []).flatMap((name) => memoryWords(name)));
+  return memoryWords(text)
+    .filter((word) => word.length >= 5 && !names.has(word))
+    .some((word) => !said.some((other) => sameWord(word, other)) && knownWords.some((other) => sameWord(word, other)));
+}
+
 export interface Judged {
   fact: LearnedFact;
   confidence: number;
@@ -232,6 +360,7 @@ export function judgeFacts(
       out.dropped.push({ fact, reason: "known" });
       continue;
     }
+    if (fromKnown(fact.text, context.personLines, context.known)) { out.dropped.push({ fact, reason: "from_known" }); continue; }
     let confidence = fact.confidence;
     if (firstPerson(fact.evidence)) confidence += 0.15;
     if (HEDGING.test(found.around)) confidence -= 0.3;
@@ -331,9 +460,10 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
   const learnStarted = Date.now();
   try {
     const known = knownFor(row.user_id, personLines.join(" "));
+    const projects = knownProjects(row.user_id);
     let answer: string;
     try {
-      answer = await ask(row.user_id, learningPrompt(shown, known));
+      answer = await ask(row.user_id, learningPrompt(shown, known, projects));
     } catch (err) {
       failedAt.set(row.id, options.now ?? Date.now());
       throw err;
@@ -342,7 +472,9 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
     const assistantLines = shown.filter((line) => line.role === "assistant").map((line) => line.content);
     const askedLines = new Set(personLines.filter((line) => askedToRemember(line) !== null));
     const facts = parseLearning(answer);
-    const judged = judgeFacts(facts, { personLines, assistantLines, known, refused: refusedNorms(row.user_id), forgotten: isForgottenFact, askedLines });
+    const refused = refusedNorms(row.user_id);
+    const judged = judgeFacts(facts, { personLines, assistantLines, known, refused, forgotten: isForgottenFact, askedLines });
+    const judgedProjects = judgeProjects(parseProjects(answer), { personLines, known: projects, refused });
     // What it made of the conversation, for the Diagnostic screen.
     recordTrace(row.user_id, {
       kind: "learn",
@@ -355,6 +487,10 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
         saved: judged.save.map((j) => ({ text: j.fact.text, confidence: j.confidence })),
         proposed: judged.propose.map((j) => ({ text: j.fact.text, confidence: j.confidence, sensitive: j.sensitive, supersedes: !!j.supersedesId })),
         dropped: judged.dropped.map((d) => ({ text: d.fact.text, reason: d.reason })),
+        projects: {
+          proposed: judgedProjects.propose.map((j) => ({ title: j.project.title, status: j.project.status, confidence: j.confidence, updates: j.updates?.id ?? null })),
+          dropped: judgedProjects.dropped.map((d) => ({ title: d.project.title, reason: d.reason })),
+        },
       },
     });
     result.dropped = judged.dropped.length;
@@ -366,6 +502,7 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
       const id = proposeLearned(row.user_id, fact, row.id, options.now ?? Date.now());
       if (id) result.proposed.push(id);
     }
+    for (const project of judgedProjects.propose) result.proposed.push(proposeProject(row.user_id, project, row.id, options.now ?? Date.now()));
     if (result.saved.length || result.proposed.length) {
       sqlite.prepare("INSERT INTO memory_notices (id, user_id, discussion_id, saved_json, proposed, created_at) VALUES (?, ?, ?, ?, ?, ?)")
         .run(randomUUID(), row.user_id, row.id, JSON.stringify(result.saved), result.proposed.length, options.now ?? Date.now());
@@ -412,6 +549,21 @@ function proposeLearned(userId: string, judged: Judged, discussionId: string, no
   return id;
 }
 
+/// A project found in a conversation, new or changed: always « À confirmer ».
+function proposeProject(userId: string, judged: JudgedProject, discussionId: string, now: number): string {
+  const id = randomUUID();
+  const { project, updates } = judged;
+  const payload = updates
+    ? { project_id: updates.id, title: updates.title, status: project.status, due: project.due, previous_status: updates.status }
+    : { title: project.title, name: project.name, kind: project.kind, size: project.size, status: project.status, due: project.due };
+  sqlite.prepare(`INSERT INTO memory_candidates (id, user_id, content, norm, kind, category, confidence, sensitive, evidence, supersedes_id, discussion_id, status, created_at, candidate_type, payload_json)
+    VALUES (?, ?, ?, ?, 'project', NULL, ?, 0, ?, NULL, ?, 'pending', ?, ?, ?)`).run(
+    id, userId, updates ? updates.title : project.title, `project:${normaliseMemoryContent(project.title)}`, judged.confidence,
+    project.evidence.slice(0, 500), discussionId, now, updates ? "project_update" : "project", JSON.stringify(payload),
+  );
+  return id;
+}
+
 // ── « À confirmer » ─────────────────────────────────────────────────────
 
 export interface CandidateRow {
@@ -425,6 +577,10 @@ export interface CandidateRow {
   supersedes: { id: string; content: string } | null;
   discussion_id: string | null;
   created_at: string;
+  /// A fact, a new project, or a change of a known one (status, due date).
+  type: "fact" | "project" | "project_update";
+  /// What was found of the project (title, name, kind, size, status, due).
+  project: Record<string, unknown> | null;
 }
 
 export function listCandidates(userId: string): CandidateRow[] {
@@ -442,6 +598,8 @@ export function listCandidates(userId: string): CandidateRow[] {
     supersedes: row.supersedes_id && typeof row.superseded_content === "string" ? { id: String(row.supersedes_id), content: row.superseded_content } : null,
     discussion_id: (row.discussion_id as string | null) ?? null,
     created_at: new Date(Number(row.created_at)).toISOString(),
+    type: (row.candidate_type as CandidateRow["type"] | undefined) ?? "fact",
+    project: row.payload_json ? (() => { try { return JSON.parse(String(row.payload_json)); } catch { return null; } })() : null,
   }));
 }
 
@@ -457,6 +615,27 @@ export function acceptCandidate(userId: string, id: string, content?: string | n
   const row = sqlite.prepare("SELECT * FROM memory_candidates WHERE id = ? AND user_id = ? AND status = 'pending'").get(id, userId) as
     { content: string; kind: string; category: string | null; confidence: number; sensitive: number; evidence: string | null; supersedes_id: string | null; discussion_id: string | null } | undefined;
   if (!row) throw new CandidateError(404, "not_found");
+  const project = (sqlite.prepare("SELECT candidate_type, payload_json FROM memory_candidates WHERE id = ?").get(id) as { candidate_type: string; payload_json: string | null });
+  if (project.candidate_type === "project" || project.candidate_type === "project_update") {
+    let payload: Record<string, unknown> = {};
+    try { payload = JSON.parse(project.payload_json ?? "{}"); } catch { /* empty */ }
+    const title = typeof content === "string" && content.trim() ? content.trim().slice(0, 200) : String(payload.title ?? row.content);
+    const due = typeof payload.due === "string" ? `${payload.due}T12:00:00.000Z` : undefined;
+    let projectId: string;
+    if (project.candidate_type === "project_update" && typeof payload.project_id === "string") {
+      projectId = payload.project_id;
+      updateProject(userId, projectId, { status: payload.status as never, ...(due ? { due_at: due } : {}) }, now);
+    } else {
+      projectId = createProject(userId, {
+        title, name: typeof payload.name === "string" ? payload.name : undefined,
+        kind: payload.kind as never, size: payload.size as never, status: payload.status as never, ...(due ? { due_at: due } : {}),
+      }, "learned", now);
+    }
+    // The conversation it came from is about it.
+    if (row.discussion_id) sqlite.prepare("UPDATE discussions SET project_id = COALESCE(project_id, ?) WHERE id = ? AND user_id = ?").run(projectId, row.discussion_id, userId);
+    sqlite.prepare("UPDATE memory_candidates SET status = 'accepted', memory_id = ?, decided_at = ? WHERE id = ?").run(projectId, now, id);
+    return projectId;
+  }
   const text = typeof content === "string" && content.trim() ? content.trim().replace(/\s+/g, " ").slice(0, 2000) : row.content;
   const tags = row.sensitive ? ["sensitive"] : [];
   let memoryId: string | null = null;

@@ -199,6 +199,8 @@ export const discussions = sqliteTable("discussions", {
   memoryMode: text("memory_mode"),
   // The rowid of the last message the learner went through (L6).
   learnedThrough: integer("learned_through"),
+  /// The project the conversation is mostly about (docs/projects-design.md).
+  projectId: text("project_id"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   lastActivityAt: integer("last_activity_at", { mode: "timestamp" }).notNull(),
 });
@@ -261,6 +263,8 @@ export const tasks = sqliteTable("tasks", {
   dueAt: integer("due_at", { mode: "timestamp" }),
   doneAt: integer("done_at", { mode: "timestamp" }),
   priority: integer("priority"),
+  /// The project it belongs to (docs/projects-design.md).
+  projectId: text("project_id"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 });
@@ -334,6 +338,8 @@ export const calendarEvents = sqliteTable("events", {
   source: text("source"),
   externalId: text("external_id"),
   calendar: text("calendar"),
+  /// The project it belongs to (docs/projects-design.md).
+  projectId: text("project_id"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 });
@@ -1256,6 +1262,52 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS idx_turn_traces_user_at ON turn_traces (user_id, at);
   CREATE INDEX IF NOT EXISTS idx_turn_traces_message ON turn_traces (message_id);
 `);
+
+// Projects (docs/projects-design.md, lot P1): what the person is working
+// towards, and what hangs off it. A project is known by an entity of the
+// memory graph (kind « project »), so the memories naming it are its own.
+{
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      entity_id TEXT,
+      title TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'other',
+      size TEXT NOT NULL DEFAULT 'small',
+      status TEXT NOT NULL DEFAULT 'active',
+      brief TEXT,
+      started_at INTEGER,
+      due_at INTEGER,
+      done_at INTEGER,
+      budget_cents INTEGER,
+      currency TEXT,
+      source TEXT NOT NULL DEFAULT 'manual',
+      hlc TEXT,
+      vault_event_id TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_projects_user ON projects (user_id, status);
+    CREATE TABLE IF NOT EXISTS project_documents (
+      project_id TEXT NOT NULL,
+      computer_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      name TEXT,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (project_id, computer_id, document_id)
+    );
+  `);
+  for (const table of ["tasks", "events", "discussions"]) {
+    const existing = sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!existing.some((column) => column.name === "project_id")) sqlite.exec(`ALTER TABLE ${table} ADD COLUMN project_id TEXT`);
+  }
+  // « À confirmer » also holds projects the learner found (candidate_type
+  // « project »), with what it found of them.
+  const candidateColumns = sqlite.prepare("PRAGMA table_info(memory_candidates)").all() as Array<{ name: string }>;
+  if (!candidateColumns.some((column) => column.name === "candidate_type")) sqlite.exec("ALTER TABLE memory_candidates ADD COLUMN candidate_type TEXT NOT NULL DEFAULT 'fact'");
+  if (!candidateColumns.some((column) => column.name === "payload_json")) sqlite.exec("ALTER TABLE memory_candidates ADD COLUMN payload_json TEXT");
+}
 
 /// Indexes again every message it should hold, from scratch: at creation
 /// (the messages already there), or after a VACUUM renumbered the rowids.

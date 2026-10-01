@@ -126,7 +126,9 @@ export async function memoryRoutes(app: FastifyInstance) {
       try {
         const id = acceptCandidate(auth.userId, req.params.id, content);
         const [row] = db.select().from(memories).where(eq(memories.id, id)).limit(1).all();
-        reply.send({ memory: row ? serialize(row) : null });
+        // A project kept (docs/projects-design.md): its id.
+        const project = row ? null : (sqlite.prepare("SELECT id FROM projects WHERE id = ? AND user_id = ?").get(id, auth.userId) as { id: string } | undefined);
+        reply.send({ memory: row ? serialize(row) : null, ...(project ? { project_id: project.id } : {}) });
       } catch (err) {
         if (err instanceof CandidateError) return reply.code(err.status).send({ error: err.code });
         throw err;
