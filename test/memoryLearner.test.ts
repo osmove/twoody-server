@@ -66,6 +66,17 @@ test("a fact must quote what the person said: never one from the assistant's wor
   assert.deepEqual(judged.dropped.map((d) => d.reason), ["no_evidence", "known", "known"]);
 });
 
+test("a name or number only the assistant wrote is not the person's: « le 29 novembre », restated from a memory", () => {
+  const personLines = ["Rappelle-moi la date de mon marathon ?", "Top. D'ailleurs mon numéro de dossard, c'est le 1843."];
+  const assistantLines = ["Ton marathon de La Rochelle a lieu le 29 novembre 2026.", "Noté, dossard 1843."];
+  const judged = judgeFacts(parseLearning(answer(
+    fact("Court le marathon de La Rochelle le 29 novembre 2026", "mon marathon", { category: "date", confidence: 0.9 }),
+    fact("A le dossard 1843", "mon numéro de dossard, c'est le 1843", { category: "date", confidence: 0.9 }),
+  )), { personLines, assistantLines, known: [] });
+  assert.deepEqual(judged.save.map((j) => j.fact.text), ["A le dossard 1843"]);
+  assert.deepEqual(judged.dropped.map((d) => d.reason), ["from_assistant"]);
+});
+
 test("doubtful facts are proposed or dropped, sensitive ones always proposed, a change of a known fact proposed with it", () => {
   const personLines = ["Je crois que mon rendez-vous chez le dentiste est mardi.", "J'ai 41 ans maintenant.", "On m'a diagnostiqué un diabète l'an dernier.", "Il est peut-être possible que je déménage."];
   const known = [{ ref: "m1", id: "mem-age", text: "A 40 ans." }];

@@ -91,14 +91,15 @@ export function learningPrompt(lines: Array<{ role: "person" | "assistant"; cont
         "to remember in later conversations: who they are, their family and people around them, work, home, pets, projects, " +
         "lasting preferences, habits, important dates, and how they like to be answered.\n" +
         "Rules:\n" +
-        "- Only from PERSON lines. ASSISTANT lines are context: never take a fact from them, even one the person does not contradict.\n" +
+        "- Only from PERSON lines. ASSISTANT lines are context: never take a fact from them, even one the person does not contradict, and never mix one into a fact the person says.\n" +
+        "- The people in their life count too: a relative's or a colleague's name, what happens to them (« Son collègue Paul a eu une fille, Lina »).\n" +
         "- Not questions, hypotheses, wishes, plans that may not happen, today's mood or task, facts about the world.\n" +
         "- Not what KNOWN already says. When the person changes a KNOWN fact, give the new fact and set \"supersedes\" to its ref.\n" +
-        "- When the person corrects themselves, only the corrected fact.\n" +
-        "- text: one short sentence in the language of the conversation, about the person (« A une fille, Léa, 7 ans », « Préfère des réponses courtes »).\n" +
+        "- When the person corrects themselves, only the corrected fact.\n" +        "- Never guess what is not said: who someone is, an animal's species, a relation, a date.\n" +
+        "- text: one short sentence about the person, in the language the PERSON writes in, never translated (« A une fille, Léa, 7 ans », « Préfère des réponses courtes »).\n" +
         "- evidence: the exact words of the PERSON line it comes from, copied character for character.\n" +
         "- kind: \"feedback\" for how to answer, \"project\" for something they work on, else \"user\".\n" +
-        `- category: one of ${[...CATEGORIES].join(", ")} (health, finances, religion, politics, sexuality, legal, ids, address are sensitive).\n` +
+        `- category: one of ${[...CATEGORIES].join(", ")} (health, finances, religion, politics, sexuality, legal, ids — identity or account numbers — and address — their precise home address — are sensitive).\n` +
         "- confidence: 0 to 1, how sure you are the person said it about themselves and it will still be true in months.\n" +
         "Answer with JSON only: {\"facts\":[{\"text\":\"…\",\"kind\":\"user\",\"category\":\"…\",\"confidence\":0.9,\"evidence\":\"…\",\"supersedes\":null}]}. " +
         "Most conversations hold nothing to remember: then {\"facts\":[]}.",
@@ -175,6 +176,21 @@ function overlap(a: string, b: string): number {
   return shared / (left.size + right.size - shared);
 }
 
+/// A name or number of the fact that the person never wrote and the
+/// assistant did (« le 29 novembre », restated from a memory): taken from
+/// the assistant's words.
+function fromAssistant(text: string, personLines: string[], assistantLines: string[]): boolean {
+  if (!assistantLines.length) return false;
+  const person = looseText(personLines.join(" "));
+  const assistant = looseText(assistantLines.join(" "));
+  const tokens = text.match(/\p{N}+|(?<=\s)\p{Lu}[\p{L}'-]+/gu) ?? [];
+  return tokens.some((token) => {
+    const loose = looseText(token);
+    const word = new RegExp(`(^|[^\\p{L}\\p{N}])${loose.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^\\p{L}\\p{N}])`, "u");
+    return !word.test(person) && word.test(assistant);
+  });
+}
+
 export interface Judged {
   fact: LearnedFact;
   confidence: number;
@@ -192,7 +208,7 @@ export interface Judgement {
 /// No database: what it needs is handed to it.
 export function judgeFacts(
   facts: LearnedFact[],
-  context: { personLines: string[]; known: KnownMemory[]; refused?: ReadonlySet<string>; forgotten?: (text: string) => boolean },
+  context: { personLines: string[]; assistantLines?: string[]; known: KnownMemory[]; refused?: ReadonlySet<string>; forgotten?: (text: string) => boolean },
 ): Judgement {
   const out: Judgement = { save: [], propose: [], dropped: [] };
   const seen = new Set<string>();
@@ -203,6 +219,7 @@ export function judgeFacts(
     seen.add(norm);
     const found = evidenceFound(fact.evidence, context.personLines);
     if (!found) { out.dropped.push({ fact, reason: "no_evidence" }); continue; }
+    if (fromAssistant(fact.text, context.personLines, context.assistantLines ?? [])) { out.dropped.push({ fact, reason: "from_assistant" }); continue; }
     if (context.refused?.has(norm)) { out.dropped.push({ fact, reason: "refused" }); continue; }
     if (context.forgotten?.(fact.text)) { out.dropped.push({ fact, reason: "forgotten" }); continue; }
     const supersedes = fact.supersedes ? context.known.find((memory) => memory.ref === fact.supersedes) ?? null : null;
@@ -317,7 +334,8 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
       throw err;
     }
     failedAt.delete(row.id);
-    const judged = judgeFacts(parseLearning(answer), { personLines, known, refused: refusedNorms(row.user_id), forgotten: isForgottenFact });
+    const assistantLines = shown.filter((line) => line.role === "assistant").map((line) => line.content);
+    const judged = judgeFacts(parseLearning(answer), { personLines, assistantLines, known, refused: refusedNorms(row.user_id), forgotten: isForgottenFact });
     result.dropped = judged.dropped.length;
     for (const fact of judged.save) {
       const id = keepLearned(row.user_id, fact, row.id);

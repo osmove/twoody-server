@@ -50,7 +50,8 @@ Embeddings: src/embeddings.ts shared (instruction as parameter); memory embeddin
 exist; embed on write and on vault sync, when idle; vectors keyed by model + content hash.
 
 ## 4. Learning v2 (src/memory/learner.ts)
-« retiens que… » saves immediately. Per-message learnFromMessage removed. Every 5 min: discussions idle ≥10 min with
+« retiens que… » saves immediately. Per-message learnFromMessage removed. At once when the person starts a new
+conversation (learnSoon, once nothing is generating — Jimmy 01/10: no delay before the next one knows). Every 5 min: discussions idle ≥10 min with
 new user messages after learned_through (not « Aucune »/private); runs on pickBackground (trusted idle peers) or the
 local background slot. Input = user messages only (assistant turns ≤300 chars, « context, do not extract »), documents
 and web blocks stripped. JSON-schema output {facts[{text, kind, entities, category, supersedes?, confidence,
