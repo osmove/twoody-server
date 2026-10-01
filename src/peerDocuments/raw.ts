@@ -59,11 +59,21 @@ const CONTENT_TYPES: Record<string, string> = {
   ".md": "text/markdown; charset=utf-8",
   ".markdown": "text/markdown; charset=utf-8",
   ".json": "application/json",
+  // Pictures and Office files a viewer shows without running anything (a
+  // file browsed in a granted folder, docs/mesh-design.md §2b).
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".heic": "image/heic",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 };
 
 /// Text formats, markup included, are served as plain text: nothing a
 /// viewer would run.
-function contentType(ext: string): string {
+export function contentType(ext: string): string {
   if (CONTENT_TYPES[ext]) return CONTENT_TYPES[ext]!;
   if ([".txt", ".log", ".srt", ".vtt", ".yml", ".yaml", ".html", ".htm", ".xml"].includes(ext)) return "text/plain; charset=utf-8";
   return "application/octet-stream";
@@ -97,6 +107,20 @@ export async function serveRawDocument(
     reply.code(404).send({ error: "not_found" });
     return null;
   }
+  const sent = await serveRawFile(req, reply, { path: doc.path, folderPath: doc.folder_path, name: doc.name, ext: doc.ext });
+  return sent ? { id: doc.id, name: doc.name, bytes: sent.bytes } : null;
+}
+
+/// Streams the file at `file.path` to `reply` if it is still a regular file
+/// inside `file.folderPath` (a granted folder), with Range and the caps
+/// above; 404 otherwise. Whether the caller may ask for that folder at all
+/// is the route's business. Returns the bytes sent, or null.
+export async function serveRawFile(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  file: { path: string; folderPath: string; name: string; ext: string | null },
+): Promise<{ bytes: number } | null> {
+  const doc = { path: file.path, folder_path: file.folderPath, name: file.name, ext: file.ext };
 
   // Opened first, then checked: what is read is what the descriptor holds,
   // so the check is about that file — the path's real location must be in
@@ -162,8 +186,8 @@ export async function serveRawDocument(
   if (length === 0 || req.method === "HEAD") {
     await handle.close();
     reply.send();
-    return { id: doc.id, name: doc.name, bytes: 0 };
+    return { bytes: 0 };
   }
   reply.send(handle.createReadStream({ start, end, autoClose: true }));
-  return { id: doc.id, name: doc.name, bytes: length };
+  return { bytes: length };
 }

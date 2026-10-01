@@ -3,12 +3,14 @@ import { buildChatMessages } from "../chatContext.js";
 import { documentAccess } from "../documents/access.js";
 import { retrieveDocuments, scopedFolders } from "../documents/retrieval.js";
 import { serveRawDocument } from "../peerDocuments/raw.js";
-import { foldersOfComputers, serveRemoteRaw } from "../documents/remote.js";
+import { browseRemote, foldersOfComputers, serveRemoteBrowsedFile, serveRemoteRaw } from "../documents/remote.js";
+import { browseGranted, readBrowseRequest, serveBrowsedFile, type BrowseRequest } from "../documents/browse.js";
+import { isSelf, selfIdentity } from "../router/index.js";
 import { relative, isAbsolute } from "node:path";
 import { indexSemantic, semanticPassages, semanticStatus, setSemantic, stopSemantic } from "../documents/semantic.js";
 import { fusePassages } from "../documents/vectorMath.js";
 import { homedir } from "node:os";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { requireAuth } from "../auth.js";
 import { meshRequester } from "../sessionTrust.js";
 import { meshRoster } from "../vault/roster.js";
@@ -47,16 +49,37 @@ function rejectionStatus(err: FolderRejected): number {
   return err.reason === "already_added" ? 409 : err.reason === "not_permitted" ? 403 : 422;
 }
 
+/// A browse of this computer's granted folders, as every route answers it.
+async function sendBrowse(reply: FastifyReply, userId: string, request: BrowseRequest) {
+  const result = await browseGranted(userId, scopedFolders(userId, {mode: "all"}), request);
+  if ("error" in result) return reply.code(result.error === "invalid_path" ? 400 : 404).send({error: result.error === "invalid_path" ? "invalid_directory" : "folder_unavailable"});
+  return reply.send({computer_id: selfIdentity().id, computer_name: selfIdentity().name, ...result});
+}
+
 export async function localDocumentRoutes(app: FastifyInstance) {
   app.addHook("onClose", async () => stopSemantic());
   const security: Array<Record<string, string[]>> = [{ bearerAuth: [] }, { userTokenAuth: [] }];
 
-  app.get<{Querystring: {folder_id: string; directory?: string; offset?: number}}>("/local_documents/browse", {
-    schema: {tags: ["documents"], security, querystring: {type: "object", required: ["folder_id"], properties: {
+  // A folder inside a granted folder as the file system has it (documents/
+  // browse.ts): `root` and `path`, for a person's session (the owner's, or
+  // a device paired with this computer; not a firmware device's token).
+  // The older form, `folder_id` and `directory`, still lists what the index
+  // holds (library.ts browseDocuments) for the clients that ask it so.
+  app.get<{Querystring: {folder_id?: string; directory?: string; offset?: number; root?: string; path?: string; sort?: string; order?: string; limit?: number; q?: string}}>("/local_documents/browse", {
+    schema: {tags: ["documents"], security, summary: "A folder inside a granted folder (root, path; sorted, paged, searched by name), or the index's view of one (folder_id, directory)", querystring: {type: "object", properties: {
       folder_id: {type: "string"}, directory: {type: "string", maxLength: 4096}, offset: {type: "integer", minimum: 0, maximum: 1000000},
+      root: {type: "string", maxLength: 64}, path: {type: "string", maxLength: 4096}, sort: {type: "string", enum: ["name", "date", "size"]}, order: {type: "string", enum: ["asc", "desc"]},
+      limit: {type: "integer", minimum: 1, maximum: 200}, q: {type: "string", maxLength: 200},
     }}},
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply); if (!auth) return;
+      if (req.query.root !== undefined) {
+        if (!auth.sessionId) return reply.code(403).send({error: "session_required"});
+        const request = readBrowseRequest(req.query);
+        if (!request) return reply.code(400).send({error: "invalid_directory"});
+        return sendBrowse(reply, auth.userId, request);
+      }
+      if (!req.query.folder_id) return reply.code(400).send({error: "folder_required"});
       try {
         const result = browseDocuments(auth.userId, req.query.folder_id, req.query.directory || "", req.query.offset || 0);
         return result ? reply.send(result) : reply.code(404).send({error: "folder_unavailable"});
@@ -64,6 +87,53 @@ export async function localDocumentRoutes(app: FastifyInstance) {
         if (error instanceof Error && error.message === "invalid_directory") return reply.code(400).send({error: "invalid_directory"});
         throw error;
       }
+    },
+  });
+
+  // A browsed file itself, indexed or not (peerDocuments/raw.ts: Range, caps, nosniff).
+  app.get<{Querystring: {root?: string; path?: string}}>("/local_documents/browse/raw", {
+    schema: {tags: ["documents"], security, summary: "A file inside a granted folder, the file itself, indexed or not (Range; 25 MB an answer through the relay, 32 MB on the local network)",
+      querystring: {type: "object", required: ["root", "path"], properties: {root: {type: "string", maxLength: 64}, path: {type: "string", minLength: 1, maxLength: 4096}}}},
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply); if (!auth) return;
+      if (!auth.sessionId) return reply.code(403).send({error: "session_required"});
+      await serveBrowsedFile(req, reply, {userId: auth.userId, roots: scopedFolders(auth.userId, {mode: "all"}), root: req.query.root, path: req.query.path});
+      return reply;
+    },
+  });
+
+  // Another computer's folder, through this one (documents/remote.ts
+  // browseRemote); this computer's own id browses here.
+  app.get<{Params: {computer_id: string}; Querystring: Record<string, string>}>("/local_documents/remote/:computer_id/browse", {
+    schema: {tags: ["documents"], security, summary: "A folder of another trusted computer of the account, through this one",
+      params: {type: "object", required: ["computer_id"], properties: {computer_id: {type: "string", minLength: 1, maxLength: 64}}}},
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply); if (!auth) return;
+      if (!auth.sessionId) return reply.code(403).send({error: "session_required"});
+      if (isSelf(req.params.computer_id)) {
+        const request = readBrowseRequest(req.query);
+        if (!request) return reply.code(400).send({error: "invalid_directory"});
+        return sendBrowse(reply, auth.userId, request);
+      }
+      const requester = await meshRequester(req, auth, () => meshRoster().get());
+      const answer = await browseRemote({userId: auth.userId, client: auth.sessionId, computerId: req.params.computer_id, query: req.query, requester});
+      return reply.code(answer.status).send(answer.body);
+    },
+  });
+
+  app.get<{Params: {computer_id: string}; Querystring: {root?: string; path?: string}}>("/local_documents/remote/:computer_id/browse/raw", {
+    schema: {tags: ["documents"], security, summary: "A file browsed on another trusted computer of the account, the file itself, through this one (Range)",
+      params: {type: "object", required: ["computer_id"], properties: {computer_id: {type: "string", minLength: 1, maxLength: 64}}}},
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply); if (!auth) return;
+      if (!auth.sessionId) return reply.code(403).send({error: "session_required"});
+      if (isSelf(req.params.computer_id)) {
+        await serveBrowsedFile(req, reply, {userId: auth.userId, roots: scopedFolders(auth.userId, {mode: "all"}), root: req.query.root, path: req.query.path});
+        return reply;
+      }
+      const requester = await meshRequester(req, auth, () => meshRoster().get());
+      await serveRemoteBrowsedFile(req, reply, {userId: auth.userId, client: auth.sessionId, computerId: req.params.computer_id, root: req.query.root, path: req.query.path, requester});
+      return reply;
     },
   });
 

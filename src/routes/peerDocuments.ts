@@ -5,6 +5,7 @@ import { accountCredentials } from "../account/service.js";
 import { sqlite } from "../db.js";
 import { folderName, indexStatus, listFolders } from "../documents/library.js";
 import { listGrantedFiles, readListingRequest } from "../documents/fileListing.js";
+import { browseGranted, readBrowseRequest, serveBrowsedFile } from "../documents/browse.js";
 import { relativeToFolder, retrieveDocuments, scopedFolders } from "../documents/retrieval.js";
 import { EMBED_MODEL, semanticStatus } from "../documents/semantic.js";
 import { auditOf, recordAccess } from "../peerDocuments/audit.js";
@@ -27,6 +28,9 @@ import { readRequester, type Requester } from "../sessionTrust.js";
 //        → {computer_id, status, where[], total, limited, files[{name, folder, size, kind, modified_at}]}
 //        the files of a granted folder from the file system (documents/fileListing.ts),
 //        « folder » being a usual folder's id resolved here (« downloads » → this computer's ~/Downloads)
+//   GET  /api/v1/peer/documents/browse?root=&path=&sort=&order=&offset=&limit=&q=
+//        → a folder inside a granted folder as the file system has it (documents/browse.ts)
+//   GET  /api/v1/peer/documents/browse/raw?root=&path=   a browsed file itself, indexed or not
 //   GET  /api/v1/peer/documents/files/:id?offset=   indexed text, 20 passages a page
 //   GET  /api/v1/peer/documents/files/:id/raw        the file, with Range (peerDocuments/raw.ts)
 //   GET  /api/v1/peers/:id/audit            what that computer read here (« Appareils »)
@@ -41,6 +45,9 @@ import { readRequester, type Requester } from "../sessionTrust.js";
 
 export const PEER_DOCUMENTS_PER_MINUTE = 30;
 const limiter = createRateLimiter({ limit: PEER_DOCUMENTS_PER_MINUTE, windowMs: 60_000 });
+/// Browsing goes folder by folder, page by page: a budget of its own.
+export const PEER_BROWSE_PER_MINUTE = 120;
+const browseLimiter = createRateLimiter({ limit: PEER_BROWSE_PER_MINUTE, windowMs: 60_000 });
 const MAX_FILES = 20;
 const MAX_SNIPPET = 300;
 
@@ -56,11 +63,11 @@ function refuse(reply: FastifyReply, status: number, error: PeerDocumentsError, 
 /// Who asks (from its session), within its budget, trusted — and this
 /// computer's own id in the account, which every source is named after:
 /// without an account there is no roster, so nobody is trusted.
-async function peerCaller(req: FastifyRequest, reply: FastifyReply): Promise<Caller | null> {
+async function peerCaller(req: FastifyRequest, reply: FastifyReply, budget = limiter): Promise<Caller | null> {
   const auth = await requireAuth(req, reply);
   if (!auth) return null;
   if (auth.sessionId) {
-    const verdict = limiter.hit(auth.sessionId);
+    const verdict = budget.hit(auth.sessionId);
     if (!verdict.allowed) {
       reply.header("Retry-After", String(verdict.retryAfterSeconds));
       refuse(reply, 429, "rate_limited", { retry_after_s: Math.max(1, verdict.retryAfterSeconds) });
@@ -238,6 +245,37 @@ export async function peerDocumentRoutes(app: FastifyInstance) {
         folders: folders.map((f) => ({ id: f.id, name: f.name, documents: f.documents, indexed: f.indexed })),
         index: { running: indexStatus(caller.userId).running },
       });
+    },
+  });
+
+  app.get<{ Querystring: Record<string, string> }>("/peer/documents/browse", {
+    schema: { tags: ["documents"], summary: "A folder inside one of this computer's granted folders (names, kinds, sizes, dates; no path), for a computer of the account it trusts" },
+    handler: async (req, reply) => {
+      const caller = await peerCaller(req, reply, browseLimiter);
+      if (!caller) return;
+      const request = readBrowseRequest(req.query);
+      if (!request) return refuse(reply, 400, "bad_request");
+      const roots = scopedFolders(caller.userId, { mode: "all" });
+      if (!roots.length) return refuse(reply, 403, "documents_off");
+      const result = await browseGranted(caller.userId, roots, request);
+      if ("error" in result) return reply.code(result.error === "invalid_path" ? 400 : 404).send({ error: result.error === "invalid_path" ? "bad_request" : "not_found" });
+      recordAccess({ userId: caller.userId, computerId: caller.computerId, sessionId: caller.sessionId, requester: caller.requester, action: "browse", documents: [{ id: null, name: result.breadcrumbs[result.breadcrumbs.length - 1]!.name }] });
+      return reply.send({ computer_id: caller.self, ...result });
+    },
+  });
+
+  app.get<{ Querystring: { root?: string; path?: string } }>("/peer/documents/browse/raw", {
+    schema: {
+      tags: ["documents"],
+      summary: "A file browsed in one of this computer's granted folders, the file itself, indexed or not (Range; 25 MB an answer through the relay, 32 MB on the local network)",
+    },
+    // No querystring schema: the caller is known before its query is judged.
+    handler: async (req, reply) => {
+      const caller = await peerCaller(req, reply, browseLimiter);
+      if (!caller) return;
+      const sent = await serveBrowsedFile(req, reply, { userId: caller.userId, roots: scopedFolders(caller.userId, { mode: "all" }), root: req.query.root, path: req.query.path });
+      if (sent) recordAccess({ userId: caller.userId, computerId: caller.computerId, sessionId: caller.sessionId, requester: caller.requester, action: "raw", documents: [{ id: sent.documentId, name: sent.name }], bytes: sent.bytes });
+      return reply;
     },
   });
 

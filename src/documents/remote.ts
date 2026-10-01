@@ -527,15 +527,28 @@ export async function serveRemoteRaw(
     reply.code(403).send({ error: "person_device_required" });
     return;
   }
-  const peer = peerById(args.userId, args.computerId);
-  if (!peer || peer.state !== "linked" || !peer.enabled || !trustedNow(peer.computerId, peer.tunnelKey)) {
+  const peer = meshPeerOf(args.userId, args.computerId);
+  if (!peer) {
     reply.code(404).send({ error: "not_found" });
     return;
   }
+  await passRemoteFile(req, reply, peer, `/api/v1/peer/documents/files/${encodeURIComponent(args.documentId)}/raw`, args.requester, args.documentId);
+}
+
+/// A computer of the verified roster this one is linked with, or null.
+function meshPeerOf(userId: string, computerId: string): PeerRow | null {
+  const peer = peerById(userId, computerId);
+  return peer && peer.state === "linked" && peer.enabled && trustedNow(peer.computerId, peer.tunnelKey) ? peer : null;
+}
+
+/// Asks `peer` for a file at `path` (its raw route) over the sealed tunnel,
+/// with the client's Range, and passes the answer on.
+async function passRemoteFile(req: FastifyRequest, reply: FastifyReply, peer: PeerRow, path: string, requester: Requester, logId: string | null): Promise<void> {
+  const args = { documentId: logId, requester };
   const range = Array.isArray(req.headers.range) ? req.headers.range[0] : req.headers.range;
   let response: Response;
   try {
-    response = await peerRequest(peer, `/api/v1/peer/documents/files/${encodeURIComponent(args.documentId)}/raw`, {
+    response = await peerRequest(peer, path, {
       headers: { ...(range && /^bytes=\d*-\d*$/.test(range.trim()) ? { range: range.trim() } : {}), ...requesterHeaders(args.requester) },
       signal: AbortSignal.timeout(120_000),
     });
@@ -543,7 +556,7 @@ export async function serveRemoteRaw(
     reply.code(503).send({ error: "computer_unavailable", computer_id: peer.computerId, computer_name: peer.name, message: err instanceof Error ? err.message : String(err) });
     return;
   }
-  req.log.info({ computer_id: peer.computerId, document_id: args.documentId, requester: args.requester.id, status: response.status, bytes: response.headers.get("content-length") }, "cited document passed on from another computer");
+  req.log.info({ computer_id: peer.computerId, document_id: args.documentId, requester: args.requester.id, status: response.status, bytes: response.headers.get("content-length") }, "document passed on from another computer");
   if (response.status === 401 || response.status === 403) {
     await response.body?.cancel().catch(() => undefined);
     reply.code(404).send({ error: "not_found" });
@@ -565,4 +578,134 @@ export async function serveRemoteRaw(
     return;
   }
   reply.send(Readable.fromWeb(response.body as import("node:stream/web").ReadableStream<Uint8Array>));
+}
+
+// ── another computer's folders, browsed through this one ─────────────────
+
+export const REMOTE_BROWSE_PER_MINUTE = 120;
+const browseLimiter = createRateLimiter({ limit: REMOTE_BROWSE_PER_MINUTE, windowMs: 60_000 });
+const BROWSE_KEYS = ["root", "path", "sort", "order", "offset", "limit", "q"] as const;
+
+type RemoteEntry = { name: string; path: string; kind: "dir" | "file"; size: number | null; modified: string; type: string; indexed: boolean; document_id?: string };
+
+/// Another computer's browse answer, as far as it holds to the contract: never an absolute path.
+export function readPeerBrowse(body: unknown): Record<string, unknown> | null {
+  const b = body as Record<string, unknown> | null;
+  const root = b?.root as Record<string, unknown> | null | undefined;
+  const rootName = cleanName(root?.name);
+  if (!b || !root || typeof root.id !== "string" || !LOCAL_ID.test(root.id) || !rootName || !Array.isArray(b.entries)) return null;
+  const relOrRoot = (value: unknown) => (value === "" ? "" : cleanRelPath(value));
+  const path = relOrRoot(b.path);
+  if (path === undefined) return null;
+  const crumbs = (Array.isArray(b.breadcrumbs) ? b.breadcrumbs.slice(0, 64) : []).flatMap((raw) => {
+    const c = raw as Record<string, unknown> | null;
+    const name = cleanName(c?.name);
+    const at = relOrRoot(c?.path);
+    return name && at !== undefined ? [{ name, path: at }] : [];
+  });
+  const entries = b.entries.slice(0, 200).flatMap((raw): RemoteEntry[] => {
+    const e = raw as Record<string, unknown> | null;
+    const name = cleanName(e?.name);
+    const at = cleanRelPath(e?.path);
+    if (!e || !name || !at || (e.kind !== "dir" && e.kind !== "file")) return [];
+    return [
+      {
+        name,
+        path: at,
+        kind: e.kind,
+        size: e.kind === "file" && Number.isSafeInteger(e.size) && (e.size as number) >= 0 ? (e.size as number) : null,
+        modified: typeof e.modified === "string" && !Number.isNaN(Date.parse(e.modified)) ? new Date(e.modified).toISOString() : new Date(0).toISOString(),
+        type: typeof e.type === "string" && /^[a-z0-9]{1,16}$/.test(e.type) ? e.type : e.kind === "dir" ? "folder" : "file",
+        indexed: e.indexed === true,
+        ...(typeof e.document_id === "string" && LOCAL_ID.test(e.document_id) ? { document_id: e.document_id } : {}),
+      },
+    ];
+  });
+  const int = (value: unknown) => (Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : null);
+  return {
+    root: { id: root.id, name: rootName },
+    path,
+    breadcrumbs: crumbs.length ? crumbs : [{ name: rootName, path: "" }],
+    entries,
+    total: int(b.total) ?? entries.length,
+    offset: int(b.offset) ?? 0,
+    next_offset: int(b.next_offset),
+    sort: ["name", "date", "size"].includes(b.sort as string) ? b.sort : "name",
+    order: b.order === "desc" ? "desc" : "asc",
+    ...(typeof b.query === "string" ? { query: b.query.slice(0, 200) } : {}),
+    limited: b.limited === true,
+  };
+}
+
+/**
+ * GET /local_documents/remote/:computer_id/browse: a folder of another
+ * computer of the person's verified roster (its GET /api/v1/peer/documents/
+ * browse, over the sealed tunnel, under this computer's `peer:` session —
+ * that computer checks it is trusted, applies its grants and writes it in
+ * its audit), for this server's owner or one of the person's own devices.
+ * 120 a minute per client. Returns the status and body to send.
+ */
+export async function browseRemote(args: {
+  userId: string;
+  client: string;
+  computerId: string;
+  query: Record<string, unknown>;
+  requester: Requester | null;
+}): Promise<{ status: number; body: Record<string, unknown> }> {
+  const verdict = browseLimiter.hit(args.client);
+  if (!verdict.allowed) return { status: 429, body: { error: "rate_limited", retry_after_s: Math.max(1, verdict.retryAfterSeconds) } };
+  if (!args.requester) return { status: 403, body: { error: "person_device_required" } };
+  const peer = meshPeerOf(args.userId, args.computerId);
+  if (!peer) return { status: 404, body: { error: "not_found" } };
+  const params = new URLSearchParams();
+  for (const key of BROWSE_KEYS) {
+    const value = args.query[key];
+    if (typeof value === "string" || typeof value === "number") params.set(key, String(value));
+  }
+  let response: Response;
+  try {
+    response = await peerRequest(peer, `/api/v1/peer/documents/browse?${params}`, { headers: requesterHeaders(args.requester), signal: AbortSignal.timeout(20_000) });
+  } catch (err) {
+    if (err instanceof PeerUnavailableError) down.set(peer.computerId, Date.now() + DOWN_MS);
+    return { status: 503, body: { error: "computer_unavailable", computer_id: peer.computerId, computer_name: peer.name } };
+  }
+  const body = await response.json().catch(() => null);
+  const named = { computer_id: peer.computerId, computer_name: peer.name };
+  if (response.status === 401 || response.status === 403) {
+    const error = (body as { error?: unknown } | null)?.error;
+    return { status: 403, body: { error: error === "documents_off" ? "documents_off" : "not_trusted", ...named } };
+  }
+  if (response.status === 404 || response.status === 400 || response.status === 429) {
+    const error = response.status === 404 ? "not_found" : response.status === 400 ? "bad_request" : "rate_limited";
+    return { status: response.status, body: { error, ...named } };
+  }
+  const result = response.ok && (body as { computer_id?: unknown } | null)?.computer_id === peer.computerId ? readPeerBrowse(body) : null;
+  if (!result) return { status: 502, body: { error: "computer_unavailable", ...named } };
+  down.delete(peer.computerId);
+  return { status: 200, body: { ...named, ...result } };
+}
+
+/// GET /local_documents/remote/:computer_id/browse/raw: a file browsed on
+/// another computer, as serveRemoteRaw passes a cited document on.
+export async function serveRemoteBrowsedFile(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  args: { userId: string; client: string; computerId: string; root: unknown; path: unknown; requester: Requester | null },
+): Promise<void> {
+  const verdict = rawLimiter.hit(args.client);
+  if (!verdict.allowed) {
+    reply.header("Retry-After", String(Math.max(1, verdict.retryAfterSeconds))).code(429).send({ error: "rate_limited", retry_after_s: Math.max(1, verdict.retryAfterSeconds) });
+    return;
+  }
+  if (!args.requester) {
+    reply.code(403).send({ error: "person_device_required" });
+    return;
+  }
+  const peer = meshPeerOf(args.userId, args.computerId);
+  if (!peer || typeof args.root !== "string" || !LOCAL_ID.test(args.root) || !cleanRelPath(args.path)) {
+    reply.code(404).send({ error: "not_found" });
+    return;
+  }
+  const params = new URLSearchParams({ root: args.root, path: args.path as string });
+  await passRemoteFile(req, reply, peer, `/api/v1/peer/documents/browse/raw?${params}`, args.requester, null);
 }

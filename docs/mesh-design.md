@@ -88,6 +88,20 @@ embed model), ≤3 passages/doc, ≥1 per computer above floor, trimmed to conte
 no path. Citations: twoody://doc/<computer>/<doc>, streamed from that computer (direct tunnel, or through the
 answering computer). Pi targets: ≤400 ms p50 / ≤1.6 s p95 added to time-to-first-token on LAN.
 
+### 2b. Browsing each computer's folders
+src/documents/browse.ts: GET …/browse?root=<granted folder id>&path=<relative>&sort=name|date|size&order=&offset=
+&limit≤200&q= → {root{id,name}, path, breadcrumbs[{name,path}], entries[{name, path, kind dir|file, size, modified,
+type, indexed, document_id?}], total, next_offset, limited}; GET …/browse/raw?root=&path= serves any regular file
+there, indexed or not (peerDocuments/raw.ts: Range, caps, nosniff, sandbox CSP, Content-Type allowlist, the rest
+octet-stream). Only inside a grant: relative path, no « . »/« .. », nothing hidden, no folder the indexer's walk
+skips (~/Library, bundles…), no symbolic link on the way (realpath must equal the path asked) nor listed, folderRisk
+on the result; no absolute path out. `q` searches names under the folder shown (depth 12, 20 000 entries, 500
+matches). Routes: /local_documents/browse[/raw] (a person's session; `folder_id`+`directory` keeps the index's
+older view), /peer/documents/browse[/raw] (trusted peers, 120 req/min/session, audited as browse/raw), and
+/local_documents/remote/:computer_id/browse[/raw] (owner or person devices, through this computer's peer session).
+« Poser une question sur ce dossier » scopes the conversation to the granted folder ("<computer>:<folder>") and names
+the sub-folder in the prompt; a sub-folder scope in document access is not there yet.
+
 ## 3. Conversations & memories
 - One history in the vault; every trusted computer runs vault sync inside twoody-server (src/vault/{crypto,client,
   sync,memories,roster}.ts, port of twoody-desktop/src/shared/vault*.ts, checked on twoody-app vault vectors);

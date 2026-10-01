@@ -259,6 +259,34 @@ test("the Documents screen lists the Pi's folders through the Mac, ids as a docu
   assert.equal((await app.inject({ url: "/local_documents/computers" })).statusCode, 401);
 });
 
+test("the Pi's folders are browsed and its files opened through the Mac (indexed or not); outside the roster, nothing", async () => {
+  await withPi();
+  const browse = (path: string, query: string) => app.inject({ url: `/api/v1/local_documents/remote/${PI}/${path}?${query}`, headers: auth });
+  const top = await browse("browse", "root=pi-folder");
+  assert.equal(top.statusCode, 200, top.body);
+  const listed = top.json();
+  assert.equal(listed.computer_id, PI);
+  assert.equal(listed.computer_name, "Raspberry Pi");
+  assert.deepEqual(listed.breadcrumbs, [{ name: "Pi", path: "" }]);
+  assert.ok(listed.entries.some((e: { name: string; kind: string }) => e.name === "Downloads" && e.kind === "dir"), top.body);
+  const contract = listed.entries.find((e: { name: string }) => e.name.endsWith(".txt"));
+  assert.equal(contract.indexed, true);
+  assert.ok(!top.body.includes(docsRoot), "no absolute path from the Pi");
+  const downloads = (await browse("browse", "root=pi-folder&path=Downloads&sort=date")).json();
+  assert.deepEqual(downloads.entries.map((e: { name: string; indexed: boolean; size: number }) => [e.name, e.indexed, e.size]), [["photo-du-pi.png", false, 512]]);
+  const photo = await fetch(`${macUrl}/api/v1/local_documents/remote/${PI}/browse/raw?root=pi-folder&path=Downloads%2Fphoto-du-pi.png`, { headers: auth });
+  assert.equal(photo.status, 200);
+  assert.equal(photo.headers.get("content-type"), "image/png");
+  assert.equal((await photo.arrayBuffer()).byteLength, 512);
+  // Escapes are the Pi's to refuse, and the Mac's to refuse before asking.
+  assert.equal((await browse("browse", "root=pi-folder&path=..")).statusCode, 400);
+  assert.equal((await browse("browse/raw", "root=pi-folder&path=..%2Fsecret")).statusCode, 404);
+  await withoutPi();
+  assert.equal((await browse("browse", "root=pi-folder")).statusCode, 404);
+  await withPi();
+  assert.equal((await app.inject({ url: `/api/v1/local_documents/remote/${PI}/browse?root=pi-folder` })).statusCode, 401);
+});
+
 test("the newest file of the Pi's Downloads, asked on the Mac, is listed on the Pi through the tunnel", async () => {
   setFanOutDeadlines({ direct: 10_000, relay: 10_000 });
   await withPi();

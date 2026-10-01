@@ -30,14 +30,15 @@ for (const name of ["requester", "requester_name"]) {
   if (!auditColumns.some((column) => column.name === name)) sqlite.exec(`ALTER TABLE peer_document_audit ADD COLUMN ${name} TEXT`);
 }
 
-export type AuditAction = "search" | "folders" | "list" | "read" | "raw";
+export type AuditAction = "search" | "folders" | "list" | "browse" | "read" | "raw";
 
 export interface AuditEntry {
   userId: string;
   computerId: string;
   sessionId: string | null;
   action: AuditAction;
-  documents?: Array<{ id: string; name: string | null }>;
+  /// `id` null: a file browsed in a granted folder that the index does not hold.
+  documents?: Array<{ id: string | null; name: string | null }>;
   bytes?: number | null;
   at?: number;
   /// Whom the computer asked for, as it said.
