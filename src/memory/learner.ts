@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { db, memories, sqlite } from "../db.js";
-import { inflight } from "../account/inflight.js";
+import { inflight, onChatGeneration } from "../account/inflight.js";
 import { typedText } from "../documentBlocks.js";
 import { normaliseMemoryContent } from "../vault/contracts.js";
 import { isForgottenFact, learnedFactId, memoryWritten } from "../vault/memories.js";
@@ -20,6 +20,11 @@ import { createProject, knownProjects, updateProject } from "../projects/project
 // only reads right with what surrounds it, and one model call per message
 // slowed the next answer on a small computer. When:
 //
+//   - after each answer (learnAfterAnswer): what was just said, with the
+//     messages before it as context, so « Mémoire enregistrée » shows
+//     seconds later (Jimmy, 01/10/2026: « C'est noté » and nothing kept).
+//     The next message stops it at once (yieldToAnswer) and it starts over
+//     after: an answer never waits for it;
 //   - a conversation idle for LEARN_IDLE_MS, looked for every TICK_MS;
 //   - at once when the person starts a new conversation (learnSoon), so that
 //     the one before is known in the next — once the computer answers
@@ -46,6 +51,10 @@ const ASSISTANT_LINE_CHARS = 300;
 const MAX_FACTS = 8;
 const MAX_KNOWN = 20;
 const RETRY_AFTER_MS = 30 * 60_000;
+/// Messages already read, given again before the new ones so that « ils »,
+/// « elle » or « en 2019 » read right; never learned from twice.
+const EARLIER_MESSAGES = 6;
+const EARLIER_CHARS = 3_000;
 
 export const SENSITIVE_CATEGORIES = new Set(["health", "finances", "religion", "politics", "sexuality", "legal", "ids", "address"]);
 const CATEGORIES = new Set([...SENSITIVE_CATEGORIES, "identity", "family", "work", "home", "preference", "habit", "pet", "project", "date", "other"]);
@@ -63,7 +72,7 @@ const HYPOTHESIS = /\b(?:si un jour|un jour peut|si j'avais|si j'[ée]tais|si (?
 
 export type LearnMessages = Array<{ role: "system" | "user"; content: string }>;
 /// Runs the learning prompt on a model (src/routes/queries.ts gives it).
-export type LearningModel = (userId: string, messages: LearnMessages) => Promise<string>;
+export type LearningModel = (userId: string, messages: LearnMessages, signal?: AbortSignal) => Promise<string>;
 
 let model: LearningModel | null = null;
 export function setLearningModel(fn: LearningModel | null) {
@@ -86,8 +95,9 @@ export interface KnownMemory {
   text: string;
 }
 
-export function learningPrompt(lines: Array<{ role: "person" | "assistant"; content: string }>, known: KnownMemory[], projects: KnownProject[] = []): LearnMessages {
-  const transcript = lines.map((line) => `${line.role === "person" ? "PERSON" : "ASSISTANT"}: ${line.content}`).join("\n");
+export function learningPrompt(lines: Array<{ role: "person" | "assistant"; content: string }>, known: KnownMemory[], projects: KnownProject[] = [], earlier: Array<{ role: "person" | "assistant"; content: string }> = []): LearnMessages {
+  const asText = (rows: typeof lines) => rows.map((line) => `${line.role === "person" ? "PERSON" : "ASSISTANT"}: ${line.content}`).join("\n");
+  const transcript = asText(lines);
   const knownText = known.length ? known.map((memory) => `${memory.ref}: ${memory.text}`).join("\n") : "(none)";
   const projectsText = projects.length ? projects.map((project) => `${project.ref}: ${project.title} (${project.status})`).join("\n") : "(none)";
   return [
@@ -99,11 +109,12 @@ export function learningPrompt(lines: Array<{ role: "person" | "assistant"; cont
         "lasting preferences, habits, important dates, and how they like to be answered.\n" +
         "Rules:\n" +
         "- Only from PERSON lines. ASSISTANT lines are context: never take a fact from them, even one the person does not contradict, and never mix one into a fact the person says.\n" +
+        "- EARLIER, when given, was read already: take no fact from it, only who « he », « they », « il », « ils » are in CONVERSATION (« et ils se sont mariés en 2019 » after « David est marié à Dafna » → « David et Dafna se sont mariés en 2019 »).\n" +
         "- The people in their life count too: a relative's or a colleague's name, what happens to them (« Son collègue Paul a eu une fille, Lina »).\n" +
         "- Not questions, hypotheses, wishes, plans that may not happen, today's mood or task, facts about the world.\n" +
-        "- Not what KNOWN already says. When the person changes a KNOWN fact, give the new fact and set \"supersedes\" to its ref.\n" +
+        "- Not what KNOWN already says. When the person changes a KNOWN fact, give the new fact and set \"supersedes\" to its ref. A fact that adds to a KNOWN one without contradicting it (a date, a detail) supersedes nothing.\n" +
         "- When the person corrects themselves, only the corrected fact.\n" +        "- Never guess what is not said: who someone is, an animal's species, a relation, a date.\n" +
-        "- text: one short sentence about the person, in the language the PERSON writes in, never translated (« A une fille, Léa, 7 ans », « Préfère des réponses courtes »).\n" +
+        "- text: one short sentence about the person, in the language the PERSON writes in, never translated (« A une fille, Léa, 7 ans », « Préfère des réponses courtes »). About someone else, name them: « David travaille chez Check Point », never « Travaille chez Check Point ».\n" +
         "- evidence: the exact words of the PERSON line it comes from, copied character for character.\n" +
         "- kind: \"feedback\" for how to answer, \"project\" for something they work on, else \"user\".\n" +
         `- category: one of ${[...CATEGORIES].join(", ")} (health, finances, religion, politics, sexuality, legal, ids — identity or account numbers — and address — their precise home address — are sensitive).\n` +
@@ -116,7 +127,7 @@ export function learningPrompt(lines: Array<{ role: "person" | "assistant"; cont
         "Answer with JSON only: {\"facts\":[{\"text\":\"…\",\"kind\":\"user\",\"category\":\"…\",\"confidence\":0.9,\"evidence\":\"…\",\"supersedes\":null}],\"projects\":[{\"title\":\"…\",\"name\":\"…\",\"kind\":\"purchase\",\"size\":\"small\",\"status\":\"idea\",\"due\":null,\"evidence\":\"…\",\"confidence\":0.8,\"ref\":null}]}. " +
         "Most conversations hold nothing to remember: then {\"facts\":[],\"projects\":[]}.",
     },
-    { role: "user", content: `KNOWN:\n${knownText}\n\nPROJECTS:\n${projectsText}\n\nCONVERSATION:\n${transcript}` },
+    { role: "user", content: `KNOWN:\n${knownText}\n\nPROJECTS:\n${projectsText}\n\n${earlier.length ? `EARLIER:\n${asText(earlier)}\n\n` : ""}CONVERSATION:\n${transcript}` },
   ];
 }
 
@@ -338,8 +349,11 @@ export interface Judgement {
 /// No database: what it needs is handed to it.
 export function judgeFacts(
   facts: LearnedFact[],
-  context: { personLines: string[]; assistantLines?: string[]; known: KnownMemory[]; refused?: ReadonlySet<string>; forgotten?: (text: string) => boolean; askedLines?: ReadonlySet<string> },
+  context: { personLines: string[]; assistantLines?: string[]; known: KnownMemory[]; refused?: ReadonlySet<string>; forgotten?: (text: string) => boolean; askedLines?: ReadonlySet<string>; earlierPersonLines?: string[] },
 ): Judgement {
+  // What the person said before (EARLIER) names who « ils » are: their
+  // words, never the evidence of a fact.
+  const saidLines = [...context.personLines, ...(context.earlierPersonLines ?? [])];
   const out: Judgement = { save: [], propose: [], dropped: [] };
   const seen = new Set<string>();
   const knownNorms = new Map(context.known.map((memory) => [normaliseMemoryContent(memory.text), memory]));
@@ -351,7 +365,7 @@ export function judgeFacts(
     if (!found) { out.dropped.push({ fact, reason: "no_evidence" }); continue; }
     // « Retiens que… »: kept as said already, at once (memoryLearning.ts).
     if (context.askedLines?.has(found.line)) { out.dropped.push({ fact, reason: "asked" }); continue; }
-    if (fromAssistant(fact.text, context.personLines, context.assistantLines ?? [])) { out.dropped.push({ fact, reason: "from_assistant" }); continue; }
+    if (fromAssistant(fact.text, saidLines, context.assistantLines ?? [])) { out.dropped.push({ fact, reason: "from_assistant" }); continue; }
     if (context.refused?.has(norm)) { out.dropped.push({ fact, reason: "refused" }); continue; }
     if (context.forgotten?.(fact.text)) { out.dropped.push({ fact, reason: "forgotten" }); continue; }
     const supersedes = fact.supersedes ? context.known.find((memory) => memory.ref === fact.supersedes) ?? null : null;
@@ -360,7 +374,7 @@ export function judgeFacts(
       out.dropped.push({ fact, reason: "known" });
       continue;
     }
-    if (fromKnown(fact.text, context.personLines, context.known)) { out.dropped.push({ fact, reason: "from_known" }); continue; }
+    if (fromKnown(fact.text, saidLines, context.known)) { out.dropped.push({ fact, reason: "from_known" }); continue; }
     let confidence = fact.confidence;
     if (firstPerson(fact.evidence)) confidence += 0.15;
     if (HEDGING.test(found.around)) confidence -= 0.3;
@@ -417,6 +431,32 @@ export interface LearnResult {
 
 const failedAt = new Map<string, number>();
 const busyDiscussions = new Set<string>();
+/// The learning call running now, stopped when an answer starts.
+let current: AbortController | null = null;
+/// Conversations to read as soon as the computer answers nothing.
+const soonDiscussions = new Set<string>();
+
+/// An answer starts: the learning running now stops at once, and starts
+/// over after it (src/routes/queries.ts).
+export function yieldToAnswer() {
+  current?.abort();
+}
+onChatGeneration(yieldToAnswer);
+
+/// Whether this conversation is being read or waits to be (the app asks
+/// again for « Mémoire enregistrée » while it is).
+export function isLearning(discussionId: string): boolean {
+  return busyDiscussions.has(discussionId) || soonDiscussions.has(discussionId);
+}
+
+/// The person's message was answered: what was said is read at once, once
+/// the computer is free (none for a conversation whose memory mode is
+/// « Aucune », learnable() says).
+export function learnAfterAnswer(discussionId: string) {
+  if (!started) return;
+  soonDiscussions.add(discussionId);
+  schedule(AFTER_ANSWER_MS);
+}
 
 /// Learns from what was said in this conversation since last time.
 export async function learnDiscussion(discussionId: string, options: { ask?: LearningModel | null; now?: number } = {}): Promise<LearnResult | null> {
@@ -434,16 +474,23 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
     advance();
     return result;
   }
-  const lines: Array<{ role: "person" | "assistant"; content: string }> = [];
-  for (const message of rows) {
+  const lineOf = (message: { role: string; content: string }): { role: "person" | "assistant"; content: string } | null => {
     if (message.role === "user") {
       const text = typedText(message.content).replace(/\s+/g, " ").trim().slice(0, PERSON_LINE_CHARS);
-      if (text) lines.push({ role: "person", content: text });
-    } else if (message.role === "assistant") {
-      const text = message.content.replace(/<think>[\s\S]*?(?:<\/think>|$)/g, "").replace(/\s+/g, " ").trim();
-      if (text) lines.push({ role: "assistant", content: text.length > ASSISTANT_LINE_CHARS ? `${text.slice(0, ASSISTANT_LINE_CHARS - 1)}…` : text });
+      return text ? { role: "person", content: text } : null;
     }
-  }
+    if (message.role === "assistant") {
+      const text = message.content.replace(/<think>[\s\S]*?(?:<\/think>|$)/g, "").replace(/\s+/g, " ").trim();
+      return text ? { role: "assistant", content: text.length > ASSISTANT_LINE_CHARS ? `${text.slice(0, ASSISTANT_LINE_CHARS - 1)}…` : text } : null;
+    }
+    return null;
+  };
+  const lines = rows.map(lineOf).filter((line): line is NonNullable<typeof line> => line !== null);
+  // The messages read before, as context only (newest kept when long).
+  const before = (sqlite.prepare("SELECT role, content FROM messages WHERE discussion_id = ? AND rowid <= ? ORDER BY rowid DESC LIMIT ?")
+    .all(row.id, row.learned_through ?? 0, EARLIER_MESSAGES) as Array<{ role: string; content: string }>).reverse();
+  let earlier = before.map(lineOf).filter((line): line is NonNullable<typeof line> => line !== null);
+  while (earlier.length && earlier.reduce((sum, line) => sum + line.content.length + 12, 0) > EARLIER_CHARS) earlier = earlier.slice(1);
   // The latest part, when the conversation is long.
   let total = 0;
   let from = lines.length;
@@ -463,17 +510,26 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
     const projects = knownProjects(row.user_id);
     let answer: string;
     try {
-      answer = await ask(row.user_id, learningPrompt(shown, known, projects));
+      current = new AbortController();
+      answer = await ask(row.user_id, learningPrompt(shown, known, projects, earlier), current.signal);
     } catch (err) {
+      // Stopped for an answer: read again once it is written, not later.
+      if (current?.signal.aborted) {
+        soonDiscussions.add(row.id);
+        return null;
+      }
       failedAt.set(row.id, options.now ?? Date.now());
       throw err;
+    } finally {
+      current = null;
     }
     failedAt.delete(row.id);
     const assistantLines = shown.filter((line) => line.role === "assistant").map((line) => line.content);
     const askedLines = new Set(personLines.filter((line) => askedToRemember(line) !== null));
     const facts = parseLearning(answer);
     const refused = refusedNorms(row.user_id);
-    const judged = judgeFacts(facts, { personLines, assistantLines, known, refused, forgotten: isForgottenFact, askedLines });
+    const earlierPersonLines = earlier.filter((line) => line.role === "person").map((line) => line.content);
+    const judged = judgeFacts(facts, { personLines, assistantLines, known, refused, forgotten: isForgottenFact, askedLines, earlierPersonLines });
     const judgedProjects = judgeProjects(parseProjects(answer), { personLines, known: projects, refused });
     // What it made of the conversation, for the Diagnostic screen.
     recordTrace(row.user_id, {
@@ -702,6 +758,8 @@ let started = false;
 const soon = new Map<string, string | null>();
 const BUSY_RETRY_MS = 5_000;
 const SOON_MS = 2_000;
+const AFTER_ANSWER_MS = 300;
+const AFTER_BUSY_MS = 1_000;
 
 async function runOnce(now = Date.now()) {
   if (running || !model) return;
@@ -709,7 +767,10 @@ async function runOnce(now = Date.now()) {
   try {
     const urgent = [...soon.entries()];
     soon.clear();
+    const justAnswered = [...soonDiscussions];
+    soonDiscussions.clear();
     const queue = [
+      ...justAnswered,
       ...urgent.flatMap(([userId, except]) => pendingDiscussions({ userId, idleMs: 0, except, now })),
       ...pendingDiscussions({ idleMs: LEARN_IDLE_MS, now }),
     ];
@@ -717,7 +778,9 @@ async function runOnce(now = Date.now()) {
       // An answer goes first: what is left waits for the computer to be quiet.
       if (inflight() > 0) {
         for (const [userId, except] of urgent) soon.set(userId, except);
-        schedule(BUSY_RETRY_MS);
+        for (const waiting of justAnswered) soonDiscussions.add(waiting);
+        // What was just said is looked at again soon after the answer.
+        schedule(soonDiscussions.size ? AFTER_BUSY_MS : BUSY_RETRY_MS);
         return;
       }
       await learnDiscussion(id).catch(() => null);
@@ -733,7 +796,7 @@ function schedule(ms: number) {
   timer = setTimeout(() => {
     timer = null;
     void runOnce().finally(() => {
-      if (!timer) schedule(soon.size ? BUSY_RETRY_MS : TICK_MS);
+      if (!timer) schedule(soonDiscussions.size ? AFTER_BUSY_MS : soon.size ? BUSY_RETRY_MS : TICK_MS);
     });
   }, ms);
   timer.unref?.();

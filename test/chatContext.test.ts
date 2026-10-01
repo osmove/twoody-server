@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildChatMessages, buildChatTurn, type ChatContextInput } from "../src/chatContext.js";
+import { buildChatMessages, buildChatTurn, messageLanguage, type ChatContextInput } from "../src/chatContext.js";
 
 // Local-time constructor so the expected weekday holds in any timezone.
 const NOW = new Date(2026, 8, 21, 10, 0, 0);
@@ -325,7 +325,8 @@ test("a prompt is given again as it was sent, with its excerpts and notes, so th
 // with the conversation, so it never moves the cached prefix.
 test("the person's language is in the system prompt, and stays the same for the whole conversation", () => {
   const first = buildChatTurn(input({ userName: null, locale: "fr-FR", content: "Hello ca va?" }));
-  assert.match(first.messages[0].content, /The user's language is French \(fr-FR\)\. When a message is short, mixed or ambiguous — a greeting, words from two languages — reply in French\./);
+  assert.match(first.messages[0].content, /Always reply in the language of the user's latest message.*Their usual language is French \(fr-FR\): use it only when you cannot tell/);
+  assert.doesNotMatch(first.messages.at(-1)!.content, /\[Reply in/, "« Hello ca va? » is mixed: the usual language holds");
   assert.equal(first.state.locale, "fr-FR");
   const next = buildChatTurn(input({
     userName: null,
@@ -408,4 +409,20 @@ test("a fact that did not fit the system prompt is found by what the question as
   // A short word is only itself: « âge » is not « voyage » nor « agenda ».
   const others = buildChatMessages(input({ memories: [{ kind: "project", title: null, content: "Voyage à Rome, agenda chargé." }], content: "Quel âge j’ai ?" }));
   assert.equal(others.at(-1)!.content, "Quel âge j’ai ?");
+});
+
+// « what do you know about my friend David? » and « hello how are you? »
+// were answered in French with French memories around them (01/10/2026).
+test("a message plainly in another language than the usual one is answered in its language", () => {
+  assert.equal(messageLanguage("what do you know about my friend David?"), "en");
+  assert.equal(messageLanguage("hello how are you?"), "en");
+  assert.equal(messageLanguage("Que sais-tu de mon ami David ?"), "fr");
+  assert.equal(messageLanguage("Hello ca va?"), null);
+  assert.equal(messageLanguage("Thanks!"), null);
+  const english = buildChatTurn(input({ userName: null, locale: "fr-FR", content: "what do you know about my friend David?" }));
+  assert.match(english.messages.at(-1)!.content, /what do you know about my friend David\?\n\n\[Reply in English, the language of this message\.\]$/);
+  const french = buildChatTurn(input({ userName: null, locale: "fr-FR", content: "Que sais-tu de mon ami David ?" }));
+  assert.doesNotMatch(french.messages.at(-1)!.content, /\[Reply in/);
+  // Nor anything said about what is known that is not from the person.
+  assert.match(english.messages[0].content, /never claim to know them well or personally/);
 });

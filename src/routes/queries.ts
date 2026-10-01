@@ -2,7 +2,7 @@ import { relative, isAbsolute } from "node:path";
 import { clientOf } from "./usage.js";
 import { recordUsageEvent, type UsageEventInput } from "../usageStore.js";
 import { askedToRemember, rememberFacts } from "../memoryLearning.js";
-import { learnSoon, setLearningModel, type LearnMessages } from "../memory/learner.js";
+import { learnAfterAnswer, learnSoon, setLearningModel, type LearnMessages } from "../memory/learner.js";
 import { onMemoriesChanged } from "../memory/changes.js";
 import { recordTrace, type ToolCallTrace, type TurnTrace } from "../diagnostics/traces.js";
 import { projectCards } from "../projects/projects.js";
@@ -1003,6 +1003,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // ones before is learned now (src/memory/learner.ts), once nothing
     // generates — never alongside this answer.
     if (discussion.created) learnSoon(auth.userId, discussion.id);
+    // And what was just said in this one, at once: « Mémoire enregistrée »
+    // seconds after the answer, stopped by the next message.
+    learnAfterAnswer(discussion.id);
     // What the next new conversation starts with, read ahead if it changed.
     scheduleWarm(auth.userId);
   } catch (err) {
@@ -1521,7 +1524,7 @@ function scheduleWarm(userId: string, delayMs = WARM_DELAY_MS) {
 /// The learner's model call (src/memory/learner.ts): the person's model, on
 /// the computer set in « Tâches de fond » when one of theirs is idle
 /// (router.pickBackground), else on this one.
-async function learningCall(userId: string, prompt: LearnMessages): Promise<string> {
+async function learningCall(userId: string, prompt: LearnMessages, signal?: AbortSignal): Promise<string> {
   const userContext = loadUserContext(userId);
   const answered = await resolveProvider(userId);
   const run = async (target: Provider) => {
@@ -1530,7 +1533,7 @@ async function learningCall(userId: string, prompt: LearnMessages): Promise<stri
     let first = 0;
     const done = target.kind === "local_openai" ? beginGeneration("background") : () => undefined;
     try {
-      const spent = await streamFromProvider(target, prompt, 0, (delta) => { first ||= Date.now(); text += delta; }, AbortSignal.timeout(180_000), { purpose: "background" });
+      const spent = await streamFromProvider(target, prompt, 0, (delta) => { first ||= Date.now(); text += delta; }, signal ? AbortSignal.any([signal, AbortSignal.timeout(180_000)]) : AbortSignal.timeout(180_000), { purpose: "background" });
       if (target.kind !== "peer_openai") recordModelCall(userId, "memory", "model" in target ? target.model : null, "this-computer", spent, messagesChars(prompt), text.length, asked, first, Date.now());
     } finally {
       done();

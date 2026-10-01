@@ -594,7 +594,14 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
     !state.web && hasWebResults(input.content) ? WEB_NOTE : null,
   ];
   const newMemories = fresh ? `[Saved in the user's Memories since this conversation started]\n${fresh}\n[End of new memories]` : null;
-  const prompt = [remembered, ...formats, documentPolicy, newMemories, ...context, chatty ? null : library, chatty ? null : inventory, input.content].filter(Boolean).join("\n\n");
+  // A message plainly in another language than the person's usual one gets
+  // its answer in that language: the sentence of the system prompt alone
+  // left « hello how are you? » answered in French 5 times in 6 (9B,
+  // French memories, 01/10/2026).
+  const spoken = messageLanguage(current.text);
+  const usual = (state.locale ?? "").split("-")[0]!.toLowerCase();
+  const languageHint = spoken && usual && spoken !== usual ? `[Reply in ${spoken === "en" ? "English" : "French"}, the language of this message.]` : null;
+  const prompt = [remembered, ...formats, documentPolicy, newMemories, ...context, chatty ? null : library, chatty ? null : inventory, input.content, languageHint].filter(Boolean).join("\n\n");
 
   // A previous turn that failed mid-stream leaves a user message with
   // no reply. Fold the new prompt into it rather than sending two
@@ -696,7 +703,29 @@ function basePrompt(local: boolean): string {
     "Reply in the language the user writes in. Be direct and concise, and use Markdown only when it helps.",
     "You cannot browse the web, send messages or act outside this chat, so never claim that you did.",
     "If you are unsure or lack the information, say so.",
+    // « Je connais bien David Krehwinkel » from three facts the person gave
+    // (01/10/2026): what Twoody knows is what it was told, no more.
+    "When asked what you know about the user or someone in their life, it is only what they told you: say so plainly, never claim to know them well or personally, and add nothing to it.",
   ].join(" ");
+}
+
+const ENGLISH_WORDS = new Set(["the", "you", "your", "what", "how", "are", "is", "do", "does", "can", "could", "would", "please", "my", "me", "about", "know", "with", "and", "this", "that", "hello", "hi", "thanks", "thank", "where", "when", "why", "who", "which", "i", "it", "of", "to", "for", "have", "tell"]);
+const FRENCH_WORDS = new Set(["le", "la", "les", "un", "une", "des", "de", "du", "je", "tu", "vous", "il", "elle", "est", "et", "que", "qui", "quoi", "comment", "pourquoi", "mon", "ma", "mes", "ton", "ta", "tes", "sur", "avec", "pour", "dans", "pas", "bonjour", "salut", "merci", "oui", "non", "ça", "ca", "sais", "peux", "fais", "moi", "toi"]);
+
+/// The language a message is plainly written in, English or French, from
+/// its common words: null when it is short, mixed or neither (the person's
+/// usual language then holds).
+export function messageLanguage(text: string): "en" | "fr" | null {
+  const words = text.toLowerCase().replace(/[’']/g, " ").match(/[a-zàâçéèêëîïôûùüÿœ]+/g) ?? [];
+  let en = 0;
+  let fr = 0;
+  for (const word of words) {
+    if (ENGLISH_WORDS.has(word)) en += 1;
+    if (FRENCH_WORDS.has(word)) fr += 1;
+  }
+  if (en >= 2 && fr === 0) return "en";
+  if (fr >= 2 && en === 0) return "fr";
+  return null;
 }
 
 /// Which language to answer in when a message does not tell: « Hello ca
@@ -711,7 +740,11 @@ export function languageSentence(locale: string | null): string | null {
     name = undefined;
   }
   const language = name && name !== locale.split("-")[0] ? `${name} (${locale})` : locale;
-  return `The user's language is ${language}. When a message is short, mixed or ambiguous — a greeting, words from two languages — reply in ${name ?? language}.`;
+  // Not « when a message is short »: « hello how are you? » and « what do
+  // you know about my friend David? » got French answers, 9 times in 10,
+  // with French memories around them (01/10/2026).
+  return `Always reply in the language of the user's latest message, even when their memories, documents or earlier messages are in another language. ` +
+    `Their usual language is ${language}: use it only when you cannot tell which language a message is in (a word from two languages, a lone name).`;
 }
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];

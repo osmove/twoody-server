@@ -12,9 +12,17 @@ export function inflight(purpose?: Purpose): number {
   return purpose ? running[purpose] : running.chat + running.background;
 }
 
+const onChat: Array<() => void> = [];
+
+/// Called when an answer starts here (the learner stops for it).
+export function onChatGeneration(fn: () => void) {
+  onChat.push(fn);
+}
+
 /// Counts one generation until the returned function is called (once).
 export function beginGeneration(purpose: Purpose): () => void {
   running[purpose] += 1;
+  if (purpose === "chat") for (const fn of onChat) fn();
   let ended = false;
   return () => {
     if (ended) return;

@@ -127,8 +127,10 @@ test("a conversation is read once, as a whole, and only what the person said goe
   // Something new: only the new part.
   addLine(id, { role: "user", content: "Moka a deux ans." });
   await learnDiscussion(id, { ask: async (_u, messages) => { prompts.push(messages[1]!.content); return answer(); } });
-  assert.doesNotMatch(prompts[1]!, /adopté/);
-  assert.match(prompts[1]!, /PERSON: Moka a deux ans\./);
+  const [before, read] = prompts[1]!.split("CONVERSATION:\n");
+  assert.doesNotMatch(read!, /adopté/);
+  assert.match(before!, /EARLIER:\nPERSON: J'ai adopté un chat/, "what came before, as context only");
+  assert.match(read!, /PERSON: Moka a deux ans\./);
   assert.match(prompts[1]!, /m\d: A un chat, Moka/, "what is known about it is shown");
 });
 
@@ -346,4 +348,55 @@ test("/projects: made by hand, changed, tied to a task, removed (what hung off i
   assert.equal((await app.inject({ method: "DELETE", url: `/projects/${id}`, headers })).statusCode, 204);
   assert.equal((sqlite.prepare("SELECT project_id FROM tasks WHERE id = 't1'").get() as { project_id: string | null }).project_id, null);
   assert.equal((await app.inject({ url: "/projects" })).statusCode, 401);
+});
+
+// « et ils se sont mariés en 2019 » answered « C'est noté » and nothing was
+// kept (Jimmy, 01/10/2026): what was said is read right after each answer,
+// with the messages before it to say who « ils » are, and stops for the next
+// answer — which never waits for it.
+test("after each answer: read at once, with what came before as context; the next answer stops it and it starts over", async () => {
+  const { beginGeneration } = await import("../src/account/inflight.js");
+  const id = conversation([
+    { role: "user", content: "Mon ami David est marié à Dafna." },
+    { role: "assistant", content: "D'accord." },
+  ], { idleMs: 0 });
+  sqlite.prepare("UPDATE discussions SET learned_through = (SELECT MAX(rowid) FROM messages WHERE discussion_id = ?) WHERE id = ?").run(id, id);
+  addLine(id, { role: "user", content: "et ils se sont mariés en 2019" });
+  addLine(id, { role: "assistant", content: "C'est noté." });
+
+  const prompts: string[] = [];
+  let stopped = 0;
+  learner.setLearningModel((_user, messages, signal) => new Promise((resolve, reject) => {
+    prompts.push(messages[1]!.content);
+    if (prompts.length === 1) {
+      // The first read is still running when the next message comes.
+      signal?.addEventListener("abort", () => { stopped += 1; reject(new Error("aborted")); });
+      return;
+    }
+    resolve(answer(fact("David et Dafna se sont mariés en 2019", "et ils se sont mariés en 2019", { confidence: 0.9 })));
+  }));
+  const running = learner.startLearning({ firstTickMs: 3_600_000 });
+  try {
+    learner.learnAfterAnswer(id);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(prompts.length, 1, "read at once");
+    assert.equal(learner.isLearning(id), true);
+    assert.match(prompts[0]!, /EARLIER:\nPERSON: Mon ami David est marié à Dafna\.[\s\S]*CONVERSATION:\nPERSON: et ils se sont mariés en 2019/);
+    const answering = beginGeneration("chat");
+    assert.equal(stopped, 1, "the next answer stops it");
+    await new Promise((resolve) => setTimeout(resolve, 2_600));
+    assert.equal(prompts.length, 1, "not while the answer is written");
+    answering();
+    await new Promise((resolve) => setTimeout(resolve, 2_600));
+    assert.equal(prompts.length, 2, "started over once it is written");
+    assert.ok(memoryTexts().includes("David et Dafna se sont mariés en 2019"), "« David », « Dafna »: the person's words, said before");
+    assert.equal(learner.isLearning(id), false);
+    const notices = (await app.inject({ method: "GET", url: `/discussions/${id}/memory_notices`, headers })).json();
+    assert.equal(notices.learning, false);
+    assert.deepEqual(notices.notices.at(-1).saved.map((m: { content: string }) => m.content), ["David et Dafna se sont mariés en 2019"]);
+    assert.equal((await app.inject({ method: "GET", url: "/discussions/nope/memory_notices", headers })).statusCode, 404);
+  } finally {
+    running.stop();
+    learner.setLearningModel(null);
+  }
 });

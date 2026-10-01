@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { requireAuth } from "../auth.js";
 import { ownerRequest } from "../localAccess.js";
-import { noticesOf } from "../memory/learner.js";
+import { isLearning, noticesOf } from "../memory/learner.js";
 import { isPersonOrOwner } from "../sessionTrust.js";
 import { meshRoster } from "../vault/roster.js";
 import { db, discussions, messages, sqlite } from "../db.js";
@@ -138,6 +138,21 @@ export async function discussionRoutes(app: FastifyInstance) {
           : null,
         total_unfiltered:   queryStr ? rows.length : null,
       });
+    },
+  });
+
+  // What was learned from this conversation (« Mémoire enregistrée »), and
+  // whether it is being read now: asked again by the app after an answer
+  // until it is not (learner.ts learnAfterAnswer).
+  app.get<{ Params: { id: string } }>("/discussions/:id/memory_notices", {
+    schema: { tags: ["discussions"], summary: "What was learned from this conversation", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      const [discussion] = db.select().from(discussions)
+        .where(and(eq(discussions.id, req.params.id), eq(discussions.userId, auth.userId))).limit(1).all();
+      if (!discussion || !(await mayReachHistory(req, auth))) return reply.code(404).send({ error: "not_found" });
+      reply.send({ notices: noticesOf(auth.userId, discussion.id), learning: isLearning(discussion.id) });
     },
   });
 
