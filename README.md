@@ -1,24 +1,22 @@
 # Twoody Server (`twoody-server`)
 
-The **single-user** edition of **Twoody Self-hosted** — runs as a
-Fastify + SQLite Node binary on a single Mac, NAS or Pi. Pairs with
-Twoody Desktop, Twoody App, Twoody Watch, Twoody CLI, and the device
-firmware over the same HTTP contract that Cloud (api.twoody.com) and
-the multi-user Self-hosted edition (Rails Docker) expose.
+Twoody's local server: one person's chat, memory, documents, projects,
+tasks and reminders, in a Fastify + SQLite Node program that never needs
+the cloud. It is the server Twoody Desktop embeds on each computer, and
+it also runs alone on a Raspberry Pi, a NAS or a Linux box, where the
+Twoody app (iPhone) and Twoody Desktop pair with it. Linked to a Twoody
+account, it becomes one of the person's computers: it lends its models,
+shares encrypted history with their trusted computers and is reachable
+through the encrypted relay.
 
-For multi-user deployments (households, agencies, on-prem teams), run
-the multi-user Self-hosted edition (Rails) with `TWOODY_DEPLOYMENT=team`
-instead; `ghcr.io/osmove/twoody-server` is the image of this single-user
-server (see [Docker](#docker)). This TypeScript binary refuses to
-boot when more than one account exists on a publicly-bound port; see
-the boot guard in `src/index.ts`.
+It is **single-user**: it refuses to boot on a publicly bound port when
+more than one account exists (`enforceSingleUserGuard` in `src/index.ts`).
+It shares no code with the private Rails backend (`twoody-backend`),
+whose API shapes it follows where clients use both.
 
-This package is the Phase 1 OSS split core: it deliberately avoids sharing
-Rails code from the private backend while keeping the public device, app, CLI,
-MCP, and desktop bridge contracts familiar.
-
-For repository-specific development context, conventions, and architecture
-notes, see [AGENTS.md](AGENTS.md).
+For development context, conventions and architecture, see
+[AGENTS.md](AGENTS.md) (and `~/Dev/twoody/AGENTS.md` for the whole
+project). Publishing to npm, PyPI and Docker: [PUBLISHING.md](PUBLISHING.md).
 
 ## Stack
 
@@ -34,7 +32,8 @@ notes, see [AGENTS.md](AGENTS.md).
 ```bash
 npm install
 npm run typecheck
-npm run dev
+npm test
+npm run dev        # tsx watch, http://0.0.0.0:3000
 ```
 
 ## Without the desktop app
@@ -52,6 +51,14 @@ runtime. Three ways to install it:
 | Docker (server with llama.cpp) | Docker with Compose | `docker compose up -d` — see [Docker](#docker) |
 | npm | Node.js 22+ | `npm install -g twoody-server`, or `npm install -g twoody` (the Twoody CLI, whose `twoody serve` runs this server) |
 | pip | Python 3.9+ and Node.js 22+ | `pip install twoody` (runs the `twoody` npm package through `npx`: `twoody serve`) |
+
+> **Not published yet (1 Oct 2026).** Version 0.2.0 is on none of these
+> registries: npm still serves `twoody@0.1.0` (the old CLI) and
+> `twoody-server@0.0.1` (April 2026), PyPI has no `twoody` project, and no
+> `ghcr.io/osmove/twoody-server` image exists. Today the server is
+> installed from a checkout: `docker compose up -d --build`, or
+> `scripts/install-linux.sh` ([below](#installer-script-from-a-checkout)).
+> The commands above are for the day Jimmy publishes (PUBLISHING.md).
 
 The npm command:
 
@@ -147,41 +154,31 @@ For a one-shot 8-character pairing code:
 TWOODY_PAIRING_CODE=A7B9C2D4 npm run dev
 ```
 
-## Implemented Routes
+## Routes
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| `GET` | `/health` | health check |
-| `POST` | `/auth/signup` | create first local account with setup token |
-| `POST` | `/auth/signin` | create local auth session with email/password |
-| `GET` | `/auth/me` | verify auth token |
-| `POST` | `/session/cli` | pair CLI via 8-character code |
-| `GET` | `/session/me` | verify auth token |
-| `GET` | `/providers` | list local/cloud LLM providers |
-| `POST` | `/providers/local` | add local OpenAI-compatible provider |
-| `PATCH` | `/providers/:id` | update provider |
-| `POST` | `/providers/:id/default` | choose default provider |
-| `DELETE` | `/providers/:id` | delete provider |
-| `POST` | `/queries` | SSE chat stream through the default provider |
-| `POST` | `/realtime_sessions` | OpenAI Realtime ephemeral token proxy |
-| `POST` | `/devices/pair` | firmware pairing via 8-character code |
-| `GET` | `/devices/:id/update_check` | OTA kill-switch stub |
-| `POST` | `/devices/:id/update_events` | OTA telemetry log |
-| `POST` | `/devices/:id/transcripts` | transcript stub |
-| `GET` | `/devices/llm_keys` | local BYOK keys for firmware |
-| `POST` | `/devices/stereo_pair` | stereo pairing registration |
-| `POST` | `/tool_calls` | local tool execution for voice / realtime sessions |
-| `GET` | `/bridge/tasks/next` | Bridge worker long-poll (token required, own user's tasks only) |
-| `PATCH` | `/bridge/tasks/:id` | Bridge task result/progress (token required) |
-| `GET` | `/bridge/tasks/:id` | poll task completion |
-| `POST` | `/bridge/tasks` | enqueue Bridge task |
-| `GET` | `/bridge/presence` | Bridge/capability presence for CLI status |
-| `GET/POST/PATCH/DELETE` | `/members*` | members + enrollment assets |
-| `GET/POST/DELETE` | `/local_documents/folders*` | grant or revoke a folder; index counts and progress |
-| `POST` | `/local_documents/reindex` | re-scan the granted folders |
-| `GET` | `/local_documents/search` | content and file/folder-name matches; short terms such as CV supported |
-| `GET` | `/local_documents/files?folder_id=…&offset=0` | 100 file metadata rows per page, scoped to the authenticated user |
-| `GET` | `/admin` | minimal admin page — this machine only, or `TWOODY_ADMIN_TOKEN` from elsewhere |
+The full, current list is the OpenAPI contract: `openapi.json` in this
+repository (regenerate with `npm run openapi`), served live at `/docs` and
+`/openapi.json`. The HTTP API answers at the root and under `/api/v1`
+(health, docs, admin, `/mcp` and `/ws` stay at the root only). The
+families, by file in `src/routes/`:
+
+| Family | Paths | File |
+|--------|-------|------|
+| Health, capabilities, deployment | `/health`, `/capabilities`, `/deployment` | `health.ts`, `capabilities.ts`, `deployment.ts` |
+| Sessions and pairing | `/auth/*`, `/session*`, `/paired_devices*`, `/devices/*` | `session.ts`, `pairedDevices.ts`, `devices.ts` |
+| Chat | `/queries` (SSE), `/queries/answer_now`, `/discussions*` | `queries.ts`, `discussions.ts` |
+| Providers and engine | `/providers*`, `/runtime*`, `/local_llm/*` | `providers.ts`, `runtime.ts`, `llmModels.ts`, `localLlm.ts` |
+| Memory | `/memories*` (candidates, duplicates, import, learn), `/memories/search`, `/memories/retrieve`, `/conversations/search`, `/entities*` | `memories.ts`, `memorySearch.ts`, `entities.ts` |
+| Projects, tasks, reminders, notes, events, contacts | `/projects*`, `/tasks*`, `/reminders*`, `/notes*`, `/events*`, `/contacts*`, `/local_sync/*` | `projects.ts`, `tasks.ts`, `reminders.ts`, `notes.ts`, `calendarEvents.ts`, `contacts.ts`, `localSync.ts` |
+| Documents | `/local_documents/*` | `localDocuments.ts` |
+| Account link | `/account/link`, `/account/approvals*` | `accountLink.ts` |
+| Other computers (mesh) | `/api/v1/peer/*`, `/api/v1/peers*` | `peer.ts`, `peers.ts`, `peerVault.ts`, `peerDocuments.ts` |
+| Usage and diagnostics | `/usage*`, `/diagnostics/turns`, `/diagnostics/telemetry` | `usage.ts`, `diagnostics.ts` |
+| Desktop-only gateways | `/api/v1/mobile_agent`, `/code/sessions*` (refused with `desktop_required` / `desktop_unavailable` when the server runs alone) | `mobileAgent.ts`, `remoteCode.ts` |
+| Bridge | `/bridge/tasks*`, `/bridge/presence` | `bridge.ts` |
+| Voice and household | `/audio/transcriptions`, `/realtime_sessions`, `/tool_calls`, `/members*`, `/voices/*` | `transcriptions.ts`, `realtime.ts`, `toolCalls.ts`, `members.ts`, `voices.ts` |
+| Misc | `/me`, `/agents`, `/built_in_capabilities*`, `/tunnel`, `/ws` | `me.ts`, `agents.ts`, `builtInCapabilities.ts`, `tunnelDirect.ts`, `ws.ts` |
+| Admin | `/admin` — this machine only, or `TWOODY_ADMIN_TOKEN` from elsewhere | `src/app.ts`, `src/adminAccess.ts` |
 
 ## Environment
 
@@ -460,6 +457,16 @@ sudo systemctl restart twoody-server
 journalctl -u twoody-server -f
 ```
 
+To update such an install from a laptop that has a checkout,
+`scripts/upgrade-linux.sh [user@host] [remote path]` rebuilds `dist/`,
+rsyncs it to `/opt/twoody-server` and restarts `twoody-server.service`
+(defaults and overrides in the script's header).
+
+Jimmy's own Pi does not use either path: it runs the server as the user
+service `twoody-next` (port 3031, data in `~/twoody-next/data`), installed
+from an `npm pack` tarball; the procedure is in `~/Dev/twoody/AGENTS.md`
+§6.
+
 ### Stopping a reply
 
 `POST /queries` aborts its request to the runtime (or to a cloud provider)
@@ -564,9 +571,8 @@ TWOODY_BRIDGE_FOLDERS=Permanent=/home/pi/mac-share/_Permanent:Osmove=/home/pi/ma
 
 ## Notes
 
-The in-memory Bridge queue is good enough for Phase 1 developer preview.
-Moving task state to SQLite or Redis is the next durability step before a
-stable v1 contract.
+Bridge tasks are kept in memory (`routes/bridge.ts`): a restart loses the
+queue.
 
 `/queries` is local-first: a stored local OpenAI-compatible provider, else
 this computer's engine ([Model engine](#model-engine-moteur)), else
@@ -586,24 +592,20 @@ downloads.twoody.com for the runtime, Hugging Face for the models), checked
 against their SHA-256, and said in the log.
 
 Bridge pollers can declare capabilities with `X-Bridge-Capabilities`, using a
-comma-separated or JSON array value such as `document-provider,local-llm-provider`.
+comma-separated or JSON array value such as `document-provider,local-llm-provider`
+(known: `document-provider`, `local-llm-provider`, `voice-device`).
 
-The stable Bridge v1 task/update/result shapes are now documented in the
-desktop monorepo at `../twoody-desktop/shared/bridge-v1.schema.json`. Keep this
-server's `/bridge/tasks*` routes aligned with that shared schema.
-
-## License
-
-Twoody Server is licensed under BSL 1.1 with a change date of
-2030-04-21, after which the covered version converts to Apache 2.0. See
-[LICENSE](LICENSE).
+The task kinds and their wire shapes are defined by `src/routes/bridge.ts`
+and `src/executors/`. The JSON schema once written for the macOS worker
+(`bridge-v1.schema.json`) lives in the dormant `twoody-mac` repository
+(`twoody-mac/shared/`) and is no longer kept in step.
 
 ### Local STT (whisper.cpp)
 
 `POST /audio/transcriptions` proxies multipart audio uploads to a
 local `whisper-cli` (whisper.cpp) and returns `{ text: "…" }`. Wire-
 compatible with the subset of OpenAI's `POST /v1/audio/transcriptions`
-the iPhone / Watch app uses, so swapping the endpoint URL is enough
+the iPhone app uses, so swapping the endpoint URL is enough
 to keep voice queries on the LAN.
 
 On a Raspberry Pi 5, build whisper.cpp once:
@@ -634,8 +636,12 @@ missing, so a vanilla install without whisper.cpp keeps booting.
 `/home/pi/.twoody/data/` (the SQLite DB + WAL + setup token) from the
 Pi to `~/Library/Twoody/backups/<TIMESTAMP>/` on the Mac every 12 h
 and keep the last 14 snapshots. Pair with `latest` symlink for easy
-recovery.
+recovery. The script reads the default data directory: the `twoody-next`
+service on Jimmy's Pi keeps its data in `~/twoody-next/data` instead
+(`--data-dir`), which it does not cover as written.
 
+
+## Documents
 
 Document search also checks existing file and granted-folder names without
 requiring reindexing. A search passage's optional `match` is `content` or
@@ -683,3 +689,9 @@ validation: `npm run build`, then `node scripts/smoke-semantic.mjs` with these
 two variables and `TWOODY_SEMANTIC_TEST_PARENT` pointing to a disposable fixture
 parent outside system directories. The test retains its temporary database
 and moves fixture documents into `~/.Trash`.
+
+## License
+
+Twoody Server is licensed under BSL 1.1 with a change date of
+2030-04-21, after which the covered version converts to Apache 2.0. See
+[LICENSE](LICENSE).
