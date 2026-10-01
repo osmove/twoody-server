@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { sqlite } from "../db.js";
-import { memoryIdsOf, projectEntity, findEntity, aliasesOf } from "../memory/entities.js";
+import { memoryIdsOf, projectEntity, findEntity, aliasesOf, entitiesInText } from "../memory/entities.js";
+import { memoriesChanged } from "../memory/changes.js";
 
 // Projects (docs/projects-design.md, lot P1): what the person is working
 // towards — a house, a Mac mini, a wedding, a move — and what hangs off it:
@@ -104,6 +105,8 @@ export function createProject(userId: string, input: ProjectInput, source: "manu
     status === "active" ? now : null, input.due_at ? Date.parse(input.due_at) : null, status === "done" ? now : null,
     input.budget_cents ?? null, input.currency ?? null, source, now, now,
   );
+  // The profile's « Projects under way » may change: read ahead again.
+  memoriesChanged(userId);
   return id;
 }
 
@@ -123,6 +126,7 @@ export function updateProject(userId: string, id: string, input: ProjectInput, n
     now, id,
   );
   if (input.name || input.aliases?.length) projectEntity(userId, input.name ?? row.title, input.aliases ?? [], row.source, now);
+  memoriesChanged(userId);
 }
 
 /// The project goes; what hung off it stays, unlinked.
@@ -134,6 +138,7 @@ export function deleteProject(userId: string, id: string) {
     sqlite.prepare("DELETE FROM project_documents WHERE project_id = ?").run(id);
     sqlite.prepare("DELETE FROM projects WHERE id = ?").run(id);
   })();
+  memoriesChanged(userId);
 }
 
 const LINKS = { task_id: "tasks", reminder_id: "reminders", event_id: "events", discussion_id: "discussions" } as const;
@@ -215,4 +220,49 @@ export function projectDetail(userId: string, id: string) {
 export function knownProjects(userId: string): Array<{ ref: string; id: string; title: string; status: string; name: string | null }> {
   return (sqlite.prepare("SELECT id, title, status, entity_id FROM projects WHERE user_id = ? AND status != 'dropped' ORDER BY updated_at DESC LIMIT 30").all(userId) as Array<{ id: string; title: string; status: string; entity_id: string | null }>)
     .map((row, index) => ({ ref: `p${index + 1}`, id: row.id, title: row.title, status: row.status, name: row.entity_id ? findEntity(userId, row.entity_id)?.name ?? null : null }));
+}
+
+const KIND_WORDS: Record<string, string> = { purchase: "purchase", event: "event", home: "home", travel: "travel", work: "work", health: "health", learning: "learning", admin: "paperwork", other: "project" };
+const day = (ms: number | null) => (ms ? new Date(ms).toISOString().slice(0, 10) : null);
+
+/// « Projects under way: … » — the large ones in progress or in mind, in the
+/// profile (docs/projects-design.md §4): changes only with the projects, so
+/// the prompt cache holds.
+export function projectsLine(userId: string): string | null {
+  const rows = sqlite.prepare("SELECT title, due_at FROM projects WHERE user_id = ? AND size = 'large' AND status IN ('active', 'idea') ORDER BY created_at LIMIT 5").all(userId) as Array<{ title: string; due_at: number | null }>;
+  if (!rows.length) return null;
+  return `Projects under way: ${rows.map((row) => (row.due_at ? `${row.title} (due ${day(row.due_at)})` : row.title)).join("; ")}.`;
+}
+
+/// The cards of the projects a message is about — named (its name, an
+/// alias) or reached through the memories given with it: status, due
+/// date, open tasks, next reminders, the last facts. At most two, ~600
+/// characters each, in the message (never the system prompt).
+export function projectCards(userId: string, text: string, memoryIds: Array<string | null> = []): Array<{ id: string; title: string; card: string }> {
+  const named = new Set(entitiesInText(userId, text).map((link) => link.entity_id));
+  const viaMemories = memoryIds.filter((id): id is string => !!id);
+  if (viaMemories.length) {
+    for (const row of sqlite.prepare(`SELECT entity_id FROM memory_entities WHERE memory_id IN (${viaMemories.map(() => "?").join(",")})`).all(...viaMemories) as Array<{ entity_id: string }>) named.add(row.entity_id);
+  }
+  if (!named.size) return [];
+  const rows = sqlite.prepare(`SELECT * FROM projects WHERE user_id = ? AND status != 'dropped' AND entity_id IN (${[...named].map(() => "?").join(",")}) ORDER BY updated_at DESC LIMIT 2`).all(userId, ...named) as Row[];
+  const at = (seconds: number | null) => (seconds ? new Date(seconds * 1000).toISOString().slice(0, 10) : null);
+  return rows.map((row) => {
+    const tasks = (sqlite.prepare("SELECT title, due_at FROM tasks WHERE project_id = ? AND user_id = ? AND done_at IS NULL ORDER BY due_at IS NULL, due_at LIMIT 4").all(row.id, userId) as Array<{ title: string; due_at: number | null }>)
+      .map((task) => (task.due_at ? `${task.title} (${at(task.due_at)})` : task.title));
+    const reminders = (sqlite.prepare("SELECT COALESCE(title, text) AS text, notify_at FROM reminders WHERE project_id = ? AND user_id = ? AND status = 'active' ORDER BY notify_at LIMIT 3").all(row.id, userId) as Array<{ text: string; notify_at: number | null }>)
+      .map((reminder) => (reminder.notify_at ? `${reminder.text} (${at(reminder.notify_at)})` : reminder.text));
+    const facts = row.entity_id
+      ? (sqlite.prepare(`SELECT m.content FROM memories m JOIN memory_entities l ON l.memory_id = m.id WHERE l.entity_id = ? AND m.user_id = ? AND m.superseded_by_id IS NULL AND m.tags_json NOT LIKE '%"sensitive"%' ORDER BY m.created_at DESC LIMIT 3`).all(row.entity_id, userId) as Array<{ content: string }>).map((fact) => fact.content.replace(/\s+/g, " ").slice(0, 160))
+      : [];
+    const head = [`${KIND_WORDS[row.kind] ?? "project"}`, row.size === "large" ? "large" : "small", row.status, row.due_at ? `due ${day(row.due_at)}` : null, row.budget_cents ? `budget ${(row.budget_cents / 100).toFixed(0)} ${row.currency ?? ""}`.trim() : null].filter(Boolean).join(", ");
+    const lines = [
+      `${row.title} — ${head}`,
+      row.brief ? `Notes: ${row.brief.replace(/\s+/g, " ").slice(0, 200)}` : null,
+      tasks.length ? `Open tasks: ${tasks.join("; ")}` : null,
+      reminders.length ? `Reminders: ${reminders.join("; ")}` : null,
+      facts.length ? `What they said: ${facts.join(" · ")}` : null,
+    ].filter(Boolean);
+    return { id: row.id, title: row.title, card: lines.join("\n").slice(0, 700) };
+  });
 }

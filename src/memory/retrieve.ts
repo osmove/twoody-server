@@ -1,4 +1,5 @@
 import { sqlite } from "../db.js";
+import { projectsLine } from "../projects/projects.js";
 import { smallTalk } from "../documents/query.js";
 import type { MemoryMode, MemoryRow, ProfileHints } from "../chatContext.js";
 import { embedMemoryQuery, embedPendingMemories, memoryEmbeddingStatus, memoryEmbeddingsEnabled, memoryVectors } from "./embeddings.js";
@@ -299,7 +300,7 @@ export function profileHints(userId: string, memories: MemoryRow[]): ProfileHint
       }
       usesOfDay.set(userId, { day, uses });
     }
-    return { selfIds, uses, graph: self ? graphLine(self.id) : null, peopleIds: self ? peopleFacts(userId, self.id, memories) : [] };
+    return { selfIds, uses, graph: self ? graphLine(self.id) : null, peopleIds: self ? peopleFacts(userId, self.id, memories) : [], projects: projectsLine(userId) };
   } catch {
     return { selfIds: null, uses: {}, graph: null };
   }

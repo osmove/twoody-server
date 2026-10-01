@@ -117,6 +117,7 @@ export function telemetryOf(row: TraceRow): Record<string, string | number | boo
       tokens_prompt: detail.tokens?.prompt, tokens_cached: detail.tokens?.cached, tokens_completion: detail.tokens?.completion, tokens_estimated: detail.tokens?.estimated,
       prompt_ms: detail.tokens?.prompt_ms, generation_ms: detail.tokens?.generation_ms, ttft_ms: detail.timings?.ttft_ms, answer_ms: detail.timings?.answer_ms,
       attempts_failed: Array.isArray(detail.attempts) ? detail.attempts.length : 0,
+      projects: Array.isArray(detail.projects) ? detail.projects.length : 0,
     });
   } else if (row.kind === "learn") {
     const dropped = Array.isArray(detail.dropped) ? (detail.dropped as Array<{ reason: string }>) : [];

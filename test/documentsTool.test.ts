@@ -74,13 +74,14 @@ async function ask(text: string, extra: Record<string, unknown> = {}) {
   const response = await app.inject({ method: "POST", url: "/queries", headers, payload: { text, channel: "desktop", force_new_discussion: true, ...extra } });
   assert.equal(response.statusCode, 200, response.body);
   const block = response.body.split("\n\n").find((b) => b.startsWith("event: final"))!;
-  return { final: JSON.parse(block.slice(block.indexOf("data: ") + 6)), sent: bodies.slice(before).filter((body) => body.max_tokens !== 1) };
+  return { final: JSON.parse(block.slice(block.indexOf("data: ") + 6)), sent: bodies.slice(before).filter((body) => body.max_tokens !== 1), body: response.body };
 }
 const lastUser = (body: Body) => body.messages.filter((message) => message.role === "user").at(-1)!.content;
 
 test("a message that is not about the documents reads none: the model has the tool, searches, and cites what it found", async () => {
-  const { final, sent } = await ask("Combien je paie pour l'électricité ?");
+  const { final, sent, body } = await ask("Combien je paie pour l'électricité ?");
   assert.equal(sent.length, 2);
+  assert.match(body, /event: status\ndata: \{"kind":"searching_documents","query":"électricité"\}/, "« Recherche dans vos documents… » while it looks");
   assert.deepEqual(sent[0]!.tools?.map((tool) => tool.function.name), ["search_documents"]);
   assert.doesNotMatch(lastUser(sent[0]!), /Excerpts from the user's documents/);
   const result = sent[1]!.messages.find((message) => message.role === "tool")!;

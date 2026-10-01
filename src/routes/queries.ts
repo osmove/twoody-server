@@ -5,6 +5,7 @@ import { askedToRemember, rememberFacts } from "../memoryLearning.js";
 import { learnSoon, setLearningModel, type LearnMessages } from "../memory/learner.js";
 import { onMemoriesChanged } from "../memory/changes.js";
 import { recordTrace, type ToolCallTrace, type TurnTrace } from "../diagnostics/traces.js";
+import { projectCards } from "../projects/projects.js";
 import { createHash } from "node:crypto";
 import { inflight } from "../account/inflight.js";
 import { citationLink, folderOf, localFolderIds, meshPeers, retrieveAcrossComputers, type MeshPassage, type MeshRetrieval } from "../documents/remote.js";
@@ -661,6 +662,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         toolCallsTraced.push(traced);
         if (name !== "search_documents") { traced.error = "unknown_tool"; return "No such tool."; }
         const query = typeof args.query === "string" && args.query.trim() ? args.query.trim().slice(0, 500) : typedText(content);
+        // « Recherche dans vos documents… » while it looks (the clients show it).
+        startSse();
+        reply.raw.write(`event: status\ndata: ${JSON.stringify({ kind: "searching_documents", query })}\n\n`);
         const found = await retrieveFor(query);
         traced.ms = Date.now() - called;
         traced.passages = found.passages.length;
@@ -684,6 +688,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       mode: memoryMode,
       documentMode: access.mode,
     });
+    const cards = memoryMode === "full" && access.mode !== "only" ? projectCards(auth.userId, typedText(content), relevant.items.map((item) => item.id)) : [];
+    trace.projects = cards.map((card) => card.title);
     const turnInput: ChatContextInput = {
       ...userContext,
       // A server with no profile (a Pi just set up) knows the person by the
@@ -709,6 +715,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       documentFolders,
       documentScan: indexStatus(auth.userId),
       documentTool: !!toolsFor(provider),
+      // The projects the message is about (named, or through the memories
+      // given with it): their cards, with the message.
+      projectCards: memoryMode === "full" ? cards.map((card) => card.card) : [],
       documentFiles: listingOnly ? [] : retrieved.files,
       documentFileTotal: listingOnly ? 0 : retrieved.total,
       excerpts: passages.map((passage) => excerptOf(passage, retrieved.remote)),
