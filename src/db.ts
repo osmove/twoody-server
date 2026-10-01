@@ -1234,6 +1234,29 @@ sqlite.exec(`
   `);
 }
 
+// What happened in each answer, for debugging (src/diagnostics/traces.ts):
+// the model and computer, the documents decision, the tools offered and
+// called, the size of each part of the prompt, the time of each step. On
+// this computer only; nothing is sent anywhere.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS turn_traces (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'chat',
+    discussion_id TEXT,
+    message_id TEXT,
+    client TEXT,
+    model TEXT,
+    outcome TEXT NOT NULL,
+    error TEXT,
+    total_ms INTEGER,
+    trace_json TEXT NOT NULL DEFAULT '{}'
+  );
+  CREATE INDEX IF NOT EXISTS idx_turn_traces_user_at ON turn_traces (user_id, at);
+  CREATE INDEX IF NOT EXISTS idx_turn_traces_message ON turn_traces (message_id);
+`);
+
 /// Indexes again every message it should hold, from scratch: at creation
 /// (the messages already there), or after a VACUUM renumbered the rowids.
 export function rebuildMessageIndex() {

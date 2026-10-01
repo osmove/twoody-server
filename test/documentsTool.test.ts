@@ -115,3 +115,28 @@ test("documents switched off: no tool, nothing read", async () => {
   assert.equal(sent[0]!.tools, undefined);
   assert.doesNotMatch(lastUser(sent[0]!), /Excerpts/);
 });
+
+test("each answer leaves a trace: the documents decision, the tools offered and called, the prompt's parts, the tokens", async () => {
+  const { final } = await ask("Combien je paie pour l'électricité ?");
+  const listed = (await app.inject({ url: "/diagnostics/turns?kind=chat&limit=1", headers })).json().traces;
+  const trace = listed[0];
+  assert.equal(trace.outcome, "answered");
+  assert.equal(trace.discussion_id, final.discussion_id);
+  assert.equal(trace.detail.documents.decision, "tool");
+  assert.deepEqual(trace.detail.tools_offered, ["search_documents"]);
+  assert.equal(trace.detail.tool_calls.length, 1);
+  assert.equal(trace.detail.tool_calls[0].name, "search_documents");
+  assert.match(trace.detail.tool_calls[0].arguments, /électricité/);
+  assert.equal(trace.detail.tool_calls[0].passages, 1);
+  assert.ok(trace.detail.prompt.system_chars > 0);
+  assert.equal(typeof trace.detail.tokens.prompt, "number");
+  assert.equal(typeof trace.total_ms, "number");
+  const byMessage = (await app.inject({ url: `/diagnostics/turns?message_id=${trace.message_id}`, headers })).json().traces;
+  assert.equal(byMessage[0].id, trace.id);
+  assert.equal((await app.inject({ url: "/diagnostics/turns" })).statusCode, 401);
+
+  const { telemetryOf } = await import("../src/diagnostics/traces.js");
+  const shared = JSON.stringify(telemetryOf(trace));
+  assert.doesNotMatch(shared, /électricité|facture|Combien/, "nothing the person wrote");
+  assert.match(shared, /search_documents/);
+});

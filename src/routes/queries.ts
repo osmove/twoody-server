@@ -4,6 +4,7 @@ import { recordUsageEvent, type UsageEventInput } from "../usageStore.js";
 import { askedToRemember, rememberFacts } from "../memoryLearning.js";
 import { learnSoon, setLearningModel, type LearnMessages } from "../memory/learner.js";
 import { onMemoriesChanged } from "../memory/changes.js";
+import { recordTrace, type ToolCallTrace, type TurnTrace } from "../diagnostics/traces.js";
 import { createHash } from "node:crypto";
 import { inflight } from "../account/inflight.js";
 import { citationLink, folderOf, localFolderIds, meshPeers, retrieveAcrossComputers, type MeshPassage, type MeshRetrieval } from "../documents/remote.js";
@@ -501,6 +502,28 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   let answeredBy: { kind: string; model: string | null } | null = null;
   let answeredByComputer: AnsweredBy | null = null;
   const routing = readRouting(parsed.provider ?? parsed.query?.provider);
+  // What happened in this answer, for the Diagnostic screen
+  // (src/diagnostics/traces.ts): filled as it goes, kept at the end.
+  const traceStarted = Date.now();
+  const trace: Record<string, unknown> = { channel, effort: readEffort(parsed.effort), routing: routing.mode };
+  const toolCallsTraced: ToolCallTrace[] = [];
+  const keepTrace = (outcome: TurnTrace["outcome"], extra: { messageId?: string | null; error?: string | null } = {}) => recordTrace(auth.userId, {
+    kind: "chat",
+    discussionId: discussion.id,
+    messageId: extra.messageId ?? null,
+    client: clientOf(auth),
+    model: answeredBy?.model ?? null,
+    outcome,
+    error: extra.error ?? null,
+    totalMs: Date.now() - traceStarted,
+    detail: {
+      ...trace,
+      provider: answeredBy?.kind ?? null,
+      computer: answeredByComputer ? { id: answeredByComputer.computer_id ?? null, name: answeredByComputer.computer_name ?? null, routed: answeredByComputer.routed ?? null } : null,
+      tool_calls: toolCallsTraced,
+      timings: { ...(trace.timings as object | undefined), ttft_ms: timing.first ? timing.first - timing.started : null, answer_ms: timing.started ? Date.now() - timing.started : null },
+    },
+  });
   try {
     // Which computer of the account answers, and with which model
     // (router/, docs/multi-computer-design.md §3): the ones to try in
@@ -587,7 +610,17 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       requester,
     });
     const plainlyDocuments = access.mode === "only" || !!intent || ABOUT_DOCUMENTS.test(typedText(content)) || citedBefore(history);
+    const documentsStarted = Date.now();
     const retrieved: MeshRetrieval = access.mode !== "off" && plainlyDocuments ? await retrieveFor(typedText(content)) : NO_DOCUMENTS;
+    trace.documents = {
+      mode: access.mode,
+      decision: access.mode === "off" ? "off" : plainlyDocuments ? "read" : toolCapable(provider) && !conversationOnlyFor(provider) ? "tool" : "none",
+      reason: access.mode === "only" ? "only" : intent ? "listing" : ABOUT_DOCUMENTS.test(typedText(content)) ? "named" : citedBefore(history) ? "follow_up" : null,
+      passages: retrieved.passages.length,
+      files: retrieved.files.length,
+      computers: retrieved.computers.map((computer) => ({ name: computer.computer_name, status: computer.status, passages: computer.passages })),
+    };
+    trace.timings = { documents_ms: plainlyDocuments && access.mode !== "off" ? Date.now() - documentsStarted : null };
     // What the search_documents tool found, when the model used it.
     let searchedByTool: MeshRetrieval | null = null;
     const listed = await listing;
@@ -623,14 +656,21 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     const documentTools: ChatTools = {
       definitions: [SEARCH_DOCUMENTS_TOOL],
       run: async (name, args) => {
-        if (name !== "search_documents") return "No such tool.";
+        const called = Date.now();
+        const traced: ToolCallTrace = { name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0 };
+        toolCallsTraced.push(traced);
+        if (name !== "search_documents") { traced.error = "unknown_tool"; return "No such tool."; }
         const query = typeof args.query === "string" && args.query.trim() ? args.query.trim().slice(0, 500) : typedText(content);
         const found = await retrieveFor(query);
+        traced.ms = Date.now() - called;
+        traced.passages = found.passages.length;
         searchedByTool = found;
         const first = sources.length;
         sources.push(...found.passages.map((passage, index) => sourceOf(passage, first + index)));
-        return formatExcerpts(found.passages.map((passage) => excerptOf(passage, found.remote)), first + 1)
+        const result = formatExcerpts(found.passages.map((passage) => excerptOf(passage, found.remote)), first + 1)
           ?? "No passage of the user's documents matches this search.";
+        traced.result_chars = result.length;
+        return result;
       },
     };
     const toolsFor = (candidate: Provider): ChatTools | undefined =>
@@ -681,6 +721,19 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     };
     const turn = buildChatTurn(turnInput);
     const chatMessages = turn.messages;
+    trace.memory_mode = memoryMode;
+    trace.memory = { retrieval: relevant.retrieval, retrieval_ms: relevant.ms, profile_tokens: turn.memory.profile_tokens, relevant_tokens: turn.memory.relevant_tokens, items: turn.memory.items.length };
+    trace.tools_offered = toolsFor(provider)?.definitions.map((tool) => tool.function.name) ?? [];
+    trace.prompt = {
+      messages: chatMessages.length,
+      system_chars: chatMessages[0]?.role === "system" ? chatMessages[0].content.length : 0,
+      history_chars: chatMessages.slice(1, -1).reduce((sum, message) => sum + message.content.length, 0),
+      last_chars: chatMessages.at(-1)?.content.length ?? 0,
+      excerpts_chars: passages.reduce((sum, passage) => sum + passage.text.length, 0),
+      files: listingOnly ? 0 : retrieved.files.length,
+      listing_chars: (listed?.blocks ?? []).reduce((sum: number, block: string) => sum + block.length, 0),
+      remembered: !!remembered,
+    };
     // What a new conversation would start with, kept ready in the runtime
     // (warmNewConversation): the facts of this request, and what was sent.
     if (provider.kind === "local_openai") {
@@ -787,6 +840,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         );
         break;
       } catch (err) {
+        // A computer that failed before its first word, for the trace.
+        trace.attempts = [...((trace.attempts as unknown[] | undefined) ?? []), { computer: answeredByComputer?.computer_name ?? null, provider: provider.kind, error: err instanceof Error ? err.message.slice(0, 200) : String(err) }];
         const beforeFirstToken = !timing.first && !aggregated && !reasoning;
         const last = attempt === plan.length - 1 || attempt >= MAX_FALLBACKS;
         if (upstream.signal.aborted || !beforeFirstToken || last || !retriable(err)) {
@@ -856,6 +911,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       estimated:        usage.estimated,
       messageId,
     });
+    trace.tokens = { prompt: usage.prompt_tokens, completion: usage.completion_tokens, cached: reported?.cached_tokens ?? null, estimated: usage.estimated, prompt_ms: reported?.prompt_ms ?? null, generation_ms: reported?.generation_ms ?? null };
+    keepTrace("answered", { messageId });
     touchDiscussion(discussion.id);
     // A synchronised conversation: a headless computer seals its own turn
     // for the person's other devices (src/vault/service.ts).
@@ -936,6 +993,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
           messageId,
         });
         touchDiscussion(discussion.id);
+        keepTrace("stopped", { messageId });
+      } else {
+        keepTrace("stopped");
       }
       return;
     }
@@ -950,6 +1010,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // A computer chosen by name that did not answer: the error offers this
     // one instead (« Répondre avec le Mac ? »), never switched silently.
     const extra = err instanceof ComputerUnavailableError ? { fallback: { computer_id: err.fallback.id, computer_name: err.fallback.name } } : {};
+    keepTrace("error", { error: `${code}: ${msg}` });
     if (!sseStarted) {
       return reply.code(status).send({ error: code, message: msg, ...extra });
     }
@@ -1388,10 +1449,12 @@ export async function warmNewConversation(userId: string): Promise<"warmed" | "u
   const digest_ = digestOf(`${next.system}\n${JSON.stringify(next.tools ?? [])}`);
   if (systemsSent.get(systemKey(next.provider)) === digest_) return "unchanged";
   if (inflight() > 0) return "busy";
+  const warmStarted = Date.now();
   const done = beginGeneration("chat");
   try {
     await streamLocal(next.provider.baseUrl, [{ role: "system", content: next.system }, { role: "user", content: "" }], next.provider.model, 0, () => undefined, AbortSignal.timeout(120_000), { purpose: "chat", maxTokens: 1, ...(next.tools ? { tools: { definitions: next.tools, run: async () => "" } } : {}) });
     systemsSent.set(systemKey(next.provider), digest_);
+    recordTrace(userId, { kind: "warm", model: next.provider.model, outcome: "answered", totalMs: Date.now() - warmStarted, detail: { system_chars: next.system.length, tools: next.tools?.map((tool) => tool.function.name) ?? [] } });
     return "warmed";
   } catch {
     return "none";

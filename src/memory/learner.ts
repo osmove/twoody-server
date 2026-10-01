@@ -7,6 +7,7 @@ import { normaliseMemoryContent } from "../vault/contracts.js";
 import { isForgottenFact, learnedFactId, memoryWritten } from "../vault/memories.js";
 import { firstPerson, memoryWords } from "./rank.js";
 import { askedToRemember } from "../memoryLearning.js";
+import { recordTrace } from "../diagnostics/traces.js";
 
 // What Twoody learns from a conversation, once it is over (Mémoire v2, L6,
 // docs/memory-v2-design.md §4). Jimmy, 01/10/2026: learn from everything
@@ -327,6 +328,7 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
   }
   if (!ask) return null;
   busyDiscussions.add(row.id);
+  const learnStarted = Date.now();
   try {
     const known = knownFor(row.user_id, personLines.join(" "));
     let answer: string;
@@ -339,7 +341,22 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
     failedAt.delete(row.id);
     const assistantLines = shown.filter((line) => line.role === "assistant").map((line) => line.content);
     const askedLines = new Set(personLines.filter((line) => askedToRemember(line) !== null));
-    const judged = judgeFacts(parseLearning(answer), { personLines, assistantLines, known, refused: refusedNorms(row.user_id), forgotten: isForgottenFact, askedLines });
+    const facts = parseLearning(answer);
+    const judged = judgeFacts(facts, { personLines, assistantLines, known, refused: refusedNorms(row.user_id), forgotten: isForgottenFact, askedLines });
+    // What it made of the conversation, for the Diagnostic screen.
+    recordTrace(row.user_id, {
+      kind: "learn",
+      discussionId: row.id,
+      outcome: "answered",
+      totalMs: Date.now() - learnStarted,
+      detail: {
+        lines: { person: personLines.length, assistant: assistantLines.length, known: known.length },
+        facts: facts.length,
+        saved: judged.save.map((j) => ({ text: j.fact.text, confidence: j.confidence })),
+        proposed: judged.propose.map((j) => ({ text: j.fact.text, confidence: j.confidence, sensitive: j.sensitive, supersedes: !!j.supersedesId })),
+        dropped: judged.dropped.map((d) => ({ text: d.fact.text, reason: d.reason })),
+      },
+    });
     result.dropped = judged.dropped.length;
     for (const fact of judged.save) {
       const id = keepLearned(row.user_id, fact, row.id);
