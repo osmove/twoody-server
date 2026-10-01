@@ -209,6 +209,9 @@ export function importAccountMemories(userId: string, items: AccountMemory[], no
     const content = typeof item?.content === "string" ? cutToBytes(item.content.trim(), MAX_ACCOUNT_MEMORY_BYTES).trim() : "";
     const key = normalize(content);
     if (!content || !key) continue;
+    // A test left it on the account (a `__…__` tag): never a fact about the
+    // person (01/10/2026, « Ma fille Claire… » came to a Mac this way).
+    if (Array.isArray(item.tags) && item.tags.some((tag) => typeof tag === "string" && /^__.+__$/.test(tag.trim()))) { skipped += 1; continue; }
     // Known here, or forgotten here on purpose (never learned again).
     if (known.has(key) || isForgottenFact(content)) { skipped += 1; continue; }
     known.add(key);

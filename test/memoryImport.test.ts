@@ -90,6 +90,11 @@ test("the account's memories are taken over one each: title, kind and date kept,
   assert.equal(fresh.memories[0].kind, "user");
   assert.equal(fresh.memories[0].title, null);
 
+  // What a test left on the account (01/10/2026: « Ma fille Claire… »).
+  const tested = (await app.inject({ method: "POST", url: "/api/v1/memories/import", headers, payload: { source: "account", memories: [{ title: "POS birthday", content: "Ma fille Claire est née le 15 mai 1995.", tags: ["__action_extractor_test__", "import"] }] } })).json();
+  assert.equal(tested.imported, 0);
+  assert.equal(tested.skipped, 1);
+
   assert.equal((await app.inject({ method: "POST", url: "/api/v1/memories/import", headers, payload: { source: "account", memories: [] } })).statusCode, 400);
   const tooMany = Array.from({ length: 501 }, (_, i) => ({ content: `Fait numéro ${i}` }));
   assert.equal((await app.inject({ method: "POST", url: "/api/v1/memories/import", headers, payload: { source: "account", memories: tooMany } })).statusCode, 413);
