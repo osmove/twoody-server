@@ -32,12 +32,16 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   req.on("data", (chunk) => (raw += chunk));
   req.on("end", () => {
     const { messages } = JSON.parse(raw) as { messages: Message[] };
-    const extraction = messages[0].content.startsWith("You extract lasting facts");
+    const extraction = messages[0].content.startsWith("You read a conversation between");
     let text: string;
     if (extraction) {
       background += 1;
-      const said = messages[1].content;
-      text = /Léa/.test(said) ? "- Sa fille s'appelle Léa." : /Thomas/.test(said) ? "- Son mari s'appelle Thomas." : /architecte/.test(said) ? "- Architecte à Lyon." : "NONE";
+      const said = messages[1].content.split("CONVERSATION:")[1]!;
+      const learned = (text: string, evidence: string) => JSON.stringify({ facts: [{ text, evidence, kind: "user", category: "family", confidence: 0.9 }] });
+      text = /Léa/.test(said) ? learned("Sa fille s'appelle Léa.", "Ma fille s'appelle Léa")
+        : /Thomas/.test(said) ? learned("Son mari s'appelle Thomas.", "Mon mari s'appelle Thomas")
+        : /architecte/.test(said) ? learned("Architecte à Lyon.", "je travaille comme architecte à Lyon")
+        : '{"facts":[]}';
     } else {
       chats.push(messages);
       text = `Réponse ${chats.length}. ${"Une phrase de réponse assez longue pour remplir la fenêtre. ".repeat(6)}`;
@@ -113,8 +117,9 @@ test("30 turns with memories learned on the way: each request starts with the pr
     assert.equal(response.statusCode, 200, response.body);
     const final = response.body.split("\n\n").find((block) => block.startsWith("event: final"))!;
     discussionId ??= (JSON.parse(final.slice(final.indexOf("data: ") + 6)) as { discussion_id: string }).discussion_id;
-    // The memory extraction runs after the answer.
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    // What was said is learned between two turns, as after a pause
+    // (src/memory/learner.ts).
+    assert.equal((await app.inject({ method: "POST", url: "/memories/learn", headers, payload: { discussion_id: discussionId } })).statusCode, 200);
 
     const [row] = db.select({ contextJson: discussions.contextJson }).from(discussions).where(eq(discussions.id, discussionId)).all();
     const state = JSON.parse(row.contextJson!) as { liveFrom: string | null };

@@ -3,16 +3,12 @@ import { db, memories } from "./db.js";
 import { normaliseMemoryContent } from "./vault/contracts.js";
 import { isForgottenFact, learnedFactId, memoryWritten, newMemoryId } from "./vault/memories.js";
 
-// What Twoody learns from a conversation (Jimmy, 28/09/2026: the Memories
-// screen stayed empty — the « memory » tools were announced to the model
-// but nothing ran them). Two ways in, both after the answer, never in its
-// way:
-//
-//   - asked outright: « retiens que… », « souviens-toi que… », « remember
-//     that… » — kept as said, no model involved;
-//   - said in passing: « je m'appelle… », « ma fille s'appelle… », « je
-//     travaille chez… » — the model that answered is asked, once the answer
-//     is written, which lasting facts about the person the message holds.
+// What the person asks Twoody to remember, kept as said and at once:
+// « retiens que… », « souviens-toi que… », « remember that… » — no model
+// involved. What is said in passing is learned once the conversation is
+// over, from the whole of it (src/memory/learner.ts, Mémoire v2 L6): the
+// model asked after every message (28/09/2026) slowed the next answer and
+// took one message alone for a fact.
 //
 // Kept on this computer like the rest (source « conversation »), shown and
 // editable in Memories, and never the same fact twice.
@@ -29,47 +25,11 @@ export function askedToRemember(text: string): string | null {
   return fact.length >= 3 && fact.length <= 500 ? capitalize(fact) : null;
 }
 
-// First-person statements that are usually lasting facts about someone.
-const PERSONAL = /\b(?:je m'appelle|mon nom est|mon pr[ée]nom|j'habite|je vis [àa]|je travaille|je suis originaire|mon anniversaire|je suis (?:n[ée]e?|m[ée]decin|avocat|ing[ée]nieur|d[ée]veloppeur|consultant|[ée]tudiant|professeur|mari[ée]e?|c[ée]libataire|v[ée]g[ée]tarien|allergique)|j'ai \d+ ans|mes enfants|ma femme|mon mari|ma fille|mon fils|ma compagne|mon compagnon|mes parents|ma m[èe]re|mon p[èe]re|ma s(?:œ|oe)ur|mon fr[èe]re|mon entreprise|ma soci[ée]t[ée]|mon (?:chien|chat)|je pr[ée]f[èe]re|je d[ée]teste|j'adore|my name is|i live in|i work (?:at|for|as)|i am (?:a|an) |i'm (?:a|an) |my (?:wife|husband|son|daughter|kids|dog|cat)|i prefer|i'm allergic)\b/i;
-
-/// Whether a message says something lasting about the person, worth asking
-/// the model about.
-export function saysSomethingPersonal(text: string): boolean {
-  return text.length <= 2000 && PERSONAL.test(straightQuotes(text));
-}
-
 /// « j’habite », as a phone types it, is « j'habite »: the iPhone's
 /// keyboard writes the curly apostrophe, and none of its messages matched
 /// (30/09/2026).
 function straightQuotes(text: string): string {
   return text.replace(/[’‘ʼ]/g, "'");
-}
-
-/// The request the answering model gets, once its answer is written.
-export function extractionPrompt(message: string): Array<{ role: "system" | "user"; content: string }> {
-  return [
-    {
-      role: "system",
-      content:
-        "You extract lasting facts about the user from one of their messages: their name, family, work, where they live, " +
-        "preferences, allergies, important dates. Not the question itself, not temporary states, not facts about other topics. " +
-        "Answer with one fact per line, each a short sentence in the language of the message, starting with « - ». " +
-        "If there is none, answer exactly: NONE",
-    },
-    { role: "user", content: message.slice(0, 2000) },
-  ];
-}
-
-/// The facts in the model's answer to extractionPrompt.
-export function parseFacts(answer: string): string[] {
-  if (/^\s*NONE\s*$/i.test(answer)) return [];
-  return answer
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => /^[-•*]\s+/.test(line))
-    .map((line) => capitalize(line.replace(/^[-•*]\s+/, "").replace(/\s+$/, "")))
-    .filter((fact) => fact.length >= 3 && fact.length <= 300)
-    .slice(0, 5);
 }
 
 /// Keeps these facts as memories of the person, the ones already known
@@ -113,21 +73,6 @@ export function rememberFacts(userId: string, facts: string[], sourceRef: string
     added += 1;
   }
   return added;
-}
-
-/// After an answer: what the message asked to be remembered, or the lasting
-/// facts it holds, kept. `ask` runs the extraction on the answering model.
-export async function learnFromMessage(args: {
-  userId: string;
-  message: string;
-  sourceRef?: string | null;
-  ask: (messages: ReturnType<typeof extractionPrompt>) => Promise<string>;
-}): Promise<number> {
-  const asked = askedToRemember(args.message);
-  if (asked) return rememberFacts(args.userId, [asked], args.sourceRef ?? null);
-  if (!saysSomethingPersonal(args.message)) return 0;
-  const facts = parseFacts(await args.ask(extractionPrompt(args.message)));
-  return rememberFacts(args.userId, facts, args.sourceRef ?? null);
 }
 
 /// The vault's normalisation (src/vault/contracts.ts): the same fact

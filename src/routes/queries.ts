@@ -1,7 +1,8 @@
 import { relative, isAbsolute } from "node:path";
 import { clientOf } from "./usage.js";
 import { recordUsageEvent, type UsageEventInput } from "../usageStore.js";
-import { askedToRemember, learnFromMessage, rememberFacts } from "../memoryLearning.js";
+import { askedToRemember, rememberFacts } from "../memoryLearning.js";
+import { learnSoon, setLearningModel, type LearnMessages } from "../memory/learner.js";
 import { citationLink, folderOf, localFolderIds, meshPeers, retrieveAcrossComputers } from "../documents/remote.js";
 import { listingIntent } from "../documents/fileListing.js";
 import { listFilesAcrossComputers, type MeshListing } from "../documents/remoteListing.js";
@@ -133,6 +134,8 @@ interface QueryBody {
 // XHR ~4 KB buffering quirk (same workaround the Rails backend
 // uses, see queries_controller.rb).
 export async function queryRoutes(app: FastifyInstance) {
+  // What the learner runs its prompt on (src/memory/learner.ts).
+  setLearningModel(learningCall);
   app.post("/queries", {
     schema: {
       tags: ["queries"],
@@ -847,47 +850,6 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       ...(vaultConversationId ? { vault_conversation_id: vaultConversationId, catch_up: { status: caughtUp!.status, missing_refs: caughtUp!.missing } } : {}),
     };
     reply.raw.write(`event: final\ndata: ${JSON.stringify(finalPayload)}\n\n`);
-    // What the message said in passing about the person, asked of the model
-    // that answered, now that its answer is written (src/memoryLearning.ts).
-    if (learning && !remembered) {
-      void learnFromMessage({
-        userId: auth.userId,
-        message: typedText(content),
-        sourceRef: discussion.id,
-        ask: async (extraction) => {
-          const answered = provider;
-          const run = async (target: Provider) => {
-            let text = "";
-            const asked = Date.now();
-            let first = 0;
-            const done = target.kind === "local_openai" ? beginGeneration("background") : () => undefined;
-            try {
-              const spent = await streamFromProvider(target, extraction, 0, (delta) => { first ||= Date.now(); text += delta; }, AbortSignal.timeout(60_000), { purpose: "background" });
-              if (target.kind !== "peer_openai") recordModelCall(auth.userId, "memory", "model" in target ? target.model : null, clientOf(auth), spent, messagesChars(extraction), text.length, asked, first, Date.now());
-            } finally {
-              done();
-            }
-            // A model that reasons first writes it before the facts.
-            return text.replace(/<think>[\s\S]*?(?:<\/think>|$)/g, "");
-          };
-          // « Tâches de fond »: an idle computer of the account may do it
-          // (router.pickBackground); this one does otherwise, or when that
-          // one fails.
-          const elsewhere = await pickBackground({ userId: auth.userId, preference: userContext.prefs.background_computer, model: "model" in answered ? answered.model : null }).catch(() => null);
-          if (elsewhere) {
-            const peer = peerById(auth.userId, elsewhere.computerId);
-            if (peer) {
-              try {
-                return await run(peerProvider(peer, elsewhere.model));
-              } catch {
-                // done here instead
-              }
-            }
-          }
-          return run(answered.kind === "peer_openai" ? await resolveProvider(auth.userId) : answered);
-        },
-      }).catch(() => 0);
-    }
   } catch (err) {
     if (upstream.signal.aborted) {
       // Keep what was written: the conversation would otherwise show a
@@ -1300,6 +1262,40 @@ async function streamFromProvider(
       });
     }
   }
+}
+
+/// The learner's model call (src/memory/learner.ts): the person's model, on
+/// the computer set in « Tâches de fond » when one of theirs is idle
+/// (router.pickBackground), else on this one.
+async function learningCall(userId: string, prompt: LearnMessages): Promise<string> {
+  const userContext = loadUserContext(userId);
+  const answered = await resolveProvider(userId);
+  const run = async (target: Provider) => {
+    let text = "";
+    const asked = Date.now();
+    let first = 0;
+    const done = target.kind === "local_openai" ? beginGeneration("background") : () => undefined;
+    try {
+      const spent = await streamFromProvider(target, prompt, 0, (delta) => { first ||= Date.now(); text += delta; }, AbortSignal.timeout(180_000), { purpose: "background" });
+      if (target.kind !== "peer_openai") recordModelCall(userId, "memory", "model" in target ? target.model : null, "this-computer", spent, messagesChars(prompt), text.length, asked, first, Date.now());
+    } finally {
+      done();
+    }
+    // A model that reasons first writes it before the facts.
+    return text.replace(/<think>[\s\S]*?(?:<\/think>|$)/g, "");
+  };
+  const elsewhere = await pickBackground({ userId, preference: userContext.prefs.background_computer, model: "model" in answered ? answered.model : null }).catch(() => null);
+  if (elsewhere) {
+    const peer = peerById(userId, elsewhere.computerId);
+    if (peer) {
+      try {
+        return await run(peerProvider(peer, elsewhere.model));
+      } catch {
+        // done here instead
+      }
+    }
+  }
+  return run(answered.kind === "peer_openai" ? await resolveProvider(userId) : answered);
 }
 
 /// One call to a model other than the answer itself (a memory extraction,
@@ -1816,6 +1812,9 @@ function resolveDiscussion(
       lastActivityAt: now,
     })
     .run();
+  // A new conversation: what was said in the ones before is learned now
+  // (src/memory/learner.ts), so that this one knows it.
+  learnSoon(userId, id);
   return { id, title: null };
 }
 

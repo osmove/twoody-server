@@ -104,7 +104,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   req.on("data", (chunk) => (raw += chunk));
   req.on("end", () => {
     const { messages } = JSON.parse(raw) as { messages: Message[] };
-    const extraction = messages[0].content.startsWith("You extract lasting facts");
+    const extraction = messages[0].content.startsWith("You read a conversation between");
     if (extraction) extractions += 1;
     else chats.push(messages);
     res.writeHead(200, { "content-type": "text/event-stream" });
@@ -175,6 +175,8 @@ test("/queries: final.memory says what the answer was given, kept with it; memor
   assert.doesNotMatch(none.sent[0].content, /41 ans/);
   assert.doesNotMatch(none.sent.at(-1)!.content, /Saved notes|novembre/);
   assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM memories").get() as { n: number }).n, memoriesBefore);
+  // Not read afterwards either, even asked to.
+  assert.equal((await app.inject({ method: "POST", url: "/memories/learn", headers, payload: { discussion_id: full.final.discussion_id } })).statusCode, 200);
   assert.equal(extractions, learnedBefore);
   assert.equal((await app.inject({ url: `/discussions/${full.final.discussion_id}`, headers })).json().memory_mode, "none");
 

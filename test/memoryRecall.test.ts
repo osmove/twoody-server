@@ -30,7 +30,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   req.on("data", (chunk) => (raw += chunk));
   req.on("end", () => {
     const { messages } = JSON.parse(raw) as { messages: Message[] };
-    const extraction = messages[0].content.startsWith("You extract lasting facts");
+    const extraction = messages[0].content.startsWith("You read a conversation between");
     if (!extraction) chats.push(messages);
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: extraction ? "NONE" : "Réponse." } }] })}\n\n`);

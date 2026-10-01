@@ -1,12 +1,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { and, desc, eq, inArray, isNull, like, or } from "drizzle-orm";
-import { db, memories } from "../db.js";
+import { db, memories, sqlite } from "../db.js";
 import { requireAuth } from "../auth.js";
 import { ownerRequest } from "../localAccess.js";
 import { isPersonOrOwner } from "../sessionTrust.js";
 import { meshRoster } from "../vault/roster.js";
 import { factsFromImport, importAccountMemories, importMemories, IMPORT_SOURCES, MAX_ACCOUNT_MEMORIES, type AccountMemory, type ImportSource } from "../memoryLearning.js";
 import { memoryDeleted, memoryWritten, newMemoryId, possibleDuplicates } from "../vault/memories.js";
+import { acceptCandidate, CandidateError, learnDiscussion, listCandidates, pendingDiscussions, rejectCandidate, type LearnResult } from "../memory/learner.js";
 
 // Cloud-shape /memories CRUD against the local SQLite store. Wire
 // shape mirrors `app/views/memories/_memory.json.jbuilder` on Rails:
@@ -101,6 +102,80 @@ function readBody(raw: unknown): {
 }
 
 export async function memoryRoutes(app: FastifyInstance) {
+  // « À confirmer »: what the learner was not sure enough of to keep on its
+  // own, a fact that changes a known one, anything sensitive
+  // (src/memory/learner.ts).
+  app.get("/memories/candidates", {
+    schema: { tags: ["memories"], summary: "Facts learned from conversations, waiting for the person", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
+      reply.send({ candidates: listCandidates(auth.userId) });
+    },
+  });
+
+  app.post<{ Params: { id: string }; Body: { content?: unknown } | null }>("/memories/candidates/:id/accept", {
+    schema: { tags: ["memories"], summary: "Keep a learned fact, as proposed or corrected", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
+      const content = typeof req.body?.content === "string" ? req.body.content : null;
+      try {
+        const id = acceptCandidate(auth.userId, req.params.id, content);
+        const [row] = db.select().from(memories).where(eq(memories.id, id)).limit(1).all();
+        reply.send({ memory: row ? serialize(row) : null });
+      } catch (err) {
+        if (err instanceof CandidateError) return reply.code(err.status).send({ error: err.code });
+        throw err;
+      }
+    },
+  });
+
+  app.post<{ Params: { id: string } }>("/memories/candidates/:id/reject", {
+    schema: { tags: ["memories"], summary: "Refuse a learned fact: never proposed again", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
+      try {
+        rejectCandidate(auth.userId, req.params.id);
+        reply.code(204).send();
+      } catch (err) {
+        if (err instanceof CandidateError) return reply.code(err.status).send({ error: err.code });
+        throw err;
+      }
+    },
+  });
+
+  // Learn now from one conversation, or from every one with something new,
+  // without waiting for them to be idle (the memory bench; a client that
+  // closes a conversation).
+  app.post<{ Body: { discussion_id?: unknown } | null }>("/memories/learn", {
+    schema: { tags: ["memories"], summary: "Learn now from what was said in conversations", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
+      const wanted = typeof req.body?.discussion_id === "string" ? req.body.discussion_id : null;
+      if (wanted && !sqlite.prepare("SELECT 1 FROM discussions WHERE id = ? AND user_id = ?").get(wanted, auth.userId)) {
+        return reply.code(404).send({ error: "not_found" });
+      }
+      const ids = wanted ? [wanted] : pendingDiscussions({ userId: auth.userId, idleMs: 0, limit: 20 });
+      const results: LearnResult[] = [];
+      try {
+        for (const id of ids) {
+          const result = await learnDiscussion(id);
+          if (result) results.push(result);
+        }
+      } catch (err) {
+        return reply.code(503).send({ error: "learning_failed", message: err instanceof Error ? err.message : String(err), results });
+      }
+      reply.send({ results });
+    },
+  });
+
   app.get<{
     Querystring: {
       q?:                  string;

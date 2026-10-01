@@ -197,6 +197,8 @@ export const discussions = sqliteTable("discussions", {
   // Which memories this conversation's turns are given (Mémoire v2, L4a):
   // "full", "profile" or "none"; null follows the person's setting (/me).
   memoryMode: text("memory_mode"),
+  // The rowid of the last message the learner went through (L6).
+  learnedThrough: integer("learned_through"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   lastActivityAt: integer("last_activity_at", { mode: "timestamp" }).notNull(),
 });
@@ -1175,6 +1177,40 @@ sqlite.exec(`
     END;
   `);
   if (created) rebuildMessageIndex();
+}
+
+// L6: what the learner read of each conversation (the rowid of the last
+// message it went through), and the facts it was not sure enough of to keep
+// on its own: « À confirmer » (src/memory/learner.ts). On this computer only
+// — candidates travel later (docs/memory-v2-design.md §6, phase 2).
+{
+  const columns = sqlite.prepare("PRAGMA table_info(discussions)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "learned_through")) {
+    sqlite.exec("ALTER TABLE discussions ADD COLUMN learned_through INTEGER");
+    // The conversations held before were learned message by message as
+    // they went: read already.
+    sqlite.exec("UPDATE discussions SET learned_through = (SELECT MAX(rowid) FROM messages m WHERE m.discussion_id = discussions.id)");
+  }
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS memory_candidates (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      content TEXT NOT NULL,
+      norm TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'user',
+      category TEXT,
+      confidence REAL NOT NULL,
+      sensitive INTEGER NOT NULL DEFAULT 0,
+      evidence TEXT,
+      supersedes_id TEXT,
+      discussion_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      memory_id TEXT,
+      created_at INTEGER NOT NULL,
+      decided_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_candidates_user ON memory_candidates (user_id, status);
+  `);
 }
 
 /// Indexes again every message it should hold, from scratch: at creation

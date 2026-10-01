@@ -108,15 +108,13 @@ test("a chat answer is counted with the runtime's cache and timings, and its tim
   clearEvents();
 });
 
-test("what the model is asked to learn from a message is counted as memory", async () => {
+test("what the model is asked to learn from a conversation is counted as memory, on this computer", async () => {
   forgetRuntimeProbes();
   const response = await app.inject({ method: "POST", url: "/queries", headers: desktop, payload: { text: "J'habite à Lyon, quel temps ?", channel: "desktop", force_new_discussion: true } });
   assert.equal(response.statusCode, 200, response.body);
-  let sources: string[] = [];
-  for (let i = 0; i < 100 && !sources.includes("memory"); i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    sources = db.select().from(usageEvents).all().map((event) => event.source);
-  }
+  const discussionId = /"discussion_id":"([^"]+)"/.exec(response.body)![1];
+  assert.equal((await app.inject({ method: "POST", url: "/memories/learn", headers: desktop, payload: { discussion_id: discussionId } })).statusCode, 200);
+  const sources = db.select().from(usageEvents).all().map((event) => event.source);
   assert.deepEqual(sources.sort(), ["chat", "memory"]);
   const memory = db.select().from(usageEvents).all().find((event) => event.source === "memory")!;
   assert.equal(memory.client, "this-computer");

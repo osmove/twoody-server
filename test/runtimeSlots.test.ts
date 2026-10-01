@@ -45,9 +45,9 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   req.on("end", () => {
     const body = JSON.parse(raw) as Record<string, unknown> & { messages: Array<{ content: string }> };
     bodies.push(body);
-    const extraction = body.messages[0]?.content.startsWith("You extract lasting facts");
+    const extraction = body.messages[0]?.content.startsWith("You read a conversation between");
     res.writeHead(200, { "content-type": "text/event-stream" });
-    res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: extraction ? "- Elle s'appelle Camille." : "Enchanté, Camille." } }] })}\n\n`);
+    res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: extraction ? '{"facts":[]}' : "Enchanté, Camille." } }] })}\n\n`);
     res.end("data: [DONE]\n\n");
   });
 });
@@ -84,7 +84,7 @@ test("a runtime without Twoody's key (Ollama, LM Studio, one the person started)
   assert.equal(propsAsked.length, before);
 });
 
-test("through /queries: the answer on slot 0, the memory extraction after it on slot 1", async () => {
+test("through /queries: the answer on slot 0, the learning from the conversation on slot 1", async () => {
   configureRuntimeKeys({ [base]: KEY });
   forgetRuntimeSlots();
   slots = 2;
@@ -98,7 +98,8 @@ test("through /queries: the answer on slot 0, the memory extraction after it on 
     bodies.length = 0;
     const response = await app.inject({ method: "POST", url: "/queries", headers, payload: { text: "Bonjour, je m'appelle Camille.", channel: "desktop", force_new_discussion: true } });
     assert.equal(response.statusCode, 200, response.body);
-    for (let i = 0; i < 100 && bodies.length < 2; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+    const learned = await app.inject({ method: "POST", url: "/memories/learn", headers, payload: { discussion_id: response.body.match(/"discussion_id":"([^"]+)"/)![1] } });
+    assert.equal(learned.statusCode, 200, learned.body);
     assert.deepEqual(bodies.map((body) => body.id_slot), [0, 1]);
   } finally {
     await app.close();

@@ -29,6 +29,7 @@ import { relayAccountThroughDesktop } from "./account/desktopRelay.js";
 import { setDesktopVault, startVaultService } from "./vault/service.js";
 import { startMemorySync } from "./vault/memories.js";
 import { startMemoryWork } from "./memory/changes.js";
+import { startLearning } from "./memory/learner.js";
 import { builtinAddress, initEngine, preloadBuiltin, stopEngine } from "./engine.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -309,6 +310,8 @@ try {
   // The memories' links to their entities and their vectors (Mémoire v2),
   // for what was written before they existed: a while after start.
   const memoryWork = startMemoryWork();
+  // What was said in passing, learned once a conversation is over.
+  const learning = startLearning();
   if (parentPort && process.env.TWOODY_TUNNEL === "1") {
     parentPort.on("message", ({ data }) => {
       if ((data as { type?: unknown } | null)?.type !== "tunnel") return;
@@ -369,6 +372,7 @@ try {
         vaultService?.stop();
         memorySync.stop();
         memoryWork.stop();
+        learning.stop();
         stopPeerPoller();
         stopMeshLinks();
         stopRoster();
