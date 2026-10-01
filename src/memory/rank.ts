@@ -41,6 +41,9 @@ export const TAU_LEX = 0.55;
 /// in twice as many that did not bear on it.
 export const RELATIVE = 0.08;
 export const ENTITY_DIRECT = 0.15;
+/// The best cosine of all, this far ahead of the next, is kept on its own.
+export const STANDOUT_COSINE = 0.55;
+export const STANDOUT_MARGIN = 0.05;
 /// A memory that names an entity of the message only by a common noun.
 export const ENTITY_NOUN = 0.08;
 /// About someone else than the one the message is about.
@@ -301,6 +304,14 @@ export function scoreMemories(items: readonly RankItem[], query: string, options
   const meaningOnly = mass === 0;
   const self = options.self ?? null;
   const reachesSomeone = [...queryEntities.values()].some((weight) => weight >= ENTITY_DIRECT);
+  // The memory closest by meaning, clearly ahead of the next: kept on its
+  // meaning, whatever the words (Jimmy, 01/10/2026: « un projet d'achat en ce
+  // moment ? » missed « Je réfléchis à acquérir un Mac Mini », C 0.585 the
+  // best by far, behind six memories that only shared « projet »).
+  const cosines = options.queryVector
+    ? items.map((item) => (item.vector ? dot(options.queryVector!, item.vector) : -1)).sort((a, b) => b - a)
+    : [];
+  const standout = cosines.length && cosines[0]! >= STANDOUT_COSINE && cosines[0]! - (cosines[1] ?? -1) >= STANDOUT_MARGIN ? cosines[0]! : null;
 
   const scored: Array<Ranked & { ok: boolean }> = [];
   items.forEach((item, index) => {
@@ -346,6 +357,10 @@ export function scoreMemories(items: readonly RankItem[], query: string, options
       // Not about the person: the meaning alone must be close (« Un
       // marathon, ça fait combien de kilomètres ? » is not about theirs).
       if (!personal) ok = ok && (c >= 0.6 || l >= 0.99);
+      if (standout !== null && c === standout && (personal || c >= 0.6)) {
+        score = Math.max(score, c + e + p);
+        ok = true;
+      }
     } else {
       score = l + e + p;
       ok = (l >= 0.6 && rare) || (e > 0 && l >= 0.4);

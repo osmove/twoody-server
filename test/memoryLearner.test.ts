@@ -276,3 +276,9 @@ test("« Doublons possibles »: the same fact said twice, by its words without v
   assert.ok(!(await app.inject({ url: "/memories/similar", headers })).json().pairs.some((p: { memories: Array<{ id: string }> }) => p.memories.some((m) => m.id === "dup-a")));
   assert.equal((await app.inject({ method: "POST", url: "/memories/similar/dismiss", headers, payload: { ids: ["dup-a"] } })).statusCode, 422);
 });
+
+test("« retiens que… » is kept as said: the learner does not learn it again in other words", async () => {
+  const id = conversation([{ role: "user", content: "Retiens que je réfléchis actuellement à acquérir un Mac Mini" }]);
+  const result = await learnDiscussion(id, { ask: async () => answer(fact("Envisage l'achat d'un Mac Mini", "je réfléchis actuellement à acquérir un Mac Mini", { category: "project", confidence: 0.9 })) });
+  assert.deepEqual([result!.saved, result!.proposed], [[], []]);
+});

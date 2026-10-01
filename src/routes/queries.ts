@@ -790,7 +790,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       usage,
       client:       clientOf(auth),
       answeredBy:   answeredByComputer,
-      memory:       memoryUsed,
+      memory:       memoryUsed && remembered ? { ...memoryUsed, remembered: { content: remembered, added: rememberedAdded } } : memoryUsed,
     });
     // What another computer wrote is counted there (source « peer »), not
     // as this computer's work.
@@ -852,6 +852,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       ...(vaultConversationId ? { vault_conversation_id: vaultConversationId, catch_up: { status: caughtUp!.status, missing_refs: caughtUp!.missing } } : {}),
     };
     reply.raw.write(`event: final\ndata: ${JSON.stringify(finalPayload)}\n\n`);
+    // A new conversation, its first answer written: what was said in the
+    // ones before is learned now (src/memory/learner.ts), once nothing
+    // generates — never alongside this answer.
+    if (discussion.created) learnSoon(auth.userId, discussion.id);
   } catch (err) {
     if (upstream.signal.aborted) {
       // Keep what was written: the conversation would otherwise show a
@@ -1789,7 +1793,7 @@ function resolveDiscussion(
   requestedId: string | null,
   channel: string,
   forceNew: boolean,
-): { id: string; title: string | null } {
+): { id: string; title: string | null; created?: boolean } {
   const own = db.select().from(discussions).where(eq(discussions.userId, userId));
   const explicit = requestedId && !forceNew
     ? own.all().find((row) => row.id === requestedId) ?? null
@@ -1814,10 +1818,7 @@ function resolveDiscussion(
       lastActivityAt: now,
     })
     .run();
-  // A new conversation: what was said in the ones before is learned now
-  // (src/memory/learner.ts), so that this one knows it.
-  learnSoon(userId, id);
-  return { id, title: null };
+  return { id, title: null, created: true };
 }
 
 export function loadHistory(discussionId: string, after: string | null = null): HistoryRow[] {

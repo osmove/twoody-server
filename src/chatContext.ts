@@ -87,6 +87,9 @@ export interface MemoryUsage {
   profile_tokens: number;
   relevant_tokens: number;
   items: Array<{ id: string | null; title: string; score: number | null }>;
+  /// « Retiens que… » in this turn: kept (`added`) or known already, kept
+  /// with the answer so that a conversation opened again still says it.
+  remembered?: { content: string; added: boolean };
 }
 
 export interface MemoryRow {
@@ -321,6 +324,9 @@ const HISTORY_MESSAGE_CHARS = 4_000;
 /// characters before it (~1 400 tokens) were read at every refresh.
 const PROFILE_TARGET_CHARS = Math.round(600 * CHARS_PER_TOKEN);
 const PROFILE_MAX_CHARS = Math.round(800 * CHARS_PER_TOKEN);
+/// The person's newest memories, in the profile for a week.
+const RECENT_MS = 7 * 86_400_000;
+const RECENT_MAX = 3;
 /// The memories a message bears on (tier b): 600 tokens and twelve at most.
 const RELEVANT_MEMORY_CHARS = Math.round(600 * CHARS_PER_TOKEN);
 const RELEVANT_MAX_ITEMS = 12;
@@ -369,7 +375,7 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   // wants of the answers, what they pinned, their people (the graph's line),
   // their core facts, the most given; a sensitive fact only pinned, and on
   // a model of the person's own.
-  const profile = profileOrder(usable, input.profileHints ?? null, input.local);
+  const profile = profileOrder(usable, input.profileHints ?? null, input.local, now.getTime());
   const graph = input.profileHints?.graph ?? null;
   const profileTarget = scaled(PROFILE_TARGET_CHARS, input.contextWindow, 0.1);
   const profileMax = scaled(PROFILE_MAX_CHARS, input.contextWindow, 0.1);
@@ -816,7 +822,7 @@ type ProfileOrder = {
 /// The profile's memories in the order it takes them. What came from the
 /// account (source « account ») is data about the person, never how to
 /// answer: with the facts, whatever its kind says.
-function profileOrder(usable: MemoryRow[], hints: ProfileHints | null, local: boolean): ProfileOrder {
+function profileOrder(usable: MemoryRow[], hints: ProfileHints | null, local: boolean, now = Date.now()): ProfileOrder {
   const fromAccount = (memory: MemoryRow) => memory.sourceRef === "account";
   const eligible = usable.filter((memory) => !memory.sensitive || (memory.pinned && local));
   const taken = new Set<MemoryRow>();
@@ -837,7 +843,16 @@ function profileOrder(usable: MemoryRow[], hints: ProfileHints | null, local: bo
     .filter((memory) => memory.id && (uses[memory.id] ?? 0) > 0)
     .sort((a, b) => (uses[b.id!] ?? 0) - (uses[a.id!] ?? 0));
   const byId = new Map(eligible.filter((memory) => memory.id).map((memory) => [memory.id!, memory] as const));
+  // What the person told Twoody these last days, written or said (not an
+  // import): in every conversation for a week, whatever is asked (Jimmy,
+  // 01/10/2026: « retiens que j'envisage un Mac mini », then a new
+  // conversation that did not know it).
+  const recent = users
+    .filter((memory) => (memory.manual || memory.source === "conversation") && memory.createdAt && now - memory.createdAt < RECENT_MS)
+    .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+    .slice(0, RECENT_MAX);
   const core = take([
+    ...recent,
     ...own.filter((memory) => BIRTH.test(normalize(memory.content))),
     ...(hints?.peopleIds ?? []).flatMap((id) => byId.get(id) ?? []),
   ]);

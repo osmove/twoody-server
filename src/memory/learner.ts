@@ -6,6 +6,7 @@ import { typedText } from "../documentBlocks.js";
 import { normaliseMemoryContent } from "../vault/contracts.js";
 import { isForgottenFact, learnedFactId, memoryWritten } from "../vault/memories.js";
 import { firstPerson, memoryWords } from "./rank.js";
+import { askedToRemember } from "../memoryLearning.js";
 
 // What Twoody learns from a conversation, once it is over (Mémoire v2, L6,
 // docs/memory-v2-design.md §4). Jimmy, 01/10/2026: learn from everything
@@ -208,7 +209,7 @@ export interface Judgement {
 /// No database: what it needs is handed to it.
 export function judgeFacts(
   facts: LearnedFact[],
-  context: { personLines: string[]; assistantLines?: string[]; known: KnownMemory[]; refused?: ReadonlySet<string>; forgotten?: (text: string) => boolean },
+  context: { personLines: string[]; assistantLines?: string[]; known: KnownMemory[]; refused?: ReadonlySet<string>; forgotten?: (text: string) => boolean; askedLines?: ReadonlySet<string> },
 ): Judgement {
   const out: Judgement = { save: [], propose: [], dropped: [] };
   const seen = new Set<string>();
@@ -219,6 +220,8 @@ export function judgeFacts(
     seen.add(norm);
     const found = evidenceFound(fact.evidence, context.personLines);
     if (!found) { out.dropped.push({ fact, reason: "no_evidence" }); continue; }
+    // « Retiens que… »: kept as said already, at once (memoryLearning.ts).
+    if (context.askedLines?.has(found.line)) { out.dropped.push({ fact, reason: "asked" }); continue; }
     if (fromAssistant(fact.text, context.personLines, context.assistantLines ?? [])) { out.dropped.push({ fact, reason: "from_assistant" }); continue; }
     if (context.refused?.has(norm)) { out.dropped.push({ fact, reason: "refused" }); continue; }
     if (context.forgotten?.(fact.text)) { out.dropped.push({ fact, reason: "forgotten" }); continue; }
@@ -335,7 +338,8 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
     }
     failedAt.delete(row.id);
     const assistantLines = shown.filter((line) => line.role === "assistant").map((line) => line.content);
-    const judged = judgeFacts(parseLearning(answer), { personLines, assistantLines, known, refused: refusedNorms(row.user_id), forgotten: isForgottenFact });
+    const askedLines = new Set(personLines.filter((line) => askedToRemember(line) !== null));
+    const judged = judgeFacts(parseLearning(answer), { personLines, assistantLines, known, refused: refusedNorms(row.user_id), forgotten: isForgottenFact, askedLines });
     result.dropped = judged.dropped.length;
     for (const fact of judged.save) {
       const id = keepLearned(row.user_id, fact, row.id);

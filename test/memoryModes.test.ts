@@ -225,3 +225,9 @@ test("« Retiens que… »: the answer says it was kept, or already known (« M�
   assert.deepEqual(again.final.remembered, { content: "Je joue du violoncelle", added: false });
   assert.equal((await ask({ text: "Bonjour", force_new_discussion: true })).final.remembered, undefined);
 });
+
+test("« Mémoire enregistrée » stays with the answer: a conversation opened again still says it", async () => {
+  const kept = await ask({ text: "Retiens que je pars à Lisbonne en mai.", force_new_discussion: true });
+  const opened = (await app.inject({ url: `/discussions/${kept.final.discussion_id}`, headers })).json();
+  assert.deepEqual(opened.messages.at(-1).memory.remembered, { content: "Je pars à Lisbonne en mai", added: true });
+});

@@ -194,3 +194,39 @@ test("/queries: what rode on a message is counted (memory_usage), the profile is
   const counted = sqlite.prepare("SELECT memory_id, uses FROM memory_usage").all() as Array<{ memory_id: string; uses: number }>;
   assert.deepEqual(counted.map((row) => row.memory_id).sort(), [...given].sort());
 });
+
+test("the memory closest by meaning, clearly ahead, is kept though it shares no word (« un projet d'achat » → « acquérir un Mac Mini »)", () => {
+  // Unit vectors at chosen cosines with the query (first axis).
+  const at = (cosine: number, axis: number) => {
+    const v = new Float32Array(8);
+    v[0] = cosine;
+    v[axis] = Math.sqrt(1 - cosine * cosine);
+    return v;
+  };
+  const query = at(1, 1);
+  const items = [
+    { text: "Jimmy fait des projets maker : Raspberry Pi, Arduino.", vector: at(0.461, 2) },
+    { text: "Twoody est un projet important et récurrent.", vector: at(0.476, 3) },
+    { text: "Le projet H-Way avance le vendredi.", vector: at(0.441, 4) },
+    { text: "Je réfléchis actuellement à acquérir un Mac Mini", vector: at(0.585, 5) },
+  ];
+  const ranked = rankMemories(items, "Est-ce que tu sais si j'ai un projet d'achat en ce moment ?", { queryVector: query });
+  assert.ok(ranked.some((entry) => entry.index === 3), JSON.stringify(ranked));
+  // Not clearly ahead: no exception.
+  const close = [...items.slice(0, 3), { ...items[3]!, vector: at(0.5, 5) }];
+  assert.ok(!rankMemories(close, "Est-ce que tu sais si j'ai un projet d'achat en ce moment ?", { queryVector: query }).some((entry) => entry.index === 3));
+});
+
+test("what the person told Twoody this week is in the profile, whatever is asked; an older fact or a project is not", () => {
+  const day = 86_400_000;
+  const turn = buildChatTurn(input({
+    content: "Bonjour",
+    memories: [
+      { id: "new", kind: "user", title: null, content: "Je réfléchis à acquérir un Mac Mini", source: "conversation", createdAt: NOW.getTime() - 2 * day },
+      { id: "old", kind: "user", title: null, content: "Je joue au padel le dimanche", source: "conversation", createdAt: NOW.getTime() - 30 * day },
+      { id: "proj", kind: "project", title: null, content: "La cuisine sera refaite en novembre", manual: true, source: "manual", createdAt: NOW.getTime() - day },
+    ],
+  }));
+  assert.match(turn.messages[0]!.content, /Mac Mini/);
+  assert.doesNotMatch(turn.messages[0]!.content, /cuisine/);
+});
