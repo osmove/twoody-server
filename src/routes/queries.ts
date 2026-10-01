@@ -52,6 +52,7 @@ import { ownerRequest } from "../localAccess.js";
 import { ensureConversation, sealAnsweredTurn } from "../vault/service.js";
 import { sqliteHistory } from "../vault/localHistory.js";
 import { pathlessSource } from "../vault/sync.js";
+import { noteMemoryUse, profileHints, retrieveMemories } from "../memory/retrieve.js";
 
 interface QueryBody {
   document_access?: unknown;
@@ -203,6 +204,7 @@ export function discussionContext(
   const chatMessages = buildChatMessages({
     ...userContext,
     memoryMode: memoryModeFor(userContext.prefs, compacted.memoryMode),
+    profileHints: profileHints(userId, userContext.memories),
     history: loadHistory(discussionId, compacted.summaryThrough),
     summary: compacted.summary,
     summaryThrough: compacted.summaryThrough,
@@ -257,6 +259,10 @@ async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body:
     const chatMessages = buildChatMessages({
       ...userContext,
       memoryMode: memoryModeFor(userContext.prefs, compacted.memoryMode),
+      // The same profile as a turn's (the runtime reuses what it read); no
+      // memory rides on the demand for a summary.
+      profileHints: profileHints(auth.userId, userContext.memories),
+      relevant: { items: [], retrieval: "skipped", ms: 0 },
       history,
       summary: compacted.summary,
       summaryThrough: compacted.summaryThrough,
@@ -586,6 +592,15 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       ...(passage.local && !shared && passage.path ? { path: passage.path } : {}),
     }));
     const documentFolders = allowedFolders;
+    // The memories this message bears on (Mémoire v2, src/memory/retrieve.ts):
+    // the message's vector is waited for 300 ms at most.
+    const relevant = await retrieveMemories({
+      userId: auth.userId,
+      query: typedText(content),
+      memories: userContext.memories,
+      mode: memoryMode,
+      documentMode: access.mode,
+    });
     const turn = buildChatTurn({
       ...userContext,
       // A server with no profile (a Pi just set up) knows the person by the
@@ -599,6 +614,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       summaryThrough: compacted.summaryThrough,
       state: compacted.state,
       memoryMode,
+      relevant,
+      profileHints: memoryMode === "none" ? null : profileHints(auth.userId, userContext.memories),
       currentId: promptId,
       discussionId: discussion.id,
       contextWindow: readWindow(parsed.context_window),
@@ -750,6 +767,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     const memoryUsed: MemoryUsage = conversationOnlyFor(provider)
       ? { mode: memoryMode, profile_tokens: 0, relevant_tokens: 0, items: [] }
       : turn.memory;
+    // What rode on the message counts for the profile's « most used ».
+    noteMemoryUse(auth.userId, memoryUsed.items.filter((item) => item.score !== null).map((item) => item.id));
     // Which memories they were is the person's to read (like /memories):
     // counted for anyone else, not listed (kept with the answer for them).
     const memoryShown: MemoryUsage = ownerRequest(req) || requester !== null ? memoryUsed : { ...memoryUsed, items: [] };
@@ -1834,7 +1853,7 @@ function onThisComputer(provider: Provider): boolean {
   }
 }
 
-function loadUserContext(userId: string): {
+export function loadUserContext(userId: string): {
   userName: string | null;
   prefs: Record<string, unknown>;
   memories: MemoryRow[];
@@ -1849,16 +1868,36 @@ function loadUserContext(userId: string): {
   }
 
   const rows = db
-    .select({ id: memories.id, kind: memories.kind, title: memories.title, content: memories.content, tagsJson: memories.tagsJson, sourceRef: memories.sourceRef })
+    .select({ id: memories.id, kind: memories.kind, title: memories.title, content: memories.content, tagsJson: memories.tagsJson, source: memories.source, sourceRef: memories.sourceRef, createdAt: memories.createdAt })
     .from(memories)
     .where(and(eq(memories.userId, userId), isNull(memories.supersededById)))
     .orderBy(desc(memories.updatedAt), asc(memories.id))
     .limit(400)
     .all()
-    .map(({ tagsJson, ...row }) => ({ ...row, archived: /"archive"/.test(tagsJson) }));
+    .map(({ tagsJson, source, createdAt, ...row }): MemoryRow => {
+      const tags = memoryTags(tagsJson);
+      return {
+        ...row,
+        archived: tags.includes("archive"),
+        sensitive: tags.includes("sensitive"),
+        pinned: tags.includes("pinned"),
+        manual: source === "manual",
+        source,
+        createdAt: createdAt instanceof Date ? createdAt.getTime() : null,
+      };
+    });
 
   const userName = user?.name && user.name !== PLACEHOLDER_USER_NAME ? user.name : null;
   return { userName, prefs, memories: rows };
+}
+
+function memoryTags(json: string): string[] {
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((tag): tag is string => typeof tag === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 function insertMessage(args: {

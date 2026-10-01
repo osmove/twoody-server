@@ -1092,6 +1092,18 @@ for (const [table, name] of [["discussions", "memory_mode"], ["messages", "memor
   if (!existing.some((column) => column.name === name)) sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${name} TEXT`);
 }
 
+// L3: how often each memory rode on a message (src/memory/retrieve.ts),
+// for the profile's « most used ». On this computer only, never synchronised.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS memory_usage (
+    memory_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    uses INTEGER NOT NULL DEFAULT 0,
+    last_used_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_memory_usage_user ON memory_usage (user_id, uses);
+`);
+
 // L5a: the full-text index of the conversations (src/memory/search.ts),
 // on this computer only. A message is indexed when its conversation's
 // memory mode is not « Aucune » — its own, else the person's (/me), and

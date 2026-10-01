@@ -16,7 +16,8 @@ import { inflight } from "../account/inflight.js";
 // computer generates nothing (inflight() = 0): a chat turn always comes
 // first, the job waits for it and goes on after.
 //
-// Nothing reads these vectors to answer yet: retrieval v2 (L3) will.
+// Retrieval v2 (src/memory/retrieve.ts) reads them to answer; the search of
+// the memories (src/memory/search.ts) too.
 
 /// What a question looks for among the memories (Qwen3-Embedding's
 /// instruction, for the query side only).

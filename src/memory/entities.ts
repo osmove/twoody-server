@@ -11,7 +11,7 @@ import { sqlite } from "../db.js";
 // kinship phrase of the person's own (« ma femme », « my boss »): the
 // lexicon below gives the relation labels such a phrase means, and the
 // person's own entity (kind « self ») the relations to follow. Retrieval
-// v2 (L3) reads the links; nothing else does yet.
+// v2 (src/memory/retrieve.ts) reads the links.
 
 export const ENTITY_KINDS = ["self", "person", "project", "place", "org", "pet", "other"] as const;
 export type EntityKind = (typeof ENTITY_KINDS)[number];
@@ -93,6 +93,18 @@ export const KINSHIP: ReadonlyMap<string, ReadonlySet<string>> = (() => {
   return map;
 })();
 
+/// The labels that say the same relation as this one, or a wider one
+/// (« fille » → fille, daughter, enfant, child…), normalised.
+export function kinLabels(label: string): Set<string> {
+  const norm = normaliseName(label);
+  const out = new Set([norm]);
+  for (const kin of KIN) {
+    const labels = kin.labels.map(normaliseName);
+    if (labels.includes(norm)) for (const other of labels) out.add(other);
+  }
+  return out;
+}
+
 /// The kinship phrases a text says, each with its labels.
 export function kinshipIn(text: string): Array<{ phrase: string; labels: ReadonlySet<string> }> {
   const padded = ` ${normaliseName(text)} `;
@@ -126,7 +138,7 @@ function liveByNorm(userId: string, norm: string): EntityRow | undefined {
   return sqlite.prepare("SELECT * FROM entities WHERE user_id = ? AND norm = ? AND merged_into IS NULL ORDER BY created_at, rowid LIMIT 1").get(userId, norm) as EntityRow | undefined;
 }
 
-function selfOf(userId: string): EntityRow | undefined {
+export function selfOf(userId: string): EntityRow | undefined {
   return sqlite.prepare("SELECT * FROM entities WHERE user_id = ? AND kind = 'self' AND merged_into IS NULL ORDER BY created_at, rowid LIMIT 1").get(userId) as EntityRow | undefined;
 }
 

@@ -399,7 +399,7 @@ test("an import of dozens of facts: the core ones (age, family, home, work) go f
 });
 
 test("a fact that did not fit the system prompt is found by what the question asks about: « âge » finds « 41 ans »", () => {
-  const core = Array.from({ length: 80 }, (_, i) => ({ kind: "user", title: null, content: `Camille travaille avec le client numéro ${i} à Lyon depuis longtemps.` }));
+  const core = Array.from({ length: 80 }, (_, i) => ({ kind: "user", title: null, content: `Camille travaille avec le client numéro ${i} à Lyon, où elle habite depuis longtemps.` }));
   // Longer than the room the others leave.
   const memories = [...core, { kind: "user", title: null, content: "Camille a 41 ans (septembre 2026), et fête toujours son anniversaire au bord du lac d'Annecy avec toute sa famille." }];
   const messages = buildChatMessages(input({ memories, content: "Quel âge j’ai ?", contextWindow: 8_192 }));

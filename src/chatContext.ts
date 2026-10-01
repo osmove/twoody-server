@@ -14,17 +14,19 @@
 // whole prompt. So the system prompt holds only what does not move during
 // a conversation (ContextState):
 //
-//   - the saved memories about the person are frozen when the
-//     conversation starts, and taken again only at a refresh point (a
-//     compaction, a cut of the history, a memory the person removed or
-//     changed, memory switched off). A memory saved since — imported,
+//   - the profile of the person (tier a: about 600 tokens of their saved
+//     memories, composeProfile) is frozen when the conversation starts,
+//     and taken again only at a refresh point (a compaction, a cut of the
+//     history, a memory the person removed or changed, another memory
+//     mode, a sensitive one before a model that is not theirs, memory
+//     switched off). A memory saved since — imported,
 //     learned in another conversation, written in Memories — rides once on
 //     the next message, as a note of new memories (ContextState.seen /
 //     told), so that the model has it from the next turn without the start
 //     of the prompt moving. One learned from this very conversation was
 //     said in it: the model already has it in the history. Any memory the
 //     model was not given yet is also given with a message it bears on
-//     (formatMatchedMemories);
+//     (tier b, src/memory/retrieve.ts, formatRelevant);
 //   - what a message asked to be remembered, the notes, the excerpts, the
 //     person's contacts and events ride on that message, never on the
 //     system prompt;
@@ -38,6 +40,8 @@ import { createHash } from "node:crypto";
 import { hasDocuments, hasWebResults, splitDocuments } from "./documentBlocks.js";
 import { smallTalk } from "./documents/query.js";
 import { personalContextBlock, type PersonalContact, type PersonalEvent } from "./personalContext.js";
+import { ageFrom, BIRTH, coreConcepts, normalize, rankMemories, withinReach } from "./memory/rank.js";
+import type { RelevantMemories } from "./memory/retrieve.js";
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -97,6 +101,30 @@ export interface MemoryRow {
   /// Where it was learned: the discussion's id for a fact said in a
   /// conversation (memoryLearning.ts).
   sourceRef?: string | null;
+  /// Tagged « sensitive » (health, finances…): never to a model outside the
+  /// person's computers, never in the profile unless pinned.
+  sensitive?: boolean;
+  /// Tagged « pinned » by the person: in the profile first.
+  pinned?: boolean;
+  /// Written by the person (source « manual »).
+  manual?: boolean;
+  /// Where it comes from (« manual », « conversation », « import »…).
+  source?: string | null;
+  /// When it was written (ms), for recency.
+  createdAt?: number | null;
+}
+
+/// What the profile is made of beyond the memories (src/memory/retrieve.ts
+/// profileHints): the person's own facts (linked to their entity; null: no
+/// such entity, every « user » fact is theirs), how often each memory was
+/// given, and one line of the people and places of their life.
+export interface ProfileHints {
+  selfIds: string[] | null;
+  uses: Record<string, number>;
+  graph: string | null;
+  /// One fact for each of the person's people, places and projects, in the
+  /// order of their relations (« Mathieu est marié à Élodie… »).
+  peopleIds?: string[];
 }
 
 /// A passage retrieved from the user's own documents for this turn.
@@ -176,6 +204,11 @@ export interface ChatContextInput {
   /// This turn's memory mode; `memory_enabled: false` in the prefs is
   /// « none » whatever it says. A change is a refresh point.
   memoryMode?: MemoryMode | null;
+  /// The memories this message bears on (src/memory/retrieve.ts), worked out
+  /// before the turn: without it, they are ranked here by their words alone.
+  relevant?: RelevantMemories | null;
+  /// What the profile is made of beyond the memories, read at each turn.
+  profileHints?: ProfileHints | null;
 }
 
 /// What a conversation keeps from one turn to the next, so that what the
@@ -223,6 +256,8 @@ export interface ChatTurn {
   sent: string;
   /// What it was given of the memories.
   memory: MemoryUsage;
+  /// The memories in the profile its system prompt holds.
+  profileIds: string[];
 }
 
 const STATE_FIELDS = new Set(["v", "basis", "profile", "documents", "web", "locale", "compact", "liveFrom", "seen", "told", "memoryMode"]);
@@ -279,52 +314,35 @@ function scaled(max: number, window: number | null | undefined, share: number): 
   return window && window > 0 ? Math.min(max, Math.floor(window * CHARS_PER_TOKEN * share)) : max;
 }
 const HISTORY_MESSAGE_CHARS = 4_000;
-/// The memories about the person in the system prompt. 1 500 held 13 of the
-/// 55 facts an import from Claude brought (30/09/2026), and « Quel âge
-/// j'ai ? » was answered « je n'ai pas d'information » — the age was the
-/// 36th. Read once per conversation and kept in the runtime's cache.
-const PROFILE_MEMORY_CHARS = envInt("TWOODY_PROFILE_MEMORY_CHARS", 5_000);
-const MATCHED_MEMORY_CHARS = 1_500;
+/// The profile of the system prompt (tier a, Mémoire v2): about 600 tokens,
+/// 800 at most — what says how to answer, the pinned facts and the line of
+/// the person's people may go up to the most, their other facts to the
+/// target — and never more than a tenth of a known window. The 5 000
+/// characters before it (~1 400 tokens) were read at every refresh.
+const PROFILE_TARGET_CHARS = Math.round(600 * CHARS_PER_TOKEN);
+const PROFILE_MAX_CHARS = Math.round(800 * CHARS_PER_TOKEN);
+/// The memories a message bears on (tier b): 600 tokens and twelve at most.
+const RELEVANT_MEMORY_CHARS = Math.round(600 * CHARS_PER_TOKEN);
+const RELEVANT_MAX_ITEMS = 12;
+/// A memory said in the last messages is in front of the model already.
+const RECENT_MESSAGES = 6;
 /// The memories saved since the conversation started, on the next message.
 const NEW_MEMORY_CHARS = 2_000;
 const MEMORY_ITEM_CHARS = 400;
 /// The contacts and events a message is about.
 const PERSONAL_CHARS = 2_000;
 
-// Memory kinds that describe the user rather than a topic (feedback, then
-// user) are short, change rarely, and apply to every turn — so they live in
-// the system prompt, as many as fit, the core facts (age, name, family,
-// home, work) first. `project` / `reference` memories, and the profile ones
-// that did not fit, are injected when the current prompt matches them.
+// The profile: what describes the person rather than a topic, short and
+// true at every turn — how to answer, what they pinned, their people, then
+// their own core facts (birth, home, work, family) and the facts given most
+// often — frozen with the conversation. Everything else, and what did not
+// fit, rides on a message it bears on (tier b, src/memory/retrieve.ts).
 
-const STOPWORDS = new Set([
-  "avec", "dans", "pour", "plus", "mais", "comme", "cette", "sont", "vous",
-  "nous", "elle", "elles", "leur", "leurs", "quel", "quelle", "quels",
-  "quelles", "quoi", "etre", "avoir", "fait", "faire", "tout", "tous",
-  "toute", "toutes", "tres", "aussi", "alors", "donc", "peux", "peut",
-  "veux", "merci", "bonjour", "what", "when", "where", "which", "with",
-  "that", "this", "these", "those", "from", "have", "does", "will", "would",
-  "could", "should", "about", "your", "their", "there", "please", "thanks",
-  "hello",
-  // Three letters: « âge » is a word worth matching, these are not.
-  "les", "des", "une", "est", "que", "qui", "moi", "toi", "mon", "ton",
-  "son", "mes", "tes", "ses", "nos", "vos", "pas", "oui", "non", "sur",
-  "par", "ete", "suis", "sais", "dis", "dit", "the", "and", "you", "are",
-  "was", "how", "who", "why", "for", "not", "but", "can", "all", "any",
-  "has", "had", "her", "him", "his", "its", "our", "out", "she", "too",
-  "did", "get", "got", "know",
-]);
-
-/// Words that ask about the same thing: « Quel âge j'ai ? » and « Jimmy a
-/// 40 ans » share no word. Accents and case already removed.
-const CONCEPTS: string[][] = [
-  ["age", "ans", "anniversaire", "naissance", "birthday", "born", "old", "aged"],
-  ["habite", "habites", "habiter", "vit", "vis", "vivre", "adresse", "ville", "domicile", "live", "lives", "living", "address", "city"],
-  ["travail", "travaille", "travailles", "travailler", "metier", "job", "boulot", "profession", "emploi", "poste", "work", "works", "career", "entreprise", "societe", "company"],
-  ["famille", "femme", "mari", "epouse", "epoux", "enfant", "enfants", "fils", "fille", "filles", "parents", "pere", "mere", "frere", "soeur", "family", "wife", "husband", "children", "kids", "daughter"],
-  ["nom", "prenom", "appelle", "appelles", "name", "called"],
-];
-const CONCEPT_OF = new Map<string, number>(CONCEPTS.flatMap((words, index) => words.map((word) => [word, index] as [string, number])));
+/// A fact on how the person wants to be answered (an import of the account
+/// keeps it as a fact: « Mathieu veut qu'on le tutoie »).
+const ANSWER_STYLE = /\b(?:reponses?|repond\w*|tutoi\w*|vouvoi\w*|answers?|replies|reply|respond\w*|politesse|formats?|unites|units|metriques|metric|puces|bullets?)\b/;
+const PREFERS = /\b(?:prefere|preferes|veut|veulent|aime pas|deteste|prefers|wants|dislikes|hates)\b/;
+const PREFERS_ABOUT = /\b(?:code|recettes?|recipes?|quantites|langue|language)\b/;
 
 /// A question about the person's own files, in French or English.
 const ASKS_ABOUT_DOCUMENTS = /\b(documents?|fichiers?|dossiers?|files?|folders?|pdfs?)\b/i;
@@ -345,19 +363,16 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   const memoryEnabled = readBool(input.prefs, "memory_enabled", true);
   const mode: MemoryMode = memoryEnabled ? input.memoryMode ?? "full" : "none";
   const usable = mode !== "none" ? input.memories.filter((memory) => !memory.archived) : [];
-  // How to answer first, then who the person is — the core facts first — as
-  // much as fits; the facts that did not fit stay findable when a message is
-  // about them (an import brings dozens at once, 29/09/2026).
-  // What came from the account (source « account ») is data about the
-  // person, never how to answer: with the facts, whatever its kind says.
-  const fromAccount = (memory: MemoryRow) => memory.sourceRef === "account";
-  const users = usable.filter((memory) => memory.kind === "user" || (memory.kind === "feedback" && fromAccount(memory)));
-  const profileRows = [
-    ...usable.filter((memory) => memory.kind === "feedback" && !fromAccount(memory)),
-    ...users.filter(isCoreFact),
-    ...users.filter((memory) => !isCoreFact(memory)),
-  ];
-  const profileBudget = scaled(PROFILE_MEMORY_CHARS, input.contextWindow, 0.1);
+  const now = input.now ?? new Date();
+  const lineOf = (memory: MemoryRow) => memoryLine(memory, now);
+  // The profile, in the order it is filled (profileOrder): what the person
+  // wants of the answers, what they pinned, their people (the graph's line),
+  // their core facts, the most given; a sensitive fact only pinned, and on
+  // a model of the person's own.
+  const profile = profileOrder(usable, input.profileHints ?? null, input.local);
+  const graph = input.profileHints?.graph ?? null;
+  const profileTarget = scaled(PROFILE_TARGET_CHARS, input.contextWindow, 0.1);
+  const profileMax = scaled(PROFILE_MAX_CHARS, input.contextWindow, 0.1);
   const current = splitDocuments(input.content);
   const documentBudget = Math.max(0, scaled(DOCUMENT_CHARS, input.contextWindow, 0.35) - current.documents.reduce((sum, document) => sum + document.block.length, 0));
   const historyBudget = scaled(HISTORY_MAX_CHARS, input.contextWindow, 0.3);
@@ -390,7 +405,10 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   // A document-only answer uses no memory and no custom prompt: the frozen
   // ones are kept for the turns after it.
   const onlyDocuments = input.documentMode === "only";
-  const lines = new Set(profileRows.map(memoryLine).filter((line): line is string => line !== null));
+  // A frozen line that is no longer one of these — a memory removed or
+  // changed, a sensitive one before a model that is not the person's — is
+  // a refresh point.
+  const lines = new Set([...profile.eligible.map(lineOf), graph].filter((line): line is string => !!line));
   const stale = previous?.profile?.split("\n").some((line) => !lines.has(line)) ?? false;
   // Another memory mode: the profile is frozen again for it (one miss).
   const modeChanged = !!previous && (previous.memoryMode ?? "full") !== mode;
@@ -402,7 +420,7 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
       v: 1,
       basis: input.summaryThrough ?? null,
       // A cut refreshes the memories; a document-only turn keeps them.
-      profile: onlyDocuments && previous ? previous.profile : formatMemoryList(profileRows, profileBudget),
+      profile: onlyDocuments && previous ? previous.profile : composeProfile(profile, graph, profileTarget, profileMax, lineOf),
       documents: !cut && previous ? previous.documents : hasDocuments(input.content) || kept.some((message) => hasDocuments(message.content)),
       web: !cut && previous ? previous.web : hasWebResults(input.content) || kept.some((message) => hasWebResults(message.content)),
       locale: previous?.locale ?? null,
@@ -437,11 +455,17 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
     if (added.length > 0) {
       // A fact learned from this conversation was said in it.
       // « Profil seulement »: only what the profile would hold.
-      const profileKinds = new Set(profileRows);
+      // A sensitive one never to a model that is not the person's.
+      const profileKinds = new Set(profile.eligible);
       const told = freshRows;
+      // In the profile's order: how to answer, the person's core facts first
+      // (an import of sixty facts does not all fit).
+      const order = new Map([...profile.first, ...profile.core, ...profile.rest].map((row, index) => [row, index] as const));
+      const rank = (row: MemoryRow) => order.get(row) ?? order.size;
       fresh = formatMemoryList(
-        added.filter((memory) => !(input.discussionId && memory.sourceRef === input.discussionId) && (mode === "full" || profileKinds.has(memory))),
+        [...added].sort((a, b) => rank(a) - rank(b)).filter((memory) => !(input.discussionId && memory.sourceRef === input.discussionId) && (mode === "full" || profileKinds.has(memory)) && (input.local || !memory.sensitive)),
         scaled(NEW_MEMORY_CHARS, input.contextWindow, 0.05),
+        lineOf,
         told,
       );
       state = {
@@ -475,12 +499,21 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
         budget: scaled(PERSONAL_CHARS, input.contextWindow, 0.05),
       })
     : null;
-  // The memories not in the frozen profile — learned since, or that did not
-  // fit — when this message is about them (« Complète » only).
+  // The memories this message bears on (tier b, « Complète » only, not for
+  // small talk): not the ones of the frozen profile, told already, or said
+  // in the last messages; a sensitive one only to a model of the person's.
   const matchedRows = new Map<MemoryRow, number>();
-  const matched = onlyDocuments || mode !== "full"
+  const recent = normalize(history!.slice(-RECENT_MESSAGES).map((message) => message.content).join("\n")).replace(/\s+/g, " ");
+  const matched = onlyDocuments || mode !== "full" || chatty
     ? null
-    : formatMatchedMemories(usable.filter((memory) => !frozen.has(memoryLine(memory) ?? "") && !told.has(memoryHash(memory))), current.text, matchedRows);
+    : formatRelevant(
+        withinReach(relevantEntries(input, usable, current.text, now).filter(({ row }) =>
+          !frozen.has(lineOf(row) ?? "") && !told.has(memoryHash(row)) && (input.local || !row.sensitive) &&
+          !recent.includes(normalize(row.content.trim()).replace(/\s+/g, " ")))),
+        scaled(RELEVANT_MEMORY_CHARS, input.contextWindow, 0.1),
+        matchedRows,
+        lineOf,
+      );
   const context = [...(chatty ? [] : input.fileListings ?? []), formatExcerpts(input.excerpts ?? []), chatty ? null : input.documentNote ?? null, matched, personal].filter(
     (block): block is string => block !== null,
   );
@@ -550,17 +583,18 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
     result.push({ role: "user", content: prompt });
   }
 
-  const profile = onlyDocuments ? null : state.profile;
+  const given = onlyDocuments ? null : state.profile;
   const memory: MemoryUsage = {
     mode,
-    profile_tokens: profile ? Math.ceil(profile.length / CHARS_PER_TOKEN) : 0,
+    profile_tokens: given ? Math.ceil(given.length / CHARS_PER_TOKEN) : 0,
     relevant_tokens: Math.ceil(((matched?.length ?? 0) + (newMemories?.length ?? 0)) / CHARS_PER_TOKEN),
     items: [
       ...[...matchedRows].map(([row, score]) => ({ id: row.id ?? null, title: memoryTitle(row), score: Math.round(score * 1000) / 1000 })),
       ...[...freshRows].map((row) => ({ id: row.id ?? null, title: memoryTitle(row), score: null })),
     ],
   };
-  return { messages: result, state, sent: prompt, memory };
+  const profileIds = given ? usable.filter((row) => row.id && frozen.has(lineOf(row) ?? "")).map((row) => row.id!) : [];
+  return { messages: result, state, sent: prompt, memory, profileIds };
 }
 
 /// A memory as the client names it: its title, or the start of it.
@@ -604,7 +638,7 @@ function buildSystemPrompt(input: ChatContextInput, profile: string | null, stat
   }
 
   if (profile) {
-    sections.push(`What you know about the user, from their saved Memories (use it when it bears on a message):\n${profile}`);
+    sections.push(`What you know about the user, from their saved Memories (use it only when it bears on a message; never bring up personal details unprompted):\n${profile}`);
   }
 
   return sections.join("\n\n");
@@ -720,40 +754,127 @@ function trimHistory(history: HistoryRow[], documentBudget: number, historyBudge
   return joinTurns(kept);
 }
 
-function formatMatchedMemories(usable: MemoryRow[], content: string, given?: Map<MemoryRow, number>): string | null {
-  // One term per word of the message, or per thing it asks about: « âge »
-  // finds « 40 ans », « ma fille » finds « son fils ».
-  const terms = new Map<string, Set<string>>();
-  for (const token of keywords(content)) {
-    const concept = CONCEPT_OF.get(token);
-    const key = concept === undefined ? token : `#${concept}`;
-    if (!terms.has(key)) terms.set(key, new Set(concept === undefined ? [token] : CONCEPTS[concept]));
-    terms.get(key)!.add(token);
+type RelevantEntry = { row: MemoryRow; score: number; entity: string | null };
+
+/// The memories this message bears on, best first: the retrieval's when the
+/// turn was given one, else ranked here by their words alone.
+function relevantEntries(input: ChatContextInput, usable: MemoryRow[], text: string, now: Date): RelevantEntry[] {
+  if (input.relevant) {
+    const byId = new Map(usable.filter((row) => row.id).map((row) => [row.id!, row] as const));
+    return input.relevant.items.flatMap((item) => {
+      const row = byId.get(item.id);
+      return row ? [{ row, score: item.score, entity: item.entity }] : [];
+    });
   }
-  if (terms.size === 0) return null;
+  const ranked = rankMemories(
+    usable.map((row) => ({ text: `${row.title ?? ""} ${row.content}`, manual: !!row.manual || !!row.pinned, createdAt: row.createdAt ?? null })),
+    text,
+    { now: now.getTime() },
+  );
+  return ranked.map((entry) => ({ row: usable[entry.index]!, score: entry.score, entity: null }));
+}
 
-  // Profile kinds that did not fit the system prompt are matched too. A
-  // term found in fewer memories counts more (« Lyon » over « ans »).
-  const words = usable.map((memory) => memoryWords(memory));
-  const found = (term: Set<string>, haystack: string[]) => [...term].some((token) => haystack.some((word) => sameWord(token, word)));
-  const weight = new Map([...terms].map(([key, term]) => [key, Math.log(1 + usable.length / (1 + words.filter((haystack) => found(term, haystack)).length))]));
-  const scored = usable
-    .map((memory, index) => {
-      let score = 0;
-      for (const [key, term] of terms) {
-        if (found(term, words[index]!)) score += weight.get(key)!;
-      }
-      return { memory, index, score };
-    })
-    .filter((entry) => entry.score > 0)
-    // Best match first; ties keep the newest-first input order.
-    .sort((a, b) => b.score - a.score || a.index - b.index);
+/// The memories a message bears on, as many as fit (twelve at most; one too
+/// long leaves room for the others), grouped by the entity they are about.
+/// The person's own wins a tie within 0.05.
+function formatRelevant(entries: RelevantEntry[], budget: number, given: Map<MemoryRow, number>, lineOf: (row: MemoryRow) => string | null): string | null {
+  const ordered = [...entries];
+  for (let i = 1; i < ordered.length; i++) {
+    for (let j = i; j > 0 && ordered[j]!.row.manual && !ordered[j - 1]!.row.manual && ordered[j - 1]!.score - ordered[j]!.score <= 0.05; j--) {
+      [ordered[j - 1], ordered[j]] = [ordered[j]!, ordered[j - 1]!];
+    }
+  }
+  const chosen: Array<RelevantEntry & { line: string }> = [];
+  let chars = 0;
+  for (const entry of ordered) {
+    if (chosen.length >= RELEVANT_MAX_ITEMS) break;
+    const line = lineOf(entry.row);
+    if (!line || chars + line.length > budget) continue;
+    chars += line.length;
+    chosen.push({ ...entry, line });
+  }
+  if (chosen.length === 0) return null;
+  const groups = new Map<string | null, string[]>();
+  for (const entry of chosen) groups.set(entry.entity, [...(groups.get(entry.entity) ?? []), entry.line]);
+  for (const entry of chosen) given.set(entry.row, entry.score);
+  const blocks = [...groups].map(([entity, lines]) => (entity ? `${entity}:\n${lines.join("\n")}` : lines.join("\n")));
+  return `[Saved notes that may be relevant]\n${blocks.join("\n")}\n[End of saved notes]`;
+}
 
-  const rows = new Set<MemoryRow>();
-  const list = formatMemoryList(scored.map((entry) => entry.memory), MATCHED_MEMORY_CHARS, rows);
-  if (!list) return null;
-  for (const entry of scored) if (rows.has(entry.memory)) given?.set(entry.memory, entry.score);
-  return `[Saved notes that may be relevant]\n${list}\n[End of saved notes]`;
+type ProfileOrder = {
+  /// What may go up to the profile's most: how to answer, pinned…
+  first: MemoryRow[];
+  /// …then, after the line of the person's people, their birth and one
+  /// fact for each of their people…
+  core: MemoryRow[];
+  /// …and the rest, up to its target.
+  rest: MemoryRow[];
+  /// Every memory a profile may hold now.
+  eligible: MemoryRow[];
+};
+
+/// The profile's memories in the order it takes them. What came from the
+/// account (source « account ») is data about the person, never how to
+/// answer: with the facts, whatever its kind says.
+function profileOrder(usable: MemoryRow[], hints: ProfileHints | null, local: boolean): ProfileOrder {
+  const fromAccount = (memory: MemoryRow) => memory.sourceRef === "account";
+  const eligible = usable.filter((memory) => !memory.sensitive || (memory.pinned && local));
+  const taken = new Set<MemoryRow>();
+  const take = (rows: MemoryRow[]) => rows.filter((row) => (taken.has(row) ? false : (taken.add(row), true)));
+  const first = take([
+    ...eligible.filter((memory) => (memory.kind === "feedback" && !fromAccount(memory)) || answerPreference(memory)),
+    ...eligible.filter((memory) => memory.pinned),
+  ]);
+  const users = eligible.filter((memory) => memory.kind === "user" || memory.kind === "feedback");
+  // The person's own facts: the ones that name their entity, when they have
+  // one; every « user » fact otherwise.
+  const selfIds = hints?.selfIds ? new Set(hints.selfIds) : null;
+  const own = selfIds ? users.filter((memory) => memory.id && selfIds.has(memory.id)) : users;
+  const uses = hints?.uses ?? {};
+  // The person's facts given most often; a project or a reference stays
+  // with the messages about it.
+  const used = users
+    .filter((memory) => memory.id && (uses[memory.id] ?? 0) > 0)
+    .sort((a, b) => (uses[b.id!] ?? 0) - (uses[a.id!] ?? 0));
+  const byId = new Map(eligible.filter((memory) => memory.id).map((memory) => [memory.id!, memory] as const));
+  const core = take([
+    ...own.filter((memory) => BIRTH.test(normalize(memory.content))),
+    ...(hints?.peopleIds ?? []).flatMap((id) => byId.get(id) ?? []),
+  ]);
+  // The core facts about the most at once first (« Les parents de Mathieu
+  // habitent à Angers »), then the oldest: what was said first of them.
+  const concepts = new Map(own.map((memory) => [memory, coreConcepts(`${memory.title ?? ""} ${memory.content}`)] as const));
+  const coreFirst = own.filter((memory) => concepts.get(memory)! > 0)
+    .sort((a, b) => concepts.get(b)! - concepts.get(a)! || (a.createdAt ?? 0) - (b.createdAt ?? 0));
+  const rest = take([...coreFirst, ...used, ...own]);
+  return { first, core, rest, eligible };
+}
+
+/// « Mathieu préfère des réponses courtes », « veut qu'on le tutoie »: how
+/// the person wants to be answered.
+function answerPreference(memory: MemoryRow): boolean {
+  if (memory.kind !== "user" && memory.kind !== "feedback") return false;
+  const text = normalize(`${memory.title ?? ""} ${memory.content}`);
+  return /\b(?:tutoi|vouvoi)/.test(text) || (PREFERS.test(text) && (ANSWER_STYLE.test(text) || PREFERS_ABOUT.test(text)));
+}
+
+/// The profile's text: how to answer, the pinned facts, the line of the
+/// person's people, their birth and one fact for each of their people up to
+/// the most; the others up to the target.
+function composeProfile(order: ProfileOrder, graph: string | null, target: number, max: number, lineOf: (row: MemoryRow) => string | null): string | null {
+  const lines: string[] = [];
+  let chars = 0;
+  const add = (line: string | null, budget: number) => {
+    // One too long leaves room for the shorter ones after it.
+    if (!line || chars + line.length + 1 > budget) return;
+    chars += line.length + 1;
+    lines.push(line);
+  };
+  for (const row of order.first) add(lineOf(row), max);
+  add(graph, max);
+  for (const row of order.core) add(lineOf(row), max);
+  for (const row of order.rest) add(lineOf(row), target);
+  return lines.length > 0 ? lines.join("\n") : null;
 }
 
 function formatExcerpts(excerpts: DocumentExcerpt[]): string | null {
@@ -767,46 +888,30 @@ function formatExcerpts(excerpts: DocumentExcerpt[]): string | null {
   return `[Excerpts from the user's documents]\n${blocks.join("\n\n")}\n[End of excerpts]`;
 }
 
-/// A memory's words, accents and case removed.
-function memoryWords(memory: MemoryRow): string[] {
-  return normalize(`${memory.title ?? ""} ${memory.content}`).split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 2);
-}
-
-/// The same word, give or take its ending: « travail » / « travaille »,
-/// « dossier » / « dossiers ». A short word only as it is: « âge » is not
-/// « agenda ».
-function sameWord(token: string, word: string): boolean {
-  if (token === word) return true;
-  if (token.length < 4 || word.length < 4) return false;
-  let shared = 0;
-  while (shared < token.length && shared < word.length && token[shared] === word[shared]) shared += 1;
-  return shared >= Math.min(5, token.length, word.length);
-}
-
-/// Age, name, family, home, work: what a profile gives first.
-function isCoreFact(memory: MemoryRow): boolean {
-  return memoryWords(memory).some((word) => CONCEPT_OF.has(word));
-}
 
 /// A memory's line, hashed short: what a conversation's state keeps of it.
 function memoryHash(memory: MemoryRow): string {
   return createHash("sha256").update(memoryLine(memory) ?? "").digest("base64url").slice(0, 12);
 }
 
-/// A memory as a line of a list; null when it says nothing.
-function memoryLine(row: MemoryRow): string | null {
+/// A memory as a line of a list; null when it says nothing. Given a day, a
+/// birth date says the age it makes (« Quel âge j'ai ? » against « né le 14
+/// mars 1984 »).
+function memoryLine(row: MemoryRow, now?: Date): string | null {
   const body = truncate(row.content.trim().replace(/\s+/g, " "), MEMORY_ITEM_CHARS);
   if (!body) return null;
   // A title that is only the start of the content says it twice.
   const title = row.title?.trim().replace(/…$/, "");
-  return title && !body.startsWith(title) ? `- ${title}: ${body}` : `- ${body}`;
+  const line = title && !body.startsWith(title) ? `- ${title}: ${body}` : `- ${body}`;
+  const age = now ? ageFrom(row.content, now) : null;
+  return age ? `${line} (${age.approximate ? "about " : ""}${age.years} years old today)` : line;
 }
 
-function formatMemoryList(rows: MemoryRow[], budget: number, given?: Set<MemoryRow>): string | null {
+function formatMemoryList(rows: MemoryRow[], budget: number, lineOf: (row: MemoryRow) => string | null, given?: Set<MemoryRow>): string | null {
   const lines: string[] = [];
   let chars = 0;
   for (const row of rows) {
-    const line = memoryLine(row);
+    const line = lineOf(row);
     // One too long leaves room for the shorter ones after it.
     if (!line || chars + line.length > budget) continue;
     chars += line.length;
@@ -814,18 +919,6 @@ function formatMemoryList(rows: MemoryRow[], budget: number, given?: Set<MemoryR
     given?.add(row);
   }
   return lines.length > 0 ? lines.join("\n") : null;
-}
-
-function keywords(text: string): Set<string> {
-  const tokens = new Set<string>();
-  for (const word of normalize(text).split(/[^\p{L}\p{N}]+/u)) {
-    if (word.length >= 3 && !STOPWORDS.has(word)) tokens.add(word);
-  }
-  return tokens;
-}
-
-function normalize(text: string): string {
-  return text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 }
 
 function truncate(text: string, max: number): string {
