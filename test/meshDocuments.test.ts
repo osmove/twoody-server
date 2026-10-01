@@ -52,7 +52,11 @@ const { closeAllPeerLinks, peerById, refreshPeerStatus, setPeerHandshakeTimeouts
 const { forgetUnreachable, setFanOutDeadlines, setPeerSearch, tunnelPeerSearch } = await import("../src/documents/remote.js");
 const { tunnelIdentity } = await import("../src/tunnel/identity.js");
 const { setRosterSource } = await import("../src/vault/roster.js");
+const { setSpotlightEnabled } = await import("../src/documents/spotlight.js");
 const { meshVault } = await import("./helpers/meshVault.js");
+
+// The host's own Spotlight is not this test's.
+setSpotlightEnabled(false);
 
 setDesktopAccount({ backendUrl: "http://127.0.0.1:9", userToken: "unused", computerId: MAC, computerName: "Mac de Jimmy" });
 // The whole suite runs in parallel: the Pi may be slow to its first hello.
@@ -66,6 +70,9 @@ const docsRoot = realpathSync(mkdtempSync(join(base, "twoody-mesh-docs-test-")))
 const macDocs = join(docsRoot, "Mac");
 const piDocs = join(docsRoot, "Pi");
 mkdirSync(macDocs);
+// The Pi's home folder is its granted folder: its Downloads is inside it.
+mkdirSync(join(piDocs, "Downloads"), { recursive: true });
+writeFileSync(join(piDocs, "Downloads", "photo-du-pi.png"), Buffer.alloc(512));
 
 const runtime = await startFakeRuntime({ models: ["gemma3:4b"], reply: () => "Voici ce que disent vos documents [1] [2]." });
 const app = await buildApp();
@@ -88,6 +95,8 @@ const pi: ChildProcess = fork(join(root, "test", "helpers", "meshPeerServer.ts")
     MESH_PEER_ID: MAC,
     MESH_PEER_KEY: tunnelIdentity().publicKey.toString("hex"),
     MESH_DOCS_DIR: piDocs,
+    HOME: piDocs,
+    TWOODY_SPOTLIGHT: "0",
   },
   stdio: ["ignore", "pipe", "pipe", "ipc"],
 });
@@ -248,6 +257,24 @@ test("the Documents screen lists the Pi's folders through the Mac, ids as a docu
   assert.deepEqual((await app.inject({ url: "/local_documents/computers", headers: auth })).json(), { computers: [] });
   await withPi();
   assert.equal((await app.inject({ url: "/local_documents/computers" })).statusCode, 401);
+});
+
+test("the newest file of the Pi's Downloads, asked on the Mac, is listed on the Pi through the tunnel", async () => {
+  setFanOutDeadlines({ direct: 10_000, relay: 10_000 });
+  await withPi();
+  const answer = final((await ask({ content: "Quel est le fichier le plus récent dans les téléchargements du Raspberry Pi ?" })).payload);
+  const prompt = lastPrompt();
+  assert.match(prompt, /\[File listing from the file system on Raspberry Pi: Downloads \(~\/Downloads\), at Pi\/Downloads, newest first/);
+  assert.match(prompt, /- photo-du-pi\.png · image · 512 B · modified .* · in Pi\/Downloads/);
+  assert.ok(!prompt.includes(docsRoot), "no absolute path from the Pi");
+  // The Pi only: the message names it.
+  assert.deepEqual(answer.documents.listing.map((c: { computer_id: string; status: string }) => [c.computer_id, c.status]), [[PI, "ok"]]);
+  // Out of the roster: not asked, and the Mac says what it can.
+  await withoutPi();
+  const alone = final((await ask({ content: "Quel est le fichier le plus récent dans les téléchargements du Raspberry Pi ?" })).payload);
+  assert.deepEqual(alone.documents.listing.map((c: { computer_id: string }) => c.computer_id), [MAC]);
+  assert.ok(!lastPrompt().includes("photo-du-pi.png"));
+  await withPi();
 });
 
 test("only the owner or the person's own devices reach the Pi's documents through the Mac; the Pi's audit is told which", async () => {

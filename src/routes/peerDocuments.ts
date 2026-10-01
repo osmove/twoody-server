@@ -3,7 +3,8 @@ import { requireAuth } from "../auth.js";
 import { inflight } from "../account/inflight.js";
 import { accountCredentials } from "../account/service.js";
 import { sqlite } from "../db.js";
-import { folderName, indexStatus } from "../documents/library.js";
+import { folderName, indexStatus, listFolders } from "../documents/library.js";
+import { listGrantedFiles, readListingRequest } from "../documents/fileListing.js";
 import { relativeToFolder, retrieveDocuments, scopedFolders } from "../documents/retrieval.js";
 import { EMBED_MODEL, semanticStatus } from "../documents/semantic.js";
 import { auditOf, recordAccess } from "../peerDocuments/audit.js";
@@ -22,6 +23,10 @@ import { readRequester, type Requester } from "../sessionTrust.js";
 //        exactly as test/fixtures/peer-documents-search.schema.json (lot P0) says;
 //        errors {error: bad_request | not_trusted | documents_off | rate_limited, retry_after_s?}
 //   GET  /api/v1/peer/documents/folders     granted folders: names and counts, no path
+//   POST /api/v1/peer/documents/list        {folder?, folder_name?, sort, kinds, limit≤30, scope}
+//        → {computer_id, status, where[], total, limited, files[{name, folder, size, kind, modified_at}]}
+//        the files of a granted folder from the file system (documents/fileListing.ts),
+//        « folder » being a usual folder's id resolved here (« downloads » → this computer's ~/Downloads)
 //   GET  /api/v1/peer/documents/files/:id?offset=   indexed text, 20 passages a page
 //   GET  /api/v1/peer/documents/files/:id/raw        the file, with Range (peerDocuments/raw.ts)
 //   GET  /api/v1/peers/:id/audit            what that computer read here (« Appareils »)
@@ -40,6 +45,7 @@ const MAX_FILES = 20;
 const MAX_SNIPPET = 300;
 
 type Caller = PeerCaller & { self: string; requester: Requester | null };
+const LIST_KEYS = new Set(["folder", "folder_name", "sort", "kinds", "limit", "scope"]);
 /// Search requests whose body named a field the contract does not.
 const unknownFields = new WeakSet<FastifyRequest>();
 
@@ -167,6 +173,55 @@ export async function peerDocumentRoutes(app: FastifyInstance) {
         },
         passages,
         files,
+      });
+    },
+  });
+
+  app.post<{ Body: Record<string, unknown> }>("/peer/documents/list", {
+    schema: {
+      tags: ["documents"],
+      summary: "Files of this computer's granted folders (names, sizes, kinds, dates), for a computer of the account it trusts",
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["scope"],
+        properties: {
+          folder: { type: "string", maxLength: 32 },
+          folder_name: { type: "string", minLength: 1, maxLength: 120 },
+          sort: { enum: ["recent", "oldest", "largest", "smallest", "name"] },
+          kinds: { type: "array", maxItems: 10, items: { type: "string", maxLength: 16 } },
+          limit: { type: "integer", minimum: 1, maximum: 30 },
+          scope: SEARCH_REQUEST_SCHEMA.properties.scope,
+        },
+      },
+    },
+    attachValidation: true,
+    // An unknown field is refused, not dropped (as for a search).
+    preValidation: async (req) => {
+      const body = req.body as Record<string, unknown> | null;
+      if (!body || typeof body !== "object" || Array.isArray(body)) return;
+      const scope = body.scope as Record<string, unknown> | null;
+      if (Object.keys(body).some((key) => !LIST_KEYS.has(key)) || (scope && typeof scope === "object" && !onlyKnownFields({ q: "x", scope }))) unknownFields.add(req);
+    },
+    handler: async (req, reply) => {
+      const caller = await peerCaller(req, reply);
+      if (!caller) return;
+      const intent = readListingRequest(req.body);
+      if (req.validationError || unknownFields.has(req) || !intent) return refuse(reply, 400, "bad_request");
+      const shared = scopedFolders(caller.userId, { mode: "all" });
+      if (!shared.length) return refuse(reply, 403, "documents_off");
+      const scope = req.body.scope as { mode: "all" | "selected"; folder_ids?: string[] };
+      const roots = scope.mode === "all" ? shared : scopedFolders(caller.userId, { mode: "selected", folderIds: scope.folder_ids ?? [] });
+      const listing = await listGrantedFiles({ intent, roots, granted: listFolders(caller.userId) });
+      recordAccess({ userId: caller.userId, computerId: caller.computerId, sessionId: caller.sessionId, requester: caller.requester, action: "list" });
+      return reply.send({
+        computer_id: caller.self,
+        status: listing.status,
+        where: listing.where,
+        total: listing.total,
+        limited: listing.limited,
+        files: listing.files,
+        ...(listing.others ? { others: listing.others } : {}),
       });
     },
   });

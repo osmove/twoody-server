@@ -30,7 +30,7 @@ for (const name of ["requester", "requester_name"]) {
   if (!auditColumns.some((column) => column.name === name)) sqlite.exec(`ALTER TABLE peer_document_audit ADD COLUMN ${name} TEXT`);
 }
 
-export type AuditAction = "search" | "folders" | "read" | "raw";
+export type AuditAction = "search" | "folders" | "list" | "read" | "raw";
 
 export interface AuditEntry {
   userId: string;

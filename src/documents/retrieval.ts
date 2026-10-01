@@ -4,6 +4,7 @@ import { sqlite } from "../db.js";
 import { queryTerms, metadataScore, smallTalk, termsFound } from "./query.js";
 import { folderName, listFolders, searchPassages, type Passage } from "./library.js";
 import { folderRisk } from "./folderRisk.js";
+import { spotlightCandidates } from "./spotlightRetrieval.js";
 import type { DocumentAccess } from "./access.js";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -26,7 +27,7 @@ export interface RetrieveOptions {
 }
 /** What became of the semantic half: run, given up at the deadline, switched off, or not needed. */
 export type SemanticOutcome = "used" | "deadline" | "off" | "not_needed";
-type Retrieved<P, F> = { passages: P[]; files: F[]; total: number; semantic?: SemanticOutcome };
+type Retrieved<P, F> = { passages: P[]; files: F[]; total: number; semantic?: SemanticOutcome; spotlight?: { found: number; read_now: number; added: number } };
 
 /**
  * The folders a caller may search here: its scope (DocumentAccess, with this
@@ -91,6 +92,7 @@ export async function retrieveDocuments(userId: string, question: string, histor
     files: found.files.map(file => ({ ...file, ...place(file.id, file.name) })),
     total: found.total,
     semantic: found.semantic,
+    ...(found.spotlight ? { spotlight: found.spotlight } : {}),
   };
 }
 
@@ -98,6 +100,22 @@ async function retrieve(userId: string, question: string, history: Turn[], folde
   const limit = Math.max(1, Math.min(options.limit ?? 6, 20));
   if (!folderIds.length) return { passages: [] as Passage[], files: [] as FileRow[], total: 0, semantic: "not_needed" };
   const scope = folderIds.map(() => "?").join(",");
+  const followUpEarly = followUpQuestion(question);
+  const inventoryEarly = /(?:dossiers?.*(?:accès|acces|access)|(?:accès|acces|access).*dossiers?)/i.test(question);
+  // Spotlight (a Mac): files whose text or name match, inside these folders,
+  // read into the index now when it has not read them yet. Asked while the
+  // search below runs; its documents the search left out are added after.
+  const spotlightAsked = !inventoryEarly && (followUpEarly || !smallTalk(question))
+    ? spotlightCandidates(
+        userId,
+        queryTerms(question.replace(/\bcvs\b/gi, "cv")),
+        sqlite.prepare(`SELECT id, path FROM document_folders WHERE user_id=? AND id IN (${scope})`).all(userId, ...folderIds).map((row) => {
+          const f = row as { id: string; path: string };
+          return { id: f.id, name: folderName(f.path), path: f.path };
+        }),
+        Math.min(1_500, options.semanticDeadlineMs !== undefined ? Math.max(100, options.semanticDeadlineMs / 2) : 1_500),
+      ).catch(() => null)
+    : Promise.resolve(null);
   const all = sqlite.prepare(`SELECT d.id, d.name, d.mtime_ms, d.chars FROM documents d
     JOIN document_folders f ON f.id=d.folder_id AND f.user_id=d.user_id
     WHERE d.user_id=? AND d.folder_id IN (${scope}) AND d.status='indexed'
@@ -156,6 +174,25 @@ async function retrieve(userId: string, question: string, history: Turn[], folde
       WHERE c.user_id=? AND d.id=? AND d.folder_id IN (${scope}) ORDER BY c.position,c.rowid LIMIT ?`)
       .all(userId,file.id,...folderIds,limit) as Passage[];
   }
+  // The documents Spotlight matched that the search left out: one passage
+  // each (its best), in place of the last ones, two at most.
+  const spotlight = await spotlightAsked;
+  let added = 0;
+  if (spotlight?.documentIds.length && referenced.length === 0 && !folderInventory) {
+    const present = new Set(passages.map(passage => passage.document_id));
+    const terms = queryTerms(contextual);
+    const extra: Passage[] = [];
+    for (const id of spotlight.documentIds) {
+      if (present.has(id) || extra.length >= 2) continue;
+      const chunks = sqlite.prepare(`SELECT c.document_id,d.name,d.path,c.page,c.text,substr(c.text,1,240) AS snippet
+        FROM document_chunks c JOIN documents d ON d.id=c.document_id
+        WHERE c.user_id=? AND d.id=? AND d.folder_id IN (${scope}) ORDER BY c.position,c.rowid LIMIT 200`).all(userId, id, ...folderIds) as Passage[];
+      const best = chunks.map(chunk => ({ chunk, score: termsFound(chunk.text, terms) })).sort((a, b) => b.score - a.score)[0];
+      if (best) extra.push({ ...best.chunk, match: "content" });
+    }
+    added = extra.length;
+    passages = passages.length + extra.length <= limit ? [...passages, ...extra] : [...passages.slice(0, limit - extra.length), ...extra];
+  }
   if (referenced.length > 1) {
     const ids = new Set(referenced.map(file => file.id));
     passages = passages.filter(passage => ids.has(passage.document_id));
@@ -168,5 +205,11 @@ async function retrieve(userId: string, question: string, history: Turn[], folde
       }
     }
   }
-  return { passages, files: files.slice(0,40).map(file => ({id:file.id,name:file.name,modified_at:new Date(file.mtime_ms).toISOString(),chars:file.chars})), total: files.length, semantic };
+  return {
+    passages,
+    files: files.slice(0,40).map(file => ({id:file.id,name:file.name,modified_at:new Date(file.mtime_ms).toISOString(),chars:file.chars})),
+    total: files.length,
+    semantic,
+    ...(spotlight ? { spotlight: { found: spotlight.found, read_now: spotlight.readNow, added } } : {}),
+  };
 }

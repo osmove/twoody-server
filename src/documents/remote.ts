@@ -52,6 +52,16 @@ export function setFanOutDeadlines(next: Partial<typeof deadlines>): void {
   Object.assign(deadlines, next);
 }
 
+/// How long a computer is waited for on this transport (file listings use the same).
+export function fanOutDeadline(transport: "direct" | "relay"): number {
+  return deadlines[transport];
+}
+
+/// Whether a computer did not answer a moment ago (not asked again yet).
+export function recentlyUnreachable(computerId: string): boolean {
+  return (down.get(computerId) ?? 0) > Date.now();
+}
+
 type SearchBody = {
   q: string;
   hint?: string;
@@ -110,6 +120,17 @@ export interface MeshFile {
   chars: number;
   /// Another computer's file: its name.
   computer?: string;
+  /// The folder holding it, from its granted folder: « jimmy/Documents/_Archives/2012/Downloads ».
+  folder?: string;
+}
+
+/// The folder holding a document, said from its granted folder
+/// (« jimmy/Documents/_Archives/2012/Downloads »): the granted folder's name
+/// and the document's path inside it, without the file's own name.
+export function folderOf(folder: string | undefined, relPath: string | undefined): string | undefined {
+  if (!folder) return undefined;
+  const at = relPath ? relPath.lastIndexOf("/") : -1;
+  return at > 0 ? `${folder}/${relPath!.slice(0, at)}` : folder;
 }
 
 export type ComputerOutcome = {
@@ -175,12 +196,12 @@ export function meshPeers(userId: string): PeerRow[] {
 }
 
 const DISPLAY_NAME = /^[^/\\\u0000-\u001f]{1,255}$/;
-const cleanName = (value: unknown): string | null => {
+export const cleanName = (value: unknown): string | null => {
   if (typeof value !== "string") return null;
   const name = value.split(/[\\/]/).pop()!.replace(/[\u0000-\u001f]/g, "").slice(0, 255);
   return DISPLAY_NAME.test(name) ? name : null;
 };
-const cleanRelPath = (value: unknown): string | undefined => {
+export const cleanRelPath = (value: unknown): string | undefined => {
   if (typeof value !== "string" || !value || value.length > 1024) return undefined;
   if (/^([a-z]:)?[\\/~]/i.test(value) || value.includes("\\") || /[\u0000-\u001f]/.test(value)) return undefined;
   if (value.split("/").some((segment) => segment === "" || segment === "." || segment === "..")) return undefined;
@@ -214,12 +235,14 @@ function readFile(raw: unknown, peer: PeerRow): MeshFile | null {
   const f = raw as Record<string, unknown> | null;
   const name = cleanName(f?.name);
   if (!f || typeof f.document_id !== "string" || !LOCAL_ID.test(f.document_id) || !name) return null;
+  const folder = folderOf(cleanName(f.folder) ?? undefined, cleanRelPath(f.rel_path));
   return {
     id: f.document_id,
     name,
     modified_at: typeof f.modified_at === "string" && !Number.isNaN(Date.parse(f.modified_at)) ? f.modified_at : new Date(0).toISOString(),
     chars: Number.isInteger(f.chars) && (f.chars as number) >= 0 ? (f.chars as number) : 0,
     computer: peer.name,
+    ...(folder ? { folder } : {}),
   };
 }
 
@@ -358,7 +381,7 @@ export async function retrieveAcrossComputers(args: {
   const local = await retrieveDocuments(args.userId, args.question, args.history, args.localFolders);
   const localMs = Date.now() - started;
   const answers = await remote;
-  const where = documentLocations(args.userId, local.passages.map((p) => p.document_id));
+  const where = documentLocations(args.userId, [...local.passages.map((p) => p.document_id), ...local.files.map((f) => f.id)]);
   const own: MeshPassage[] = local.passages.map((p) => ({
     computer_id: me.id,
     computer_name: me.name,
@@ -385,7 +408,12 @@ export async function retrieveAcrossComputers(args: {
       )
     : // This computer alone: its retrieval as it always was.
       own;
-  const files: MeshFile[] = [...local.files, ...answers.flatMap((a) => a.files)].slice(0, 40);
+  const ownFiles: MeshFile[] = local.files.map((f) => {
+    const place = where.get(f.id);
+    const folder = folderOf(place?.folder, place?.rel_path);
+    return { ...f, ...(folder ? { folder } : {}) };
+  });
+  const files: MeshFile[] = [...ownFiles, ...answers.flatMap((a) => a.files)].slice(0, 40);
   const computers: ComputerOutcome[] = [
     { computer_id: me.id, computer_name: me.name, status: "answered", transport: null, took_ms: localMs, passages: own.length },
     ...answers.map((a) => a.outcome),

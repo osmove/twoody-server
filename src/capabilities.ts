@@ -138,6 +138,18 @@ export const BUILT_IN_CAPABILITIES: BuiltInCapabilityDef[] = [
     ],
   },
   {
+    slug:           "files",
+    label:          "Files",
+    description:    "List the files of the folders granted in Documents: newest, oldest or largest first, by kind, with their folder.",
+    icon:           "folder",
+    cost:           "free",
+    requires_setup: false,
+    default_on:     true,
+    tools: [
+      { name: "list_files", description: "List files of a granted folder (folder: downloads, desktop, documents, pictures, icloud, onedrive, googledrive, dropbox, home, or a folder's name; sort: recent, oldest, largest, smallest, name; kinds: image, screenshot, pdf, document, spreadsheet, presentation, video, audio, archive, installer or .ext; limit ≤ 30). Never outside the granted folders." },
+    ],
+  },
+  {
     slug:           "local_llm",
     label:          "Local model bridge",
     description:    "Route LLM calls to mlx-lm or Ollama running on your Mac/NAS.",

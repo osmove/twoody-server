@@ -8,6 +8,10 @@ import {
   wakeWordSamples,
 } from "./db.js";
 import { outboundFetch } from "./outbound.js";
+import { FOLDER_ALIAS_IDS } from "./documents/folderAliases.js";
+import { formatListing, listGrantedFiles, readListingRequest } from "./documents/fileListing.js";
+import { listFolders } from "./documents/library.js";
+import { scopedFolders } from "./documents/retrieval.js";
 
 export async function executeLocalTool(
   name: string,
@@ -26,9 +30,27 @@ export async function executeLocalTool(
       return listMembers(context.userId);
     case "stereo_pair":
       return registerStereoPair(arguments_);
+    case "list_files":
+      return listFiles(arguments_, context.userId);
     default:
       throw new Error(`Unsupported tool: ${name}`);
   }
+}
+
+/// The files of a granted folder, from the file system (documents/fileListing.ts):
+/// only inside the folders granted on this computer, as their grant reaches.
+export async function listFiles(arguments_: Record<string, unknown>, userId: string) {
+  const folder = typeof arguments_.folder === "string" ? arguments_.folder.trim() : "";
+  const alias = (FOLDER_ALIAS_IDS as readonly string[]).includes(folder.toLowerCase()) ? folder.toLowerCase() : null;
+  const intent = readListingRequest({
+    ...(alias ? { folder: alias } : folder ? { folder_name: folder } : {}),
+    sort: arguments_.sort,
+    kinds: arguments_.kinds,
+    limit: arguments_.limit,
+  });
+  if (!intent) throw new Error("Invalid list_files arguments");
+  const listing = await listGrantedFiles({ intent, roots: scopedFolders(userId, { mode: "all" }), granted: listFolders(userId) });
+  return { ...listing, text: formatListing(listing, { ...intent, count: false }) };
 }
 
 export async function listMembers(userId: string) {

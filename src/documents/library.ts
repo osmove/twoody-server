@@ -204,6 +204,13 @@ export async function reindex(userId: string): Promise<IndexStatus> {
   return status;
 }
 
+/// One file read into the index now, outside a pass (a file Spotlight found
+/// for a question before the indexer reached it): the same as the pass
+/// would do, so the pass finds it up to date. The caller checks the grant.
+export function indexOnDemand(userId: string, folderId: string, path: string): Promise<void> {
+  return indexFile(userId, folderId, path);
+}
+
 async function indexFile(userId: string, folderId: string, path: string): Promise<void> {
   let info;
   try {

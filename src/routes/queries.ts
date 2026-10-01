@@ -2,7 +2,9 @@ import { relative, isAbsolute } from "node:path";
 import { clientOf } from "./usage.js";
 import { recordUsageEvent, type UsageEventInput } from "../usageStore.js";
 import { askedToRemember, learnFromMessage, rememberFacts } from "../memoryLearning.js";
-import { citationLink, localFolderIds, meshPeers, retrieveAcrossComputers } from "../documents/remote.js";
+import { citationLink, folderOf, localFolderIds, meshPeers, retrieveAcrossComputers } from "../documents/remote.js";
+import { listingIntent } from "../documents/fileListing.js";
+import { listFilesAcrossComputers, type MeshListing } from "../documents/remoteListing.js";
 import { contextBudget } from "./localDocuments.js";
 import { importVaultConversation } from "./discussions.js";
 import { VIA_TUNNEL_HEADER } from "../tunnel/host.js";
@@ -507,6 +509,25 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       const path = relative(parent.path, folder.path);
       return path === "" || (!path.startsWith("..") && !isAbsolute(path));
     })));
+    // A question about the files themselves (« le fichier le plus récent de
+    // mes téléchargements »): listed from the file system of the computer
+    // holding the folder, alongside the search (documents/fileListing.ts).
+    const intent = access.mode === "off" ? null : listingIntent(typedText(content));
+    const listing: Promise<MeshListing | null> = intent
+      ? listFilesAcrossComputers({
+          userId: auth.userId,
+          question: typedText(content),
+          intent,
+          access,
+          roots: allowedFolders,
+          granted,
+          remote: fullFor !== null,
+          requester,
+        }).catch((err) => {
+          req.log.warn({ err: err instanceof Error ? err.message : String(err) }, "file listing failed");
+          return null;
+        })
+      : Promise.resolve(null);
     const retrieved = await retrieveAcrossComputers({
       userId: auth.userId,
       question: typedText(content),
@@ -518,7 +539,12 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       remote: fullFor !== null,
       requester,
     });
-    const passages = retrieved.passages;
+    const listed = await listing;
+    // About a named folder that was listed, or said not to be granted: the
+    // excerpts and indexed files of other folders — another « Downloads »
+    // inside the archives, say — are not given, nor cited.
+    const listingOnly = !!listed?.settled && !!(intent?.folder || intent?.folderName);
+    const passages = listingOnly ? [] : retrieved.passages;
     // A source says which computer holds it, and is cited by the link that
     // opens it there; never an absolute path, except this computer's own
     // shown to its own Desktop in a conversation that is not shared.
@@ -560,9 +586,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       hasDocuments: granted.length > 0 || meshPeers(auth.userId).length > 0,
       documentFolders,
       documentScan: indexStatus(auth.userId),
-      documentFiles: retrieved.files,
-      documentFileTotal: retrieved.total,
-      excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text, computer: retrieved.remote ? passage.computer_name : null })),
+      documentFiles: listingOnly ? [] : retrieved.files,
+      documentFileTotal: listingOnly ? 0 : retrieved.total,
+      excerpts: passages.map((passage) => ({ name: passage.name, page: passage.page, text: passage.text, computer: retrieved.remote ? passage.computer_name : null, folder: folderOf(passage.folder, passage.rel_path) ?? null })),
+      fileListings: listed?.blocks ?? null,
       documentNote: retrieved.note,
       local: provider.kind === "local_openai" || provider.kind === "peer_openai",
       remembered,
@@ -762,7 +789,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       answered_by:  answeredByComputer,
       // Which of the person's computers were searched, and the ones left
       // out (late, offline…): the client can say it.
-      documents:    { computers: retrieved.computers.map(({ computer_id, computer_name, status, passages: found }) => ({ computer_id, computer_name, status, passages: found })) },
+      documents:    {
+        computers: retrieved.computers.map(({ computer_id, computer_name, status, passages: found }) => ({ computer_id, computer_name, status, passages: found })),
+        ...(listed ? { listing: listed.computers } : {}),
+      },
       ...(vaultConversationId ? { vault_conversation_id: vaultConversationId, catch_up: { status: caughtUp!.status, missing_refs: caughtUp!.missing } } : {}),
     };
     reply.raw.write(`event: final\ndata: ${JSON.stringify(finalPayload)}\n\n`);

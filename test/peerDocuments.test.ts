@@ -167,6 +167,8 @@ test("a trusted computer's peer session searches; an untrusted, removed or unkno
     for (const url of ["/api/v1/peer/documents/folders", "/api/v1/peer/documents/files/bail", "/api/v1/peer/documents/files/scan/raw"]) {
       assert.equal((await app.inject({ url, headers })).statusCode, 403, `${who} ${url}`);
     }
+    const listed = await app.inject({ method: "POST", url: "/api/v1/peer/documents/list", headers, payload: { folder: "downloads", scope: { mode: "all" } } });
+    assert.equal(listed.statusCode, 403, `${who} list`);
   }
   assert.equal((await app.inject({ method: "POST", url: "/api/v1/peer/documents/search", payload: { q: "loyer", scope: { mode: "all" } } })).statusCode, 401);
 });
@@ -362,6 +364,15 @@ test("property: no response of the peer document API carries an absolute path", 
   }
   assert.ok(ids.has("deep"), "the generator reached the nested document");
   assert.ok(!ids.has("risky"), "never the folder folderRisk refuses");
+
+  // A file listing: names and folders from the grant, never a path.
+  for (const body of [{ scope: { mode: "all" } }, { folder: "home", scope: { mode: "all" } }, { folder_name: "2026", scope: { mode: "all" } }, { scope: { mode: "selected", folder_ids: ["f-risky", "f-invoices"] } }]) {
+    const response = await app.inject({ method: "POST", url: "/api/v1/peer/documents/list", headers: trustedPeer(), payload: body });
+    assert.equal(response.statusCode, 200, `${JSON.stringify(body)} → ${response.body}`);
+    assert.deepEqual(offenders(response.json()), [], JSON.stringify(body));
+  }
+  const unknownField = await app.inject({ method: "POST", url: "/api/v1/peer/documents/list", headers: trustedPeer(), payload: { path: "/etc", scope: { mode: "all" } } });
+  assert.equal(unknownField.statusCode, 400);
 
   for (const id of [...ids, "risky", "unknown"]) {
     const headers = trustedPeer();
