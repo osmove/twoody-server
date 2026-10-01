@@ -3,6 +3,9 @@ import { clientOf } from "./usage.js";
 import { recordUsageEvent, type UsageEventInput } from "../usageStore.js";
 import { askedToRemember, rememberFacts } from "../memoryLearning.js";
 import { learnSoon, setLearningModel, type LearnMessages } from "../memory/learner.js";
+import { onMemoriesChanged } from "../memory/changes.js";
+import { createHash } from "node:crypto";
+import { inflight } from "../account/inflight.js";
 import { citationLink, folderOf, localFolderIds, meshPeers, retrieveAcrossComputers } from "../documents/remote.js";
 import { listingIntent } from "../documents/fileListing.js";
 import { listFilesAcrossComputers, type MeshListing } from "../documents/remoteListing.js";
@@ -24,6 +27,7 @@ import {
   readMemoryMode,
   HISTORY_MAX_MESSAGES,
   type ContextState,
+  type ChatContextInput,
   type ChatMessage,
   type HistoryRow,
   type MemoryRow,
@@ -136,6 +140,9 @@ interface QueryBody {
 export async function queryRoutes(app: FastifyInstance) {
   // What the learner runs its prompt on (src/memory/learner.ts).
   setLearningModel(learningCall);
+  // A memory saved, edited or learned: the next new conversation's start,
+  // read ahead.
+  onMemoriesChanged((userId) => scheduleWarm(userId));
   app.post("/queries", {
     schema: {
       tags: ["queries"],
@@ -605,7 +612,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       mode: memoryMode,
       documentMode: access.mode,
     });
-    const turn = buildChatTurn({
+    const turnInput: ChatContextInput = {
       ...userContext,
       // A server with no profile (a Pi just set up) knows the person by the
       // first name their phone gives.
@@ -638,8 +645,15 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       remembered,
       personal: fullFor && onThisComputer(fullFor) && access.mode !== "only" ? loadPersonalData(auth.userId) : null,
       timeZone: validTimeZone(parsed.time_zone),
-    });
+    };
+    const turn = buildChatTurn(turnInput);
     const chatMessages = turn.messages;
+    // What a new conversation would start with, kept ready in the runtime
+    // (warmNewConversation): the facts of this request, and what was sent.
+    if (provider.kind === "local_openai") {
+      lastTurnInputs.set(auth.userId, { input: turnInput, provider });
+      noteSystemSent(provider, chatMessages[0]?.content ?? "");
+    }
     let conversationOnly: ChatMessage[] | null = null;
     const messagesFor = (candidate: Provider): ChatMessage[] => {
       if (!conversationOnlyFor(candidate)) return chatMessages;
@@ -856,6 +870,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // ones before is learned now (src/memory/learner.ts), once nothing
     // generates — never alongside this answer.
     if (discussion.created) learnSoon(auth.userId, discussion.id);
+    // What the next new conversation starts with, read ahead if it changed.
+    scheduleWarm(auth.userId);
   } catch (err) {
     if (upstream.signal.aborted) {
       // Keep what was written: the conversation would otherwise show a
@@ -1270,6 +1286,99 @@ async function streamFromProvider(
   }
 }
 
+// ── A new conversation starts at once ──────────────────────────────────
+// The runtime keeps what it last read and restores what it read before
+// (llama.cpp's prompt cache, --cache-ram): a new conversation whose system
+// prompt — instructions and profile — is the one already read only reads
+// the question (0.26 s for 907 tokens on Jimmy's MacBook Air, 01/10/2026,
+// instead of ~2 s, and more with a longer profile). When that prompt
+// changes (a memory saved, edited, learned; a new day), it is read ahead
+// in the background, once nothing generates, so that the next new
+// conversation finds it ready. Built from the facts of the person's last
+// request (language, first name, time zone, window, model).
+
+const lastTurnInputs = new Map<string, { input: ChatContextInput; provider: Provider }>();
+const systemsSent = new Map<string, string>();
+const warmTimers = new Map<string, NodeJS.Timeout>();
+const WARM_DELAY_MS = 4_000;
+const WARM_BUSY_RETRY_MS = 5_000;
+
+function systemKey(provider: Provider): string {
+  return "baseUrl" in provider ? `${provider.baseUrl}\n${"model" in provider ? provider.model : ""}` : provider.kind;
+}
+
+function digestOf(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+function noteSystemSent(provider: Provider, system: string) {
+  systemsSent.set(systemKey(provider), digestOf(system));
+}
+
+/// The system prompt a new conversation of this person would start with now.
+export function newConversationSystem(userId: string): { system: string; provider: Provider } | null {
+  const last = lastTurnInputs.get(userId);
+  if (!last) return null;
+  const context = loadUserContext(userId);
+  const memoryMode = memoryModeFor(context.prefs);
+  const turn = buildChatTurn({
+    ...last.input,
+    ...context,
+    userName: last.input.userName,
+    memoryMode,
+    profileHints: memoryMode === "none" ? null : profileHints(userId, context.memories),
+    history: [],
+    content: "",
+    summary: null,
+    summaryThrough: null,
+    state: null,
+    currentId: null,
+    relevant: undefined,
+    remembered: null,
+    excerpts: [],
+    documentFiles: [],
+    documentFileTotal: 0,
+    fileListings: null,
+    documentNote: null,
+    personal: null,
+    now: new Date(),
+  });
+  const system = turn.messages[0];
+  return system?.role === "system" ? { system: system.content, provider: last.provider } : null;
+}
+
+/// Reads ahead what the next new conversation starts with, when it changed.
+export async function warmNewConversation(userId: string): Promise<"warmed" | "unchanged" | "busy" | "none"> {
+  const next = newConversationSystem(userId);
+  if (!next || next.provider.kind !== "local_openai") return "none";
+  const digest = digestOf(next.system);
+  if (systemsSent.get(systemKey(next.provider)) === digest) return "unchanged";
+  if (inflight() > 0) return "busy";
+  const done = beginGeneration("chat");
+  try {
+    await streamLocal(next.provider.baseUrl, [{ role: "system", content: next.system }, { role: "user", content: "" }], next.provider.model, 0, () => undefined, AbortSignal.timeout(120_000), { purpose: "chat", maxTokens: 1 });
+    systemsSent.set(systemKey(next.provider), digest);
+    return "warmed";
+  } catch {
+    return "none";
+  } finally {
+    done();
+  }
+}
+
+function scheduleWarm(userId: string, delayMs = WARM_DELAY_MS) {
+  const pending = warmTimers.get(userId);
+  if (pending) clearTimeout(pending);
+  const timer = setTimeout(() => {
+    warmTimers.delete(userId);
+    void warmNewConversation(userId).then((outcome) => {
+      if (outcome === "busy") scheduleWarm(userId, WARM_BUSY_RETRY_MS);
+    });
+  }, delayMs);
+  timer.unref?.();
+  warmTimers.set(userId, timer);
+}
+
 /// The learner's model call (src/memory/learner.ts): the person's model, on
 /// the computer set in « Tâches de fond » when one of theirs is idle
 /// (router.pickBackground), else on this one.
@@ -1564,6 +1673,8 @@ async function streamLocal(
     /// Another way to send the request than to `baseUrl` (a peer, through
     /// the tunnel).
     post?: (payload: object, signal: AbortSignal) => Promise<Response>;
+    /// At most this many tokens written (a read-ahead writes one).
+    maxTokens?: number;
   } = {},
 ): Promise<Usage | null> {
   const endpoint = baseUrl.replace(/\/$/, "");
@@ -1577,7 +1688,7 @@ async function streamLocal(
     model,
     messages: chatMessages,
     stream: true,
-    max_tokens: LOCAL_MAX_TOKENS + budget,
+    max_tokens: options.maxTokens ?? LOCAL_MAX_TOKENS + budget,
     ...(temperature !== undefined ? { temperature } : {}),
   };
   // Qwen3-style models otherwise reason silently for 20-40 s before the

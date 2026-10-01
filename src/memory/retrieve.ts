@@ -272,6 +272,13 @@ export async function retrieveMemories(args: {
 /// What the profile is made of beyond the memories themselves: which are the
 /// person's own facts (linked to their entity), how often each was given,
 /// and one line of the people and places of their life, from the graph.
+const usesOfDay = new Map<string, { day: string; uses: Record<string, number> }>();
+
+/// Forgets the day's counts (tests).
+export function forgetUsesOfDay() {
+  usesOfDay.clear();
+}
+
 export function profileHints(userId: string, memories: MemoryRow[]): ProfileHints {
   try {
     ensureLinked(userId);
@@ -279,9 +286,18 @@ export function profileHints(userId: string, memories: MemoryRow[]): ProfileHint
     const selfIds = self
       ? (sqlite.prepare("SELECT memory_id FROM memory_entities WHERE entity_id = ?").all(self.id) as Array<{ memory_id: string }>).map((row) => row.memory_id)
       : null;
-    const uses: Record<string, number> = {};
-    for (const row of sqlite.prepare("SELECT memory_id, uses FROM memory_usage WHERE user_id = ? AND uses > 0").all(userId) as Array<{ memory_id: string; uses: number }>) {
-      uses[row.memory_id] = row.uses;
+    // How often each was given, as it stood at the day's first turn: the
+    // profile it orders stays the same all day, and the runtime reuses it
+    // from one conversation to the next instead of reading it again (it
+    // shifted at nearly every answer, 01/10/2026).
+    const day = new Date().toDateString();
+    let uses = usesOfDay.get(userId)?.day === day ? usesOfDay.get(userId)!.uses : null;
+    if (!uses) {
+      uses = {};
+      for (const row of sqlite.prepare("SELECT memory_id, uses FROM memory_usage WHERE user_id = ? AND uses > 0").all(userId) as Array<{ memory_id: string; uses: number }>) {
+        uses[row.memory_id] = row.uses;
+      }
+      usesOfDay.set(userId, { day, uses });
     }
     return { selfIds, uses, graph: self ? graphLine(self.id) : null, peopleIds: self ? peopleFacts(userId, self.id, memories) : [] };
   } catch {

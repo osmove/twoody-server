@@ -375,7 +375,8 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   // wants of the answers, what they pinned, their people (the graph's line),
   // their core facts, the most given; a sensitive fact only pinned, and on
   // a model of the person's own.
-  const profile = profileOrder(usable, input.profileHints ?? null, input.local, now.getTime());
+  // « This week » from the start of the day: the profile stays the same all day.
+  const profile = profileOrder(usable, input.profileHints ?? null, input.local, new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime());
   const graph = input.profileHints?.graph ?? null;
   const profileTarget = scaled(PROFILE_TARGET_CHARS, input.contextWindow, 0.1);
   const profileMax = scaled(PROFILE_MAX_CHARS, input.contextWindow, 0.1);

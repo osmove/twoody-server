@@ -56,10 +56,25 @@ async function run() {
   if (pending.size) schedule(busy ? BUSY_RETRY_MS : SOON_MS);
 }
 
+const listeners = new Set<(userId: string) => void>();
+
+/// Told when a person's memories change (the chat reads ahead the next new
+/// conversation's start, routes/queries.ts).
+export function onMemoriesChanged(listener: (userId: string) => void) {
+  listeners.add(listener);
+}
+
 /// This person's memories changed here: written, deleted, or brought by a
 /// vault sync. Never throws.
 export function memoriesChanged(userId: string | null | undefined) {
   if (!userId) return;
+  for (const listener of listeners) {
+    try {
+      listener(userId);
+    } catch {
+      /* a listener never stops a memory */
+    }
+  }
   try {
     invalidateMemoryVectors(userId);
     markLinksStale(userId);
