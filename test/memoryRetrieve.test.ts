@@ -20,6 +20,7 @@ delete process.env.TWOODY_EMBEDDING_MODEL;
 
 const { buildChatTurn } = await import("../src/chatContext.js");
 const { rankMemories, firstPerson, ageFrom } = await import("../src/memory/rank.js");
+const { ageNote } = await import("../src/chatContext.js");
 type Input = Parameters<typeof buildChatTurn>[0];
 
 const NOW = new Date(2026, 9, 1, 10, 0, 0);
@@ -38,17 +39,23 @@ test("the profile is compact: about 600 tokens out of a hundred facts, how to an
   const profile = turn.state.profile!;
   assert.ok(tokens(profile) <= 800 && tokens(profile) >= 450, `${tokens(profile)} tokens`);
   assert.equal(turn.memory.profile_tokens, tokens(profile));
-  assert.match(profile, /^- Camille préfère des réponses courtes\.\n- Camille est née le 14 mars 1984 à Angers\. \(42 years old today\)/);
+  assert.match(profile, /^- Camille préfère des réponses courtes\.\n- Camille est née le 14 mars 1984 à Angers\. \(age now: 42; next birthday 14 March 2027, in \d+ days, turning 43\)/);
   assert.ok(turn.profileIds.includes("birth") && turn.profileIds.length < 40);
   // A tenth of a small window at most.
   assert.ok(tokens(buildChatTurn(input({ memories, contextWindow: 4_096 })).state.profile) <= 410);
 });
 
 test("a birth date gives an age; a year, an approximate one", () => {
-  assert.deepEqual(ageFrom("Mathieu Garnier est né le 14 mars 1984 à Angers.", NOW), { years: 42, approximate: false });
-  assert.deepEqual(ageFrom("Léa est née le 9 octobre 2014.", NOW), { years: 11, approximate: false });
+  assert.deepEqual(ageFrom("Mathieu Garnier est né le 14 mars 1984 à Angers.", NOW), { years: 42, approximate: false, birthday: { month: 2, day: 14 } });
+  assert.deepEqual(ageFrom("Léa est née le 9 octobre 2014.", NOW), { years: 11, approximate: false, birthday: { month: 9, day: 9 } });
   assert.deepEqual(ageFrom("Sophie est née en 1987.", NOW), { years: 39, approximate: true });
   assert.equal(ageFrom("Élodie Garnier (née Roux) est orthophoniste.", NOW), null);
+  // Worked out here, never left to the model: « (40 years old today) » was
+  // read « il fête ses 40 ans aujourd'hui » on 1 October for 12 December.
+  assert.equal(ageNote(ageFrom("Ilan est né le 12 décembre 1985.", new Date(2026, 9, 1))!, new Date(2026, 9, 1)), "age now: 40; next birthday 12 December 2026, in 72 days, turning 41");
+  assert.equal(ageNote(ageFrom("Ilan est né le 12 décembre 1985.", new Date(2026, 11, 12))!, new Date(2026, 11, 12)), "birthday today: turns 41");
+  assert.equal(ageNote(ageFrom("Ilan est né le 12 décembre 1985.", new Date(2026, 11, 20))!, new Date(2026, 11, 20)), "age now: 41; next birthday 12 December 2027, in 357 days, turning 42");
+  assert.equal(ageNote(ageFrom("Sophie est née en 1987.", NOW)!, NOW), "about 39 years old now; birthday unknown");
 });
 
 test("sensitive memories: never in the profile, on a message only for a model of the person's own", () => {
@@ -161,7 +168,7 @@ test("POST /memories/retrieve: the profile and the memories a message would be g
   assert.equal(wife.retrieval, "lexical");
   const profile = wife.profile.items.map((item: { id: string }) => item.id);
   assert.ok(profile.includes(ids["Mathieu Garnier est né le 14 mars 1984 à Angers."]), "the birth date is in the profile");
-  assert.match(wife.profile.text, /\(42 years old today\)|\(\d+ years old today\)/);
+  assert.match(wife.profile.text, /\(age now: \d+; next birthday/);
   assert.match(wife.profile.text, /The user's people, places and projects: Élodie Garnier \(épouse\)\./);
   assert.ok(!profile.includes(ids["Mathieu a un diabète de type 1 diagnostiqué en 2009."]), "nothing sensitive in the profile");
   const given = [...profile, ...wife.items.map((item: { id: string }) => item.id)];

@@ -391,7 +391,7 @@ const MONTHS: Record<string, number> = {
 
 /// The age a birth date in a memory gives today: « né le 14 mars 1984 » →
 /// 42 on 1 October 2026; « née en 1987 » → about 39. Null without one.
-export function ageFrom(text: string, now: Date): { years: number; approximate: boolean } | null {
+export function ageFrom(text: string, now: Date): { years: number; approximate: boolean; birthday?: { month: number; day: number } } | null {
   const t = normalize(text);
   const full = /\b(?:nee?s?\s+le|born\s+on|born)\s+(\d{1,2}|1er)\s+(\p{L}+)\s+(\d{4})/u.exec(t)
     ?? null;
@@ -402,7 +402,7 @@ export function ageFrom(text: string, now: Date): { years: number; approximate: 
     if (month !== undefined && day >= 1 && day <= 31) {
       let years = now.getFullYear() - year;
       if (now.getMonth() < month || (now.getMonth() === month && now.getDate() < day)) years -= 1;
-      return years >= 0 && years < 130 ? { years, approximate: false } : null;
+      return years >= 0 && years < 130 ? { years, approximate: false, birthday: { month, day } } : null;
     }
   }
   const english = /\bborn\s+(?:on\s+)?(\p{L}+)\s+(\d{1,2}),?\s+(\d{4})/u.exec(t);
@@ -411,7 +411,7 @@ export function ageFrom(text: string, now: Date): { years: number; approximate: 
     const day = Number(english[2]);
     let years = now.getFullYear() - Number(english[3]);
     if (now.getMonth() < month || (now.getMonth() === month && now.getDate() < day)) years -= 1;
-    return years >= 0 && years < 130 ? { years, approximate: false } : null;
+    return years >= 0 && years < 130 ? { years, approximate: false, birthday: { month, day } } : null;
   }
   const year = /\b(?:nee?s?\s+en|born\s+in)\s+(\d{4})\b/u.exec(t);
   if (year) {

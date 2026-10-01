@@ -989,9 +989,30 @@ function memoryLine(row: MemoryRow, now?: Date): string | null {
   if (!body) return null;
   // A title that is only the start of the content says it twice.
   const title = row.title?.trim().replace(/…$/, "");
-  const line = title && !body.startsWith(title) ? `- ${title}: ${body}` : `- ${body}`;
+  // « Retiens que j'ai un ami… » is kept as said: « J'ai un ami d'enfance
+  // qui s'appelle Ilan » was answered as Twoody's own (01/10/2026).
+  const said = SAID_AS_I.test(body) ? `the user, in their own words: « ${body} »` : body;
+  const line = title && !body.startsWith(title) ? `- ${title}: ${said}` : `- ${said}`;
   const age = now ? ageFrom(row.content, now) : null;
-  return age ? `${line} (${age.approximate ? "about " : ""}${age.years} years old today)` : line;
+  return age ? `${line} (${ageNote(age, now!)})` : line;
+}
+
+const SAID_AS_I = /^(?:\*\s*)?(?:je |j['’]|j'ai|mon |ma |mes |nous |notre |nos |moi |i |i['’]m |i['’]ve |my |we |our )/i;
+
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/// What a birth date makes today, worked out here: « (40 years old today) »
+/// read as « il fête ses 40 ans aujourd'hui » on 1 October for a birthday on
+/// 12 December (01/10/2026). The age now, and when the next birthday is.
+export function ageNote(age: { years: number; approximate: boolean; birthday?: { month: number; day: number } }, now: Date): string {
+  if (!age.birthday) return `about ${age.years} years old now; birthday unknown`;
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const { month, day } = age.birthday;
+  if (now.getMonth() === month && now.getDate() === day) return `birthday today: turns ${age.years}`;
+  let year = now.getFullYear();
+  if (Date.UTC(year, month, day) < today) year += 1;
+  const days = Math.round((Date.UTC(year, month, day) - today) / 86_400_000);
+  return `age now: ${age.years}; next birthday ${day} ${MONTH_NAMES[month]} ${year}, in ${days} days, turning ${age.years + 1}`;
 }
 
 function formatMemoryList(rows: MemoryRow[], budget: number, lineOf: (row: MemoryRow) => string | null, given?: Set<MemoryRow>): string | null {

@@ -426,3 +426,12 @@ test("a message plainly in another language than the usual one is answered in it
   // Nor anything said about what is known that is not from the person.
   assert.match(english.messages[0].content, /never claim to know them well or personally/);
 });
+
+// « J'ai un ami d'enfance qui s'appelle Ilan », kept as said, was answered
+// as Twoody's own (01/10/2026): such a memory is shown as the user's words.
+test("a memory kept in the person's own words is given as theirs, never as the model's", () => {
+  const turn = buildChatTurn(input({ userName: null, content: "que sais-tu d'Ilan ?", memories: [{ kind: "user", title: null, content: "J'ai un ami d'enfance qui s'appelle Ilan Khalifa." }] }));
+  assert.match(turn.messages[0].content, /- the user, in their own words: « J'ai un ami d'enfance qui s'appelle Ilan Khalifa\. »/);
+  const third = buildChatTurn(input({ userName: null, content: "que sais-tu d'Ilan ?", memories: [{ kind: "user", title: null, content: "Ilan est un ami d'enfance de Jimmy." }] }));
+  assert.doesNotMatch(third.messages[0].content, /in their own words/);
+});
