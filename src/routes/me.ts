@@ -2,6 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import { requireAuth } from "../auth.js";
 import { db, users } from "../db.js";
+import { memoryModeFor, readMemoryMode } from "../chatContext.js";
+import { memoryEmbeddingStatus } from "../memory/embeddings.js";
+import { memoriesChanged } from "../memory/changes.js";
 
 // `/me` is the iPhone/watch app's bootstrap call. The cloud Rails
 // backend uses it for prefs, tier, quota, audio settings, local-LLM
@@ -66,6 +69,8 @@ export async function meRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
       mergePrefs(auth.userId, req.body?.user ?? {});
+      // Switched on: the memories get their vectors; off: they go.
+      if (req.body?.user && "memory_embeddings" in req.body.user) memoriesChanged(auth.userId);
       reply.send(serializeUser(auth.userId));
     },
   });
@@ -107,6 +112,13 @@ function serializeUser(userId: string) {
     has_completed_onboarding: true,
     local_llm_enabled:   true,
     memory_enabled:      readBool(prefs, "memory_enabled", true),
+    // Mémoire v2: the memories a conversation is given unless it says
+    // otherwise — "full", "profile" or "none" (memory_enabled: false).
+    memory_mode:         memoryModeFor(prefs),
+    // Memory embeddings on this computer: on by default, used once the
+    // model files are here (the status says); false switches them off.
+    memory_embeddings:   readBool(prefs, "memory_embeddings", true),
+    memory_embedding_status: memoryEmbeddingStatus(user.id),
     transcribe_audio:    readBool(prefs, "transcribe_audio", true),
     audio_output:        readBool(prefs, "audio_output", false),
     default_voice_mode:  readString(prefs, "default_voice_mode", "tap"),
@@ -194,6 +206,7 @@ function mergePrefs(userId: string, patch: Record<string, unknown>) {
     "transcribe_audio",
     "audio_output",
     "memory_enabled",
+    "memory_embeddings",
     "stt_provider",
     "system_prompt",
     "system_prompt_replace_base",
@@ -207,6 +220,15 @@ function mergePrefs(userId: string, patch: Record<string, unknown>) {
     if (ACCEPTED.has(key)) {
       merged[key] = key === "background_computer" || key === "preferred_computer" ? readBackgroundComputer(value) : value;
     }
+  }
+  if (typeof merged.memory_embeddings !== "boolean") delete merged.memory_embeddings;
+  // The memory mode and the older switch say the same thing: « Aucune » is
+  // memory switched off, « Complète » or « Profil seulement » switches it on.
+  const mode = readMemoryMode(patch.memory_mode);
+  if (mode === "none") merged.memory_enabled = false;
+  else if (mode) {
+    merged.memory_enabled = true;
+    merged.memory_mode = mode;
   }
 
   // Mirror name updates onto the dedicated column too — the cloud

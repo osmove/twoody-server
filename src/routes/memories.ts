@@ -44,7 +44,7 @@ const KINDS = new Set(["user", "feedback", "project", "reference"]);
 /// device paired by code that is no member of the history, one the console
 /// approved or a firmware device. Replies 403 otherwise (the app then signs
 /// a fresh device-access, POST /session/device-access).
-async function requirePerson(req: FastifyRequest, reply: FastifyReply, auth: { sessionId?: string }): Promise<boolean> {
+export async function requirePerson(req: FastifyRequest, reply: FastifyReply, auth: { sessionId?: string }): Promise<boolean> {
   if (ownerRequest(req) || (await isPersonOrOwner(req, auth, () => meshRoster().get()))) return true;
   reply.code(403).send({ error: "person_device_required" });
   return false;
@@ -334,7 +334,7 @@ export async function memoryRoutes(app: FastifyInstance) {
         .run();
       if (result.changes === 0 || !existing) return reply.code(404).send({ error: "not_found" });
       // Deleted on every computer of the vault, and never learned again.
-      memoryDeleted({ id: existing.id, content: existing.content, vaultEventId: existing.vaultEventId });
+      memoryDeleted({ id: existing.id, content: existing.content, vaultEventId: existing.vaultEventId, userId: existing.userId });
       reply.code(204).send();
     },
   });

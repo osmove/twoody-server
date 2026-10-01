@@ -28,6 +28,7 @@ import { desktopVaultAccount } from "./vault/desktopAccount.js";
 import { relayAccountThroughDesktop } from "./account/desktopRelay.js";
 import { setDesktopVault, startVaultService } from "./vault/service.js";
 import { startMemorySync } from "./vault/memories.js";
+import { startMemoryWork } from "./memory/changes.js";
 import { builtinAddress, initEngine, preloadBuiltin, stopEngine } from "./engine.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -305,6 +306,9 @@ try {
   // this computer's keys, or the ones Twoody Desktop handed over. Inert
   // while this computer is no trusted member.
   const memorySync = startMemorySync({ log: (message) => console.log(`  ${message}`) });
+  // The memories' links to their entities and their vectors (Mémoire v2),
+  // for what was written before they existed: a while after start.
+  const memoryWork = startMemoryWork();
   if (parentPort && process.env.TWOODY_TUNNEL === "1") {
     parentPort.on("message", ({ data }) => {
       if ((data as { type?: unknown } | null)?.type !== "tunnel") return;
@@ -364,6 +368,7 @@ try {
         accountService.stop();
         vaultService?.stop();
         memorySync.stop();
+        memoryWork.stop();
         stopPeerPoller();
         stopMeshLinks();
         stopRoster();

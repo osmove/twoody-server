@@ -18,12 +18,16 @@ import { publish as publishEvent } from "../events.js";
 import {
   buildChatMessages,
   buildChatTurn,
+  memoryModeFor,
   readContextState,
+  readMemoryMode,
   HISTORY_MAX_MESSAGES,
   type ContextState,
   type ChatMessage,
   type HistoryRow,
   type MemoryRow,
+  type MemoryMode,
+  type MemoryUsage,
 } from "../chatContext.js";
 import { chooseDiscussion, reuseWindowMs } from "../discussionWindow.js";
 import { runtimeAuthHeaders } from "../runtimeAuth.js";
@@ -44,6 +48,7 @@ import { peerById, peerRequest, PeerUnavailableError, type PeerRow } from "../pe
 import { isSelf, peerRoutable, peerTrusted, pick, pickBackground, selfIdentity } from "../router/index.js";
 import { meshRoster } from "../vault/roster.js";
 import { meshRequester } from "../sessionTrust.js";
+import { ownerRequest } from "../localAccess.js";
 import { ensureConversation, sealAnsweredTurn } from "../vault/service.js";
 import { sqliteHistory } from "../vault/localHistory.js";
 import { pathlessSource } from "../vault/sync.js";
@@ -95,6 +100,10 @@ interface QueryBody {
   /// computer that one trusts. The profile's name wins; never given to an
   /// untrusted peer (conversationOnly).
   user_first_name?: string;
+  /// The memories this conversation is given from now on (Mémoire v2):
+  /// "full", "profile" or "none"; kept as the conversation's own. The
+  /// person's `memory_enabled: false` is « none » whatever it says.
+  memory_mode?: string;
   // The watch + iPhone voice path nests fields under `query`. We
   // accept both flat and nested shapes so a single client codebase
   // can target either backend without case-by-case wire reshaping.
@@ -173,14 +182,14 @@ const COMPACT_REQUEST =
   "in the language the person uses: what they asked and wanted, the facts, figures and decisions that came up (from joined " +
   "documents too, naming them), what was concluded, and what remains open. Be precise and brief, and invent nothing.";
 
-function discussionSummary(id: string): { summary: string | null; summaryThrough: string | null; state: ContextState | null } {
+function discussionSummary(id: string): { summary: string | null; summaryThrough: string | null; state: ContextState | null; memoryMode: MemoryMode | null } {
   const [row] = db
-    .select({ summary: discussions.summary, summaryThrough: discussions.summaryThrough, contextJson: discussions.contextJson })
+    .select({ summary: discussions.summary, summaryThrough: discussions.summaryThrough, contextJson: discussions.contextJson, memoryMode: discussions.memoryMode })
     .from(discussions)
     .where(eq(discussions.id, id))
     .limit(1)
     .all();
-  return { summary: row?.summary ?? null, summaryThrough: row?.summaryThrough ?? null, state: readContextState(row?.contextJson) };
+  return { summary: row?.summary ?? null, summaryThrough: row?.summaryThrough ?? null, state: readContextState(row?.contextJson), memoryMode: readMemoryMode(row?.memoryMode) };
 }
 
 /// What the next turn of a discussion would give the model, counted:
@@ -190,8 +199,10 @@ export function discussionContext(
   discussionId: string,
 ): { summary: string | null; summaryThrough: string | null; tokensEstimate: number } {
   const compacted = discussionSummary(discussionId);
+  const userContext = loadUserContext(userId);
   const chatMessages = buildChatMessages({
-    ...loadUserContext(userId),
+    ...userContext,
+    memoryMode: memoryModeFor(userContext.prefs, compacted.memoryMode),
     history: loadHistory(discussionId, compacted.summaryThrough),
     summary: compacted.summary,
     summaryThrough: compacted.summaryThrough,
@@ -242,8 +253,10 @@ async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body:
     // The conversation as a turn gives it (the runtime reuses what it
     // already read), then the demand for the summary.
     const documentFolders = listFolders(auth.userId);
+    const userContext = loadUserContext(auth.userId);
     const chatMessages = buildChatMessages({
-      ...loadUserContext(auth.userId),
+      ...userContext,
+      memoryMode: memoryModeFor(userContext.prefs, compacted.memoryMode),
       history,
       summary: compacted.summary,
       summaryThrough: compacted.summaryThrough,
@@ -304,6 +317,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   catch { return reply.code(422).send({ error: "invalid_document_access" }); }
   const audioBuffer = parsed.audioBuffer ?? null;
   const skipTranscription = readBool(parsed.skip_transcription, false);
+  const rawMemoryMode = parsed.memory_mode ?? (parsed.query as { memory_mode?: unknown } | undefined)?.memory_mode;
+  const askedMemoryMode = rawMemoryMode === undefined || rawMemoryMode === null ? null : readMemoryMode(rawMemoryMode);
+  if (rawMemoryMode !== undefined && rawMemoryMode !== null && !askedMemoryMode) return reply.code(422).send({ error: "invalid_memory_mode" });
 
   // Resolve the user's prompt: explicit text wins; otherwise we
   // shell out to whisper-cpp on the audio blob (when STT wasn't
@@ -371,6 +387,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     caughtUp ? false : readBool(parsed.force_new_discussion ?? parsed.query?.force_new_discussion, false),
   );
 
+  // The memory mode asked for is the conversation's from now on.
+  if (askedMemoryMode) db.update(discussions).set({ memoryMode: askedMemoryMode }).where(eq(discussions.id, discussion.id)).run();
   // Read the thread before the new prompt lands in it, so the history
   // handed to the model never contains the current turn twice. What a
   // compaction summarised is given as its summary.
@@ -488,8 +506,11 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // given here with their context (conversationOnly, below).
     const conversationOnlyFor = (candidate: Provider) => candidate.kind === "peer_openai" && !candidate.trusted;
     const fullFor = plan.find((entry) => !conversationOnlyFor(entry.provider))?.provider ?? null;
+    // Which memories this turn is given (« Complète », « Profil seulement »,
+    // « Aucune »): nothing is learned from a conversation in « Aucune ».
+    const memoryMode = memoryModeFor(userContext.prefs, compacted.memoryMode);
     // « Retiens que… »: kept before the answer, so that it can say so.
-    const learning = userContext.prefs.memory_enabled !== false && access.mode !== "only";
+    const learning = memoryMode !== "none" && access.mode !== "only";
     const remembered = learning ? askedToRemember(typedText(content)) : null;
     if (remembered) rememberFacts(auth.userId, [remembered], vaultRef ?? null);
     // Passages from the user's own documents that match this prompt.
@@ -577,6 +598,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       summary: compacted.summary,
       summaryThrough: compacted.summaryThrough,
       state: compacted.state,
+      memoryMode,
       currentId: promptId,
       discussionId: discussion.id,
       contextWindow: readWindow(parsed.context_window),
@@ -724,6 +746,13 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     const providerModel = "model" in provider ? provider.model : null;
     // A computer given the conversation only saw no excerpt: nothing to cite.
     const cited = conversationOnlyFor(provider) ? [] : sources;
+    // Nor any memory.
+    const memoryUsed: MemoryUsage = conversationOnlyFor(provider)
+      ? { mode: memoryMode, profile_tokens: 0, relevant_tokens: 0, items: [] }
+      : turn.memory;
+    // Which memories they were is the person's to read (like /memories):
+    // counted for anyone else, not listed (kept with the answer for them).
+    const memoryShown: MemoryUsage = ownerRequest(req) || requester !== null ? memoryUsed : { ...memoryUsed, items: [] };
     const messageId = insertMessage({
       discussionId: discussion.id,
       userId:       auth.userId,
@@ -738,6 +767,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       usage,
       client:       clientOf(auth),
       answeredBy:   answeredByComputer,
+      memory:       memoryUsed,
     });
     // What another computer wrote is counted there (source « peer »), not
     // as this computer's work.
@@ -787,6 +817,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       usage,
       reasoning_ms: reasoningMs,
       answered_by:  answeredByComputer,
+      // What it was given of the memories: the footer « mémoire : 420 tokens ».
+      memory:       memoryShown,
       // Which of the person's computers were searched, and the ones left
       // out (late, offline…): the client can say it.
       documents:    {
@@ -951,6 +983,7 @@ async function parseMultipartBody(req: FastifyRequest): Promise<ParsedBody | nul
     skip_transcription: (nested.skip_transcription as boolean | string) ?? (fields.skip_transcription as boolean | string),
     locale:             (nested.locale as string) ?? (fields.locale as string),
     user_first_name:    (nested.user_first_name as string) ?? (fields.user_first_name as string),
+    memory_mode:        (nested.memory_mode as string) ?? (fields.memory_mode as string),
     audioBuffer:        audioBuffer ?? undefined,
   };
 }
@@ -1816,7 +1849,7 @@ function loadUserContext(userId: string): {
   }
 
   const rows = db
-    .select({ kind: memories.kind, title: memories.title, content: memories.content, tagsJson: memories.tagsJson, sourceRef: memories.sourceRef })
+    .select({ id: memories.id, kind: memories.kind, title: memories.title, content: memories.content, tagsJson: memories.tagsJson, sourceRef: memories.sourceRef })
     .from(memories)
     .where(and(eq(memories.userId, userId), isNull(memories.supersededById)))
     .orderBy(desc(memories.updatedAt), asc(memories.id))
@@ -1842,6 +1875,7 @@ function insertMessage(args: {
   usage?: { prompt_tokens: number; completion_tokens: number; estimated?: boolean } | null;
   client?: string | null;
   answeredBy?: AnsweredBy | null;
+  memory?: MemoryUsage | null;
 }): string {
   const id = generateId();
   db.insert(messages)
@@ -1862,6 +1896,7 @@ function insertMessage(args: {
       tokensEstimated:  args.usage ? args.usage.estimated === true : null,
       client:       args.client ?? null,
       answeredByJson: args.answeredBy ? JSON.stringify(args.answeredBy) : null,
+      memoryJson:   args.memory ? JSON.stringify(args.memory) : null,
       createdAt:    new Date(),
     })
     .run();

@@ -8,6 +8,7 @@ import {
 import { openEvent, sealEvent, type Random, type SealedEvent } from "./crypto.js";
 import type { EventsApi } from "./client.js";
 import { vaultContext, vaultEpochKeys, vaultIdentity } from "./service.js";
+import { memoriesChanged } from "../memory/changes.js";
 
 // Memories through the vault (docs/mesh-design.md §3, lot S5): every
 // trusted computer holds the same memories, end-to-end encrypted in the
@@ -465,36 +466,51 @@ function serverAccess(): MemoryVaultAccess | null {
 let serverVault: MemoryVault | null = null;
 const vault = () => (serverVault ??= createMemoryVault({ sqlite: localSqlite, owner: ownerId, access: serverAccess }));
 
+/// One sync; what it changed here gets its links and vectors again
+/// (src/memory/changes.ts).
+async function syncHere() {
+  const result = await vault().sync();
+  if (result.status === "synced" && (result.changed || result.removed || result.uploaded)) memoriesChanged(ownerId());
+  return result;
+}
+
 let soon: NodeJS.Timeout | null = null;
 function syncSoon() {
   if (soon) return;
   soon = setTimeout(() => {
     soon = null;
-    void vault().sync().catch(() => null);
+    void syncHere().catch(() => null);
   }, SOON_MS);
   soon.unref?.();
+}
+
+function userOf(id: string): string | null {
+  return (localSqlite.prepare("SELECT user_id FROM memories WHERE id = ?").get(id) as { user_id: string } | undefined)?.user_id ?? null;
 }
 
 /// A memory was written here (created, learned, imported: `write`; edited
 /// by the person: `edit`). Returns its id, which the vault may have
 /// changed; never throws — a memory is kept here whatever the vault says.
 export function memoryWritten(id: string, how: "write" | "edit" = "write"): string {
+  let current = id;
   try {
-    const now = vault().record(id, how);
+    current = vault().record(id, how) ?? id;
     syncSoon();
-    return now ?? id;
   } catch {
-    return id;
+    /* kept here anyway */
   }
+  memoriesChanged(userOf(current) ?? userOf(id));
+  return current;
 }
 
 /// A memory was deleted here (the row as it was).
-export function memoryDeleted(row: { id: string; content: string; vaultEventId: string | null }): void {
+export function memoryDeleted(row: { id: string; content: string; vaultEventId: string | null; userId?: string | null }): void {
   try {
     if (vault().recordDelete(row)) syncSoon();
   } catch {
     /* deleted here anyway */
   }
+  memoriesChanged(row.userId ?? ownerId());
 }
 
 /// The id of a new manual or imported memory: a random UUID v4, as the vault wants it.
@@ -521,7 +537,7 @@ export function isForgottenFact(content: string): boolean {
 export const possibleDuplicates = (userId: string) => vault().possibleDuplicates(userId);
 
 /// One sync now (tests, and the timer).
-export const syncMemories = () => vault().sync();
+export const syncMemories = () => syncHere();
 
 /// This server's memory vault itself (tests).
 export const serverMemoryVault = (): MemoryVault => vault();
@@ -534,7 +550,7 @@ export function startMemorySync(options: { intervalMs?: number; firstTickMs?: nu
   const schedule = (ms: number) => {
     if (stopped) return;
     timer = setTimeout(() => {
-      void vault().sync()
+      void syncHere()
         .catch((err) => options.log?.(`Vault memories: ${err instanceof Error ? err.message : String(err)}`))
         .finally(() => schedule(options.intervalMs ?? TICK_MS));
     }, ms);

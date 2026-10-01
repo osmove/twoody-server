@@ -56,7 +56,38 @@ export interface HistoryRow {
   sent?: string | null;
 }
 
+/// Which memories a conversation's turns are given (Mémoire v2, L4a):
+/// « Complète » (the profile, and the memories a message is about),
+/// « Profil seulement » (the profile alone), « Aucune » (none).
+export type MemoryMode = "full" | "profile" | "none";
+export const MEMORY_MODES: readonly MemoryMode[] = ["full", "profile", "none"];
+
+export function readMemoryMode(value: unknown): MemoryMode | null {
+  return typeof value === "string" && (MEMORY_MODES as readonly string[]).includes(value) ? (value as MemoryMode) : null;
+}
+
+/// The memory mode of a turn: « none » when the person switched memory off
+/// (`memory_enabled: false`, /me), else the one this message asks for, the
+/// conversation's, or the person's own (`memory_mode`, « full » by default).
+export function memoryModeFor(prefs: Record<string, unknown>, conversation?: unknown, asked?: unknown): MemoryMode {
+  if (prefs.memory_enabled === false || prefs.memory_enabled === "false") return "none";
+  return readMemoryMode(asked) ?? readMemoryMode(conversation) ?? readMemoryMode(prefs.memory_mode) ?? "full";
+}
+
+/// What a turn was given of the memories: the final event's `memory`, and
+/// messages.memory_json. `items` are the memories that rode on the
+/// message (the profile is counted, not listed); a score is the match's,
+/// null for a memory given as new.
+export interface MemoryUsage {
+  mode: MemoryMode;
+  profile_tokens: number;
+  relevant_tokens: number;
+  items: Array<{ id: string | null; title: string; score: number | null }>;
+}
+
 export interface MemoryRow {
+  /// The memory's id, for what a turn says it was given (MemoryUsage).
+  id?: string;
   kind: string;
   title: string | null;
   content: string;
@@ -142,6 +173,9 @@ export interface ChatContextInput {
   /// The message a compaction's summary goes up to: a new summary is a
   /// refresh point.
   summaryThrough?: string | null;
+  /// This turn's memory mode; `memory_enabled: false` in the prefs is
+  /// « none » whatever it says. A change is a refresh point.
+  memoryMode?: MemoryMode | null;
 }
 
 /// What a conversation keeps from one turn to the next, so that what the
@@ -174,6 +208,10 @@ export interface ContextState {
   /// Those of `seen` a message gave as new memories: in the conversation
   /// already, like the frozen profile, so not matched again.
   told?: string[];
+  /// The memory mode the profile was frozen for (absent: « full »).
+  memoryMode?: MemoryMode;
+  /// Whatever a newer server keeps here: read, and kept as it is (G9).
+  [field: string]: unknown;
 }
 
 export interface ChatTurn {
@@ -183,6 +221,17 @@ export interface ChatTurn {
   /// The last message as given to the model, without an unanswered prompt
   /// folded into it.
   sent: string;
+  /// What it was given of the memories.
+  memory: MemoryUsage;
+}
+
+const STATE_FIELDS = new Set(["v", "basis", "profile", "documents", "web", "locale", "compact", "liveFrom", "seen", "told", "memoryMode"]);
+
+/// The fields of a state this server does not know: kept as they are.
+function unknownFields(state: Record<string, unknown> | null | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(state ?? {})) if (!STATE_FIELDS.has(key)) out[key] = value;
+  return out;
 }
 
 /// Reads a stored ContextState; null for anything else.
@@ -191,7 +240,10 @@ export function readContextState(json: string | null | undefined): ContextState 
   try {
     const parsed = JSON.parse(json) as Partial<ContextState>;
     if (parsed?.v !== 1) return null;
+    const memoryMode = readMemoryMode(parsed.memoryMode);
     return {
+      // A newer server's fields first, so that none of them overrides one read here.
+      ...unknownFields(parsed),
       v: 1,
       basis: typeof parsed.basis === "string" ? parsed.basis : null,
       profile: typeof parsed.profile === "string" ? parsed.profile : null,
@@ -205,6 +257,7 @@ export function readContextState(json: string | null | undefined): ContextState 
       liveFrom: typeof parsed.liveFrom === "string" ? parsed.liveFrom : null,
       ...(Array.isArray(parsed.seen) ? { seen: parsed.seen.filter((hash): hash is string => typeof hash === "string") } : {}),
       ...(Array.isArray(parsed.told) ? { told: parsed.told.filter((hash): hash is string => typeof hash === "string") } : {}),
+      ...(memoryMode ? { memoryMode } : {}),
     };
   } catch {
     return null;
@@ -290,7 +343,8 @@ const WEB_NOTE =
 
 export function buildChatTurn(input: ChatContextInput): ChatTurn {
   const memoryEnabled = readBool(input.prefs, "memory_enabled", true);
-  const usable = memoryEnabled ? input.memories.filter((memory) => !memory.archived) : [];
+  const mode: MemoryMode = memoryEnabled ? input.memoryMode ?? "full" : "none";
+  const usable = mode !== "none" ? input.memories.filter((memory) => !memory.archived) : [];
   // How to answer first, then who the person is — the core facts first — as
   // much as fits; the facts that did not fit stay findable when a message is
   // about them (an import brings dozens at once, 29/09/2026).
@@ -338,10 +392,13 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   const onlyDocuments = input.documentMode === "only";
   const lines = new Set(profileRows.map(memoryLine).filter((line): line is string => line !== null));
   const stale = previous?.profile?.split("\n").some((line) => !lines.has(line)) ?? false;
+  // Another memory mode: the profile is frozen again for it (one miss).
+  const modeChanged = !!previous && (previous.memoryMode ?? "full") !== mode;
   let state: ContextState;
-  if (cut || (stale && !onlyDocuments)) {
+  if (cut || ((stale || modeChanged) && !onlyDocuments)) {
     const kept = history!;
     state = {
+      ...unknownFields(input.state),
       v: 1,
       basis: input.summaryThrough ?? null,
       // A cut refreshes the memories; a document-only turn keeps them.
@@ -355,6 +412,7 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
       // findable when a message is about it. A document-only turn keeps
       // what the frozen profile was built on.
       ...(onlyDocuments && previous ? { seen: previous.seen, told: previous.told } : { seen: usable.map(memoryHash), told: [] }),
+      ...(onlyDocuments && previous ? (previous.memoryMode ? { memoryMode: previous.memoryMode } : {}) : mode !== "full" ? { memoryMode: mode } : {}),
     };
   } else {
     // A state from before `seen`: this turn's memories are taken as seen.
@@ -366,6 +424,7 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   // about them. Not in a document-only answer, which uses no memory: they
   // wait for the next turn.
   let fresh: string | null = null;
+  const freshRows = new Set<MemoryRow>();
   // What this message asks to be remembered is saved after it was read: the
   // model has it from this message (`remembered`), not to be told again.
   if (input.remembered) {
@@ -377,9 +436,11 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
     const added = usable.filter((memory) => !seen.has(memoryHash(memory)));
     if (added.length > 0) {
       // A fact learned from this conversation was said in it.
-      const told = new Set<MemoryRow>();
+      // « Profil seulement »: only what the profile would hold.
+      const profileKinds = new Set(profileRows);
+      const told = freshRows;
       fresh = formatMemoryList(
-        added.filter((memory) => !(input.discussionId && memory.sourceRef === input.discussionId)),
+        added.filter((memory) => !(input.discussionId && memory.sourceRef === input.discussionId) && (mode === "full" || profileKinds.has(memory))),
         scaled(NEW_MEMORY_CHARS, input.contextWindow, 0.05),
         told,
       );
@@ -415,10 +476,11 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
       })
     : null;
   // The memories not in the frozen profile — learned since, or that did not
-  // fit — when this message is about them.
-  const matched = onlyDocuments
+  // fit — when this message is about them (« Complète » only).
+  const matchedRows = new Map<MemoryRow, number>();
+  const matched = onlyDocuments || mode !== "full"
     ? null
-    : formatMatchedMemories(usable.filter((memory) => !frozen.has(memoryLine(memory) ?? "") && !told.has(memoryHash(memory))), current.text);
+    : formatMatchedMemories(usable.filter((memory) => !frozen.has(memoryLine(memory) ?? "") && !told.has(memoryHash(memory))), current.text, matchedRows);
   const context = [...(chatty ? [] : input.fileListings ?? []), formatExcerpts(input.excerpts ?? []), chatty ? null : input.documentNote ?? null, matched, personal].filter(
     (block): block is string => block !== null,
   );
@@ -488,7 +550,22 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
     result.push({ role: "user", content: prompt });
   }
 
-  return { messages: result, state, sent: prompt };
+  const profile = onlyDocuments ? null : state.profile;
+  const memory: MemoryUsage = {
+    mode,
+    profile_tokens: profile ? Math.ceil(profile.length / CHARS_PER_TOKEN) : 0,
+    relevant_tokens: Math.ceil(((matched?.length ?? 0) + (newMemories?.length ?? 0)) / CHARS_PER_TOKEN),
+    items: [
+      ...[...matchedRows].map(([row, score]) => ({ id: row.id ?? null, title: memoryTitle(row), score: Math.round(score * 1000) / 1000 })),
+      ...[...freshRows].map((row) => ({ id: row.id ?? null, title: memoryTitle(row), score: null })),
+    ],
+  };
+  return { messages: result, state, sent: prompt, memory };
+}
+
+/// A memory as the client names it: its title, or the start of it.
+function memoryTitle(row: MemoryRow): string {
+  return row.title?.trim() || truncate(row.content.trim().replace(/\s+/g, " "), 80);
 }
 
 function buildSystemPrompt(input: ChatContextInput, profile: string | null, state: ContextState): string {
@@ -643,7 +720,7 @@ function trimHistory(history: HistoryRow[], documentBudget: number, historyBudge
   return joinTurns(kept);
 }
 
-function formatMatchedMemories(usable: MemoryRow[], content: string): string | null {
+function formatMatchedMemories(usable: MemoryRow[], content: string, given?: Map<MemoryRow, number>): string | null {
   // One term per word of the message, or per thing it asks about: « âge »
   // finds « 40 ans », « ma fille » finds « son fils ».
   const terms = new Map<string, Set<string>>();
@@ -670,11 +747,12 @@ function formatMatchedMemories(usable: MemoryRow[], content: string): string | n
     })
     .filter((entry) => entry.score > 0)
     // Best match first; ties keep the newest-first input order.
-    .sort((a, b) => b.score - a.score || a.index - b.index)
-    .map((entry) => entry.memory);
+    .sort((a, b) => b.score - a.score || a.index - b.index);
 
-  const list = formatMemoryList(scored, MATCHED_MEMORY_CHARS);
+  const rows = new Set<MemoryRow>();
+  const list = formatMemoryList(scored.map((entry) => entry.memory), MATCHED_MEMORY_CHARS, rows);
   if (!list) return null;
+  for (const entry of scored) if (rows.has(entry.memory)) given?.set(entry.memory, entry.score);
   return `[Saved notes that may be relevant]\n${list}\n[End of saved notes]`;
 }
 

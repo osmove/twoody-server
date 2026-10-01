@@ -54,6 +54,17 @@ Every turn sends the model a full message list, built by the pure
    memories whose text matches it. `memory_enabled: false` disables both
    memory paths.
 
+A conversation has a memory mode (`discussions.memory_mode`, set by
+`PATCH /discussions/:id` or `/queries` `memory_mode`, else `/me`
+`memory_mode`): `full` gives both paths, `profile` the system message's
+memories only, `none` neither, and learns nothing. A change of mode is a
+refresh point of `ContextState`. The `final` event's `memory` (kept in
+`messages.memory_json`) says what the turn was given; its `items` are
+listed only to the owner or the person's own devices. Entities
+(`/entities`, `src/memory/entities.ts`) and memory vectors
+(`src/memory/embeddings.ts`) are worked out per computer and not read by
+retrieval yet (docs/memory-v2-design.md, wave 2).
+
 Which conversation a turn belongs to is decided by the pure
 `src/discussionWindow.ts` (same rule and table as the cloud backend's
 `DiscussionResolver`): the one named by `discussion_id`; otherwise a new

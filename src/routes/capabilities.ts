@@ -29,6 +29,7 @@ export async function capabilitiesRoutes(app: FastifyInstance) {
             local_only:         { type: "boolean" },
             has_document_index: { type: "boolean" },
             tunnel_relay:       { type: ["string", "null"] },
+            memory_features:    { type: "array", items: { type: "string" } },
           },
           required: [
             "has_billing", "has_org", "has_memory", "has_browser_agent",
@@ -74,6 +75,10 @@ export async function capabilitiesRoutes(app: FastifyInstance) {
         // Folders the user grants are indexed here (SQLite FTS5) and
         // /queries cites passages from them.
         has_document_index: true,
+        // Mémoire v2 (docs/memory-v2-design.md), what this build has of it:
+        // /entities, memory modes (/me, PATCH /discussions/:id, /queries,
+        // final.memory) and memory embeddings.
+        memory_features:    ["entities", "modes", "embeddings"],
       });
     },
   });

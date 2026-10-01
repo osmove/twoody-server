@@ -194,6 +194,9 @@ export const discussions = sqliteTable("discussions", {
   // The encrypted conversation this one mirrors (the vault's conversation
   // id), when its exchanges are synchronised between the person's devices.
   vaultId: text("vault_id"),
+  // Which memories this conversation's turns are given (Mémoire v2, L4a):
+  // "full", "profile" or "none"; null follows the person's setting (/me).
+  memoryMode: text("memory_mode"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   lastActivityAt: integer("last_activity_at", { mode: "timestamp" }).notNull(),
 });
@@ -236,6 +239,10 @@ export const messages = sqliteTable("messages", {
   // Which of the account's computers wrote an answer, and how it was
   // chosen: {computer_id, computer_name, model, routed}.
   answeredByJson: text("answered_by_json"),
+  // What an answer was given of the person's memories (Mémoire v2, L4a):
+  // {mode, profile_tokens, relevant_tokens, items: [{id, title, score}]},
+  // as the final event of /queries said it.
+  memoryJson: text("memory_json"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
 });
 
@@ -1015,6 +1022,74 @@ for (const [table, columns] of [
     if (!existing.some((column) => column.name === name)) sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
   }
   sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_user_source ON ${table} (user_id, source)`);
+}
+
+// Mémoire v2 (docs/memory-v2-design.md §2), one block per lot.
+//
+// L1: the memories' vectors, on this computer only (each computer embeds
+// with its own model): keyed by memory and model, with the hash of the
+// text they were made from — a memory edited since is embedded again.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS memory_embeddings (
+    memory_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    vector BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (memory_id, model)
+  );
+  CREATE INDEX IF NOT EXISTS idx_memory_embeddings_user ON memory_embeddings (user_id, model);
+`);
+
+// L2 (block B): the people, projects and places the memories are about,
+// their other names and how they relate (src/memory/entities.ts). The
+// entities travel later (L8: hlc, vault_event_id); which memory names
+// which entity is worked out on each computer (memory_entities).
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS entities (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    kind TEXT NOT NULL DEFAULT 'person',
+    name TEXT NOT NULL,
+    norm TEXT NOT NULL,
+    note TEXT,
+    source TEXT NOT NULL DEFAULT 'manual',
+    merged_into TEXT,
+    hlc TEXT,
+    vault_event_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_entities_user_norm ON entities (user_id, norm);
+  CREATE TABLE IF NOT EXISTS entity_aliases (
+    entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    alias TEXT NOT NULL,
+    norm TEXT NOT NULL,
+    PRIMARY KEY (entity_id, norm)
+  );
+  CREATE TABLE IF NOT EXISTS entity_relations (
+    from_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    to_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    label TEXT NOT NULL,
+    hlc TEXT,
+    PRIMARY KEY (from_id, to_id, label)
+  );
+  CREATE INDEX IF NOT EXISTS idx_entity_relations_to ON entity_relations (to_id);
+  CREATE TABLE IF NOT EXISTS memory_entities (
+    memory_id TEXT NOT NULL,
+    entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    how TEXT NOT NULL,
+    PRIMARY KEY (memory_id, entity_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_memory_entities_entity ON memory_entities (entity_id);
+`);
+
+// L4a: a conversation's memory mode, and what each answer was given of
+// the memories.
+for (const [table, name] of [["discussions", "memory_mode"], ["messages", "memory_json"]] as const) {
+  const existing = sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!existing.some((column) => column.name === name)) sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${name} TEXT`);
 }
 
 export const db = drizzle(sqlite);

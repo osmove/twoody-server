@@ -8,6 +8,7 @@ import { db, discussions, messages, sqlite } from "../db.js";
 import { generateId } from "../auth.js";
 import { publish as publishEvent } from "../events.js";
 import { discussionContext } from "./queries.js";
+import { readMemoryMode } from "../chatContext.js";
 
 // `/discussions` mirrors the cloud's chat-history surface. The RN app
 // hits this on chat boot to render the recent-conversations drawer
@@ -33,6 +34,7 @@ export async function mayReachHistory(req: FastifyRequest, auth: { sessionId?: s
 export async function discussionRoutes(app: FastifyInstance) {
   await deleteDiscussion(app);
   await importDiscussion(app);
+  await patchDiscussion(app);
   app.get<{
     Querystring: { q?: string; limit?: string; before?: string };
   }>("/discussions", {
@@ -124,6 +126,7 @@ export async function discussionRoutes(app: FastifyInstance) {
           title:            row.title ?? null,
           channel:          row.channel,
           vault_id:         row.vaultId ?? null,
+          memory_mode:      readMemoryMode(row.memoryMode),
           created_at:       row.createdAt.toISOString(),
           last_activity_at: row.lastActivityAt.toISOString(),
         })),
@@ -175,11 +178,16 @@ export async function discussionRoutes(app: FastifyInstance) {
       // A compaction: where its summary stops, and what the model is given
       // of the conversation now (the gauge under the composer).
       const context = discussionContext(auth.userId, discussion.id);
+      // Which memories an answer was given is the person's to read (like
+      // /memories): counted for anyone else, not listed.
+      const listsMemories = rows.some((row) => row.memoryJson) && (await mayReachHistory(req, auth));
       reply.send({
         id:               discussion.id,
         title:            discussion.title ?? null,
         channel:          discussion.channel,
         vault_id:         discussion.vaultId ?? null,
+        // Its own memory mode (Mémoire v2); null follows the person's (/me).
+        memory_mode:      readMemoryMode(discussion.memoryMode),
         summary:          context.summary,
         summary_through:  context.summaryThrough,
         context_tokens_estimate: context.tokensEstimate,
@@ -199,9 +207,45 @@ export async function discussionRoutes(app: FastifyInstance) {
           tokens_estimated: row.tokensEstimated ?? null,
           // Which of the account's computers wrote it (router/, /queries).
           answered_by: parseAnsweredBy(row.answeredByJson),
+          // What an answer was given of the memories (/queries final.memory).
+          memory:     memoryOf(row.memoryJson, listsMemories),
           created_at: row.createdAt.toISOString(),
         })),
       });
+    },
+  });
+}
+
+/// A conversation's memory mode (Mémoire v2, L4a): « Complète » ("full"),
+/// « Profil seulement » ("profile"), « Aucune » ("none"), or null to follow
+/// the person's (/me). Its next turn freezes the memories again for it.
+async function patchDiscussion(app: FastifyInstance) {
+  app.patch<{ Params: { id: string }; Body: { memory_mode?: unknown } }>("/discussions/:id", {
+    schema: {
+      tags: ["session"],
+      summary: "Change a discussion's memory mode",
+      security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
+      params: { type: "object", required: ["id"], properties: { id: { type: "string" } } },
+      body: { type: "object", properties: { memory_mode: { type: ["string", "null"] } } },
+    },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      const [owned] = db
+        .select({ id: discussions.id, vaultId: discussions.vaultId, memoryMode: discussions.memoryMode })
+        .from(discussions)
+        .where(and(eq(discussions.id, req.params.id), eq(discussions.userId, auth.userId)))
+        .limit(1)
+        .all();
+      if (!owned || (owned.vaultId && !(await mayReachHistory(req, auth)))) return reply.code(404).send({ error: "not_found" });
+      const body = req.body ?? {};
+      let memoryMode = readMemoryMode(owned.memoryMode);
+      if ("memory_mode" in body) {
+        if (body.memory_mode !== null && !readMemoryMode(body.memory_mode)) return reply.code(422).send({ error: "invalid_memory_mode" });
+        memoryMode = readMemoryMode(body.memory_mode);
+        db.update(discussions).set({ memoryMode }).where(eq(discussions.id, owned.id)).run();
+      }
+      reply.send({ id: owned.id, memory_mode: memoryMode });
     },
   });
 }
@@ -385,6 +429,21 @@ export function deleteVaultConversation(userId: string, vaultId: string): number
     publishEvent({ kind: "discussion.touched", userId, discussionId: row.id, lastActivityAt: new Date().toISOString() });
   }
   return rows.length;
+}
+
+function parseJson(json: string | null): unknown {
+  if (!json) return null;
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function memoryOf(json: string | null, listed: boolean): unknown {
+  const memory = parseJson(json);
+  if (!memory || typeof memory !== "object" || listed) return memory;
+  return { ...(memory as Record<string, unknown>), items: [] };
 }
 
 function parseAnsweredBy(json: string | null): unknown {
