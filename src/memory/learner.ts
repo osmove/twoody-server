@@ -111,7 +111,7 @@ export function learningPrompt(lines: Array<{ role: "person" | "assistant"; cont
         "- Only from PERSON lines. ASSISTANT lines are context: never take a fact from them, even one the person does not contradict, and never mix one into a fact the person says.\n" +
         "- EARLIER, when given, was read already: take no fact from it, only who « he », « they », « il », « ils » are in CONVERSATION (« et ils se sont mariés en 2019 » after « David est marié à Dafna » → « David et Dafna se sont mariés en 2019 »).\n" +
         "- The people in their life count too: a relative's or a colleague's name, what happens to them (« Son collègue Paul a eu une fille, Lina »).\n" +
-        "- Not questions, hypotheses, wishes, plans that may not happen, today's mood or task, facts about the world.\n" +
+        "- Not questions, hypotheses, wishes, plans that may not happen, today's mood or task, facts about the world, nor a one-off happening (« Pixel a renversé mon verre hier soir », a delay, a spill): only what will still be true in months.\n" +
         "- Not what KNOWN already says. When the person changes a KNOWN fact, give the new fact and set \"supersedes\" to its ref. A fact that adds to a KNOWN one without contradicting it (a date, a detail) supersedes nothing.\n" +
         "- When the person corrects themselves, only the corrected fact.\n" +        "- Never guess what is not said: who someone is, an animal's species, a relation, a date.\n" +
         "- text: one short sentence about the person, in the language the PERSON writes in, never translated (« A une fille, Léa, 7 ans », « Préfère des réponses courtes »). About someone else, name them: « David travaille chez Check Point », never « Travaille chez Check Point ».\n" +
