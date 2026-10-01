@@ -136,7 +136,14 @@ test("each answer leaves a trace: the documents decision, the tools offered and 
   assert.equal((await app.inject({ url: "/diagnostics/turns" })).statusCode, 401);
 
   const { telemetryOf } = await import("../src/diagnostics/traces.js");
-  const shared = JSON.stringify(telemetryOf(trace));
-  assert.doesNotMatch(shared, /électricité|facture|Combien/, "nothing the person wrote");
-  assert.match(shared, /search_documents/);
+  const flat = telemetryOf(trace);
+  assert.ok(Object.values(flat).every((value) => ["string", "number", "boolean"].includes(typeof value)) && Object.keys(flat).length <= 40);
+  assert.doesNotMatch(JSON.stringify(flat), /électricité|facture|Combien/, "nothing the person wrote");
+  assert.equal(flat.tool_names, "search_documents");
+  assert.equal(flat.documents_decision, "tool");
+  const sent = (await app.inject({ url: "/diagnostics/telemetry?after=0", headers })).json();
+  assert.ok(sent.events.length >= 1);
+  assert.equal(sent.events[0].name, "assistant_turn");
+  assert.doesNotMatch(JSON.stringify(sent), /électricité|facture|Combien|dîner/);
+  assert.equal((await app.inject({ url: `/diagnostics/telemetry?after=${sent.next}`, headers })).json().events.length, 0, "sent once");
 });

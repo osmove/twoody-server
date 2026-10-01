@@ -91,16 +91,56 @@ export function traceOfMessage(userId: string, messageId: string): TraceRow | nu
 }
 
 /// What a trace says without anything the person wrote: names, counts,
-/// sizes, durations, model ids, outcomes. The part that could be shared,
-/// one day, on the person's say (never the arguments, texts or titles).
-export function telemetryOf(row: TraceRow): Record<string, unknown> {
-  const detail = row.detail;
-  const calls = Array.isArray(detail.tool_calls) ? (detail.tool_calls as ToolCallTrace[]) : [];
+/// sizes, durations, model ids, outcomes — flat, at most 40 values (the
+/// account's app analytics take no more, twoody-backend
+/// AppAnalytics::EventIngestor). Shared only when the person ticks
+/// « Partager des diagnostics » (off by default); never the arguments,
+/// texts, titles, file or folder names.
+export function telemetryOf(row: TraceRow): Record<string, string | number | boolean> {
+  const detail = row.detail as Record<string, any>;
+  const out: Record<string, string | number | boolean | null | undefined> = {
+    model: row.model, outcome: row.outcome, error: row.error ? row.error.split(":")[0] : null, total_ms: row.total_ms,
+  };
+  if (row.kind === "chat") {
+    const calls = Array.isArray(detail.tool_calls) ? (detail.tool_calls as ToolCallTrace[]) : [];
+    Object.assign(out, {
+      provider: detail.provider, routed: detail.computer?.routed ?? detail.routing, effort: detail.effort, channel: detail.channel,
+      memory_mode: detail.memory_mode, memory_retrieval: detail.memory?.retrieval, memory_retrieval_ms: detail.memory?.retrieval_ms,
+      memory_profile_tokens: detail.memory?.profile_tokens, memory_relevant_tokens: detail.memory?.relevant_tokens, memory_items: detail.memory?.items,
+      documents_mode: detail.documents?.mode, documents_decision: detail.documents?.decision, documents_reason: detail.documents?.reason,
+      documents_passages: detail.documents?.passages, documents_files: detail.documents?.files, documents_ms: detail.timings?.documents_ms,
+      tools_offered: Array.isArray(detail.tools_offered) ? detail.tools_offered.join(",") : null,
+      tool_calls: calls.length, tool_names: calls.map((call) => call.name).join(","), tool_ms: calls.reduce((sum, call) => sum + (call.ms || 0), 0),
+      tool_passages: calls.reduce((sum, call) => sum + (call.passages || 0), 0), tool_errors: calls.filter((call) => call.error).length,
+      prompt_messages: detail.prompt?.messages, prompt_system_chars: detail.prompt?.system_chars, prompt_history_chars: detail.prompt?.history_chars,
+      prompt_last_chars: detail.prompt?.last_chars, prompt_excerpts_chars: detail.prompt?.excerpts_chars, prompt_remembered: detail.prompt?.remembered,
+      tokens_prompt: detail.tokens?.prompt, tokens_cached: detail.tokens?.cached, tokens_completion: detail.tokens?.completion, tokens_estimated: detail.tokens?.estimated,
+      prompt_ms: detail.tokens?.prompt_ms, generation_ms: detail.tokens?.generation_ms, ttft_ms: detail.timings?.ttft_ms, answer_ms: detail.timings?.answer_ms,
+      attempts_failed: Array.isArray(detail.attempts) ? detail.attempts.length : 0,
+    });
+  } else if (row.kind === "learn") {
+    const dropped = Array.isArray(detail.dropped) ? (detail.dropped as Array<{ reason: string }>) : [];
+    Object.assign(out, {
+      person_lines: detail.lines?.person, known: detail.lines?.known, facts: detail.facts,
+      saved: Array.isArray(detail.saved) ? detail.saved.length : 0, proposed: Array.isArray(detail.proposed) ? detail.proposed.length : 0,
+      dropped: dropped.length, dropped_reasons: [...new Set(dropped.map((entry) => entry.reason))].join(","),
+      projects_proposed: Array.isArray(detail.projects?.proposed) ? detail.projects.proposed.length : 0,
+      projects_dropped: Array.isArray(detail.projects?.dropped) ? detail.projects.dropped.length : 0,
+    });
+  } else if (row.kind === "warm") {
+    Object.assign(out, { system_chars: detail.system_chars, tools: Array.isArray(detail.tools) ? detail.tools.join(",") : null });
+  }
+  return Object.fromEntries(Object.entries(out).filter((entry): entry is [string, string | number | boolean] => entry[1] !== null && entry[1] !== undefined && entry[1] !== "").slice(0, 40));
+}
+
+/// Traces after a point, oldest first, as the account's app analytics take
+/// them (events of « assistant_turn », « assistant_learning »,
+/// « assistant_warmup »).
+export function telemetrySince(userId: string, after: number, limit = 50) {
+  const rows = (sqlite.prepare("SELECT * FROM turn_traces WHERE user_id = ? AND at > ? ORDER BY at LIMIT ?").all(userId, after, Math.min(50, Math.max(1, limit))) as Array<Record<string, unknown>>).map(rowOf);
+  const names: Record<string, string> = { chat: "assistant_turn", learn: "assistant_learning", warm: "assistant_warmup" };
   return {
-    at: row.at, kind: row.kind, model: row.model, outcome: row.outcome, error: row.error, total_ms: row.total_ms,
-    provider: detail.provider ?? null, routed: detail.routed ?? null, effort: detail.effort ?? null,
-    memory_mode: detail.memory_mode ?? null, documents: detail.documents ?? null,
-    tools_offered: detail.tools_offered ?? [], tool_calls: calls.map(({ name, round, ms, result_chars, passages, error }) => ({ name, round, ms, result_chars, passages, error })),
-    prompt: detail.prompt ?? null, timings: detail.timings ?? null, tokens: detail.tokens ?? null,
+    events: rows.map((row) => ({ event_uuid: row.id, name: names[row.kind] ?? `assistant_${row.kind}`, occurred_at: row.at, metadata: telemetryOf(row) })),
+    next: rows.length ? Date.parse(rows.at(-1)!.at) : after,
   };
 }
