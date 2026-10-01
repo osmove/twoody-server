@@ -11,7 +11,9 @@
 set -euo pipefail
 
 REMOTE_HOST="${TWOODY_PI_HOST:-twoody-pi}"
-REMOTE_SRC="/home/pi/.twoody/data/"
+# The server the Pi runs today (the twoody-next service) keeps its data
+# here; the older ~/.twoody/data belongs to the server it replaced.
+REMOTE_SRC="${TWOODY_PI_DATA:-/home/pi/twoody-next/data/}"
 BACKUP_ROOT="$HOME/Library/Twoody/backups"
 TIMESTAMP=$(date +%Y%m%dT%H%M%S)
 LATEST="$BACKUP_ROOT/latest"
