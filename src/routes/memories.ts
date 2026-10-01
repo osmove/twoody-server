@@ -7,7 +7,8 @@ import { isPersonOrOwner } from "../sessionTrust.js";
 import { meshRoster } from "../vault/roster.js";
 import { factsFromImport, importAccountMemories, importMemories, IMPORT_SOURCES, MAX_ACCOUNT_MEMORIES, type AccountMemory, type ImportSource } from "../memoryLearning.js";
 import { memoryDeleted, memoryWritten, newMemoryId, possibleDuplicates } from "../vault/memories.js";
-import { acceptCandidate, CandidateError, learnDiscussion, listCandidates, pendingDiscussions, rejectCandidate, type LearnResult } from "../memory/learner.js";
+import { acceptCandidate, CandidateError, learnDiscussion, listCandidates, pendingDiscussions, rejectCandidate, takeMemoryNews, type LearnResult } from "../memory/learner.js";
+import { dismissPair, similarMemories } from "../memory/similar.js";
 
 // Cloud-shape /memories CRUD against the local SQLite store. Wire
 // shape mirrors `app/views/memories/_memory.json.jbuilder` on Rails:
@@ -149,6 +150,43 @@ export async function memoryRoutes(app: FastifyInstance) {
     },
   });
 
+  // What was learned from the conversations and not told yet: told once
+  // (« Twoody a retenu 2 choses de votre conversation précédente »).
+  app.get<{ Querystring: { except?: string } }>("/memories/news", {
+    schema: { tags: ["memories"], summary: "What Twoody learned and has not said yet", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
+      const except = typeof req.query.except === "string" && req.query.except ? req.query.except : null;
+      reply.send({ notices: takeMemoryNews(auth.userId, except), candidates: listCandidates(auth.userId).length });
+    },
+  });
+
+  // « Doublons possibles » (src/memory/similar.ts).
+  app.get("/memories/similar", {
+    schema: { tags: ["memories"], summary: "Pairs of memories that say much the same", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
+      reply.send({ pairs: similarMemories(auth.userId) });
+    },
+  });
+
+  app.post<{ Body: { ids?: unknown } | null }>("/memories/similar/dismiss", {
+    schema: { tags: ["memories"], summary: "These two memories differ: never shown as a pair again", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
+      const ids = Array.isArray(req.body?.ids) ? req.body!.ids.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 64) : [];
+      if (ids.length !== 2 || ids[0] === ids[1]) return reply.code(422).send({ error: "two_ids_required" });
+      dismissPair(auth.userId, ids[0]!, ids[1]!);
+      reply.code(204).send();
+    },
+  });
+
   // Learn now from one conversation, or from every one with something new,
   // without waiting for them to be idle (the memory bench; a client that
   // closes a conversation).
@@ -215,8 +253,10 @@ export async function memoryRoutes(app: FastifyInstance) {
         .select()
         .from(memories)
         .where(and(...filters))
-        .orderBy(desc(memories.updatedAt), desc(memories.createdAt))
-        .limit(200)
+        // Newest first, by when it was learned or written: an import keeps
+        // each memory's own date.
+        .orderBy(desc(memories.createdAt), desc(memories.updatedAt))
+        .limit(1000)
         .all();
 
       reply.send(rows.map(serialize));

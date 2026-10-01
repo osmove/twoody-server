@@ -241,3 +241,38 @@ test("a new conversation: the one before is read once the computer answers nothi
     learner.setLearningModel(null);
   }
 });
+
+test("what was learned is told: in its conversation, and once in the next one", async () => {
+  const id = conversation([{ role: "user", content: "Je fais de l'escalade le jeudi." }]);
+  await learnDiscussion(id, { ask: async () => answer(
+    fact("Fait de l'escalade le jeudi", "Je fais de l'escalade le jeudi", { category: "habit", confidence: 0.9 }),
+    fact("Fait peut-être un stage en mai", "Je fais de l'escalade le jeudi", { category: "date", confidence: 0.6 }),
+  ) });
+  const opened = (await app.inject({ url: `/discussions/${id}`, headers })).json();
+  assert.equal(opened.memory_notices.length, 1);
+  assert.deepEqual(opened.memory_notices[0].saved.map((m: { content: string }) => m.content), ["Fait de l'escalade le jeudi"]);
+  assert.equal(opened.memory_notices[0].proposed, 1);
+
+  const news = (await app.inject({ url: "/memories/news?except=another", headers })).json();
+  const mine = news.notices.find((n: { discussion_id: string }) => n.discussion_id === id);
+  assert.ok(mine, "told in the next conversation");
+  assert.ok(news.candidates >= 1);
+  const again = (await app.inject({ url: "/memories/news", headers })).json();
+  assert.ok(!again.notices.some((n: { discussion_id: string }) => n.discussion_id === id), "once");
+  assert.equal((await app.inject({ url: `/discussions/${id}`, headers })).json().memory_notices.length, 1, "the conversation keeps saying it");
+});
+
+test("« Doublons possibles »: the same fact said twice, by its words without vectors; a pair said to differ is not shown again", async () => {
+  const put = (id: string, content: string, days: number) => db.insert(memories).values({ id, userId, kind: "user", title: null, content, tagsJson: "[]", source: "import", sourceRef: "claude", createdAt: new Date(Date.now() - days * 86_400_000), updatedAt: new Date() }).run();
+  put("dup-a", "Jimmy préfère les e-mails professionnels sans icônes.", 40);
+  put("dup-b", "Dans les e-mails professionnels, Jimmy préfère sans icônes.", 1);
+  put("dup-c", "Jimmy joue au padel le dimanche.", 3);
+  const pairs = (await app.inject({ url: "/memories/similar", headers })).json().pairs as Array<{ by: string; memories: Array<{ id: string }> }>;
+  const pair = pairs.find((p) => p.memories.some((m) => m.id === "dup-a"))!;
+  assert.deepEqual(pair.memories.map((m) => m.id), ["dup-a", "dup-b"], "the older first");
+  assert.equal(pair.by, "words");
+  assert.ok(!pairs.some((p) => p.memories.some((m) => m.id === "dup-c")));
+  assert.equal((await app.inject({ method: "POST", url: "/memories/similar/dismiss", headers, payload: { ids: ["dup-b", "dup-a"] } })).statusCode, 204);
+  assert.ok(!(await app.inject({ url: "/memories/similar", headers })).json().pairs.some((p: { memories: Array<{ id: string }> }) => p.memories.some((m) => m.id === "dup-a")));
+  assert.equal((await app.inject({ method: "POST", url: "/memories/similar/dismiss", headers, payload: { ids: ["dup-a"] } })).statusCode, 422);
+});

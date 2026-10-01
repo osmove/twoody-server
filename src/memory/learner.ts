@@ -345,6 +345,10 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
       const id = proposeLearned(row.user_id, fact, row.id, options.now ?? Date.now());
       if (id) result.proposed.push(id);
     }
+    if (result.saved.length || result.proposed.length) {
+      sqlite.prepare("INSERT INTO memory_notices (id, user_id, discussion_id, saved_json, proposed, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(randomUUID(), row.user_id, row.id, JSON.stringify(result.saved), result.proposed.length, options.now ?? Date.now());
+    }
     advance();
     return result;
   } finally {
@@ -559,4 +563,49 @@ export function startLearning(options: { firstTickMs?: number } = {}) {
 /// One pass now (tests).
 export async function learnPendingNow(now?: number) {
   await runOnce(now);
+}
+
+// ── Telling the person ─────────────────────────────────────────────────
+// « Mémoire mise à jour » in the conversation a memory came from, and
+// « Twoody a retenu 2 choses de votre conversation précédente » once, in
+// the next one (Jimmy, 01/10/2026: like ChatGPT and Claude).
+
+export interface MemoryNotice {
+  id: string;
+  discussion_id: string;
+  discussion_title: string | null;
+  /// What was kept, as it reads now (a memory deleted since is left out).
+  saved: Array<{ id: string; content: string }>;
+  /// How many went to « À confirmer ».
+  proposed: number;
+  created_at: string;
+}
+
+function readNotices(rows: Array<{ id: string; discussion_id: string; title: string | null; saved_json: string; proposed: number; created_at: number }>, userId: string): MemoryNotice[] {
+  const content = sqlite.prepare("SELECT content FROM memories WHERE id = ? AND user_id = ?");
+  return rows.map((row) => {
+    let ids: string[] = [];
+    try { ids = JSON.parse(row.saved_json); } catch { /* none */ }
+    const saved = ids.flatMap((id) => {
+      const memory = content.get(id, userId) as { content: string } | undefined;
+      return memory ? [{ id, content: memory.content }] : [];
+    });
+    return { id: row.id, discussion_id: row.discussion_id, discussion_title: row.title, saved, proposed: row.proposed, created_at: new Date(row.created_at).toISOString() };
+  }).filter((notice) => notice.saved.length || notice.proposed);
+}
+
+/// What was learned from this conversation, oldest first.
+export function noticesOf(userId: string, discussionId: string): MemoryNotice[] {
+  return readNotices(sqlite.prepare(`SELECT n.id, n.discussion_id, d.title, n.saved_json, n.proposed, n.created_at FROM memory_notices n
+    LEFT JOIN discussions d ON d.id = n.discussion_id WHERE n.user_id = ? AND n.discussion_id = ? ORDER BY n.created_at`).all(userId, discussionId) as never, userId);
+}
+
+/// What was learned and not told yet — told now, once, whichever device
+/// asks first. `except`: the conversation open (it says so itself).
+export function takeMemoryNews(userId: string, except: string | null = null): MemoryNotice[] {
+  const rows = sqlite.prepare(`SELECT n.id, n.discussion_id, d.title, n.saved_json, n.proposed, n.created_at FROM memory_notices n
+    LEFT JOIN discussions d ON d.id = n.discussion_id WHERE n.user_id = ? AND n.announced = 0 AND n.discussion_id IS NOT ? ORDER BY n.created_at LIMIT 20`).all(userId, except) as Array<{ id: string }>;
+  const mark = sqlite.prepare("UPDATE memory_notices SET announced = 1 WHERE id = ?");
+  for (const row of rows) mark.run(row.id);
+  return readNotices(rows as never, userId);
 }

@@ -217,3 +217,11 @@ test("someone who may not read the memories is told how much was given, not whic
   const owner = (await app.inject({ url: `/discussions/${turn.final.discussion_id}`, headers })).json();
   assert.equal(owner.messages.at(-1).memory.items.length, 1, "the owner reads them");
 });
+
+test("« Retiens que… »: the answer says it was kept, or already known (« Mémoire enregistrée »)", async () => {
+  const first = await ask({ text: "Retiens que je joue du violoncelle.", force_new_discussion: true });
+  assert.deepEqual(first.final.remembered, { content: "Je joue du violoncelle", added: true });
+  const again = await ask({ text: "Retiens que je joue du violoncelle", force_new_discussion: true });
+  assert.deepEqual(again.final.remembered, { content: "Je joue du violoncelle", added: false });
+  assert.equal((await ask({ text: "Bonjour", force_new_discussion: true })).final.remembered, undefined);
+});

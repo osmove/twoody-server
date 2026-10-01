@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { requireAuth } from "../auth.js";
 import { ownerRequest } from "../localAccess.js";
+import { noticesOf } from "../memory/learner.js";
 import { isPersonOrOwner } from "../sessionTrust.js";
 import { meshRoster } from "../vault/roster.js";
 import { db, discussions, messages, sqlite } from "../db.js";
@@ -188,6 +189,8 @@ export async function discussionRoutes(app: FastifyInstance) {
         vault_id:         discussion.vaultId ?? null,
         // Its own memory mode (Mémoire v2); null follows the person's (/me).
         memory_mode:      readMemoryMode(discussion.memoryMode),
+        // What was learned from it (« Mémoire mise à jour »): the person's.
+        memory_notices:   (await mayReachHistory(req, auth)) ? noticesOf(auth.userId, discussion.id) : [],
         summary:          context.summary,
         summary_through:  context.summaryThrough,
         context_tokens_estimate: context.tokensEstimate,

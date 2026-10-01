@@ -1210,6 +1210,27 @@ sqlite.exec(`
       decided_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_memory_candidates_user ON memory_candidates (user_id, status);
+    -- What the learner kept or proposed from a conversation: shown in that
+    -- conversation (« Mémoire mise à jour ») and, once, in the next one.
+    CREATE TABLE IF NOT EXISTS memory_notices (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      discussion_id TEXT NOT NULL,
+      saved_json TEXT NOT NULL DEFAULT '[]',
+      proposed INTEGER NOT NULL DEFAULT 0,
+      announced INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_notices_discussion ON memory_notices (discussion_id);
+    CREATE INDEX IF NOT EXISTS idx_memory_notices_user ON memory_notices (user_id, announced);
+    -- « Ce n'est pas la même chose »: pairs of memories the person said differ.
+    CREATE TABLE IF NOT EXISTS memory_pairs_dismissed (
+      user_id TEXT NOT NULL,
+      a TEXT NOT NULL,
+      b TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, a, b)
+    );
   `);
 }
 

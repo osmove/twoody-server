@@ -521,7 +521,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // « Retiens que… »: kept before the answer, so that it can say so.
     const learning = memoryMode !== "none" && access.mode !== "only";
     const remembered = learning ? askedToRemember(typedText(content)) : null;
-    if (remembered) rememberFacts(auth.userId, [remembered], vaultRef ?? null);
+    // « Mémoire enregistrée » under the answer; « déjà en mémoire » when known.
+    const rememberedAdded = remembered ? rememberFacts(auth.userId, [remembered], vaultRef ?? null) > 0 : false;
     // Passages from the user's own documents that match this prompt.
     // The model sees them numbered; the client gets the same list to
     // resolve the [1], [2]… the reply cites.
@@ -841,6 +842,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       answered_by:  answeredByComputer,
       // What it was given of the memories: the footer « mémoire : 420 tokens ».
       memory:       memoryShown,
+      ...(remembered ? { remembered: { content: remembered, added: rememberedAdded } } : {}),
       // Which of the person's computers were searched, and the ones left
       // out (late, offline…): the client can say it.
       documents:    {
