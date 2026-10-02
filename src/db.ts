@@ -233,6 +233,10 @@ export const messages = sqliteTable("messages", {
   // byte and the runtime reuses its cache (chatContext.ts). Never sent to
   // a client.
   sentContent: text("sent_content"),
+  // How a question was put: « recording » when said (the phone's
+  // microphone), else typed — kept so the conversation shows it again
+  // (Jimmy, 02/10/2026: the microphones were gone once reloaded).
+  channel: text("channel"),
   // What an answer cost, as the runtime counted it (estimated when it did
   // not say), and who asked: « iPhone », a device's name, or
   // « this-computer » — the Devices screen's usage (28/09/2026).
@@ -915,7 +919,7 @@ if (!messageColumns.some((column) => column.name === "reasoning_ms")) {
 if (!messageColumns.some((column) => column.name === "vault_ref")) {
   sqlite.exec("ALTER TABLE messages ADD COLUMN vault_ref TEXT");
 }
-for (const [name, type] of [["prompt_tokens", "INTEGER"], ["completion_tokens", "INTEGER"], ["tokens_estimated", "INTEGER"], ["client", "TEXT"], ["answered_by_json", "TEXT"], ["sent_content", "TEXT"]] as const) {
+for (const [name, type] of [["prompt_tokens", "INTEGER"], ["completion_tokens", "INTEGER"], ["tokens_estimated", "INTEGER"], ["client", "TEXT"], ["answered_by_json", "TEXT"], ["sent_content", "TEXT"], ["channel", "TEXT"]] as const) {
   if (!messageColumns.some((column) => column.name === name)) sqlite.exec(`ALTER TABLE messages ADD COLUMN ${name} ${type}`);
 }
 

@@ -101,3 +101,15 @@ test("a model without its vision file: « vision_unavailable », with the model"
   assert.equal(said.error, "vision_unavailable");
   assert.equal(said.model, "gemma");
 });
+
+test("a question said aloud keeps it: the conversation shows its microphone again once reloaded", async () => {
+  const response = await ask({ text: "Que sais-tu de moi ?", channel: "recording" });
+  assert.equal(response.statusCode, 200, response.body);
+  const final = response.body.split("\n\n").find((block) => block.startsWith("event: final"))!;
+  const id = JSON.parse(final.slice(final.indexOf("data: ") + 6)).discussion_id;
+  const opened = (await app.inject({ url: `/discussions/${id}`, headers })).json();
+  assert.equal(opened.messages[0].channel, "recording");
+  const typed = await ask({ text: "Bonjour" });
+  const typedId = JSON.parse(typed.body.split("\n\n").find((block) => block.startsWith("event: final"))!.split("data: ")[1]!).discussion_id;
+  assert.equal((await app.inject({ url: `/discussions/${typedId}`, headers })).json().messages[0].channel, "desktop");
+});

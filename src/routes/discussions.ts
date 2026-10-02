@@ -225,6 +225,8 @@ export async function discussionRoutes(app: FastifyInstance) {
           tokens_estimated: row.tokensEstimated ?? null,
           // Which of the account's computers wrote it (router/, /queries).
           answered_by: parseAnsweredBy(row.answeredByJson),
+          // « recording » for a question said aloud.
+          channel:    row.channel ?? null,
           // What an answer was given of the memories (/queries final.memory).
           memory:     memoryOf(row.memoryJson, listsMemories),
           created_at: row.createdAt.toISOString(),
@@ -369,6 +371,8 @@ export type ImportedTurn = {
   /// Kept with the reply when the vault carries them (src/vault/sync.ts): who
   /// answered, and the excerpts it cited (never a path).
   answered_by?: unknown; sources?: unknown[];
+  /// « recording » for a question said aloud.
+  channel?: unknown;
 };
 export type ImportBody = { vault_id: string; discussion_id?: string; title?: string; turns: ImportedTurn[] };
 
@@ -419,7 +423,9 @@ export function importVaultConversation(userId: string, body: ImportBody): { err
       const at = Math.floor((Date.parse(turn.created_at ?? "") || Date.now()) / 1000);
       const sources = Array.isArray(turn.sources) && turn.sources.length > 0 ? JSON.stringify(turn.sources.slice(0, 12)) : null;
       const answeredBy = turn.answered_by && typeof turn.answered_by === "object" ? JSON.stringify(turn.answered_by) : null;
-      insert.run(generateId(), id, userId, "user", turn.text, null, null, turn.ref, at, null, null);
+      const questionId = generateId();
+      insert.run(questionId, id, userId, "user", turn.text, null, null, turn.ref, at, null, null);
+      if (turn.channel === "recording") sqlite.prepare("UPDATE messages SET channel = 'recording' WHERE id = ?").run(questionId);
       insert.run(generateId(), id, userId, "assistant", turn.reply, "vault", turn.model ?? null, `${turn.ref}#reply`, at, sources, answeredBy);
       known.add(turn.ref);
       latest = Math.max(latest, at);

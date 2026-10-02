@@ -453,6 +453,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     provider:     null,
     model:        null,
     vaultRef,
+    channel,
   });
   const wasNewDiscussion = !discussion.title;
   if (wasNewDiscussion) {
@@ -2382,6 +2383,7 @@ function insertMessage(args: {
   client?: string | null;
   answeredBy?: AnsweredBy | null;
   memory?: MemoryUsage | null;
+  channel?: string | null;
 }): string {
   const id = generateId();
   db.insert(messages)
@@ -2401,6 +2403,7 @@ function insertMessage(args: {
       completionTokens: args.usage?.completion_tokens ?? null,
       tokensEstimated:  args.usage ? args.usage.estimated === true : null,
       client:       args.client ?? null,
+      channel:      args.channel && /^[a-z_]{1,20}$/.test(args.channel) ? args.channel : null,
       answeredByJson: args.answeredBy ? JSON.stringify(args.answeredBy) : null,
       memoryJson:   args.memory ? JSON.stringify(args.memory) : null,
       createdAt:    new Date(),

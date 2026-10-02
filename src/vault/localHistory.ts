@@ -34,7 +34,7 @@ export function sqliteHistory(userId: string): LocalHistory {
     // from the vault or inlined by a client as prior_turns is answered
     // « vault »: it is context, never sealed again as this computer's).
     turn(discussionId, ref) {
-      const questions = sqlite.prepare("SELECT content, created_at FROM messages WHERE discussion_id = ? AND role = 'user' AND vault_ref = ? ORDER BY rowid LIMIT 2").all(discussionId, ref) as Array<{ content: string; created_at: number }>;
+      const questions = sqlite.prepare("SELECT content, created_at, channel FROM messages WHERE discussion_id = ? AND role = 'user' AND vault_ref = ? ORDER BY rowid LIMIT 2").all(discussionId, ref) as Array<{ content: string; created_at: number; channel: string | null }>;
       const answers = sqlite.prepare("SELECT content, model, provider, sources_json, answered_by_json FROM messages WHERE discussion_id = ? AND role = 'assistant' AND vault_ref = ? ORDER BY rowid LIMIT 2").all(discussionId, `${ref}#reply`) as Array<{ content: string; model: string | null; provider: string | null; sources_json: string | null; answered_by_json: string | null }>;
       if (questions.length !== 1 || answers.length !== 1) return null;
       const [question, answer] = [questions[0]!, answers[0]!];
@@ -48,6 +48,7 @@ export function sqliteHistory(userId: string): LocalHistory {
         created_at: new Date(Number(question.created_at) * 1000).toISOString(),
         sources: Array.isArray(sources) ? sources : [],
         answered_by: parse(answer.answered_by_json),
+        ...(question.channel === "recording" ? { channel: "recording" } : {}),
       };
     },
   };

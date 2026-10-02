@@ -35,10 +35,12 @@ export type Turn = {
   ref: string; text: string; reply: string; model?: string | null; host?: string | null; sources?: unknown[]; created_at?: string;
   /// Which computer wrote the reply (src/routes/queries.ts AnsweredBy). Older readers ignore it.
   answered_by?: unknown;
+  /// « recording » for a question said aloud. Older readers ignore it.
+  channel?: string;
 };
-type StoredTurn = { ref: string; text: string; reply: string; model: string | null; host: string | null; sources: unknown[]; created_at: string; answered_by?: unknown };
+type StoredTurn = { ref: string; text: string; reply: string; model: string | null; host: string | null; sources: unknown[]; created_at: string; answered_by?: unknown; channel?: string };
 /// An event's decrypted payload: a turn, a title or a tombstone, read field by field.
-type Payload = { ref?: unknown; text?: unknown; reply?: unknown; model?: string | null; host?: string | null; sources?: unknown; created_at?: string; title?: unknown; deleted?: boolean; answered_by?: unknown } | null | undefined;
+type Payload = { ref?: unknown; text?: unknown; reply?: unknown; model?: string | null; host?: string | null; sources?: unknown; created_at?: string; title?: unknown; deleted?: boolean; answered_by?: unknown; channel?: unknown } | null | undefined;
 type Cache = { cursor: number; conversations: Record<string, { id: string; title: string | null; turns: Record<string, StoredTurn>; deleted: boolean; updated_at: string }> };
 const emptyCache = (): Cache => ({ cursor: 0, conversations: {} });
 
@@ -126,6 +128,7 @@ export function createVaultSync({ api, epochKeys, userId, store, random = system
         model: payload.model || null, host: payload.host || null, sources: Array.isArray(payload.sources) ? payload.sources.slice(0, 12) : [],
         created_at: payload.created_at || createdAt,
         ...(payload.answered_by && typeof payload.answered_by === "object" ? { answered_by: payload.answered_by } : {}),
+        ...(payload.channel === "recording" ? { channel: "recording" } : {}),
       };
       if (!conversation.title) conversation.title = String(payload.text || "").slice(0, 60) || null;
     }
@@ -149,6 +152,7 @@ export function createVaultSync({ api, epochKeys, userId, store, random = system
     ref: String(turn.ref), text: turn.text, reply: turn.reply, model: turn.model || null, host: turn.host || null,
     sources: turn.sources || [], created_at: turn.created_at || now(),
     ...(turn.answered_by ? { answered_by: turn.answered_by } : {}),
+    ...(turn.channel === "recording" ? { channel: "recording" } : {}),
   });
   const recordTitle = (conversationId: string, title: string) => enqueue(conversationId, "title", `title:${now()}`, { title });
   const deleteConversation = (conversationId: string) => enqueue(conversationId, "tombstone", "tombstone", { deleted: true });
@@ -280,7 +284,7 @@ export type VaultSync = ReturnType<typeof createVaultSync>;
 /// What the sync needs of this server's discussions (src/vault/localHistory.ts
 /// over SQLite; a stand-in in tests).
 export interface LocalHistory {
-  import(body: { vault_id: string; title?: string; turns: Array<{ ref: string; text: string; reply: string; model?: string | null; created_at?: string; answered_by?: unknown; sources?: unknown[] }> }): { id: string; added: number; created: boolean } | { error: string };
+  import(body: { vault_id: string; title?: string; turns: Array<{ ref: string; text: string; reply: string; model?: string | null; created_at?: string; answered_by?: unknown; sources?: unknown[]; channel?: string }> }): { id: string; added: number; created: boolean } | { error: string };
   deleteByVaultId(vaultId: string): number;
   /// The discussion holding this vault conversation, and the refs it has.
   byVaultId(vaultId: string): { id: string; refs: Set<string> } | null;
@@ -288,7 +292,7 @@ export interface LocalHistory {
   vaultIdOf(discussionId: string): string | null;
   /// One exchange of a discussion that this computer answered itself, by its
   /// question's vault ref: null when it has none, several, or one imported.
-  turn(discussionId: string, ref: string): { text: string; reply: string; model: string | null; created_at: string; sources: unknown[]; answered_by: unknown } | null;
+  turn(discussionId: string, ref: string): { text: string; reply: string; model: string | null; created_at: string; sources: unknown[]; answered_by: unknown; channel?: string } | null;
 }
 
 /// A source as it may leave this computer: what a citation shows, never a
@@ -331,7 +335,7 @@ export function createConversationBridge({ sync, local, userId, trusted, self }:
       if (turns.length === 0 || turns.length <= (counts.get(row.id) || 0)) continue;
       const imported = local.import({
         vault_id: row.id, ...(row.name ? { title: row.name } : {}),
-        turns: turns.map(({ ref, text, reply, model, created_at, answered_by, sources }) => ({ ref, text, reply, model, created_at, answered_by, sources })),
+        turns: turns.map(({ ref, text, reply, model, created_at, answered_by, sources, channel }) => ({ ref, text, reply, model, created_at, answered_by, sources, channel })),
       });
       if ("error" in imported) continue;
       counts.set(row.id, turns.length);
@@ -367,6 +371,7 @@ export function createConversationBridge({ sync, local, userId, trusted, self }:
       sources: turn.sources.map((source) => pathlessSource(source, me.id)).filter((s): s is Record<string, unknown> => !!s),
       created_at: turn.created_at,
       ...(turn.answered_by ? { answered_by: turn.answered_by } : {}),
+      ...(turn.channel === "recording" ? { channel: "recording" } : {}),
     });
     // It is here already: the next reconcile has nothing to add for it.
     counts.set(vaultId, (await sync.conversation(vaultId)).length);
