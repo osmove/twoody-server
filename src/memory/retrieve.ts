@@ -235,6 +235,7 @@ export async function retrieveMemories(args: {
     const items: RankItem[] = pool.map((memory) => ({
       text: memory.title?.trim() && !memory.content.trim().startsWith(memory.title.trim().replace(/…$/, "")) ? `${memory.title.trim()}: ${memory.content}` : memory.content,
       manual: !!memory.manual || !!memory.pinned,
+      importance: memory.importance,
       createdAt: memory.createdAt ?? null,
       vector: queryVector ? vectors?.get(memory.id) ?? null : null,
       entities: (links.get(memory.id) ?? []).map((link) => link.entity),

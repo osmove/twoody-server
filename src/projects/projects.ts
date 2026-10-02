@@ -9,7 +9,10 @@ import { memoriesChanged } from "../memory/changes.js";
 // tasks, reminders, events, conversations and documents.
 
 export const PROJECT_KINDS = ["purchase", "event", "home", "travel", "work", "health", "learning", "admin", "other"] as const;
-export const PROJECT_SIZES = ["small", "large"] as const;
+/// How much a project matters (Jimmy, 02/10/2026: « petit et grand…
+/// ajouter moyen, et critique »): a large or critical one is in every
+/// conversation, a critical one first.
+export const PROJECT_SIZES = ["small", "medium", "large", "critical"] as const;
 export const PROJECT_STATUSES = ["idea", "active", "paused", "done", "dropped"] as const;
 export type ProjectKind = (typeof PROJECT_KINDS)[number];
 export type ProjectSize = (typeof PROJECT_SIZES)[number];
@@ -229,9 +232,9 @@ const day = (ms: number | null) => (ms ? new Date(ms).toISOString().slice(0, 10)
 /// profile (docs/projects-design.md §4): changes only with the projects, so
 /// the prompt cache holds.
 export function projectsLine(userId: string): string | null {
-  const rows = sqlite.prepare("SELECT title, due_at FROM projects WHERE user_id = ? AND size = 'large' AND status IN ('active', 'idea') ORDER BY created_at LIMIT 5").all(userId) as Array<{ title: string; due_at: number | null }>;
+  const rows = sqlite.prepare("SELECT title, due_at, size FROM projects WHERE user_id = ? AND size IN ('large', 'critical') AND status IN ('active', 'idea') ORDER BY size = 'critical' DESC, created_at LIMIT 6").all(userId) as Array<{ title: string; due_at: number | null; size: string }>;
   if (!rows.length) return null;
-  return `Projects under way: ${rows.map((row) => (row.due_at ? `${row.title} (due ${day(row.due_at)})` : row.title)).join("; ")}.`;
+  return `Projects under way: ${rows.map((row) => `${row.title}${row.size === "critical" ? " (critical)" : ""}${row.due_at ? ` (due ${day(row.due_at)})` : ""}`).join("; ")}.`;
 }
 
 /// The cards of the projects a message is about — named (its name, an
@@ -255,7 +258,7 @@ export function projectCards(userId: string, text: string, memoryIds: Array<stri
     const facts = row.entity_id
       ? (sqlite.prepare(`SELECT m.content FROM memories m JOIN memory_entities l ON l.memory_id = m.id WHERE l.entity_id = ? AND m.user_id = ? AND m.superseded_by_id IS NULL AND m.tags_json NOT LIKE '%"sensitive"%' ORDER BY m.created_at DESC LIMIT 3`).all(row.entity_id, userId) as Array<{ content: string }>).map((fact) => fact.content.replace(/\s+/g, " ").slice(0, 160))
       : [];
-    const head = [`${KIND_WORDS[row.kind] ?? "project"}`, row.size === "large" ? "large" : "small", row.status, row.due_at ? `due ${day(row.due_at)}` : null, row.budget_cents ? `budget ${(row.budget_cents / 100).toFixed(0)} ${row.currency ?? ""}`.trim() : null].filter(Boolean).join(", ");
+    const head = [`${KIND_WORDS[row.kind] ?? "project"}`, (PROJECT_SIZES as readonly string[]).includes(row.size) ? row.size : "small", row.status, row.due_at ? `due ${day(row.due_at)}` : null, row.budget_cents ? `budget ${(row.budget_cents / 100).toFixed(0)} ${row.currency ?? ""}`.trim() : null].filter(Boolean).join(", ");
     const lines = [
       `${row.title} — ${head}`,
       row.brief ? `Notes: ${row.brief.replace(/\s+/g, " ").slice(0, 200)}` : null,

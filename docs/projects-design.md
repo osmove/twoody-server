@@ -13,7 +13,7 @@ has a full Project model (status, priority, deadline, budget, brief) linked to t
 
 ## 2. Data (db.ts, one migration block)
 projects(id, user_id, entity_id → entities (kind project, the names and aliases), title, kind purchase|event|home|
-travel|work|health|learning|admin|other, size small|large, status idea|active|paused|done|dropped, brief,
+travel|work|health|learning|admin|other, size small|medium|large|critical, status idea|active|paused|done|dropped, brief,
 started_at, due_at, done_at, budget_cents, currency, source manual|learned|account, hlc, vault_event_id, created_at,
 updated_at). Links: tasks.project_id, reminders.project_id (exists), events.project_id, discussions.project_id
 (the conversation's main project), memories via memory_entities (already: a memory naming the project's entity),

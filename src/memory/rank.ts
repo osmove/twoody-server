@@ -1,3 +1,5 @@
+import { importanceBonus } from "./importance.js";
+
 // How well each memory answers a message (docs/memory-v2-design.md §3,
 // lot L3): the scoring and admission of retrieval v2, with nothing but the
 // texts, vectors and entity links it is handed — no database, so that the
@@ -18,7 +20,8 @@
 //      +0.08 when it names it only by a common noun (« le chien »);
 //      −0.25 when it is about someone else, −0.08 when it names nobody and
 //      came from an import, in a message about the person;
-//   P  +0.04 written or pinned by the person, +0.03·exp(−age/180 days).
+//   P  +0.04 written or pinned by the person, +0.03·exp(−age/180 days),
+//      and its importance: +0.06 Essentiel, +0.03 Important, −0.04 Faible.
 //
 // Admitted: H ≥ τ and (C ≥ 0.45, or L ≥ 0.6 with a rare term, or an entity
 // with C ≥ 0.40 or L ≥ 0.5). Without vectors (no embedding model, a Pi):
@@ -181,6 +184,8 @@ export interface RankItem {
   text: string;
   /// Written or pinned by the person.
   manual?: boolean;
+  /// 0 Faible to 3 Essentiel (memory/importance.ts).
+  importance?: number;
   createdAt?: number | null;
   vector?: Float32Array | null;
   /// The entities it names (ids).
@@ -347,7 +352,7 @@ export function scoreMemories(items: readonly RankItem[], query: string, options
       }
     }
     const ageDays = item.createdAt ? Math.max(0, (now - item.createdAt) / DAY_MS) : null;
-    const p = (item.manual ? 0.04 : 0) + (ageDays === null ? 0 : 0.03 * Math.exp(-ageDays / 180));
+    const p = (item.manual ? 0.04 : 0) + (ageDays === null ? 0 : 0.03 * Math.exp(-ageDays / 180)) + importanceBonus(item.importance);
     const c = options.queryVector && item.vector ? dot(options.queryVector, item.vector) : null;
     let score: number;
     let ok: boolean;

@@ -50,6 +50,7 @@ import { RuntimeError } from "../builtin/index.js";
 import { discussionTitle, typedText } from "../documentBlocks.js";
 import { loadPersonalData } from "./localSync.js";
 import { capabilityOn } from "../localCapabilities.js";
+import { importanceOf } from "../memory/importance.js";
 import { controlHome, HOME_TOOL, homeBlock, homeConfig, homeDoneSentence, homeEntities, homeErrorSentence, homeOn, homeShortcut, type HomeDone } from "../home/homeAssistant.js";
 import { validTimeZone } from "../usagePeriods.js";
 import { beginGeneration } from "../account/inflight.js";
@@ -2349,6 +2350,7 @@ export function loadUserContext(userId: string): {
         archived: tags.includes("archive"),
         sensitive: tags.includes("sensitive"),
         pinned: tags.includes("pinned"),
+        importance: importanceOf(tags),
         manual: source === "manual",
         source,
         createdAt: createdAt instanceof Date ? createdAt.getTime() : null,

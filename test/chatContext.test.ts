@@ -452,3 +452,22 @@ test("« Que sais-tu de moi ? »: who the person is comes first, and what the pr
   const plain = buildChatTurn(input({ userName: "Jimmy", memories: [...friends, ...self], content: "Quelle heure est-il ?" }));
   assert.doesNotMatch(plain.messages.at(-1)!.content as string, /More of what the user's saved memories say/);
 });
+
+test("four levels of importance: Essentiel and Important in the profile first, Faible never in it", async () => {
+  const { importanceOf, withImportance } = await import("../src/memory/importance.js");
+  assert.equal(importanceOf(["pinned"]), 3);
+  assert.equal(importanceOf(["important", "minor"]), 2);
+  assert.equal(importanceOf([]), 1);
+  assert.equal(importanceOf(["minor"]), 0);
+  assert.deepEqual(withImportance(["pinned", "work"], 0), ["work", "minor"]);
+  assert.deepEqual(withImportance(["minor"], 1), []);
+  const filler = Array.from({ length: 30 }, (_, index) => ({ kind: "user" as const, title: null, content: `Camille a noté une préférence numéro ${index} sur les réponses, assez longue pour remplir le profil.` }));
+  const turn = buildChatTurn(input({ memories: [
+    ...filler,
+    { kind: "user", title: null, content: "Camille a peur des chiens.", importance: 0 },
+    { kind: "user", title: null, content: "Camille est allergique aux arachides.", importance: 2 },
+  ] }));
+  const system = turn.messages[0]!.content as string;
+  assert.match(system, /allergique aux arachides/);
+  assert.doesNotMatch(system, /peur des chiens/);
+});

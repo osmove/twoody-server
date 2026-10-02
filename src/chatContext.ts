@@ -111,6 +111,8 @@ export interface MemoryRow {
   sensitive?: boolean;
   /// Tagged « pinned » by the person: in the profile first.
   pinned?: boolean;
+  /// 0 Faible, 1 Normal, 2 Important, 3 Essentiel (memory/importance.ts).
+  importance?: number;
   /// Written by the person (source « manual »).
   manual?: boolean;
   /// Where it comes from (« manual », « conversation », « import »…).
@@ -860,7 +862,7 @@ function relevantEntries(input: ChatContextInput, usable: MemoryRow[], text: str
     });
   }
   const ranked = rankMemories(
-    usable.map((row) => ({ text: `${row.title ?? ""} ${row.content}`, manual: !!row.manual || !!row.pinned, createdAt: row.createdAt ?? null })),
+    usable.map((row) => ({ text: `${row.title ?? ""} ${row.content}`, manual: !!row.manual || !!row.pinned, createdAt: row.createdAt ?? null, importance: row.importance })),
     text,
     { now: now.getTime() },
   );
@@ -913,7 +915,8 @@ type ProfileOrder = {
 /// answer: with the facts, whatever its kind says.
 function profileOrder(usable: MemoryRow[], hints: ProfileHints | null, local: boolean, now = Date.now(), userName: string | null = null): ProfileOrder {
   const fromAccount = (memory: MemoryRow) => memory.sourceRef === "account";
-  const eligible = usable.filter((memory) => !memory.sensitive || (memory.pinned && local));
+  // « Faible »: only with a message it bears on, never in the profile.
+  const eligible = usable.filter((memory) => (!memory.sensitive || (memory.pinned && local)) && memory.importance !== 0);
   const taken = new Set<MemoryRow>();
   const take = (rows: MemoryRow[]) => rows.filter((row) => (taken.has(row) ? false : (taken.add(row), true)));
   const first = take([
@@ -955,6 +958,8 @@ function profileOrder(usable: MemoryRow[], hints: ProfileHints | null, local: bo
   // not his work nor his town, which the people's long quotes had pushed
   // out of the profile (02/10/2026).
   const core = take([
+    // « Important »: before the rest of what the profile holds.
+    ...eligible.filter((memory) => memory.importance === 2),
     ...own.filter((memory) => BIRTH.test(normalize(memory.content))),
     ...coreFirst.slice(0, CORE_SELF_MAX),
     ...recent,
