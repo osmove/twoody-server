@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { sqlite } from "../db.js";
+import { setLocalCapability } from "../localCapabilities.js";
 import { createProject, knownProjects } from "../projects/projects.js";
 import { learningModel, type LearnMessages, type LearningModel } from "./learner.js";
 
@@ -171,5 +172,9 @@ export function applyDiscovery(userId: string, chosen: Partial<Discovery>, now =
       .run(id, userId, event.name.trim().slice(0, 160), start, seconds, seconds);
     made.events.push(id);
   }
+  // The person chose to keep these people and dates: their Contacts and
+  // Agenda are switched on, or what was made would serve nothing.
+  if (made.contacts.length) setLocalCapability(userId, "contacts", true);
+  if (made.events.length) setLocalCapability(userId, "calendar", true);
   return made;
 }

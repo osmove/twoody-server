@@ -287,6 +287,10 @@ test("the Pi searches the Mac mini (a Desktop) with its own bound key; a forged 
 test("one question on the Air cites the Mac mini's document and the Pi's, each under its computer", async () => {
   setFanOutDeadlines({ direct: 10_000, relay: 10_000 });
   for (const id of [MINI, PI]) assert.ok(await refreshPeerStatus(peerById(user.id, id)!).then(() => true));
+  // Documents is switched on in the Air's Capabilities (off by default).
+  // (Imported here: the data folder is chosen above, before any src module.)
+  const { setLocalCapability } = await import("../src/localCapabilities.js");
+  setLocalCapability(user.id, "documents", true);
   const response = await app.inject({
     method: "POST", url: "/queries", headers: auth,
     payload: { content: "Combien coûte la facture d'électricité et jusqu'à quand court le contrat de location de la voiture ?" },

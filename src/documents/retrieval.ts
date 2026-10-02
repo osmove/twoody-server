@@ -1,3 +1,4 @@
+import { capabilityOn } from "../localCapabilities.js";
 import { semanticPassages } from "./semantic.js";
 import { fusePassages } from "./vectorMath.js";
 import { sqlite } from "../db.js";
@@ -36,7 +37,9 @@ type Retrieved<P, F> = { passages: P[]; files: F[]; total: number; semantic?: Se
  * machine now, whatever was granted before. Unknown ids are ignored.
  */
 export function scopedFolders(userId: string, scope: Pick<DocumentAccess, "mode" | "folderIds">): Array<{ id: string; name: string; path: string; documents: number; indexed: number }> {
-  if (scope.mode === "off") return [];
+  // Documents switched off in Capabilities: no folder is searched, for
+  // anyone (localCapabilities.ts).
+  if (scope.mode === "off" || !capabilityOn(userId, "documents")) return [];
   const granted = listFolders(userId);
   const selected = scope.mode === "all" && !scope.folderIds ? granted : granted.filter(folder => scope.folderIds?.includes(folder.id));
   const within = granted.filter(folder => scope.mode === "all" && !scope.folderIds ? true : selected.some(parent => {

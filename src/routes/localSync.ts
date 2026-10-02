@@ -5,6 +5,7 @@ import { calendarEvents, contacts, db, sqlite } from "../db.js";
 import { requireAuth } from "../auth.js";
 import { isThisComputersApp } from "./usage.js";
 import type { PersonalContact, PersonalEvent } from "../personalContext.js";
+import { localCapabilities } from "../localCapabilities.js";
 
 // Contacts and Calendar of this Mac, copied into the embedded server by the
 // desktop app when the person turns them on in « Capacités » (29/09/2026): the
@@ -193,7 +194,9 @@ function parseJsonList(value: string | null): string[] {
 /// by name in memory, accents and case aside), and the events from a month
 /// ago to a year ahead.
 export function loadPersonalData(userId: string, now = new Date()): { contacts: PersonalContact[]; events: PersonalEvent[] } {
-  const people = db
+  // Each only once switched on in Capabilities (localCapabilities.ts).
+  const switches = localCapabilities(userId);
+  const people = !switches.contacts ? [] : db
     .select()
     .from(contacts)
     .where(eq(contacts.userId, userId))
@@ -210,7 +213,7 @@ export function loadPersonalData(userId: string, now = new Date()): { contacts: 
     }));
   const from = new Date(now.getTime() - 31 * 86_400_000);
   const to = new Date(now.getTime() + 366 * 86_400_000);
-  const events = db
+  const events = !switches.calendar ? [] : db
     .select()
     .from(calendarEvents)
     .where(and(eq(calendarEvents.userId, userId), gte(calendarEvents.startTime, from), lte(calendarEvents.startTime, to)))

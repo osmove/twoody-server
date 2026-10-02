@@ -49,6 +49,7 @@ import { engineRoute, isBuiltinUrl, localRuntimeReady } from "../engine.js";
 import { RuntimeError } from "../builtin/index.js";
 import { discussionTitle, typedText } from "../documentBlocks.js";
 import { loadPersonalData } from "./localSync.js";
+import { capabilityOn } from "../localCapabilities.js";
 import { validTimeZone } from "../usagePeriods.js";
 import { beginGeneration } from "../account/inflight.js";
 import { noteModelUsed } from "../account/statusSource.js";
@@ -341,6 +342,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   let access;
   try { access = documentAccess(parsed.document_access); }
   catch { return reply.code(422).send({ error: "invalid_document_access" }); }
+  // Documents switched off in Capabilities: the chat does not search them.
+  if (access.mode !== "off" && !capabilityOn(auth.userId, "documents")) access = { mode: "off" as const };
   const audioBuffer = parsed.audioBuffer ?? null;
   const skipTranscription = readBool(parsed.skip_transcription, false);
   const rawMemoryMode = parsed.memory_mode ?? (parsed.query as { memory_mode?: unknown } | undefined)?.memory_mode;

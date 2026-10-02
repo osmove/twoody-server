@@ -8,7 +8,7 @@ import { serveRawFile } from "../peerDocuments/raw.js";
 import { fileKind, type GrantedRoot } from "./fileListing.js";
 import { plain } from "./folderAliases.js";
 import { folderRisk } from "./folderRisk.js";
-import { skipDirectory, skipFile } from "./walk.js";
+import { entryKind, skipDirectory, skipFile } from "./walk.js";
 
 // A file browser over the person's granted folders (docs/mesh-design.md
 // §2b): what a folder holds as the file system has it — sub-folders and
@@ -181,8 +181,9 @@ async function folderEntries(dir: string, realRoot: string, cap: number): Promis
   const dirents = await readdir(dir, { withFileTypes: true });
   const kept = [];
   for (const entry of dirents) {
-    if (entry.isSymbolicLink()) continue;
-    if (entry.isDirectory() ? skipDirectory(entry.name) : !entry.isFile() || skipFile(entry.name)) continue;
+    // A real link is left out; a OneDrive file on Windows is not (walk.ts).
+    const kind = await entryKind(entry, join(dir, entry.name));
+    if (kind === null || (kind === "dir" ? skipDirectory(entry.name) : skipFile(entry.name))) continue;
     kept.push(entry);
     if (kept.length >= cap) break;
   }

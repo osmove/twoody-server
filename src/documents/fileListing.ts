@@ -5,7 +5,7 @@ import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
 import { aliasLabel, aliasPaths, FOLDER_ALIAS_IDS, folderAliasIn, nodeAliasSystem, plain, type AliasSystem, type FolderAliasId } from "./folderAliases.js";
 import { folderRisk } from "./folderRisk.js";
 import { spotlightDatesAdded, spotlightItems } from "./spotlight.js";
-import { skipDirectory, skipFile } from "./walk.js";
+import { entryKind, skipDirectory, skipFile } from "./walk.js";
 
 // The files of the person's granted folders as the file system has them —
 // names, sizes, kinds and modification dates of every regular file, indexed
@@ -231,9 +231,10 @@ async function walkFiles(start: string, root: GrantedRoot, into: Found[], seen: 
     for (const entry of entries) {
       const path = join(dir, entry.name);
       // Symbolic links are not followed: a link must not widen the grant.
-      if (entry.isDirectory()) {
+      const kind = await entryKind(entry, path);
+      if (kind === "dir") {
         if (recursive && depth < MAX_DEPTH && !skipDirectory(entry.name)) pending.push({ dir: path, depth: depth + 1 });
-      } else if (entry.isFile() && !skipFile(entry.name) && matchesKinds(entry.name, kinds) && !seen.has(path)) {
+      } else if (kind === "file" && !skipFile(entry.name) && matchesKinds(entry.name, kinds) && !seen.has(path)) {
         files.push(path);
       }
     }
@@ -286,7 +287,7 @@ async function spotlightFiles(start: string, kinds: string[]): Promise<string[] 
   // The first level as it is now: Spotlight may not know the newest file yet.
   try {
     for (const entry of await readdir(start, { withFileTypes: true })) {
-      if (entry.isFile() && !skipFile(entry.name) && matchesKinds(entry.name, kinds)) files.push(join(start, entry.name));
+      if ((await entryKind(entry, join(start, entry.name))) === "file" && !skipFile(entry.name) && matchesKinds(entry.name, kinds)) files.push(join(start, entry.name));
     }
   } catch {
     // listed from Spotlight only
@@ -312,8 +313,8 @@ async function findFolders(roots: GrantedRoot[], name: string, max = 6): Promise
         continue;
       }
       for (const entry of entries) {
-        if (!entry.isDirectory() || skipDirectory(entry.name)) continue;
         const path = join(dir, entry.name);
+        if ((await entryKind(entry, path)) !== "dir" || skipDirectory(entry.name)) continue;
         if (plain(entry.name) === wanted && !found.some((f) => f.path === path)) found.push({ path, root });
         if (depth < 4) pending.push({ dir: path, depth: depth + 1 });
       }

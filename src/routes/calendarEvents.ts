@@ -158,7 +158,7 @@ export async function calendarEventRoutes(app: FastifyInstance) {
           lte(calendarEvents.startTime, end),
         ))
         .orderBy(asc(calendarEvents.startTime), asc(calendarEvents.name))
-        .limit(250)
+        .limit(1_000)
         .all();
 
       reply.send({

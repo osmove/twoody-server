@@ -10,6 +10,7 @@ import { db, documentFolders, documents, sqlite } from "../db.js";
 import { chunkSections } from "./chunk.js";
 import { extractSections, MAX_FILE_BYTES } from "./extract.js";
 import { folderRisk } from "./folderRisk.js";
+import { capabilityOn, setLocalCapability } from "../localCapabilities.js";
 import { folderReadable, walk } from "./walk.js";
 import { buildMatchQuery, metadataScore, queryTerms, selectPassages } from "./query.js";
 
@@ -60,6 +61,9 @@ export function folderName(path: string): string {
   return basename(path);
 }
 
+/// Files of each folder the last pass could not read (walk.ts `ignored`).
+const ignoredByFolder = new Map<string, number>();
+
 export function listFolders(userId: string) {
   const counts = sqlite
     .prepare(
@@ -89,6 +93,7 @@ export function listFolders(userId: string) {
         indexed: count?.indexed ?? 0,
         without_text: count?.empty ?? 0,
         failed: count?.failed ?? 0,
+        ignored: ignoredByFolder.get(folder.id) ?? 0,
       };
     });
 }
@@ -109,6 +114,9 @@ export async function addFolder(userId: string, input: string, personalRoot = fa
 
   const id = generateId();
   db.insert(documentFolders).values({ id, userId, path, createdAt: new Date() }).run();
+  // Granting a folder is asking for Documents — the way to switch it on
+  // for a computer without a screen (a Pi), where Capacités is not shown.
+  setLocalCapability(userId, "documents", true);
   return { id, path };
 }
 
@@ -155,6 +163,8 @@ export function indexStatus(userId: string): IndexStatus {
 export async function reindex(userId: string): Promise<IndexStatus> {
   const current = jobs.get(userId);
   if (current?.running) return current;
+  // Documents switched off in Capabilities: nothing is read.
+  if (!capabilityOn(userId, "documents")) return indexStatus(userId);
 
   const status: IndexStatus = {
     running: true,
@@ -172,7 +182,18 @@ export async function reindex(userId: string): Promise<IndexStatus> {
     const seen = new Set<string>();
 
     for (const folder of folders) {
-      const scan = await walk(folder.path);
+      // Granted subfolders are walked for themselves (longest path first);
+      // the files this one indexed already, and when it was last read,
+      // decide what a full folder keeps (walk.ts).
+      const inside = folders.filter((other) => other.id !== folder.id && within(folder.path, other.path));
+      const indexed = sqlite.prepare("SELECT path, indexed_at AS indexedAt FROM documents WHERE user_id = ? AND folder_id = ?").all(userId, folder.id) as Array<{ path: string; indexedAt: number | null }>;
+      const last = indexed.reduce<number | null>((latest, row) => (row.indexedAt !== null && (latest === null || row.indexedAt > latest) ? row.indexedAt : latest), null);
+      const scan = await walk(folder.path, undefined, {
+        skip: inside.map((other) => other.path),
+        keep: new Set(indexed.map((row) => row.path)),
+        since: last === null ? null : last * 1000,
+      });
+      ignoredByFolder.set(folder.id, scan.ignored);
       if (scan.limited) status.limited = true;
       if (scan.denied.length > 0) status.denied = [...(status.denied ?? []), ...scan.denied].slice(0, 10);
       for (const path of scan.files) {
@@ -202,6 +223,12 @@ export async function reindex(userId: string): Promise<IndexStatus> {
   }
   void indexSemantic(userId);
   return status;
+}
+
+/// Whether `child` lies under `parent` (not the same folder).
+function within(parent: string, child: string): boolean {
+  const path = relative(parent, child);
+  return path !== "" && !path.startsWith("..") && !isAbsolute(path);
 }
 
 /// One file read into the index now, outside a pass (a file Spotlight found

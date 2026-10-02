@@ -90,6 +90,8 @@ function readBody(raw: unknown): {
   phone_number?:       string | null;
   relation_type?:      string | null;
   relation_subtype?:   string | null;
+  organization?:       string | null;
+  birthday?:           string | null;
   origin?:             string;
 } {
   const body = (raw as { contact?: Record<string, unknown> } | null)?.contact ?? {};
@@ -105,6 +107,10 @@ function readBody(raw: unknown): {
   if (typeof body.phone_number === "string" || body.phone_number === null) out.phone_number = body.phone_number;
   if (typeof body.relation_type === "string" || body.relation_type === null) out.relation_type = body.relation_type;
   if (typeof body.relation_subtype === "string" || body.relation_subtype === null) out.relation_subtype = body.relation_subtype;
+  if (typeof body.organization === "string" || body.organization === null) out.organization = body.organization;
+  // « 1990-05-17 », or « --05-17 » without the year.
+  if (body.birthday === null || body.birthday === "") out.birthday = null;
+  else if (typeof body.birthday === "string" && /^(?:\d{4}|--)-\d{2}-\d{2}$/.test(body.birthday)) out.birthday = body.birthday;
   if (typeof body.origin === "string") out.origin = body.origin;
   return out as ReturnType<typeof readBody>;
 }
@@ -161,7 +167,7 @@ export async function contactRoutes(app: FastifyInstance) {
         .from(contacts)
         .where(eq(contacts.userId, auth.userId))
         .orderBy(asc(contacts.name), asc(contacts.firstName))
-        .limit(200)
+        .limit(5_000)
         .all();
       reply.send(rows.map(serialize));
     },
@@ -221,6 +227,8 @@ export async function contactRoutes(app: FastifyInstance) {
           phoneNumber:      body.phone_number ?? null,
           relationType:     body.relation_type ?? null,
           relationSubtype:  body.relation_subtype ?? null,
+          organization:     body.organization ?? null,
+          birthday:         body.birthday ?? null,
           origin:           body.origin ?? "local",
           createdAt:        now,
           updatedAt:        now,
@@ -265,6 +273,8 @@ export async function contactRoutes(app: FastifyInstance) {
         phoneNumber:      body.phone_number       !== undefined ? body.phone_number : existing.phoneNumber,
         relationType:     body.relation_type      !== undefined ? body.relation_type : existing.relationType,
         relationSubtype:  body.relation_subtype   !== undefined ? body.relation_subtype : existing.relationSubtype,
+        organization:     body.organization       !== undefined ? body.organization : existing.organization,
+        birthday:         body.birthday           !== undefined ? body.birthday : existing.birthday,
         origin:           body.origin             ?? existing.origin,
         updatedAt:        new Date(),
       };
