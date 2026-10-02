@@ -1,3 +1,4 @@
+import { applyDiscovery, discoverFromMemories, DiscoveryError, type Discovery } from "../memory/discover.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { and, desc, eq, inArray, isNull, like, or } from "drizzle-orm";
 import { db, memories, sqlite } from "../db.js";
@@ -162,6 +163,36 @@ export async function memoryRoutes(app: FastifyInstance) {
       if (!(await requirePerson(req, reply, auth))) return;
       const except = typeof req.query.except === "string" && req.query.except ? req.query.except : null;
       reply.send({ notices: takeMemoryNews(auth.userId, except), candidates: listCandidates(auth.userId).length });
+    },
+  });
+
+  // After an import: the projects, people and dates its memories speak of,
+  // proposed (memory/discover.ts) — made only once ticked (…/apply).
+  app.post<{ Body: { memory_ids?: unknown } }>("/memories/discover", {
+    schema: { tags: ["memories"], summary: "Projects, contacts and dates found in these memories", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
+      const ids = Array.isArray(req.body?.memory_ids) ? req.body.memory_ids.filter((id): id is string => typeof id === "string") : [];
+      if (!ids.length) return reply.code(422).send({ error: "memory_ids_required" });
+      try {
+        reply.send(await discoverFromMemories(auth.userId, ids));
+      } catch (err) {
+        if (err instanceof DiscoveryError) return reply.code(err.code === "no_model" ? 503 : 422).send({ error: err.code });
+        throw err;
+      }
+    },
+  });
+
+  app.post<{ Body: Partial<Discovery> }>("/memories/discover/apply", {
+    schema: { tags: ["memories"], summary: "Make the projects, contacts and dates the person ticked", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
+      const made = applyDiscovery(auth.userId, req.body ?? {});
+      reply.code(201).send({ projects: made.projects.length, contacts: made.contacts.length, events: made.events.length });
     },
   });
 

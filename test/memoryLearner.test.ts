@@ -400,3 +400,52 @@ test("after each answer: read at once, with what came before as context; the nex
     learner.setLearningModel(null);
   }
 });
+
+// The Pi read again, two minutes of its four cores each, the conversations
+// the Mac had answered and learned, brought by the encrypted history — its
+// fan (02/10/2026): an exchange another computer answered is not read here.
+test("an exchange another computer answered (from the encrypted history) is not read again here", async () => {
+  const id = conversation([], { idleMs: 0 });
+  sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, created_at) VALUES (?, ?, ?, 'user', 'Ma sœur s''appelle Inès.', ?)").run(`v${++counter}`, id, userId, Math.floor(Date.now() / 1000));
+  sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, provider, created_at) VALUES (?, ?, ?, 'assistant', 'Noté.', 'vault', ?)").run(`v${++counter}`, id, userId, Math.floor(Date.now() / 1000));
+  let asked = 0;
+  const result = await learnDiscussion(id, { ask: async () => { asked += 1; return answer(); } });
+  assert.equal(asked, 0);
+  assert.deepEqual(result!.saved, []);
+  assert.ok(!pendingDiscussions({ userId, idleMs: 0 }).includes(id), "and not looked at again");
+});
+
+// Steeve imported what Claude knew of him (02/10/2026): the projects, people
+// and dates in it are proposed, held to the facts, and made only once ticked.
+test("after an import: projects, contacts and dates proposed from its memories, made only when ticked", async () => {
+  const { discoverFromMemories, applyDiscovery } = await import("../src/memory/discover.js");
+  const ids = ["Steeve a fondé The Posterity Project, une plateforme de mémoire numérique.", "Sa fille Lina est née le 3 mars 2019.", "Il se marie avec Sarah le 14 juin 2027."].map((content, index) => {
+    const id = `import-${index}-${++counter}`;
+    db.insert(memories).values({ id, userId, kind: "user", title: null, content, tagsJson: "[\"import\"]", source: "import", createdAt: new Date(), updatedAt: new Date() }).run();
+    return id;
+  });
+  let prompt = "";
+  const found = await discoverFromMemories(userId, ids, async (_user, messages) => {
+    prompt = messages[1]!.content;
+    return JSON.stringify({
+      projects: [{ title: "The Posterity Project", name: null, kind: "work", status: "active", facts: ["F1"] }, { title: "Inventé", kind: "work", status: "active", facts: ["F9"] }],
+      contacts: [{ name: "Lina", relation: "family", detail: "fille", birthday: "2019-03-03", facts: ["F2"] }, { name: "Sarah", relation: "partner", birthday: "2019-02-30", facts: ["F3"] }],
+      events: [{ name: "Mariage avec Sarah", date: "2027-06-14", facts: ["F3"] }, { name: "Sans date", date: "bientôt", facts: ["F3"] }],
+    });
+  });
+  assert.match(prompt, /F1: Steeve a fondé The Posterity Project/);
+  assert.deepEqual(found.projects.map((project) => [project.title, project.memory_ids]), [["The Posterity Project", [ids[0]]]], "a fact not given is no evidence");
+  assert.deepEqual(found.contacts.map((contact) => [contact.name, contact.birthday]), [["Lina", "2019-03-03"], ["Sarah", null]], "no date that does not exist");
+  assert.deepEqual(found.events.map((event) => [event.name, event.date]), [["Mariage avec Sarah", "2027-06-14"]]);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM contacts WHERE user_id = ?").get(userId)!.n, 0, "nothing made yet");
+
+  const made = applyDiscovery(userId, { projects: found.projects, contacts: [found.contacts[0]!], events: found.events });
+  assert.deepEqual([made.projects.length, made.contacts.length, made.events.length], [1, 1, 1]);
+  assert.equal((sqlite.prepare("SELECT birthday, relation_type FROM contacts WHERE id = ?").get(made.contacts[0]) as { birthday: string }).birthday, "2019-03-03");
+  // Ticked twice: nothing made twice.
+  assert.deepEqual(Object.values(applyDiscovery(userId, { projects: found.projects, contacts: [found.contacts[0]!], events: found.events })).map((list) => list.length), [0, 0, 0]);
+  const response = await app.inject({ method: "POST", url: "/memories/discover/apply", headers, payload: { contacts: [found.contacts[1]] } });
+  assert.equal(response.statusCode, 201);
+  assert.equal(response.json().contacts, 1);
+  assert.equal((await app.inject({ method: "POST", url: "/memories/discover", headers, payload: {} })).statusCode, 422);
+});

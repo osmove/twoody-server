@@ -75,6 +75,11 @@ export type LearnMessages = Array<{ role: "system" | "user"; content: string }>;
 export type LearningModel = (userId: string, messages: LearnMessages, signal?: AbortSignal) => Promise<string>;
 
 let model: LearningModel | null = null;
+/// The model the learning reads with (memory/discover.ts too).
+export function learningModel(): LearningModel | null {
+  return model;
+}
+
 export function setLearningModel(fn: LearningModel | null) {
   model = fn;
 }
@@ -391,7 +396,7 @@ export function judgeFacts(
 
 // ── Reading a conversation ─────────────────────────────────────────────
 
-interface MessageRow { rowid: number; role: string; content: string }
+interface MessageRow { rowid: number; role: string; content: string; provider?: string | null }
 
 /// The memories the model is shown, so that it neither learns them again
 /// nor misses one it changes: the ones sharing the most words with what the
@@ -465,10 +470,18 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
     { id: string; user_id: string; learned_through: number | null } | undefined;
   if (!row || busyDiscussions.has(discussionId)) return null;
   const result: LearnResult = { discussion_id: row.id, read: 0, saved: [], proposed: [], dropped: 0 };
-  const rows = sqlite.prepare("SELECT rowid, role, content FROM messages WHERE discussion_id = ? AND rowid > ? ORDER BY rowid").all(row.id, row.learned_through ?? 0) as MessageRow[];
+  const rows = sqlite.prepare("SELECT rowid, role, content, provider FROM messages WHERE discussion_id = ? AND rowid > ? ORDER BY rowid").all(row.id, row.learned_through ?? 0) as MessageRow[];
   if (!rows.length) return result;
   const through = rows.at(-1)!.rowid;
   const advance = () => sqlite.prepare("UPDATE discussions SET learned_through = ? WHERE id = ? AND COALESCE(learned_through, 0) < ?").run(through, row.id, through);
+  // Exchanges another computer answered, brought by the encrypted history:
+  // that computer learned them, and its memories come here the same way.
+  // Read again here, they cost the Pi two minutes of its four cores each —
+  // its fan — for nothing (315 such conversations, 02/10/2026).
+  if (rows.some((message) => message.role === "assistant") && rows.every((message) => message.role !== "assistant" || message.provider === "vault")) {
+    advance();
+    return result;
+  }
   if (!learnable(row.id)) {
     // Never read; and not later either, should its mode change.
     advance();
