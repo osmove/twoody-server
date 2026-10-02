@@ -153,7 +153,9 @@ export async function homeEntities(userId: string, options: { fresh?: boolean; e
 /// The service a word stands for, for a domain.
 export function serviceFor(domain: string, action: HomeAction): string | null {
   if (domain === "cover") return { on: "open_cover", open: "open_cover", off: "close_cover", close: "close_cover", stop: "stop_cover", toggle: "toggle" }[action];
-  if (domain === "scene" || domain === "script") return action === "on" || action === "open" || action === "toggle" ? "turn_on" : null;
+  // A scene or a script is run, whatever the word: its name says what it
+  // does (« Éteins Télé »).
+  if (domain === "scene" || domain === "script") return "turn_on";
   if (action === "stop") return null;
   return { on: "turn_on", open: "turn_on", off: "turn_off", close: "turn_off", toggle: "toggle" }[action];
 }

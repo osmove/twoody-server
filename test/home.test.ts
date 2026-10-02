@@ -84,10 +84,20 @@ test("« allume la lumière du salon », « éteins la bibliothèque »: one dev
   assert.equal(homeShortcut("parle-moi du salon de l'auto", entities), null);
 });
 
+test("Jimmy's scripts: « allume la télé » runs Allume Télé, « éteins la télé » runs Éteins Télé", () => {
+  const tv = [
+    { entity_id: "script.allume_tele", name: "Allume Télé", domain: "script", state: "off", brightness: null },
+    { entity_id: "script.eteins_tele", name: "Éteins Télé", domain: "script", state: "off", brightness: null },
+    { entity_id: "media_player.lg_webos_tv_ut73006la", name: "Téléviseur LG", domain: "media_player", state: "unavailable", brightness: null },
+  ];
+  assert.deepEqual(homeShortcut("allume la télé", tv)?.entities.map((e) => e.entity_id), ["script.allume_tele"]);
+  assert.deepEqual(homeShortcut("éteins la télé", tv)?.entities.map((e) => e.entity_id), ["script.eteins_tele"]);
+});
+
 test("what a word does, by domain; a lock is never offered", () => {
   assert.equal(serviceFor("light", "on"), "turn_on");
   assert.equal(serviceFor("cover", "close"), "close_cover");
-  assert.equal(serviceFor("scene", "off"), null);
+  assert.equal(serviceFor("script", "off"), "turn_on", "« Éteins Télé » is run");
   assert.match(homeBlock("allume la guirlande", entities)!, /switch\.guirlande_salon « Guirlande salon »: off/);
   assert.equal(homeBlock("quelle heure est-il ?", entities), null);
 });
