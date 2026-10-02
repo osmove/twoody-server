@@ -23,6 +23,7 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { requireAuth } from "../auth.js";
+import { transcribeOnDevice, withoutNonSpeech } from "../whisper.js";
 
 const DEFAULT_BIN   = "/home/pi/whisper.cpp/build/bin/whisper-cli";
 const DEFAULT_MODEL = "/home/pi/whisper.cpp/models/ggml-base.bin";
@@ -75,14 +76,6 @@ export async function transcriptionRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
 
-      const { bin, model } = whisperConfig();
-      if (!existsSync(bin) || !existsSync(model)) {
-        return reply.code(503).send({
-          error: "whisper_not_configured",
-          hint: "Install whisper.cpp and set WHISPER_BIN / WHISPER_MODEL, or run scripts/install-linux.sh on a fresh host.",
-        });
-      }
-
       let file: { filename?: string; mimetype?: string; toBuffer: () => Promise<Buffer> } | null = null;
       let language: string | undefined;
       try {
@@ -109,6 +102,18 @@ export async function transcriptionRoutes(app: FastifyInstance) {
         return reply.code(413).send({ error: "audio_too_large", max_bytes: MAX_AUDIO_BYTES });
       }
 
+      // This Mac's own recognizer first, where there is one (whisper.ts).
+      const native = await transcribeOnDevice(buffer, language ?? null);
+      if (native !== null) return reply.send({ text: native });
+
+      const { bin, model } = whisperConfig();
+      if (!existsSync(bin) || !existsSync(model)) {
+        return reply.code(503).send({
+          error: "whisper_not_configured",
+          hint: "Install whisper.cpp and set WHISPER_BIN / WHISPER_MODEL, or run scripts/install-linux.sh on a fresh host.",
+        });
+      }
+
       const dir = await mkdtemp(join(tmpdir(), "twoody-stt-"));
       const inputExt = (file!.filename && extname(file!.filename)) || ".wav";
       const audioPath = join(dir, `input${inputExt}`);
@@ -118,7 +123,8 @@ export async function transcriptionRoutes(app: FastifyInstance) {
       try {
         await runWhisper({ audioPath, outBase, language });
         const txt = await readFile(`${outBase}.txt`, "utf8");
-        const text = txt.trim();
+        // [BLANK_AUDIO] and the like are no words (whisper.ts).
+        const text = withoutNonSpeech(txt.trim());
         return reply.send({ text });
       } catch (error) {
         const message = error instanceof Error ? error.message : "whisper_failed";

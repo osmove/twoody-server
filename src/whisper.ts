@@ -29,7 +29,60 @@ const DEFAULT_BINARY = process.env.TWOODY_WHISPER_BINARY ?? "whisper-cli";
 const DEFAULT_MODEL_DIR = process.env.TWOODY_WHISPER_MODEL_DIR
   ?? join(process.env.HOME ?? "", ".twoody", "whisper-models");
 
-export async function transcribeWavWithWhisperCpp(audio: Buffer): Promise<string> {
+/// « fr-FR », « fr » → the language whisper.cpp is told (« fr »); null
+/// lets it guess — which a few seconds of French often get wrong.
+export function speechLanguage(locale: string | null | undefined): string | null {
+  const primary = locale?.trim().split(/[-_]/)[0]?.toLowerCase();
+  return primary && /^[a-z]{2,3}$/.test(primary) ? primary : null;
+}
+
+/// The region the Mac's recognizer wants: « fr » → « fr-FR ».
+export function speechLocale(locale: string | null | undefined): string {
+  const tag = locale?.trim().replace(/_/g, "-");
+  if (tag && /^[a-z]{2,3}-[A-Za-z]{2}$/i.test(tag)) return tag;
+  const language = speechLanguage(tag) ?? "fr";
+  return { fr: "fr-FR", en: "en-US", de: "de-DE", es: "es-ES", it: "it-IT", pt: "pt-PT", nl: "nl-NL" }[language] ?? language;
+}
+
+/// This Mac's own speech recognition (twoody-desktop native/speech, named
+/// by TWOODY_SPEECH_HELPER), on the computer only: the text, "" for no
+/// speech, or null when it cannot (no permission, no on-device model for
+/// this language) — Whisper then.
+export async function transcribeOnDevice(audio: Buffer, locale: string | null | undefined, helper = process.env.TWOODY_SPEECH_HELPER?.trim()): Promise<string | null> {
+  if (!helper || !existsSync(helper) || audioKind(audio) !== "wav") return null;
+  const dir = await mkdtemp(join(tmpdir(), "twoody-speech-"));
+  try {
+    const file = join(dir, "speech.wav");
+    await writeFile(file, audio);
+    const output = await new Promise<string>((resolve) => {
+      const child = spawn(helper, ["transcribe", file, "--locale", speechLocale(locale)], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+      let out = "";
+      const timer = setTimeout(() => child.kill(), 120_000);
+      child.stdout?.on("data", (chunk) => (out += chunk.toString()));
+      child.on("error", () => { clearTimeout(timer); resolve(""); });
+      child.on("exit", () => { clearTimeout(timer); resolve(out); });
+    });
+    const parsed = JSON.parse(output.trim().split("\n").pop() || "{}") as { text?: unknown; error?: unknown };
+    if (typeof parsed.text === "string") return parsed.text.trim();
+    if (parsed.error === "no_speech") return "";
+    return null;
+  } catch {
+    return null;
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/// A voice message to text: the device's recognizer first where there is
+/// one (Jimmy, 02/10/2026: « utiliser la transcription depuis l'appareil
+/// si disponible, en priorité »), whisper.cpp otherwise, told the language.
+export async function transcribeSpeech(audio: Buffer, options: { locale?: string | null } = {}): Promise<string> {
+  const native = await transcribeOnDevice(audio, options.locale);
+  if (native !== null) return native;
+  return transcribeWavWithWhisperCpp(audio, { language: speechLanguage(options.locale) });
+}
+
+export async function transcribeWavWithWhisperCpp(audio: Buffer, options: { language?: string | null } = {}): Promise<string> {
   if (!audio || audio.length === 0) {
     throw new Error("empty_audio");
   }
@@ -77,7 +130,7 @@ export async function transcribeWavWithWhisperCpp(audio: Buffer): Promise<string
       "-f", inputPath,
       "-otxt",
       "-of", outputPath,
-      "-l", "auto",
+      "-l", options.language ?? "auto",
       // -nt: no timestamps in the output text
       "-nt",
     ]);
@@ -226,15 +279,19 @@ async function binaryExists(name: string): Promise<boolean> {
 
 async function runWhisper(binary: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    // The text goes to a file (-otxt): nothing read on stdout, which must
+    // not fill up and hold the child; and never more than three minutes.
+    const child = spawn(binary, args, { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     child.stderr?.on("data", (chunk) => {
-      stderr += chunk.toString();
+      stderr = (stderr + chunk.toString()).slice(-4000);
     });
-    child.on("error", reject);
-    child.on("exit", (code) => {
+    const timer = setTimeout(() => child.kill(), 180_000);
+    child.on("error", (error) => { clearTimeout(timer); reject(error); });
+    child.on("exit", (code, signal) => {
+      clearTimeout(timer);
       if (code === 0) resolve();
-      else reject(new Error(`whisper exited ${code}: ${stderr.trim().slice(0, 400)}`));
+      else reject(new Error(signal ? `whisper stopped (${signal})` : `whisper exited ${code}: ${stderr.trim().split("\n").slice(-3).join(" ").slice(0, 400)}`));
     });
   });
 }

@@ -20,7 +20,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { requireAuth, generateId, PLACEHOLDER_USER_NAME } from "../auth.js";
 import { db, providers, discussions, messages, memories, sqlite, users } from "../db.js";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
-import { transcribeWavWithWhisperCpp, withoutNonSpeech, WhisperUnavailableError } from "../whisper.js";
+import { transcribeSpeech, withoutNonSpeech, WhisperUnavailableError } from "../whisper.js";
 import { publish as publishEvent } from "../events.js";
 import {
   buildChatMessages,
@@ -361,7 +361,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     try {
       // Whisper writes [BLANK_AUDIO] and the like for what it did not
       // hear as speech: that is no message.
-      content = withoutNonSpeech(await transcribeWavWithWhisperCpp(audioBuffer));
+      content = withoutNonSpeech(await transcribeSpeech(audioBuffer, { locale: validLocale(parsed.locale ?? (parsed.query as { locale?: unknown } | undefined)?.locale) }));
       transcribed = true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
