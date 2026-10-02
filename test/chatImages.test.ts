@@ -62,6 +62,17 @@ test("the images of a request: up to four data URLs of an image, nothing else", 
   assert.equal(readImages(["data:text/html;base64,PGgxPg=="]), "invalid");
   const sent = withImages([{ role: "system", content: "S" }, { role: "user", content: "Q" }], [PNG]);
   assert.deepEqual(sent[1], { role: "user", content: [{ type: "text", text: "Q" }, { type: "image_url", image_url: { url: PNG } }] });
+  // The mark the conversation keeps is no text for the model (« je ne vois
+  // qu'un code image », 02/10/2026): out with the image, explained after it.
+  const withMark = withImages([{ role: "user", content: "Vois-tu cette image ?\n\n[image]" }], [PNG]);
+  assert.deepEqual((withMark[0]!.content as Array<{ text?: string }>)[0], { type: "text", text: "Vois-tu cette image ?" });
+  const later = withImages([{ role: "user", content: "Vois-tu cette image ?\n\n[image]" }, { role: "assistant", content: "Un carré." }, { role: "user", content: "Décris-la" }], []);
+  assert.match(later[0]!.content as string, /you saw it then; it is no longer shown to you/);
+  assert.doesNotMatch(later[0]!.content as string, /\[image\]/);
+  // Kept in memory: the image goes again with its own message.
+  const again = withImages([{ role: "user", content: "Vois-tu cette image ?\n\n[image]" }, { role: "assistant", content: "Un carré." }, { role: "user", content: "Décris-la" }], [], [PNG]);
+  assert.deepEqual((again[0]!.content as Array<{ type: string }>).map((part) => part.type), ["text", "image_url"]);
+  assert.equal(again[2]!.content, "Décris-la");
 });
 
 test("an image goes to the model with the last message; the conversation keeps « [image] »", async () => {

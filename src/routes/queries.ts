@@ -441,6 +441,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // erase the question. Assistant message is inserted after the
   // stream completes (or with a partial body on error).
   // Flat, or nested under `query[…]` as voice messages send it.
+  // Shown again with the questions that follow, for half an hour.
+  if (images.length) rememberImages(discussion.id, images);
   const promptId = insertMessage({
     discussionId: discussion.id,
     userId:       auth.userId,
@@ -935,6 +937,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
             purpose: "chat",
             tools: toolsFor(provider),
             images,
+            // « Tu peux me la décrire ? »: the image shown a moment ago,
+            // shown again in its place (Jimmy, 02/10/2026).
+            earlierImages: images.length ? [] : recentImages(discussion.id),
           },
         );
         break;
@@ -1449,7 +1454,7 @@ async function streamFromProvider(
   temperature: number | undefined,
   onDelta: (text: string) => void,
   signal: AbortSignal,
-  options: { effort?: Effort; onReasoning?: (text: string) => void; answerNow?: AbortSignal; purpose?: Purpose; tools?: ChatTools; images?: string[] } = {},
+  options: { effort?: Effort; onReasoning?: (text: string) => void; answerNow?: AbortSignal; purpose?: Purpose; tools?: ChatTools; images?: string[]; earlierImages?: string[] } = {},
 ): Promise<Usage | null> {
   // Images go to a model of the person's computers only.
   if (options.images?.length && provider.kind !== "local_openai" && provider.kind !== "peer_openai") throw new VisionUnavailableError(null);
@@ -1944,6 +1949,8 @@ async function streamLocal(
     tools?: ChatTools;
     /// Images with the last message (data URLs).
     images?: string[];
+    /// The images of the conversation's latest message that had some.
+    earlierImages?: string[];
   } = {},
 ): Promise<Usage | null> {
   const endpoint = baseUrl.replace(/\/$/, "");
@@ -1955,7 +1962,7 @@ async function streamLocal(
   const thinking = budget > 0;
   const body = {
     model,
-    messages: withImages(chatMessages, options.images ?? []),
+    messages: withImages(chatMessages, options.images ?? [], options.earlierImages ?? []),
     stream: true,
     max_tokens: options.maxTokens ?? LOCAL_MAX_TOKENS + budget,
     ...(temperature !== undefined ? { temperature } : {}),
@@ -2032,6 +2039,11 @@ async function streamLocal(
       res = await post({ ...body, ...extras });
       if (res.status === 400 || res.status === 422) {
         res = await post(body);
+      }
+      // An image shown earlier, to a model that does not read images (it
+      // was changed since): the question goes again without it.
+      if (!res.ok && !options.images?.length && options.earlierImages?.length) {
+        res = await post({ ...body, messages: withImages(chatMessages, [], []) });
       }
       if (!res.ok) {
         // A model without its vision file, given an image (llama.cpp: « image
@@ -2568,6 +2580,9 @@ const IMAGE_DATA_URL = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+
 /// What a message keeps of its images, in the conversation.
 const IMAGE_MARK = "[image]";
 const IMAGE_ONLY_QUESTION = "Décris cette image.";
+/// An image of an earlier message, as the model is told of it: it saw it
+/// then, it no longer does.
+const EARLIER_IMAGE = "[an image the user showed with this message — you saw it then; it is no longer shown to you]";
 
 export class VisionUnavailableError extends Error {
   constructor(public model: string | null) {
@@ -2587,13 +2602,39 @@ export function readImages(value: unknown): string[] | "invalid" {
 }
 
 /// The last message with its images, as OpenAI-compatible servers take
-/// them (llama.cpp, LM Studio, Ollama).
-export function withImages(messages: ChatMessage[], images: string[]): Array<ChatMessage | { role: "user"; content: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> }> {
-  if (!images.length) return messages;
-  const at = messages.map((message) => message.role).lastIndexOf("user");
-  if (at < 0) return messages;
-  return messages.map((message, index) => index !== at ? message : {
-    role: "user" as const,
-    content: [{ type: "text" as const, text: message.content }, ...images.map((url) => ({ type: "image_url" as const, image_url: { url } }))],
+/// them (llama.cpp, LM Studio, Ollama). The « [image] » a message keeps in
+/// the conversation is no text for the model: with the image, it is taken
+/// out — the model read it as all it was shown (« je ne vois qu'un code
+/// image », 02/10/2026); in an earlier message, it says what it was.
+export function withImages(messages: ChatMessage[], images: string[], earlier: string[] = []): Array<ChatMessage | { role: "user"; content: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> }> {
+  const at = images.length ? messages.map((message) => message.role).lastIndexOf("user") : -1;
+  // The latest earlier message with images, given them again when kept.
+  let shown = -1;
+  if (earlier.length) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (index !== at && messages[index]!.role === "user" && messages[index]!.content.includes(IMAGE_MARK)) { shown = index; break; }
+    }
+  }
+  const parts = (text: string, urls: string[]) => ({ role: "user" as const, content: [{ type: "text" as const, text }, ...urls.map((url) => ({ type: "image_url" as const, image_url: { url } }))] });
+  return messages.map((message, index) => {
+    if (index === at) return parts(message.content.split(IMAGE_MARK).join("").trim() || IMAGE_ONLY_QUESTION, images);
+    if (index === shown) return parts(message.content.split(IMAGE_MARK).join("").trim() || IMAGE_ONLY_QUESTION, earlier);
+    if (message.role !== "user" || !message.content.includes(IMAGE_MARK)) return message;
+    return { ...message, content: message.content.split(IMAGE_MARK).join(EARLIER_IMAGE) };
   });
+}
+
+/// The images of a conversation's latest message that had some, kept in
+/// memory half an hour for the questions that follow — never written down.
+const RECENT_IMAGES_MS = 30 * 60 * 1000;
+const recentImageStore = new Map<string, { at: number; images: string[] }>();
+
+export function rememberImages(discussionId: string, images: string[], now = Date.now()): void {
+  for (const [id, entry] of recentImageStore) if (now - entry.at > RECENT_IMAGES_MS) recentImageStore.delete(id);
+  if (images.length) recentImageStore.set(discussionId, { at: now, images });
+}
+
+export function recentImages(discussionId: string, now = Date.now()): string[] {
+  const entry = recentImageStore.get(discussionId);
+  return entry && now - entry.at <= RECENT_IMAGES_MS ? entry.images : [];
 }

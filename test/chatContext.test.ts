@@ -435,3 +435,20 @@ test("a memory kept in the person's own words is given as theirs, never as the m
   const third = buildChatTurn(input({ userName: null, content: "que sais-tu d'Ilan ?", memories: [{ kind: "user", title: null, content: "Ilan est un ami d'enfance de Jimmy." }] }));
   assert.doesNotMatch(third.messages[0].content, /in their own words/);
 });
+
+test("« Que sais-tu de moi ? »: who the person is comes first, and what the profile had no room for comes with the message", () => {
+  const friends = Array.from({ length: 8 }, (_, index) => ({
+    kind: "user" as const, title: null, manual: true, source: "conversation", createdAt: NOW.getTime() - 3_600_000,
+    content: `J'ai un ami qui s'appelle Ami${index}, il habite loin, il a 40 ans, une femme et des enfants, et nous nous connaissons depuis l'école primaire, c'est un très bon ami ${"de longue date ".repeat(6)}`,
+  }));
+  const self = [
+    { kind: "user" as const, title: null, content: "Jimmy habite 48 rue Jean Bonal, à La Garenne-Colombes." },
+    { kind: "user" as const, title: null, content: "Jimmy dirige Osmove, sa société de conseil, et travaille chez Hyundai Motor France." },
+  ];
+  const turn = buildChatTurn(input({ userName: "Jimmy", memories: [...friends, ...self], content: "Que sais-tu de moi ?" }));
+  const system = turn.messages[0]!.content as string;
+  assert.match(system, /Jimmy habite 48 rue Jean Bonal/);
+  assert.match(system, /Jimmy dirige Osmove/);
+  const plain = buildChatTurn(input({ userName: "Jimmy", memories: [...friends, ...self], content: "Quelle heure est-il ?" }));
+  assert.doesNotMatch(plain.messages.at(-1)!.content as string, /More of what the user's saved memories say/);
+});
