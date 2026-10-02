@@ -125,17 +125,28 @@ export async function transcribeWavWithWhisperCpp(audio: Buffer, options: { lang
     // happens to match the model" footguns. The original WAV path
     // still works as a fallback when ffmpeg is missing.
     const inputPath = await ensureWavOrPassthrough(audio, rawPath, wavPath);
-    await runWhisper(DEFAULT_BINARY, [
-      "-m", modelPath,
-      "-f", inputPath,
-      "-otxt",
-      "-of", outputPath,
-      "-l", options.language ?? "auto",
-      // -nt: no timestamps in the output text
-      "-nt",
-    ]);
-    const text = await readFile(`${outputPath}.txt`, "utf-8").catch(() => "");
-    return text.trim();
+    const pass = async (language: string) => {
+      const stderr = await runWhisper(DEFAULT_BINARY, [
+        "-m", modelPath,
+        "-f", inputPath,
+        "-otxt",
+        "-of", outputPath,
+        "-l", language,
+        // -nt: no timestamps in the output text
+        "-nt",
+      ]);
+      return { stderr, text: (await readFile(`${outputPath}.txt`, "utf-8").catch(() => "")).trim() };
+    };
+    // Whisper guesses the language first. A few seconds of French in a
+    // poor microphone are often heard as English (« Are you looking to
+    // salon? » for « Allume la guirlande du salon », 02/10/2026), so a
+    // guess other than the person's language counts only when Whisper is
+    // sure of it — someone dictating in English keeps their English;
+    // otherwise the message is heard again in the person's language.
+    const first = await pass("auto");
+    const wanted = options.language ?? null;
+    if (!wanted) return first.text;
+    return keepDetected(first.stderr, wanted) ? first.text : (await pass(wanted)).text;
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -277,7 +288,15 @@ async function binaryExists(name: string): Promise<boolean> {
   });
 }
 
-async function runWhisper(binary: string, args: string[]): Promise<void> {
+/// Whether whisper's own guess stands: the person's language, or another
+/// one it is sure of (« auto-detected language: en (p = 0.962386) »).
+export function keepDetected(stderr: string, wanted: string, sure = 0.95): boolean {
+  const match = /auto-detected language:\s*([a-z]{2,3})\s*\(p\s*=\s*([0-9.]+)\)/i.exec(stderr);
+  if (!match) return false;
+  return match[1]!.toLowerCase() === wanted.toLowerCase() || Number(match[2]) >= sure;
+}
+
+async function runWhisper(binary: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     // The text goes to a file (-otxt): nothing read on stdout, which must
     // not fill up and hold the child; and never more than three minutes.
@@ -290,7 +309,7 @@ async function runWhisper(binary: string, args: string[]): Promise<void> {
     child.on("error", (error) => { clearTimeout(timer); reject(error); });
     child.on("exit", (code, signal) => {
       clearTimeout(timer);
-      if (code === 0) resolve();
+      if (code === 0) resolve(stderr);
       else reject(new Error(signal ? `whisper stopped (${signal})` : `whisper exited ${code}: ${stderr.trim().split("\n").slice(-3).join(" ").slice(0, 400)}`));
     });
   });

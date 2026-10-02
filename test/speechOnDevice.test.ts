@@ -18,13 +18,14 @@ const script = (name: string, body: string) => {
 const heard = script("helper-ok", `const a = process.argv.slice(2); console.log(JSON.stringify(a.includes("fr-FR") ? { text: "Allume la guirlande." } : { error: "failed" }));`);
 const refused = script("helper-refused", `console.log(JSON.stringify({ error: "not_authorized" })); process.exit(3);`);
 const silent = script("helper-silent", `console.log(JSON.stringify({ error: "no_speech" })); process.exit(3);`);
-const whisper = script("whisper-cli", `const a = process.argv.slice(2); require("fs").writeFileSync(a[a.indexOf("-of") + 1] + ".txt", "langue " + a[a.indexOf("-l") + 1]);`);
+// A whisper that hears English, sure of it at 0.6 (a poor recording of French).
+const whisper = script("whisper-cli", `const a = process.argv.slice(2); const l = a[a.indexOf("-l") + 1]; if (l === "auto") process.stderr.write("auto-detected language: en (p = 0.600000)\\n"); require("fs").writeFileSync(a[a.indexOf("-of") + 1] + ".txt", "langue " + l);`);
 const model = join(dir, "ggml-small.bin");
 writeFileSync(model, "model");
 process.env.TWOODY_WHISPER_BINARY = whisper;
 process.env.TWOODY_WHISPER_MODEL = model;
 
-const { speechLanguage, speechLocale, transcribeOnDevice, transcribeSpeech } = await import("../src/whisper.js");
+const { keepDetected, speechLanguage, speechLocale, transcribeOnDevice, transcribeSpeech } = await import("../src/whisper.js");
 
 const wav = (() => {
   const header = Buffer.alloc(44);
@@ -53,7 +54,14 @@ test("the Mac's recognizer first: its words, nothing for silence, and Whisper wh
   assert.equal(await transcribeOnDevice(wav, "fr", join(dir, "missing")), null);
 });
 
-test("without it, Whisper is told the language", async () => {
+test("Whisper's guess stands for the person's language, or another it is sure of", () => {
+  assert.equal(keepDetected("auto-detected language: fr (p = 0.71)", "fr"), true);
+  assert.equal(keepDetected("auto-detected language: en (p = 0.962386)", "fr"), true, "someone dictating in English keeps it");
+  assert.equal(keepDetected("auto-detected language: en (p = 0.908244)", "fr"), false, "French heard as English: heard again in French");
+  assert.equal(keepDetected("", "fr"), false);
+});
+
+test("without it, Whisper is told the language when unsure", async () => {
   delete process.env.TWOODY_SPEECH_HELPER;
   assert.equal(await transcribeSpeech(wav, { locale: "fr-FR" }), "langue fr");
   assert.equal(await transcribeSpeech(wav, {}), "langue auto");
