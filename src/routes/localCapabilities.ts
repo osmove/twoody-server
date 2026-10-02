@@ -3,6 +3,7 @@ import { requireAuth } from "../auth.js";
 import { reindex } from "../documents/library.js";
 import { isLocalCapability, LOCAL_CAPABILITIES, localCapabilities, setLocalCapability } from "../localCapabilities.js";
 import { isThisComputersApp } from "./usage.js";
+import { homeOn } from "../home/homeAssistant.js";
 
 //   GET   /local_capabilities        → { capabilities: { documents: false, … } }
 //   PATCH /local_capabilities/:id    { enabled } → the same
@@ -14,7 +15,8 @@ export async function localCapabilityRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      reply.send({ capabilities: localCapabilities(auth.userId), known: LOCAL_CAPABILITIES });
+      // Maison may be on by the environment of a computer without a screen.
+      reply.send({ capabilities: { ...localCapabilities(auth.userId), home: homeOn(auth.userId) }, known: LOCAL_CAPABILITIES });
     },
   });
 

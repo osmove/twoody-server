@@ -9,14 +9,15 @@ import { updateProject, PROJECT_STATUSES, type ProjectStatus } from "./projects.
 // « Annuler » (routes/queries.ts `actions`).
 
 export interface ChatAction {
-  type: "reminder" | "task" | "project";
+  /// "home": a device of the person's home switched (home/homeAssistant.ts).
+  type: "reminder" | "task" | "project" | "home";
   id: string;
   title: string;
   /// When it is due or will ring (ISO), if it has a time.
   at: string | null;
   project: { id: string; title: string } | null;
   /// For a project: what changed.
-  change?: { status?: string; due?: string | null };
+  change?: { status?: string; due?: string | null; state?: string; brightness?: number | null };
 }
 
 export const ACTION_TOOLS = [

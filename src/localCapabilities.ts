@@ -13,7 +13,7 @@ import { sqlite } from "./db.js";
 // first read turns on documents when folders are granted, contacts and the
 // agenda when there are some.
 
-export const LOCAL_CAPABILITIES = ["documents", "contacts", "calendar", "web", "dictation", "agent"] as const;
+export const LOCAL_CAPABILITIES = ["documents", "contacts", "calendar", "web", "dictation", "agent", "home"] as const;
 export type LocalCapability = (typeof LOCAL_CAPABILITIES)[number];
 
 export function isLocalCapability(value: unknown): value is LocalCapability {
