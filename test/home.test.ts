@@ -14,7 +14,7 @@ process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-home-"));
 
 const { buildApp } = await import("../src/app.js");
 const { createAuthSession, ensureSetupToken } = await import("../src/auth.js");
-const { homeShortcut, homeBlock, serviceFor } = await import("../src/home/homeAssistant.js");
+const { homeShortcut, homeBlock, homeDoneSentence, serviceFor } = await import("../src/home/homeAssistant.js");
 
 // Jimmy's Home Assistant, as its /api/states lists it (02/10/2026), plus a
 // lock Twoody must never be given.
@@ -94,6 +94,12 @@ test("Jimmy's scripts: « allume la télé » runs Allume Télé, « éteins la 
   assert.deepEqual(homeShortcut("éteins la télé", tv)?.entities.map((e) => e.entity_id), ["script.eteins_tele"]);
 });
 
+test("what was done is said with the state before and after: « already » only when it was", () => {
+  const garland = { entity_id: "switch.guirlande_salon", name: "Guirlande salon", domain: "switch", state: "on", brightness: null };
+  assert.equal(homeDoneSentence({ entity: garland, action: "off", brightness: null }), "« Guirlande salon » was on; Twoody has just switched it: it is now off.");
+  assert.equal(homeDoneSentence({ entity: garland, action: "on", brightness: null }), "« Guirlande salon » was already on; the command was sent anyway: it is on.");
+});
+
 test("what a word does, by domain; a lock is never offered", () => {
   assert.equal(serviceFor("light", "on"), "turn_on");
   assert.equal(serviceFor("cover", "close"), "close_cover");
@@ -125,7 +131,8 @@ test("on: the chat switches the light at once, says what it did, and never touch
   const response = await app.inject({ method: "POST", url: "/queries", headers: phone, payload: { text: "Allume la lumière du salon", channel: "desktop", force_new_discussion: true } });
   assert.equal(response.statusCode, 200, response.body);
   assert.deepEqual(called, [{ path: "/api/services/light/turn_on", body: { entity_id: "light.lumiere_salon" } }]);
-  assert.match(asked[0]!.messages.at(-1)!.content, /Done just now: « Lumière Salon » on\./);
+  assert.match(asked[0]!.messages.at(-1)!.content, /« Lumière Salon » was off; Twoody has just switched it: it is now on\./);
+  assert.doesNotMatch(asked[0]!.messages.at(-1)!.content, /\[The user's home devices/, "done already: no list of the states from before");
   assert.ok(!asked[0]!.tools?.some((tool) => tool.function.name === "control_home"), "done already: not offered again");
   assert.match(response.body, /"type":"home"/);
 
