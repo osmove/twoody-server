@@ -294,6 +294,9 @@ test("projects: a new one is proposed, never made on its own; a hypothesis or on
     { title: "Mariage", name: "mariage", kind: "event", size: "large", status: "active", due: "2027-06-15", evidence: "On se marie en juin 2027", confidence: 0.95, ref: "p1" },
     { title: "Déménagement", name: "déménagement", kind: "home", size: "large", status: "active", due: null, evidence: "nous déménageons", confidence: 0.9, ref: null },
   ] }));
+  // Four sizes (Jimmy, 02/10/2026): what the model says is kept, anything else is small.
+  assert.deepEqual(projects.map((project) => project.size), ["small", "large", "large", "large"]);
+  assert.deepEqual(parseProjects(JSON.stringify({ projects: ["medium", "critical", "huge"].map((size) => ({ title: `Projet ${size}`, size, evidence: "x", confidence: 0.9 })) })).map((project) => project.size), ["medium", "critical", "small"]);
   const known = [{ ref: "p1", id: "proj-wedding", title: "Mariage", status: "active", name: "mariage" }];
   const judged = judgeProjects(projects, { personLines, known });
   assert.deepEqual(judged.propose.map((j) => [j.project.title, j.updates?.id ?? null]), [["Achat d'un Mac mini", null], ["Mariage", "proj-wedding"]]);

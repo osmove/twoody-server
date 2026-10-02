@@ -8,7 +8,7 @@ import { isForgottenFact, learnedFactId, memoryWritten } from "../vault/memories
 import { firstPerson, memoryWords, sameWord } from "./rank.js";
 import { askedToRemember } from "../memoryLearning.js";
 import { recordTrace } from "../diagnostics/traces.js";
-import { createProject, knownProjects, updateProject } from "../projects/projects.js";
+import { createProject, knownProjects, PROJECT_SIZES, updateProject, type ProjectSize } from "../projects/projects.js";
 
 // What Twoody learns from a conversation, once it is over (Mémoire v2, L6,
 // docs/memory-v2-design.md §4). Jimmy, 01/10/2026: learn from everything
@@ -127,7 +127,7 @@ export function learningPrompt(lines: Array<{ role: "person" | "assistant"; cont
         "Projects: also list what the person is working towards over days or months — a purchase (a house, a car, a Mac mini), a wedding, a move, a trip, a job search, a renovation, a project at work — " +
         "only when the PERSON says they are doing or planning it themselves, not someone else's, not a mere wish or hypothesis. " +
         "title: a short name in their language (« Achat d'un Mac mini »); name: how they call it in a sentence (« Mac mini »); kind: one of purchase, event, home, travel, work, health, learning, admin, other; " +
-        "size: \"large\" for months of effort or a big budget, else \"small\"; status: idea, active, paused, done or dropped; due: a date YYYY-MM-DD if they say one, else null; evidence and confidence as for facts. " +
+        "size: \"critical\" when much rides on it and it cannot slip (their health, their job or company, a legal or tax deadline, their home), \"large\" for months of effort or a big budget, \"medium\" for weeks of effort or a real budget, else \"small\"; status: idea, active, paused, done or dropped; due: a date YYYY-MM-DD if they say one, else null; evidence and confidence as for facts. " +
         "When it is one of PROJECTS, set \"ref\" to its ref and give it only if its status or due date changes. A project never replaces the facts: still list in facts what the person said about it.\n" +
         "Answer with JSON only: {\"facts\":[{\"text\":\"…\",\"kind\":\"user\",\"category\":\"…\",\"confidence\":0.9,\"evidence\":\"…\",\"supersedes\":null}],\"projects\":[{\"title\":\"…\",\"name\":\"…\",\"kind\":\"purchase\",\"size\":\"small\",\"status\":\"idea\",\"due\":null,\"evidence\":\"…\",\"confidence\":0.8,\"ref\":null}]}. " +
         "Most conversations hold nothing to remember: then {\"facts\":[],\"projects\":[]}.",
@@ -180,7 +180,7 @@ export interface LearnedProject {
   title: string;
   name: string;
   kind: string;
-  size: "small" | "large";
+  size: ProjectSize;
   status: "idea" | "active" | "paused" | "done" | "dropped";
   due: string | null;
   evidence: string;
@@ -217,7 +217,7 @@ export function parseProjects(answer: string): LearnedProject[] {
       title: title.charAt(0).toUpperCase() + title.slice(1),
       name,
       kind: typeof project!.kind === "string" && PROJECT_KINDS_LEARNED.has(project!.kind) ? project!.kind : "other",
-      size: project!.size === "large" ? "large" : "small",
+      size: typeof project!.size === "string" && (PROJECT_SIZES as readonly string[]).includes(project!.size) ? (project!.size as ProjectSize) : "small",
       status: typeof project!.status === "string" && PROJECT_STATUSES_LEARNED.has(project!.status) ? (project!.status as LearnedProject["status"]) : "active",
       due,
       evidence: typeof project!.evidence === "string" ? project!.evidence : "",
