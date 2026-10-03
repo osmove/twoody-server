@@ -92,3 +92,21 @@ test("an exchange already here, synchronised later, takes its ref instead of a c
   assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM messages WHERE discussion_id = 'old-1'").get() as { n: number }).n, 2);
   assert.deepEqual((sqlite.prepare("SELECT vault_ref FROM messages WHERE discussion_id = 'old-1' ORDER BY rowid").all() as Array<{ vault_ref: string }>).map((r) => r.vault_ref), ["q-1", "q-1#reply"]);
 });
+
+test("a question said here without its ref, its copy from the vault moments later: one exchange, not two", async () => {
+  // Jimmy, 03/10/2026: « Salut, comment ça va ? » said aloud on the phone,
+  // then shown twice once the phone's copy came back through the vault.
+  const at = Math.floor(Date.parse("2026-10-03T06:06:06Z") / 1000);
+  sqlite.prepare("INSERT INTO discussions (id, user_id, channel, title, created_at, last_activity_at) VALUES ('voice-1', ?, 'iPhone', 'Salut', ?, ?)").run(owner, at, at);
+  const insert = sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, channel, created_at) VALUES (?, 'voice-1', ?, ?, ?, ?, ?)");
+  insert.run("vq-1", owner, "user", "Salut, comment ça va ?", "recording", at);
+  insert.run("va-1", owner, "assistant", "Salut Jimmy, ça va !", null, at + 9);
+  const spoken = "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f";
+  const synced = await app.inject({ method: "POST", url: "/discussions/import", headers, payload: { vault_id: spoken, discussion_id: "voice-1", turns: [{ ...turn("1791007566186", "Salut, comment ça va ?", "Salut Jimmy, ça va !", "2026-10-03T06:06:08Z"), channel: "recording" }] } });
+  assert.equal(synced.json().added, 0);
+  const rows = sqlite.prepare("SELECT role, vault_ref, channel FROM messages WHERE discussion_id = 'voice-1' ORDER BY rowid").all() as Array<{ role: string; vault_ref: string; channel: string | null }>;
+  assert.deepEqual(rows.map((r) => [r.role, r.vault_ref, r.channel]), [["user", "1791007566186", "recording"], ["assistant", "1791007566186#reply", null]]);
+  // The same words asked again later are another exchange.
+  const later = await app.inject({ method: "POST", url: "/discussions/import", headers, payload: { vault_id: spoken, turns: [turn("1791009000000", "Salut, comment ça va ?", "Toujours bien.", "2026-10-03T07:00:00Z")] } });
+  assert.equal(later.json().added, 1);
+});

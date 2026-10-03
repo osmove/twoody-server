@@ -1,4 +1,5 @@
-import { relative, isAbsolute } from "node:path";
+import { relative, isAbsolute, join } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
 import { clientOf } from "./usage.js";
 import { recordUsageEvent, type UsageEventInput } from "../usageStore.js";
 import { askedToRemember, rememberFacts } from "../memoryLearning.js";
@@ -18,7 +19,7 @@ import { VIA_TUNNEL_HEADER } from "../tunnel/host.js";
 import { documentAccess } from "../documents/access.js";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { requireAuth, generateId, PLACEHOLDER_USER_NAME } from "../auth.js";
-import { db, providers, discussions, messages, memories, sqlite, users } from "../db.js";
+import { DATA_DIR, db, providers, discussions, messages, memories, sqlite, users } from "../db.js";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { transcribeSpeech, withoutNonSpeech, WhisperUnavailableError } from "../whisper.js";
 import { publish as publishEvent } from "../events.js";
@@ -153,6 +154,23 @@ export async function queryRoutes(app: FastifyInstance) {
   // A memory saved, edited or learned: the next new conversation's start,
   // read ahead.
   onMemoriesChanged((userId) => scheduleWarm(userId));
+  // A new day (« Today is… »), a restart: the start of a new conversation
+  // read ahead before anyone asks (Jimmy, 03/10/2026: the first spoken
+  // question of the morning read 2 477 tokens from nothing, 5 s).
+  startWarmWatch();
+  // The person is about to ask (a recording started on the phone, the
+  // chat opened): what a new conversation starts with is read now, while
+  // they speak or type.
+  app.post("/queries/warm", {
+    schema: { tags: ["queries"], summary: "Read ahead the start of a new conversation, while the person speaks or types", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      await restoreWarmSeed(auth.userId);
+      scheduleWarm(auth.userId, 0);
+      reply.code(202).send({ status: "scheduled" });
+    },
+  });
   app.post("/queries", {
     // Images come inline (data URLs, IMAGES_MAX of IMAGE_MAX_CHARS each).
     bodyLimit: 48 * 1024 * 1024,
@@ -840,6 +858,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // (warmNewConversation): the facts of this request, and what was sent.
     if (provider.kind === "local_openai") {
       lastTurnInputs.set(auth.userId, { input: turnInput, provider, tools: toolsFor(provider)?.definitions ?? null });
+      saveWarmSeed(auth.userId, turnInput, provider, toolsFor(provider)?.definitions ?? null);
       noteSystemSent(provider, chatMessages[0]?.content ?? "", toolsFor(provider)?.definitions ?? null);
     }
     let conversationOnly: ChatMessage[] | null = null;
@@ -1196,6 +1215,9 @@ async function parseMultipartBody(req: FastifyRequest): Promise<ParsedBody | nul
     locale:             (nested.locale as string) ?? (fields.locale as string),
     user_first_name:    (nested.user_first_name as string) ?? (fields.user_first_name as string),
     memory_mode:        (nested.memory_mode as string) ?? (fields.memory_mode as string),
+    // A spoken question names its exchange too: its copy from the vault
+    // is then known here, not added a second time.
+    vault_ref:          (nested.vault_ref as string) ?? (fields.vault_ref as string),
     audioBuffer:        audioBuffer ?? undefined,
   };
 }
@@ -1577,6 +1599,73 @@ export async function warmNewConversation(userId: string): Promise<"warmed" | "u
   } finally {
     done();
   }
+}
+
+// What the next new conversation is built from, kept on disk: after a
+// restart (an update), the runtime's cache is empty and nothing would say
+// what to read ahead until the person's first message. Without what is
+// read again at each turn (history, memories, documents, the message).
+const WARM_SEEDS_FILE = join(DATA_DIR, "warm-seeds.json");
+const WARM_WATCH_MS = 10 * 60_000;
+const SEED_LEFT_OUT = ["prefs", "history", "memories", "content", "excerpts", "documentFiles", "documentFileTotal", "fileListings", "documentNote", "personal", "homeDevices", "homeDone", "projectCards", "remembered", "summary", "summaryThrough", "state", "currentId", "discussionId", "relevant", "profileHints", "now", "documentScan"];
+
+type WarmSeed = { input: Record<string, unknown>; tools: ChatTools["definitions"] | null; model: string | null };
+
+function readWarmSeeds(): Record<string, WarmSeed> {
+  try {
+    const parsed = JSON.parse(readFileSync(WARM_SEEDS_FILE, "utf8")) as unknown;
+    return parsed && typeof parsed === "object" ? parsed as Record<string, WarmSeed> : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveWarmSeed(userId: string, input: ChatContextInput, provider: Provider, tools: ChatTools["definitions"] | null) {
+  const kept = Object.fromEntries(Object.entries(input).filter(([key]) => !SEED_LEFT_OUT.includes(key)));
+  const seeds = readWarmSeeds();
+  seeds[userId] = { input: kept, tools, model: "model" in provider ? provider.model : null };
+  try {
+    writeFileSync(WARM_SEEDS_FILE, JSON.stringify(seeds), { mode: 0o600 });
+  } catch {
+    // Read ahead only from the next message after a restart.
+  }
+}
+
+/// After a restart, what the last turn was built from, from disk.
+export async function restoreWarmSeed(userId: string): Promise<boolean> {
+  if (lastTurnInputs.has(userId)) return true;
+  const seed = readWarmSeeds()[userId];
+  if (!seed?.input) return false;
+  const provider = await resolveProvider(userId, seed.model ?? undefined).catch(() => null);
+  if (!provider || provider.kind !== "local_openai" || lastTurnInputs.has(userId)) return lastTurnInputs.has(userId);
+  const input = { ...seed.input, prefs: {}, history: [], memories: [], content: "" } as unknown as ChatContextInput;
+  lastTurnInputs.set(userId, { input, provider, tools: seed.tools });
+  return true;
+}
+
+/// A restart, for the tests: what was kept in memory is gone.
+export function forgetWarmStateForTests() {
+  lastTurnInputs.clear();
+  systemsSent.clear();
+}
+
+let warmWatch: NodeJS.Timeout | null = null;
+
+/// Every few minutes, and once soon after starting: the start of a new
+/// conversation of each person who chatted here, read again if it changed
+/// (a new day, a memory learned while nothing ran).
+function startWarmWatch() {
+  if (warmWatch || process.env.NODE_ENV === "test") return;
+  const check = async () => {
+    for (const userId of new Set([...Object.keys(readWarmSeeds()), ...lastTurnInputs.keys()])) {
+      if (inflight() > 0) return;
+      if (await restoreWarmSeed(userId)) await warmNewConversation(userId).catch(() => "none");
+    }
+  };
+  const first = setTimeout(() => void check(), 30_000);
+  first.unref?.();
+  warmWatch = setInterval(() => void check(), WARM_WATCH_MS);
+  warmWatch.unref?.();
 }
 
 function scheduleWarm(userId: string, delayMs = WARM_DELAY_MS) {

@@ -38,7 +38,7 @@ const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
 
 const { buildApp } = await import("../src/app.js");
 const { ensureSetupToken } = await import("../src/auth.js");
-const { warmNewConversation } = await import("../src/routes/queries.js");
+const { forgetWarmStateForTests, restoreWarmSeed, warmNewConversation } = await import("../src/routes/queries.js");
 const app = await buildApp();
 test.after(async () => {
   await app.close();
@@ -87,4 +87,29 @@ test("projects: a message about one carries its card; the large ones under way a
   await ask("Une idée de dîner ?");
   assert.doesNotMatch(chats().at(-1)!.messages.at(-1)!.content, /projects this message is about/);
   assert.ok(mac.id);
+});
+
+test("after a restart (an update), the start of a new conversation is still known and read ahead, the same as before", async () => {
+  // Jimmy, 03/10/2026: the first spoken question of the morning read its
+  // 2 477 tokens from nothing (5 s) — Twoody had been updated the evening before.
+  await ask("Bonsoir");
+  const before = chats().at(-1)!.messages[0]!.content;
+  forgetWarmStateForTests();
+  assert.equal(await warmNewConversation(userId), "none", "nothing in memory");
+  assert.equal(await restoreWarmSeed(userId), true);
+  assert.equal(await warmNewConversation(userId), "warmed");
+  assert.equal(warms().at(-1)!.messages[0]!.content, before, "the same start as the last new conversation's");
+});
+
+test("« the person is about to ask » (a recording started on the phone): read ahead at once, and only once", async () => {
+  forgetWarmStateForTests();
+  const count = warms().length;
+  const started = await app.inject({ method: "POST", url: "/queries/warm", headers });
+  assert.equal(started.statusCode, 202);
+  for (let i = 0; i < 50 && warms().length === count; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(warms().length, count + 1);
+  await app.inject({ method: "POST", url: "/queries/warm", headers });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(warms().length, count + 1, "unchanged: not read twice");
+  assert.equal((await app.inject({ method: "POST", url: "/queries/warm" })).statusCode, 401);
 });

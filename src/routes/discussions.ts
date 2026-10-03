@@ -408,11 +408,17 @@ export function importVaultConversation(userId: string, body: ImportBody): { err
     const adopt = sqlite.prepare("SELECT id, rowid AS position FROM messages WHERE discussion_id = ? AND id = ? AND role = 'user' AND vault_ref IS NULL");
     const replyAfter = sqlite.prepare("SELECT id FROM messages WHERE discussion_id = ? AND role = 'assistant' AND vault_ref IS NULL AND rowid > ? ORDER BY rowid LIMIT 1");
     const setRef = sqlite.prepare("UPDATE messages SET vault_ref = ? WHERE id = ?");
+    // The same question asked here moments before, without a ref (a phone
+    // that did not name its exchange: Jimmy, 03/10/2026, a spoken question
+    // shown twice, its copy from the vault added beside it).
+    const sameQuestion = sqlite.prepare("SELECT id, rowid AS position FROM messages WHERE discussion_id = ? AND role = 'user' AND vault_ref IS NULL AND content = ? AND created_at BETWEEN ? AND ? ORDER BY rowid DESC LIMIT 1");
     for (const turn of turns) {
       if (known.has(turn.ref)) continue;
       // An exchange already here, now being synchronised (its ref is the
-      // question's message id): it takes the ref instead of a copy.
-      const existing = adopt.get(id, turn.ref) as { id: string; position: number } | undefined;
+      // question's message id, or the same words asked a moment before):
+      // it takes the ref instead of a copy.
+      const asked = Math.floor((Date.parse(turn.created_at ?? "") || Date.now()) / 1000);
+      const existing = (adopt.get(id, turn.ref) ?? sameQuestion.get(id, turn.text, asked - 600, asked + 600)) as { id: string; position: number } | undefined;
       if (existing) {
         setRef.run(turn.ref, existing.id);
         const answer = replyAfter.get(id, existing.position) as { id: string } | undefined;
