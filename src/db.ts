@@ -1265,6 +1265,16 @@ sqlite.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_turn_traces_user_at ON turn_traces (user_id, at);
   CREATE INDEX IF NOT EXISTS idx_turn_traces_message ON turn_traces (message_id);
+  -- What the model was given for an answer — instructions, profile,
+  -- history, the message, the tools offered — for « Détails » under it
+  -- (Jimmy, 03/10/2026). This computer only, like the traces.
+  CREATE TABLE IF NOT EXISTS turn_prompts (
+    trace_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    message_id TEXT,
+    prompt_json TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_turn_prompts_message ON turn_prompts (message_id);
 `);
 
 // Projects (docs/projects-design.md, lot P1): what the person is working

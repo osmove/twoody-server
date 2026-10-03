@@ -53,6 +53,16 @@ export class ConnectorError extends Error {
 const FILE = () => join(DATA_DIR, "connectors.json");
 /// Tools offered to a chat in all: each costs tokens in every message.
 export const MAX_CHAT_TOOLS = 40;
+/// A connector with more tools than this starts with none offered: the
+/// person picks the ones they need (Jimmy, 03/10/2026: J-Way's 58 tools all
+/// went to every message).
+export const PICK_ABOVE_TOOLS = 15;
+
+/// About how many tokens a tool's definition adds to every message (its
+/// name, description and parameters as the model reads them).
+export function toolTokens(tool: Pick<StoredTool, "name" | "description" | "inputSchema">): number {
+  return Math.ceil(JSON.stringify({ name: tool.name, description: tool.description, parameters: tool.inputSchema }).length / 3.6);
+}
 const DESCRIPTION_CHARS = 500;
 
 function readAll(): Record<string, Connector[]> {
@@ -164,6 +174,9 @@ export function removeConnector(userId: string, id: string) {
 
 /// What a screen shows: never a value of its environment or headers.
 export function connectorView(userId: string, connector: Connector) {
+  // What the chat really gets, across all the connectors (MAX_CHAT_TOOLS).
+  const offered = new Set(connectorChatTools(userId).filter((tool) => tool.connectorId === connector.id).map((tool) => tool.tool));
+  const tools = connector.tools.map((tool) => ({ name: tool.name, description: tool.description, enabled: !connector.disabled_tools.includes(tool.name), offered: offered.has(tool.name), tokens: toolTokens(tool) }));
   return {
     id: connector.id,
     name: connector.name,
@@ -176,7 +189,11 @@ export function connectorView(userId: string, connector: Connector) {
     enabled: connector.enabled,
     running: clients.get(runningKey(userId, connector.id))?.client.running === true,
     error: connector.error,
-    tools: connector.tools.map((tool) => ({ name: tool.name, description: tool.description, enabled: !connector.disabled_tools.includes(tool.name) })),
+    tools,
+    /// The tools the chat gets from it, and about what they add to every message.
+    offered_tools: tools.filter((tool) => tool.offered).length,
+    offered_tokens: tools.filter((tool) => tool.offered).reduce((sum, tool) => sum + tool.tokens, 0),
+    max_chat_tools: MAX_CHAT_TOOLS,
     oauth: connector.url ? {
       required: connector.auth_required === true,
       connected: !!(connector.oauth?.access_token || connector.oauth?.refresh_token),
@@ -236,7 +253,11 @@ export async function startConnector(userId: string, id: string): Promise<{ clie
       description: (tool.description ?? "").slice(0, 2_000),
       inputSchema: tool.inputSchema && typeof tool.inputSchema === "object" ? tool.inputSchema : { type: "object", properties: {} },
     }));
-    const updated = update(userId, id, (stored) => ({ ...stored, tools, error: null, auth_required: false }));
+    // Many tools, read for the first time: none offered until the person picks.
+    const updated = update(userId, id, (stored) => ({
+      ...stored, tools, error: null, auth_required: false,
+      ...(stored.tools.length === 0 && tools.length > PICK_ABOVE_TOOLS ? { disabled_tools: tools.map((tool) => tool.name) } : {}),
+    }));
     return { client, connector: updated };
   } catch (err) {
     client.stop();

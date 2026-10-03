@@ -10,6 +10,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   else if (message.method === "tools/list") send({ id: message.id, result: { tools: [
     { name: "lookup", description: "Finds a word in the notebook", inputSchema: { type: "object", properties: { word: { type: "string" } }, required: ["word"] } },
     { name: "erase_all", description: "Erases the notebook", inputSchema: { type: "object", properties: {} } },
+    // EXTRA_TOOLS=n: a server with many tools, as J-Way's 58.
+    ...Array.from({ length: Number(process.env.EXTRA_TOOLS ?? 0) }, (_, i) => ({ name: `extra_${i}`, description: `Extra tool ${i}`, inputSchema: { type: "object", properties: {} } })),
   ] } });
   else if (message.method === "tools/call") send({ id: message.id, result: { content: [{ type: "text", text: `${process.env.GREETING ?? "?"}: ${message.params.arguments.word} found on page 12` }] } });
   else if (message.id !== undefined) send({ id: message.id, error: { code: -32601, message: "unknown" } });

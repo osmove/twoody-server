@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
 import { requirePerson } from "./memories.js";
-import { listTraces, telemetrySince, traceOfMessage } from "../diagnostics/traces.js";
+import { listTraces, promptOfTrace, telemetrySince, traceOfMessage } from "../diagnostics/traces.js";
 
 // The Diagnostic screen (src/diagnostics/traces.ts): what happened in each
 // answer, learning and read-ahead on this computer. The person's own: the
@@ -26,6 +26,21 @@ export async function diagnosticsRoutes(app: FastifyInstance) {
           discussionId: req.query.discussion_id || null,
         }),
       });
+    },
+  });
+
+  // « Détails » under an answer (Jimmy, 03/10/2026): its trace, and what
+  // the model was given — instructions, profile, history, the message,
+  // the tools offered.
+  app.get<{ Params: { id: string } }>("/diagnostics/messages/:id", {
+    schema: { tags: ["diagnostics"], summary: "An answer's trace and the prompt its model was given", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
+      const trace = traceOfMessage(auth.userId, req.params.id);
+      if (!trace) return reply.code(404).send({ error: "not_found" });
+      reply.send({ trace, prompt: promptOfTrace(auth.userId, trace.id) });
     },
   });
 

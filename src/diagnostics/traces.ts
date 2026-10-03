@@ -17,7 +17,18 @@ export interface ToolCallTrace {
   /// Passages a document search returned.
   passages?: number;
   error?: string;
+  /// The start of what the tool returned, as the model read it (local only,
+  /// never in telemetryOf).
+  result_preview?: string;
 }
+
+/// What the model was given for an answer (« Détails » under it).
+export interface TurnPrompt {
+  messages: Array<{ role: string; content: unknown }>;
+  tools: Array<{ name: string; description: string; parameters: unknown }>;
+}
+
+const MAX_PROMPT_JSON = 2 * 1024 * 1024;
 
 export interface TurnTrace {
   kind: "chat" | "learn" | "warm";
@@ -36,9 +47,14 @@ export interface TurnTrace {
 
 const MAX_JSON = 64 * 1024;
 
-export function recordTrace(userId: string, trace: TurnTrace, at = Date.now()): string | null {
+export function recordTrace(userId: string, trace: TurnTrace, at = Date.now(), prompt: TurnPrompt | null = null): string | null {
   try {
     const id = randomUUID();
+    if (prompt) {
+      let promptJson = JSON.stringify(prompt);
+      if (promptJson.length > MAX_PROMPT_JSON) promptJson = JSON.stringify({ truncated: true, messages: prompt.messages.map((message) => ({ role: message.role, content: String(typeof message.content === "string" ? message.content : JSON.stringify(message.content)).slice(0, 20_000) })), tools: prompt.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: null })) });
+      sqlite.prepare("INSERT INTO turn_prompts (trace_id, user_id, message_id, prompt_json) VALUES (?, ?, ?, ?)").run(id, userId, trace.messageId ?? null, promptJson);
+    }
     let json = JSON.stringify(trace.detail ?? {});
     if (json.length > MAX_JSON) json = JSON.stringify({ truncated: true, keys: Object.keys(trace.detail ?? {}) });
     sqlite.prepare(`INSERT INTO turn_traces (id, user_id, at, kind, discussion_id, message_id, client, model, outcome, error, total_ms, trace_json)
@@ -83,6 +99,16 @@ export function listTraces(userId: string, options: { limit?: number; before?: n
   const rows = sqlite.prepare(`SELECT * FROM turn_traces WHERE user_id = ? AND at < ? AND (? IS NULL OR kind = ?) AND (? IS NULL OR discussion_id = ?)
     ORDER BY at DESC LIMIT ?`).all(userId, options.before ?? Number.MAX_SAFE_INTEGER, options.kind ?? null, options.kind ?? null, options.discussionId ?? null, options.discussionId ?? null, limit) as Array<Record<string, unknown>>;
   return rows.map(rowOf);
+}
+
+/// What the model was given for the answer of a trace, when it was kept.
+export function promptOfTrace(userId: string, traceId: string): TurnPrompt | null {
+  const row = sqlite.prepare("SELECT prompt_json FROM turn_prompts WHERE user_id = ? AND trace_id = ?").get(userId, traceId) as { prompt_json: string } | undefined;
+  try {
+    return row ? (JSON.parse(row.prompt_json) as TurnPrompt) : null;
+  } catch {
+    return null;
+  }
 }
 
 export function traceOfMessage(userId: string, messageId: string): TraceRow | null {

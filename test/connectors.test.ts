@@ -125,6 +125,40 @@ test("a tool turned off is not offered; a connector switched off neither", async
   assert.ok(!(bodies.at(-1)!.tools ?? []).some((tool) => tool.function.name.startsWith("mcp__")));
 });
 
+test("« Détails » under an answer: its trace, the prompt the model was given, the tools offered, each call's result", async () => {
+  await app.inject({ method: "PATCH", url: `/connectors/${connectorId}`, headers, payload: { enabled: true, disabled_tools: [] } });
+  call = { name: chatToolName({ name: "Carnet" }, "lookup"), arguments: { word: "Zanzibar" } };
+  const [response] = await Promise.all([ask("Cherche Zanzibar dans mon carnet"), answerWhenAsked(true)]);
+  call = null;
+  const final = finalOf(response.body) as { message: string; message_id?: string };
+  assert.ok(final.message_id, "the final event names the answer");
+  const details = await app.inject({ url: `/diagnostics/messages/${final.message_id}`, headers });
+  assert.equal(details.statusCode, 200, details.body);
+  const body = details.json() as { trace: { detail: { tool_calls: Array<{ name: string; result_preview?: string }>; tools_offered: string[] } }; prompt: { messages: Array<{ role: string; content: string }>; tools: Array<{ name: string }> } };
+  assert.equal(body.prompt.messages[0]!.role, "system");
+  assert.match(body.prompt.messages.at(-1)!.content, /Cherche Zanzibar/);
+  assert.ok(body.prompt.tools.some((tool) => tool.name === chatToolName({ name: "Carnet" }, "lookup")));
+  assert.match(body.trace.detail.tool_calls[0]!.result_preview ?? "", /found on page 12/);
+  // Nothing of it in what « Partager des diagnostics » could send.
+  const telemetry = (await app.inject({ url: "/diagnostics/telemetry?after=0", headers })).body;
+  assert.doesNotMatch(telemetry, /Zanzibar|page 12/);
+});
+
+test("a connector with many tools: none offered until the person picks; what the chat gets is counted, 40 at most", async () => {
+  const added = await app.inject({ method: "POST", url: "/connectors", headers, payload: { connector: { name: "Gros", command: process.execPath, args: [fixture], env: { EXTRA_TOOLS: "56" } } } });
+  const big = added.json().connector as { id: string; tools: Array<{ name: string; enabled: boolean; offered: boolean; tokens: number }>; offered_tools: number; offered_tokens: number; max_chat_tools: number };
+  assert.equal(big.tools.length, 58);
+  assert.equal(big.offered_tools, 0, "none offered at first");
+  assert.ok(big.tools.every((tool) => !tool.enabled && tool.tokens > 0));
+  const all = await app.inject({ method: "PATCH", url: `/connectors/${big.id}`, headers, payload: { disabled_tools: [] } });
+  const picked = all.json().connector as typeof big;
+  assert.equal(picked.max_chat_tools, 40);
+  assert.ok(picked.offered_tools <= 40 && picked.offered_tools > 0);
+  assert.ok(picked.tools.some((tool) => tool.enabled && !tool.offered), "beyond the limit: on, but not offered");
+  assert.ok(picked.offered_tokens > 0);
+  await app.inject({ method: "DELETE", url: `/connectors/${big.id}`, headers });
+});
+
 test("an answer over HTTP may come as an event stream", () => {
   assert.deepEqual(answerFromEventStream('event: message\ndata: {"jsonrpc":"2.0","id":3,"result":{"tools":[]}}\n\n', 3), { jsonrpc: "2.0", id: 3, result: { tools: [] } });
   assert.equal(answerFromEventStream("data: not json\n\n", 3), null);

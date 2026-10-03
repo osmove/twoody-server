@@ -8,7 +8,7 @@ import { recordUsageEvent, type UsageEventInput } from "../usageStore.js";
 import { askedToRemember, rememberFacts } from "../memoryLearning.js";
 import { learnAfterAnswer, learnSoon, setLearningModel, type LearnMessages } from "../memory/learner.js";
 import { onMemoriesChanged } from "../memory/changes.js";
-import { recordTrace, type ToolCallTrace, type TurnTrace } from "../diagnostics/traces.js";
+import { recordTrace, type ToolCallTrace, type TurnPrompt, type TurnTrace } from "../diagnostics/traces.js";
 import { projectCards } from "../projects/projects.js";
 import { ACTION_TOOLS, askedAction, runAction, type ChatAction } from "../projects/actions.js";
 import { createHash } from "node:crypto";
@@ -553,6 +553,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   const traceStarted = Date.now();
   const trace: Record<string, unknown> = { channel, effort: readEffort(parsed.effort), routing: routing.mode };
   const toolCallsTraced: ToolCallTrace[] = [];
+  // What the model was given, kept with the trace (« Détails » under the answer).
+  let promptKept: TurnPrompt | null = null;
   const keepTrace = (outcome: TurnTrace["outcome"], extra: { messageId?: string | null; error?: string | null } = {}) => recordTrace(auth.userId, {
     kind: "chat",
     discussionId: discussion.id,
@@ -569,7 +571,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       tool_calls: toolCallsTraced,
       timings: { ...(trace.timings as object | undefined), ttft_ms: timing.first ? timing.first - timing.started : null, answer_ms: timing.started ? Date.now() - timing.started : null },
     },
-  });
+  }, Date.now(), promptKept);
   try {
     // Which computer of the account answers, and with which model
     // (router/, docs/multi-computer-design.md §3): the ones to try in
@@ -822,6 +824,21 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         return result;
       },
     };
+    // Each call's result, as the model read it, kept with the trace; a
+    // tool that keeps no trace of its own (Maison) gets one here.
+    const runTool = chatTools.run;
+    chatTools.run = async (name, args) => {
+      const before = toolCallsTraced.length;
+      const called = Date.now();
+      const result = await runTool(name, args);
+      let traced = toolCallsTraced[before];
+      if (!traced) {
+        traced = { name, arguments: JSON.stringify(args).slice(0, 2000), round: before, ms: Date.now() - called, result_chars: result.length };
+        toolCallsTraced.push(traced);
+      }
+      traced.result_preview = result.slice(0, 2_000);
+      return result;
+    };
     const toolsFor = (candidate: Provider): ChatTools | undefined =>
       chatTools.definitions.length && !conversationOnlyFor(candidate) && toolCapable(candidate) ? chatTools : undefined;
     // The memories this message bears on (Mémoire v2, src/memory/retrieve.ts):
@@ -880,6 +897,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     };
     const turn = buildChatTurn(turnInput);
     const chatMessages = turn.messages;
+    promptKept = {
+      messages: chatMessages.map((message) => ({ role: message.role, content: message.content })),
+      tools: (toolsFor(provider)?.definitions ?? []).map((tool) => ({ name: tool.function.name, description: tool.function.description, parameters: tool.function.parameters })),
+    };
     trace.memory_mode = memoryMode;
     trace.memory = { retrieval: relevant.retrieval, retrieval_ms: relevant.ms, profile_tokens: turn.memory.profile_tokens, relevant_tokens: turn.memory.relevant_tokens, items: turn.memory.items.length };
     trace.tools_offered = toolsFor(provider)?.definitions.map((tool) => tool.function.name) ?? [];
@@ -1096,6 +1117,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
 
     const finalPayload = {
       id:            null,
+      // The answer as this computer keeps it: « Détails » asks for its trace.
+      message_id:    messageId,
       ref:           null,
       discussion_id: discussion.id,
       provider:      provider.kind,
