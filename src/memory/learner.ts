@@ -9,6 +9,7 @@ import { firstPerson, memoryWords, sameWord } from "./rank.js";
 import { askedToRemember } from "../memoryLearning.js";
 import { recordTrace } from "../diagnostics/traces.js";
 import { createProject, knownProjects, PROJECT_SIZES, updateProject, type ProjectSize } from "../projects/projects.js";
+import { languageName, messageLanguage, readContextState } from "../chatContext.js";
 
 // What Twoody learns from a conversation, once it is over (Mémoire v2, L6,
 // docs/memory-v2-design.md §4). Jimmy, 01/10/2026: learn from everything
@@ -100,7 +101,7 @@ export interface KnownMemory {
   text: string;
 }
 
-export function learningPrompt(lines: Array<{ role: "person" | "assistant"; content: string }>, known: KnownMemory[], projects: KnownProject[] = [], earlier: Array<{ role: "person" | "assistant"; content: string }> = []): LearnMessages {
+export function learningPrompt(lines: Array<{ role: "person" | "assistant"; content: string }>, known: KnownMemory[], projects: KnownProject[] = [], earlier: Array<{ role: "person" | "assistant"; content: string }> = [], language: string | null = null): LearnMessages {
   const asText = (rows: typeof lines) => rows.map((line) => `${line.role === "person" ? "PERSON" : "ASSISTANT"}: ${line.content}`).join("\n");
   const transcript = asText(lines);
   const knownText = known.length ? known.map((memory) => `${memory.ref}: ${memory.text}`).join("\n") : "(none)";
@@ -119,7 +120,7 @@ export function learningPrompt(lines: Array<{ role: "person" | "assistant"; cont
         "- Not questions, hypotheses, wishes, plans that may not happen, today's mood or task, facts about the world, nor a one-off happening (« Pixel a renversé mon verre hier soir », a delay, a spill): only what will still be true in months.\n" +
         "- Not what KNOWN already says. When the person changes a KNOWN fact, give the new fact and set \"supersedes\" to its ref. A fact that adds to a KNOWN one without contradicting it (a date, a detail) supersedes nothing.\n" +
         "- When the person corrects themselves, only the corrected fact.\n" +        "- Never guess what is not said: who someone is, an animal's species, a relation, a date.\n" +
-        "- text: one short sentence about the person, in the language the PERSON writes in, never translated (« A une fille, Léa, 7 ans », « Préfère des réponses courtes »). About someone else, name them: « David travaille chez Check Point », never « Travaille chez Check Point ».\n" +
+        "- text: one short sentence about the person, in the language the PERSON uses in CONVERSATION, never translated, even when KNOWN, PROJECTS or the examples here are in another language (« A une fille, Léa, 7 ans », « Préfère des réponses courtes »; in English « Has a daughter, Léa, 7 », « Prefers short answers »); names and quoted terms kept as they were. About someone else, name them: « David travaille chez Check Point », never « Travaille chez Check Point ».\n" +
         "- evidence: the exact words of the PERSON line it comes from, copied character for character.\n" +
         "- kind: \"feedback\" for how to answer, \"project\" for something they work on, else \"user\".\n" +
         `- category: one of ${[...CATEGORIES].join(", ")} (health, finances, religion, politics, sexuality, legal, ids — identity or account numbers — and address — their precise home address — are sensitive).\n` +
@@ -132,7 +133,9 @@ export function learningPrompt(lines: Array<{ role: "person" | "assistant"; cont
         "Answer with JSON only: {\"facts\":[{\"text\":\"…\",\"kind\":\"user\",\"category\":\"…\",\"confidence\":0.9,\"evidence\":\"…\",\"supersedes\":null}],\"projects\":[{\"title\":\"…\",\"name\":\"…\",\"kind\":\"purchase\",\"size\":\"small\",\"status\":\"idea\",\"due\":null,\"evidence\":\"…\",\"confidence\":0.8,\"ref\":null}]}. " +
         "Most conversations hold nothing to remember: then {\"facts\":[],\"projects\":[]}.",
     },
-    { role: "user", content: `KNOWN:\n${knownText}\n\nPROJECTS:\n${projectsText}\n\n${earlier.length ? `EARLIER:\n${asText(earlier)}\n\n` : ""}CONVERSATION:\n${transcript}` },
+    // The language last, with the conversation: the system message stays
+    // the same for every conversation (the runtime reuses it).
+    { role: "user", content: `KNOWN:\n${knownText}\n\nPROJECTS:\n${projectsText}\n\n${earlier.length ? `EARLIER:\n${asText(earlier)}\n\n` : ""}CONVERSATION:\n${transcript}${language ? `\n\nWrite each text and title in ${languageName(language)}, the language the PERSON spoke in this conversation, keeping names and quoted terms as they were.` : ""}` },
   ];
 }
 
@@ -463,6 +466,23 @@ export function learnAfterAnswer(discussionId: string) {
   schedule(AFTER_ANSWER_MS);
 }
 
+/// The language the person spoke in these lines (« Mme Dupont souhaite
+/// mettre fin à l'accord de services » learned from an English
+/// conversation, 03/10/2026); else their usual one, the locale their app
+/// gave with this conversation or, failing it, with their latest one.
+export function conversationLanguage(userId: string, discussionId: string, personLines: string[]): string | null {
+  const spoken = messageLanguage(personLines.join("\n"));
+  if (spoken) return spoken;
+  const rows = sqlite.prepare("SELECT context FROM discussions WHERE user_id = ? AND context IS NOT NULL ORDER BY (id = ?) DESC, last_activity_at DESC LIMIT 20")
+    .all(userId, discussionId) as Array<{ context: string | null }>;
+  for (const row of rows) {
+    const locale = readContextState(row.context)?.locale;
+    const code = locale?.split("-")[0]?.toLowerCase();
+    if (code && /^[a-z]{2,3}$/.test(code)) return code;
+  }
+  return null;
+}
+
 /// Learns from what was said in this conversation since last time.
 export async function learnDiscussion(discussionId: string, options: { ask?: LearningModel | null; now?: number } = {}): Promise<LearnResult | null> {
   const ask = options.ask ?? model;
@@ -524,7 +544,7 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
     let answer: string;
     try {
       current = new AbortController();
-      answer = await ask(row.user_id, learningPrompt(shown, known, projects, earlier), current.signal);
+      answer = await ask(row.user_id, learningPrompt(shown, known, projects, earlier, conversationLanguage(row.user_id, row.id, personLines)), current.signal);
     } catch (err) {
       // Stopped for an answer: read again once it is written, not later.
       if (current?.signal.aborted) {

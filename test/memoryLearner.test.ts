@@ -134,6 +134,34 @@ test("a conversation is read once, as a whole, and only what the person said goe
   assert.match(prompts[1]!, /m\d: A un chat, Moka/, "what is known about it is shown");
 });
 
+test("a memory is written in the language the person spoke in that conversation, else in their usual one", async () => {
+  // « Mme Dupont souhaite mettre fin à l'accord de services », learned from
+  // an English conversation (03/10/2026).
+  const english = conversation([
+    { role: "user", content: "Mrs Dupont is my client and she wants to end the services agreement before the end of the year. What notice does she have to give?" },
+    { role: "assistant", content: "Under the agreement, she must give one month's notice in writing." },
+  ]);
+  const prompts: Array<Array<{ role: string; content: string }>> = [];
+  const ask = async (_user: string, messages: Array<{ role: "system" | "user"; content: string }>) => {
+    prompts.push(messages);
+    return answer();
+  };
+  await learnDiscussion(english, { ask });
+  assert.match(prompts[0]![1]!.content, /\n\nWrite each text and title in English, the language the PERSON spoke in this conversation, keeping names and quoted terms as they were\.$/);
+  assert.match(prompts[0]![0]!.content, /in the language the PERSON uses in CONVERSATION, never translated, even when KNOWN, PROJECTS or the examples here are in another language/);
+
+  // Too short to tell: the locale the app gave with this conversation.
+  const short = conversation([{ role: "user", content: "Moka, 2 ans." }]);
+  sqlite.prepare("UPDATE discussions SET context = ? WHERE id = ?").run(JSON.stringify({ v: 1, locale: "de-DE" }), short);
+  await learnDiscussion(short, { ask });
+  assert.match(prompts[1]![1]!.content, /Write each text and title in German,/);
+  assert.equal(prompts[1]![0]!.content, prompts[0]![0]!.content, "the system message is the same whatever the language (the runtime reuses it)");
+
+  const { conversationLanguage } = learner;
+  assert.equal(conversationLanguage(userId, english, ["Je voudrais résilier le contrat de prestation avant la fin de l'année."]), "fr");
+  assert.equal(conversationLanguage(userId, english, ["¿Qué preaviso debe dar la señora Dupont para terminar el contrato?"]), "es");
+});
+
 test("« Aucune », its own or the person's: never read, not even later", async () => {
   const id = conversation([{ role: "user", content: "Je m'appelle Camille et j'habite à Lyon." }], { mode: "none" });
   let asked = 0;
