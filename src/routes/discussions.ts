@@ -392,16 +392,16 @@ export function importVaultConversation(userId: string, body: ImportBody): { err
       sqlite.prepare("UPDATE discussions SET vault_id = ? WHERE id = ?").run(vaultId, own.id);
       found = { id: own.id };
     }
-    const nowSeconds = Math.floor(Date.now() / 1000);
+    const nowMs = Date.now();
     const id = found?.id ?? generateId();
     if (!found) {
       sqlite.prepare("INSERT INTO discussions (id, user_id, channel, title, created_at, last_activity_at, vault_id) VALUES (?, ?, 'vault', ?, ?, ?, ?)")
-        .run(id, userId, body.title?.slice(0, 200) || body.turns[0]?.text.slice(0, 60) || null, nowSeconds, nowSeconds, vaultId);
+        .run(id, userId, body.title?.slice(0, 200) || body.turns[0]?.text.slice(0, 60) || null, nowMs, nowMs, vaultId);
     } else if (body.title) {
       sqlite.prepare("UPDATE discussions SET title = ? WHERE id = ?").run(body.title.slice(0, 200), id);
     }
     const known = new Set((sqlite.prepare("SELECT vault_ref FROM messages WHERE discussion_id = ? AND vault_ref IS NOT NULL").all(id) as Array<{ vault_ref: string }>).map((row) => row.vault_ref));
-    const insert = sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, provider, model, vault_ref, created_at, sources_json, answered_by_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    const insert = sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, provider, model, vault_ref, created_at, sources, answered_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     let added = 0;
     let latest = 0;
     const turns = [...body.turns].sort((a, b) => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")));
@@ -417,8 +417,8 @@ export function importVaultConversation(userId: string, body: ImportBody): { err
       // An exchange already here, now being synchronised (its ref is the
       // question's message id, or the same words asked a moment before):
       // it takes the ref instead of a copy.
-      const asked = Math.floor((Date.parse(turn.created_at ?? "") || Date.now()) / 1000);
-      const existing = (adopt.get(id, turn.ref) ?? sameQuestion.get(id, turn.text, asked - 600, asked + 600)) as { id: string; position: number } | undefined;
+      const asked = Date.parse(turn.created_at ?? "") || Date.now();
+      const existing = (adopt.get(id, turn.ref) ?? sameQuestion.get(id, turn.text, asked - 600_000, asked + 600_000)) as { id: string; position: number } | undefined;
       if (existing) {
         setRef.run(turn.ref, existing.id);
         const answer = replyAfter.get(id, existing.position) as { id: string } | undefined;
@@ -426,7 +426,7 @@ export function importVaultConversation(userId: string, body: ImportBody): { err
         known.add(turn.ref);
         continue;
       }
-      const at = Math.floor((Date.parse(turn.created_at ?? "") || Date.now()) / 1000);
+      const at = Date.parse(turn.created_at ?? "") || Date.now();
       const sources = Array.isArray(turn.sources) && turn.sources.length > 0 ? JSON.stringify(turn.sources.slice(0, 12)) : null;
       const answeredBy = turn.answered_by && typeof turn.answered_by === "object" ? JSON.stringify(turn.answered_by) : null;
       const questionId = generateId();

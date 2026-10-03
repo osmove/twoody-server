@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { and, desc, eq, gte, inArray, isNotNull } from "drizzle-orm";
-import { db, providers, usageEvents, users } from "../db.js";
+import { db, llmEndpoints, modelCalls, users } from "../db.js";
 import { isChatModel, probeRuntime } from "../localRuntime.js";
 import { outboundFetch } from "../outbound.js";
 import { recentLoad, type LoadSample } from "../machineSampler.js";
@@ -40,8 +40,8 @@ function appVersion(): string {
 export function localRuntimes(userId?: string | null): Array<{ baseUrl: string; model: string | null }> {
   const rows = db
     .select()
-    .from(providers)
-    .where(userId ? eq(providers.userId, userId) : undefined)
+    .from(llmEndpoints)
+    .where(userId ? eq(llmEndpoints.userId, userId) : undefined)
     .all()
     .filter((p) => p.enabled && p.kind === "local_openai" && p.baseUrl)
     .sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
@@ -128,17 +128,17 @@ async function loadedModels(baseUrl: string, listed: string[]): Promise<Set<stri
 export function measuredTps(userId?: string | null, sinceDays = 30): Record<string, number> {
   const since = new Date(Date.now() - sinceDays * 24 * 3600 * 1000);
   const rows = db
-    .select({ model: usageEvents.model, completionTokens: usageEvents.completionTokens, generationMs: usageEvents.generationMs, estimated: usageEvents.estimated })
-    .from(usageEvents)
+    .select({ model: modelCalls.model, completionTokens: modelCalls.completionTokens, generationMs: modelCalls.generationMs, estimated: modelCalls.estimated })
+    .from(modelCalls)
     .where(
       and(
-        userId ? eq(usageEvents.userId, userId) : undefined,
-        gte(usageEvents.at, since),
-        isNotNull(usageEvents.model),
-        inArray(usageEvents.source, ["chat", "memory", "peer"]),
+        userId ? eq(modelCalls.userId, userId) : undefined,
+        gte(modelCalls.occurredAt, since),
+        isNotNull(modelCalls.model),
+        inArray(modelCalls.source, ["chat", "memory", "peer"]),
       ),
     )
-    .orderBy(desc(usageEvents.at))
+    .orderBy(desc(modelCalls.occurredAt))
     .limit(500)
     .all();
   const byModel = new Map<string, number[]>();

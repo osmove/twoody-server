@@ -7,7 +7,7 @@ import { onVaultChange, vaultRosterInput } from "./service.js";
 // for a phone. Derived every time from the vault itself — GET /vault's
 // devices, approvals and bindings, walked strictly forward from the person
 // devices this computer pinned (src/vault/client.ts verifiedIds) — never
-// stored, never taken from the backend's listing or account_peers.
+// stored, never taken from the backend's listing or account_computers.
 //
 //   computers  verified, trusted vault devices whose signed approval says
 //              computer (approval/v2, client.ts deviceKind — never the kind

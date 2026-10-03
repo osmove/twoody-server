@@ -94,15 +94,15 @@ const piVault = memoriesVault.createMemoryVault({ sqlite: piDb.sqlite, owner: ()
 
 type Held = { id: string; kind: string; title: string | null; content: string; tags: string[]; source: string; superseded_by: string | null; hlc: string | null; vault_event_id: string | null };
 const held = (db: typeof sqlite): Held[] =>
-  (db.prepare("SELECT id, kind, title, content, tags_json, source, superseded_by_id, hlc, vault_event_id FROM memories ORDER BY id").all() as Array<Record<string, any>>).map((r) => ({
-    id: r.id, kind: r.kind, title: r.title, content: r.content, tags: JSON.parse(r.tags_json), source: r.source, superseded_by: r.superseded_by_id, hlc: r.hlc, vault_event_id: r.vault_event_id,
+  (db.prepare("SELECT id, kind, title, content, tags, source, superseded_by_id, hlc, vault_event_id FROM memories ORDER BY id").all() as Array<Record<string, any>>).map((r) => ({
+    id: r.id, kind: r.kind, title: r.title, content: r.content, tags: JSON.parse(r.tags), source: r.source, superseded_by: r.superseded_by_id, hlc: r.hlc, vault_event_id: r.vault_event_id,
   }));
 const contents = (db: typeof sqlite) => held(db).map((m) => m.content).sort();
 const legacyId = () => Buffer.from(globalThis.crypto.getRandomValues(new Uint8Array(16))).toString("hex");
 const insertLegacy = (db: typeof sqlite, user: string, row: { title: string | null; content: string; source?: string }) => {
   const id = legacyId();
-  db.prepare("INSERT INTO memories (id, user_id, kind, title, content, tags_json, source, created_at, updated_at) VALUES (?, ?, 'user', ?, ?, '[]', ?, ?, ?)")
-    .run(id, user, row.title, row.content, row.source ?? "manual", Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000));
+  db.prepare("INSERT INTO memories (id, user_id, kind, title, content, tags, source, created_at, updated_at) VALUES (?, ?, 'user', ?, ?, '[]', ?, ?, ?)")
+    .run(id, user, row.title, row.content, row.source ?? "manual", Date.now(), Date.now());
   return id;
 };
 const syncBoth = async () => {
@@ -179,7 +179,7 @@ test("a memory learned on one computer is on the other after a sync; learned on 
 
   // The Pi learns another fact on its own, which the Mac learns too.
   const claire = contracts.learnedMemoryId(EPOCH_ONE, contracts.memoryContentHash("Ma fille s'appelle Claire")!);
-  piDb.sqlite.prepare("INSERT INTO memories (id, user_id, kind, title, content, tags_json, source, created_at, updated_at) VALUES (?, 'pi-owner', 'user', ?, ?, '[]', 'conversation', ?, ?)")
+  piDb.sqlite.prepare("INSERT INTO memories (id, user_id, kind, title, content, tags, source, created_at, updated_at) VALUES (?, 'pi-owner', 'user', ?, ?, '[]', 'conversation', ?, ?)")
     .run(claire, "Ma fille s'appelle Claire", "Ma fille s'appelle Claire", 1, 1);
   assert.equal(piVault.record(claire), claire);
   assert.equal(rememberFacts(owner, ["Ma fille s’appelle Claire."]), 1);
@@ -227,7 +227,7 @@ test("deleted on one computer: gone everywhere, never learned again", async () =
   assert.ok(!held(sqlite).some((m) => m.id === paris));
   // Learned again, in other words, on either computer: refused.
   assert.equal(rememberFacts(owner, ["J’HABITE À PARIS !"]), 0);
-  piDb.sqlite.prepare("INSERT INTO memories (id, user_id, kind, title, content, tags_json, source, created_at, updated_at) VALUES (?, 'pi-owner', 'user', 'Paris', 'J habite a Paris', '[]', 'conversation', 1, 1)").run(paris);
+  piDb.sqlite.prepare("INSERT INTO memories (id, user_id, kind, title, content, tags, source, created_at, updated_at) VALUES (?, 'pi-owner', 'user', 'Paris', 'J habite a Paris', '[]', 'conversation', 1, 1)").run(paris);
   assert.equal(piVault.record(paris), null);
   assert.ok(!held(piDb.sqlite).some((m) => m.id === paris));
   await syncBoth();

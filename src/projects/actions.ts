@@ -120,9 +120,9 @@ export function runAction(userId: string, name: string, args: Record<string, unk
     const time = typeof args.when === "string" ? /(?:T|\s)(\d{2}:\d{2})/.exec(args.when)?.[1] ?? null : null;
     const at = zonedInstant(day ? `${day}T${time ?? "09:00"}` : (args.when as string), timeZone);
     const id = randomUUID();
-    const seconds = Math.floor(now.getTime() / 1000);
+    const stamp = now.getTime();
     sqlite.prepare(`INSERT INTO reminders (id, user_id, project_id, text, title, notify_at, status, channel, reminder_type, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'active', 'push', 'once', ?, ?)`).run(id, userId, project?.id ?? null, text, text, Math.floor(at.getTime() / 1000), seconds, seconds);
+      VALUES (?, ?, ?, ?, ?, ?, 'active', 'push', 'once', ?, ?)`).run(id, userId, project?.id ?? null, text, text, at.getTime(), stamp, stamp);
     return { type: "reminder", id, title: text, at: at.toISOString(), project };
   }
   if (name === "create_task") {
@@ -131,9 +131,9 @@ export function runAction(userId: string, name: string, args: Record<string, unk
     const dueDay = day ?? (typeof args.due === "string" && /^\d{4}-\d{2}-\d{2}/.test(args.due) ? args.due.slice(0, 10) : null);
     const due = dueDay ? zonedInstant(dueDay, timeZone) : null;
     const id = randomUUID();
-    const seconds = Math.floor(now.getTime() / 1000);
+    const stamp = now.getTime();
     sqlite.prepare("INSERT INTO tasks (id, user_id, title, due_at, project_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(id, userId, title, due ? Math.floor(due.getTime() / 1000) : null, project?.id ?? null, seconds, seconds);
+      .run(id, userId, title, due ? due.getTime() : null, project?.id ?? null, stamp, stamp);
     return { type: "task", id, title, at: due?.toISOString() ?? null, project };
   }
   if (name === "update_project") {

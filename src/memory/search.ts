@@ -40,11 +40,11 @@ function clip(text: string, max = SNIPPET_CHARS): string {
   return flat.length <= max ? flat : `${flat.slice(0, max - 1).trimEnd()}…`;
 }
 
-const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
+const iso = (ms: number) => new Date(ms).toISOString();
 
 // ── memories ──────────────────────────────────────────────────────────────
 
-type MemoryRow = { id: string; kind: string; title: string | null; content: string; tags_json: string; source: string; updated_at: number };
+type MemoryRow = { id: string; kind: string; title: string | null; content: string; tags: string; source: string; updated_at: number };
 
 export type MemoryHit = {
   id: string;
@@ -109,8 +109,8 @@ export async function searchMemories(
   const q = (options.q ?? "").trim() || entity?.name || "";
   if (!q) throw new SearchError(422, "q_required");
 
-  let pool = (sqlite.prepare("SELECT id, kind, title, content, tags_json, source, updated_at FROM memories WHERE user_id = ? AND superseded_by_id IS NULL").all(userId) as MemoryRow[])
-    .filter((row) => row.content.trim() && !tagsOf(row.tags_json).includes("archive"));
+  let pool = (sqlite.prepare("SELECT id, kind, title, content, tags, source, updated_at FROM memories WHERE user_id = ? AND superseded_by_id IS NULL").all(userId) as MemoryRow[])
+    .filter((row) => row.content.trim() && !tagsOf(row.tags).includes("archive"));
   const linksOf = sqlite.prepare("SELECT entity_id FROM memory_entities WHERE memory_id = ?");
   const links = new Map(pool.map((row) => [row.id, new Set((linksOf.all(row.id) as Array<{ entity_id: string }>).map((link) => link.entity_id))] as const));
   if (entity) pool = pool.filter((row) => links.get(row.id)?.has(entity.id));
@@ -150,7 +150,7 @@ export async function searchMemories(
       kind: row.kind,
       title: row.title,
       content: row.content,
-      tags: tagsOf(row.tags_json),
+      tags: tagsOf(row.tags),
       source: row.source,
       entities: [...(links.get(row.id) ?? [])].map((id) => entityNames.get(id)).filter((name): name is string => !!name),
       score: round(score),
@@ -181,12 +181,12 @@ export type ConversationHit = {
   score: number;
 };
 
-/// A date given to after / before: an ISO date or date-time, in seconds.
+/// A date given to after / before: an ISO date or date-time, in milliseconds.
 export function readDate(value: unknown, name: string): number | null {
   if (value === undefined || value === null || value === "") return null;
   const ms = typeof value === "string" ? Date.parse(value) : NaN;
   if (!Number.isFinite(ms)) throw new SearchError(422, `invalid_${name}`);
-  return Math.floor(ms / 1000);
+  return ms;
 }
 
 /// The messages of the person's conversations that hold the question's

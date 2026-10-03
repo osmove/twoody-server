@@ -187,7 +187,7 @@ export function periodUsage(userId: string, period: Period, tz: string, offset =
   const series = range.buckets.map(() => new Tallier());
   for (const event of events) {
     totals.add(event);
-    const index = bucketIndex(range.buckets, event.at.getTime());
+    const index = bucketIndex(range.buckets, event.occurredAt.getTime());
     if (index >= 0) series[index].add(event);
   }
   const previous = periodRange(period, tz, offset + 1, now);
@@ -251,7 +251,7 @@ export function performance(userId: string, range: Range, now = Date.now()) {
     app_rss_bytes: mean(bucket, "appRssBytes", true),
   }));
   const generation = eventsBetween(userId, new Date(from), new Date(now + 1))
-    .map((event) => ({ t: event.at.toISOString(), tps: generationTps(event), model: event.model, source: event.source, ttft_ms: event.ttftMs }))
+    .map((event) => ({ t: event.occurredAt.toISOString(), tps: generationTps(event), model: event.model, source: event.source, ttft_ms: event.ttftMs }))
     .filter((point) => point.tps !== null);
   return { range, step_seconds: step, machine: machineOf(userId), samples, generation };
 }
@@ -274,7 +274,7 @@ export function usageCsv(events: UsageEventRow[]): string {
     lines.push(
       [
         event.id,
-        event.at.toISOString(),
+        event.occurredAt.toISOString(),
         event.source,
         event.model,
         event.client,

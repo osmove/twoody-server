@@ -31,7 +31,7 @@ type Line = { role: "user" | "assistant"; content: string };
 let counter = 0;
 function conversation(lines: Line[], options: { mode?: string | null; idleMs?: number } = {}): string {
   const id = `d${++counter}`;
-  const at = Math.floor((Date.now() - (options.idleMs ?? LEARN_IDLE_MS + 60_000)) / 1000);
+  const at = Date.now() - (options.idleMs ?? LEARN_IDLE_MS + 60_000);
   sqlite.prepare("INSERT INTO discussions (id, user_id, channel, title, memory_mode, created_at, last_activity_at) VALUES (?, ?, 'desktop', NULL, ?, ?, ?)")
     .run(id, userId, options.mode ?? null, at, at);
   for (const line of lines) addLine(id, line);
@@ -39,7 +39,7 @@ function conversation(lines: Line[], options: { mode?: string | null; idleMs?: n
 }
 function addLine(discussionId: string, line: Line) {
   sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(`msg${++counter}`, discussionId, userId, line.role, line.content, Math.floor(Date.now() / 1000));
+    .run(`msg${++counter}`, discussionId, userId, line.role, line.content, Date.now());
 }
 const fact = (text: string, evidence: string, extra: Record<string, unknown> = {}) => ({ text, evidence, kind: "user", category: "family", confidence: 0.8, supersedes: null, ...extra });
 const answer = (...facts: unknown[]) => `<think>hmm</think>\n\`\`\`json\n${JSON.stringify({ facts })}\n\`\`\``;
@@ -409,8 +409,8 @@ test("after each answer: read at once, with what came before as context; the nex
 // fan (02/10/2026): an exchange another computer answered is not read here.
 test("an exchange another computer answered (from the encrypted history) is not read again here", async () => {
   const id = conversation([], { idleMs: 0 });
-  sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, created_at) VALUES (?, ?, ?, 'user', 'Ma sœur s''appelle Inès.', ?)").run(`v${++counter}`, id, userId, Math.floor(Date.now() / 1000));
-  sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, provider, created_at) VALUES (?, ?, ?, 'assistant', 'Noté.', 'vault', ?)").run(`v${++counter}`, id, userId, Math.floor(Date.now() / 1000));
+  sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, created_at) VALUES (?, ?, ?, 'user', 'Ma sœur s''appelle Inès.', ?)").run(`v${++counter}`, id, userId, Date.now());
+  sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, provider, created_at) VALUES (?, ?, ?, 'assistant', 'Noté.', 'vault', ?)").run(`v${++counter}`, id, userId, Date.now());
   let asked = 0;
   const result = await learnDiscussion(id, { ask: async () => { asked += 1; return answer(); } });
   assert.equal(asked, 0);

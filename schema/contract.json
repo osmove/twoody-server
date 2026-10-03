@@ -1,0 +1,141 @@
+{
+  "about": "Shared schema contract between the local SQLite (twoody-server) and the account's Postgres (twoody-backend). Every table here exists on both sides with these columns, of these logical types. A column named differently on one side says so with \"local\" or \"rails\". Logical types: uuid, text, int, real, bool, datetime (SQLite: INTEGER milliseconds since 1970 UTC; Postgres: timestamp), json (SQLite: TEXT holding JSON; Postgres: jsonb), text_array (SQLite: TEXT holding a JSON array of strings; Postgres: text[]). Copied to twoody-backend/config/schema_contract.json; change it in twoody-server, then copy. See twoody-server/docs/schema-convergence.md.",
+  "version": 1,
+  "tables": {
+    "discussions": {
+      "id": { "type": "uuid", "rails": "uuid" },
+      "title": { "type": "text" },
+      "created_at": { "type": "datetime" }
+    },
+    "messages": {
+      "id": { "type": "uuid" },
+      "role": { "type": "text", "values": ["user", "assistant", "tool", "system"] },
+      "content": { "type": "text" },
+      "reasoning": { "type": "text" },
+      "model": { "type": "text" },
+      "provider": { "type": "text" },
+      "client": { "type": "text" },
+      "channel": { "type": "text" },
+      "prompt_tokens": { "type": "int" },
+      "completion_tokens": { "type": "int" },
+      "tokens_estimated": { "type": "bool" },
+      "sources": { "type": "json" },
+      "memory": { "type": "json" },
+      "answered_by": { "type": "json" },
+      "vault_ref": { "type": "text" },
+      "created_at": { "type": "datetime" }
+    },
+    "message_traces": {
+      "id": { "type": "uuid", "rails": "event_uuid" },
+      "kind": { "type": "text", "values": ["chat", "learn", "warm"] },
+      "occurred_at": { "type": "datetime" },
+      "client": { "type": "text" },
+      "model": { "type": "text" },
+      "outcome": { "type": "text" },
+      "error": { "type": "text" },
+      "total_ms": { "type": "int" },
+      "trace": { "type": "json" },
+      "prompt": { "type": "json" }
+    },
+    "memories": {
+      "id": { "type": "uuid", "rails": "uuid" },
+      "kind": { "type": "text", "values": ["user", "feedback", "project", "reference"] },
+      "title": { "type": "text" },
+      "content": { "type": "text" },
+      "tags": { "type": "text_array" },
+      "source": { "type": "text" },
+      "source_ref": { "type": "text" },
+      "entity_type": { "type": "text" },
+      "confidence": { "type": "real" },
+      "created_at": { "type": "datetime" },
+      "updated_at": { "type": "datetime" }
+    },
+    "memory_candidates": {
+      "status": { "type": "text" },
+      "created_at": { "type": "datetime" }
+    },
+    "projects": {
+      "id": { "type": "uuid", "rails": "uuid" },
+      "title": { "type": "text" },
+      "kind": { "type": "text" },
+      "size": { "type": "text", "values": ["small", "medium", "large", "critical"] },
+      "status": { "type": "text", "values": ["idea", "active", "paused", "blocked", "done", "dropped"] },
+      "brief": { "type": "text" },
+      "started_at": { "type": "datetime" },
+      "due_at": { "type": "datetime" },
+      "done_at": { "type": "datetime" },
+      "budget_cents": { "type": "int" },
+      "currency": { "type": "text", "rails": "budget_currency" },
+      "source": { "type": "text" },
+      "created_at": { "type": "datetime" },
+      "updated_at": { "type": "datetime" }
+    },
+    "tasks": {
+      "id": { "type": "uuid", "rails": "uuid" },
+      "title": { "type": "text" },
+      "notes": { "type": "text" },
+      "due_at": { "type": "datetime" },
+      "done_at": { "type": "datetime" },
+      "priority": { "type": "int" },
+      "created_at": { "type": "datetime" },
+      "updated_at": { "type": "datetime" }
+    },
+    "reminders": {
+      "id": { "type": "uuid", "rails": "uuid" },
+      "text": { "type": "text" },
+      "title": { "type": "text" },
+      "subtitle": { "type": "text" },
+      "notify_at": { "type": "datetime" },
+      "status": { "type": "text" },
+      "channel": { "type": "text" },
+      "reminder_type": { "type": "text" },
+      "cron": { "type": "text" },
+      "created_at": { "type": "datetime" },
+      "updated_at": { "type": "datetime" }
+    },
+    "notes": {
+      "id": { "type": "uuid", "rails": "uuid" },
+      "title": { "type": "text" },
+      "body": { "type": "text" },
+      "pinned": { "type": "bool" },
+      "archived": { "type": "bool" },
+      "created_at": { "type": "datetime" },
+      "updated_at": { "type": "datetime" }
+    },
+    "events": {
+      "id": { "type": "uuid", "rails": "uuid" },
+      "name": { "type": "text" },
+      "description": { "type": "text" },
+      "status": { "type": "text" },
+      "kind": { "type": "text" },
+      "notes": { "type": "text" },
+      "start_time": { "type": "datetime" },
+      "end_time": { "type": "datetime" },
+      "all_day": { "type": "bool" },
+      "created_at": { "type": "datetime" },
+      "updated_at": { "type": "datetime" }
+    },
+    "contacts": {
+      "id": { "type": "uuid", "rails": "uuid" },
+      "name": { "type": "text" },
+      "first_name": { "type": "text" },
+      "middle_name": { "type": "text" },
+      "last_name": { "type": "text" },
+      "email": { "type": "text" },
+      "phone_country_code": { "type": "text" },
+      "phone_number": { "type": "text" },
+      "relation_type": { "type": "text", "values": ["family", "partner", "friend", "colleague", "client", "other"] },
+      "relation_subtype": { "type": "text" },
+      "origin": { "type": "text" },
+      "phones": { "type": "json", "shape": "[{label: string|null, value: string, formatted?: string|null}]" },
+      "emails": { "type": "json", "shape": "[{label: string|null, value: string}]" },
+      "addresses": { "type": "json", "shape": "[{label: string|null, value: string}]" },
+      "birthday": { "type": "text" },
+      "organization": { "type": "text" },
+      "source": { "type": "text" },
+      "external_id": { "type": "text" },
+      "created_at": { "type": "datetime" },
+      "updated_at": { "type": "datetime" }
+    }
+  }
+}

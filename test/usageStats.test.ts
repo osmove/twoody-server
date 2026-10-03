@@ -15,7 +15,7 @@ process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-usage-stats-"))
 
 const { buildApp } = await import("../src/app.js");
 const { createAuthSession, ensureSetupToken } = await import("../src/auth.js");
-const { db, discussions, messages, tunnelPeers, usageEvents, usageSamples } = await import("../src/db.js");
+const { db, discussions, messages, tunnelPeers, modelCalls: usageEvents, usageSamples } = await import("../src/db.js");
 const { forgetRuntimeProbes } = await import("../src/localRuntime.js");
 const { backfillUsageEvents, compactUsageSamples, recordSamples, recordUsageEvent } = await import("../src/usageStore.js");
 const { periodRange } = await import("../src/usagePeriods.js");
@@ -59,7 +59,7 @@ test.after(async () => {
 
 const clearEvents = () => db.delete(usageEvents).run();
 
-test("the answers kept before usage_events are copied once, as chat", () => {
+test("the answers kept before model_calls are copied once, as chat", () => {
   const now = new Date();
   db.insert(discussions).values({ id: "d-old", userId: owner, channel: "desktop", title: "t", createdAt: now, lastActivityAt: now }).run();
   db.insert(messages).values({ id: "m-old", discussionId: "d-old", userId: owner, role: "assistant", content: "…", model: "Qwen3.5-9B", client: "iPhone", promptTokens: 1200, completionTokens: 80, tokensEstimated: false, createdAt: new Date(now.getTime() - 3 * 86_400_000) }).run();
@@ -73,7 +73,7 @@ test("the answers kept before usage_events are copied once, as chat", () => {
   assert.equal(copied.messageId, "m-old");
   assert.equal(copied.promptTokens, 1200);
   assert.equal(copied.client, "iPhone");
-  assert.equal(copied.at.getTime(), Math.floor((now.getTime() - 3 * 86_400_000) / 1000) * 1000);
+  assert.equal(copied.occurredAt.getTime(), now.getTime() - 3 * 86_400_000);
   clearEvents();
 });
 

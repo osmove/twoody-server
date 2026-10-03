@@ -3,7 +3,7 @@ import { computerName } from "../account/link.js";
 import { accountCredentials } from "../account/service.js";
 import { buildStatus, lastLoad } from "../account/statusSource.js";
 import type { Purpose } from "../account/status.js";
-import { db, providers, sqlite, users } from "../db.js";
+import { db, llmEndpoints, sqlite, users } from "../db.js";
 import { engineRoute } from "../engine.js";
 import { accountComputers, linkedPeers, peerDocumentCounts, peerStatus, type PeerRow } from "../peers/index.js";
 import { meshRoster, rosterSnapshot, trustedNow } from "../vault/roster.js";
@@ -15,7 +15,7 @@ import { rank, STATUS_MAX_AGE_MS, type Choice, type ComputerView } from "./score
 //
 // Which peer is trusted with what this computer knows of its person comes
 // from the verified vault roster (vault/roster.ts, docs/mesh-design.md §4),
-// never from account_peers.trusted: a computer the person devices enrolled
+// never from account_computers.trusted: a computer the person devices enrolled
 // and bound, reached over the tunnel key its binding names. The others
 // lend their models, conversation only.
 
@@ -63,7 +63,7 @@ export function isSelf(computerId: string): boolean {
 /// stored provider's, else its engine's (the built-in runtime's
 /// `default_model`, engine.ts).
 async function defaultModel(userId: string): Promise<string | null> {
-  const rows = db.select().from(providers).where(eq(providers.userId, userId)).all().filter((p) => p.enabled);
+  const rows = db.select().from(llmEndpoints).where(eq(llmEndpoints.userId, userId)).all().filter((p) => p.enabled);
   const chosen = rows.find((p) => p.isDefault) ?? rows[0];
   if (chosen?.model) return chosen.model;
   return (await engineRoute(null).catch(() => null))?.model ?? null;

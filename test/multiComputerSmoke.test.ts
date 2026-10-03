@@ -99,7 +99,7 @@ delete process.env.BRIDGE_LOCAL_LLM_ENDPOINT;
 
 const { buildApp } = await import("../src/app.js");
 const { ensureSetupToken } = await import("../src/auth.js");
-const { accountPeers, db, memories } = await import("../src/db.js");
+const { accountComputers: accountPeers, db, memories } = await import("../src/db.js");
 const { endorse } = await import("../src/account/endorsement.js");
 const { readStatus } = await import("../src/account/status.js");
 const { closeAllPeerLinks, refreshPeerStatus, peerById, setPeerHandshakeTimeouts } = await import("../src/peers/index.js");

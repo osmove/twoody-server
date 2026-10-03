@@ -33,7 +33,7 @@ const { newPairingKey } = await import("../src/account/keys.js");
 const { linkState, logout, resetLinkForTests, startLink } = await import("../src/account/link.js");
 const { startAccountService } = await import("../src/account/service.js");
 const { accountPath, linkedAccount, readAccountFile, writeAccountFile } = await import("../src/account/store.js");
-const { accountPeers, authSessions, db } = await import("../src/db.js");
+const { accountComputers: accountPeers, authSessions, db } = await import("../src/db.js");
 const { ensureLocalUser, pairDevice } = await import("../src/pairing.js");
 const { accountComputers, linkedPeers, listPeers, requestPeer, syncPeersWithAccount } = await import("../src/peers/index.js");
 

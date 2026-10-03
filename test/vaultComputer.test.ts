@@ -185,8 +185,8 @@ test("the history comes into the Pi's discussions, once however often it syncs",
 
 test("a turn the Pi answers is sealed for the iPhone, with who answered and no path", async () => {
   const discussion = (sqlite.prepare("SELECT id FROM discussions WHERE vault_id = ?").get(VAULT_ID) as { id: string }).id;
-  const at = Math.floor(Date.parse("2026-09-30T09:05:00Z") / 1000);
-  const insert = sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, provider, model, vault_ref, created_at, sources_json, answered_by_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  const at = Date.parse("2026-09-30T09:05:00Z");
+  const insert = sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, provider, model, vault_ref, created_at, sources, answered_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   insert.run("q2", discussion, owner, "user", "Et mon contrat ?", null, null, "r2", at, null, null);
   insert.run("a2", discussion, owner, "assistant", "Il finit en mars [1].", "builtin", "qwen3", "r2#reply", at,
     JSON.stringify([{ n: 1, document_id: "doc-7", name: "contrat.pdf", path: "/home/pi/Documents/contrat.pdf", page: 2, snippet: "jusqu'au 31 mars" }]),

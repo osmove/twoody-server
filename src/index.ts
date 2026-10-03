@@ -77,7 +77,7 @@ const migrated = (() => {
 
 const app = await buildApp();
 const setupToken = ensureSetupToken();
-// The answers kept before usage_events existed, copied once; the machine's
+// The answers kept before model calls were recorded, copied once; the machine's
 // load samples thinned out now and every hour.
 startUsageMaintenance((message) => console.log(`  ${message}`));
 

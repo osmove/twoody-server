@@ -19,7 +19,7 @@ delete process.env.TWOODY_BACKEND_URL;
 const { buildApp } = await import("../src/app.js");
 const { ensureSetupToken, generateToken, generateId, sha256 } = await import("../src/auth.js");
 const { pairDevice, ensureLocalUser } = await import("../src/pairing.js");
-const { accountPeers, db, devices, sqlite } = await import("../src/db.js");
+const { accountComputers: accountPeers, db, devices, sqlite } = await import("../src/db.js");
 const { folderRisk } = await import("../src/documents/folderRisk.js");
 const { retrieveDocuments, scopedFolders } = await import("../src/documents/retrieval.js");
 const { beginGeneration } = await import("../src/account/inflight.js");
@@ -202,12 +202,12 @@ test("the trust check is one replaceable function (lot S2 puts the vault roster 
   setTrustCheck(async (id) => id === "46");
   try {
     assert.equal((await search(headers, {})).statusCode, 200);
-    assert.equal((await search(trustedPeer(), {})).statusCode, 403, "the roster, not account_peers, decides then");
+    assert.equal((await search(trustedPeer(), {})).statusCode, 403, "the roster, not account_computers, decides then");
   } finally {
     setTrustCheck(rosterStandIn);
   }
   // Put back, it is the verified vault roster: no vault here, nobody —
-  // whatever account_peers.trusted says.
+  // whatever account_computers.trusted says.
   setTrustCheck(null);
   try {
     assert.equal((await search(trustedPeer(), {})).statusCode, 403);

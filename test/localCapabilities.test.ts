@@ -37,11 +37,11 @@ test("off, documents, contacts and the agenda are not read; on, they are", async
   // Not under the system's temporary folder, which is never searched.
   const folder = mkdtempSync(join(process.cwd(), "tmp-capabilities-"));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
-  sqlite.prepare("INSERT INTO document_folders (id, user_id, path, created_at) VALUES ('f1', ?, ?, ?)").run(owner, folder, Math.floor(Date.now() / 1000));
+  sqlite.prepare("INSERT INTO document_folders (id, user_id, path, created_at) VALUES ('f1', ?, ?, ?)").run(owner, folder, Date.now());
   assert.deepEqual(scopedFolders(owner, { mode: "all" }), []);
   await app.inject({ method: "POST", url: "/contacts", headers: desktop, payload: { contact: { name: "Lina", birthday: "2019-03-02" } } });
-  const now = Date.now() / 1000;
-  sqlite.prepare("INSERT INTO events (id, user_id, name, status, kind, start_time, all_day, created_at, updated_at) VALUES ('e1', ?, 'Mariage', 'confirmed', 'event', ?, 1, ?, ?)").run(owner, Math.floor(now + 86_400), Math.floor(now), Math.floor(now));
+  const now = Date.now();
+  sqlite.prepare("INSERT INTO events (id, user_id, name, status, kind, start_time, all_day, created_at, updated_at) VALUES ('e1', ?, 'Mariage', 'confirmed', 'event', ?, 1, ?, ?)").run(owner, now + 86_400_000, now, now);
   assert.deepEqual(loadPersonalData(owner), { contacts: [], events: [] });
 
   for (const id of ["documents", "contacts", "calendar"]) {
@@ -63,16 +63,16 @@ test("only this computer's app changes them; a phone reads them", async () => {
 
 test("an installation from before the switches keeps what it used", () => {
   const user = "older-user";
-  const seconds = Math.floor(Date.now() / 1000);
-  sqlite.prepare("INSERT INTO users (id, email, name, prefs_json, created_at) VALUES (?, 'ancien@example.com', 'Ancien', '{}', ?)").run(user, seconds);
+  const seconds = Date.now();
+  sqlite.prepare("INSERT INTO users (id, email, name, prefs, created_at) VALUES (?, 'ancien@example.com', 'Ancien', '{}', ?)").run(user, seconds);
   sqlite.prepare("INSERT INTO contacts (id, user_id, name, origin, created_at, updated_at) VALUES ('c-old', ?, 'Paul', 'local', ?, ?)").run(user, seconds, seconds);
   assert.deepEqual(localCapabilities(user), { documents: false, contacts: true, calendar: false, web: false, dictation: false, agent: false, home: false, connectors: false });
 });
 
 test("people and dates kept after an import switch Contacts and Agenda on", () => {
   const user = "importer";
-  const seconds = Math.floor(Date.now() / 1000);
-  sqlite.prepare("INSERT INTO users (id, email, name, prefs_json, created_at) VALUES (?, 'steeve@example.com', 'Steeve', '{}', ?)").run(user, seconds);
+  const seconds = Date.now();
+  sqlite.prepare("INSERT INTO users (id, email, name, prefs, created_at) VALUES (?, 'steeve@example.com', 'Steeve', '{}', ?)").run(user, seconds);
   assert.equal(localCapabilities(user).contacts, false);
   applyDiscovery(user, { contacts: [{ key: "k", name: "Sarah", relation: "partner", detail: null, birthday: null, memory_ids: [] }], events: [{ key: "e", name: "Mariage", date: "2027-06-14", memory_ids: [] }] });
   assert.equal(localCapabilities(user).contacts, true);

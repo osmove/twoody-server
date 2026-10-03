@@ -44,7 +44,7 @@ delete process.env.TWOODY_BACKEND_URL;
 
 const { buildApp } = await import("../src/app.js");
 const { ensureSetupToken } = await import("../src/auth.js");
-const { accountPeers, db, sqlite } = await import("../src/db.js");
+const { accountComputers: accountPeers, db, sqlite } = await import("../src/db.js");
 const { ensureLocalUser, pairDevice } = await import("../src/pairing.js");
 const { setDesktopAccount } = await import("../src/account/service.js");
 const { folderRisk } = await import("../src/documents/folderRisk.js");
@@ -203,8 +203,8 @@ test("a question needing a document on the Pi and one on the Mac cites both, eac
   assert.ok(prompt.includes("running entirely on the user's own computers"));
   assert.equal(await piSearches(), before + 1);
   // Stored as sent: the next turn's history carries no path either.
-  const stored = sqlite.prepare("SELECT sources_json FROM messages WHERE role = 'assistant' ORDER BY rowid DESC LIMIT 1").get() as { sources_json: string };
-  assert.ok(!stored.sources_json.includes(docsRoot));
+  const stored = sqlite.prepare("SELECT sources FROM messages WHERE role = 'assistant' ORDER BY rowid DESC LIMIT 1").get() as { sources: string };
+  assert.ok(!stored.sources.includes(docsRoot));
 });
 
 test("this computer alone, shown to its own Desktop and not shared, still gives its path", async () => {
@@ -462,8 +462,8 @@ test("a synchronised conversation started elsewhere is caught up from the turns 
   assert.ok(lastPrompt().includes("Mon garagiste s'appelle Martin."), "the earlier exchange is in the history");
   const row = sqlite.prepare("SELECT id FROM discussions WHERE vault_id = ?").get(conversation) as { id: string };
   assert.equal(answer.discussion_id, row.id);
-  const imported = sqlite.prepare("SELECT sources_json FROM messages WHERE discussion_id = ? AND vault_ref = 'turn-1#reply'").get(row.id) as { sources_json: string };
-  assert.ok(!imported.sources_json.includes("/Users/x"), "an inlined source keeps no path");
+  const imported = sqlite.prepare("SELECT sources FROM messages WHERE discussion_id = ? AND vault_ref = 'turn-1#reply'").get(row.id) as { sources: string };
+  assert.ok(!imported.sources.includes("/Users/x"), "an inlined source keeps no path");
   // Again, with the conversation here: complete, nothing imported twice.
   const again = final((await ask({ content: "Et son prénom ?", vault_conversation_id: conversation, known_refs: ["turn-1", "turn-2"], prior_turns: prior, vault_ref: "turn-3" })).payload);
   assert.deepEqual(again.catch_up, { status: "complete", missing_refs: [] });

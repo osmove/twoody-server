@@ -9,7 +9,7 @@ import test from "node:test";
 // Mémoire v2, lot L4a (docs/memory-v2-design.md §2): a conversation's memory
 // mode — « Complète » (full), « Profil seulement » (profile), « Aucune »
 // (none) — from /me, PATCH /discussions/:id or /queries; what a turn was
-// given of the memories, in the final event and messages.memory_json; and
+// given of the memories, in the final event and messages.memory; and
 // a conversation's state that keeps the fields it does not know (G9).
 
 process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-memory-modes-"));
@@ -158,8 +158,8 @@ test("/queries: final.memory says what the answer was given, kept with it; memor
   assert.equal(memory.mode, "full");
   assert.ok(memory.profile_tokens > 0 && memory.relevant_tokens > 0);
   assert.deepEqual(memory.items.map((i: { id: string; title: string }) => [i.id, i.title]), [[project, "Cuisine"]]);
-  const stored = sqlite.prepare("SELECT memory_json FROM messages WHERE discussion_id = ? AND role = 'assistant'").get(full.final.discussion_id) as { memory_json: string };
-  assert.deepEqual(JSON.parse(stored.memory_json), memory);
+  const stored = sqlite.prepare("SELECT memory FROM messages WHERE discussion_id = ? AND role = 'assistant'").get(full.final.discussion_id) as { memory: string };
+  assert.deepEqual(JSON.parse(stored.memory), memory);
   const opened = (await app.inject({ url: `/discussions/${full.final.discussion_id}`, headers })).json();
   assert.deepEqual(opened.messages.at(-1).memory, memory);
   assert.equal(opened.memory_mode, null, "follows the person's");

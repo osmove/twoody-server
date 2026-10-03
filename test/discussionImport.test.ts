@@ -60,8 +60,8 @@ test("an exchange answered here and synced back is not added twice", async () =>
   const id = (sqlite.prepare("SELECT id FROM discussions WHERE vault_id = ? AND user_id = ?").get(vaultId, owner) as { id: string }).id;
   // What /queries stores for a question sent with vault_ref "r3".
   const insert = sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, vault_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)");
-  insert.run("m-r3", id, owner, "user", "Et en espagnol ?", "r3", Math.floor(Date.now() / 1000));
-  insert.run("m-r3b", id, owner, "assistant", "En español", "r3#reply", Math.floor(Date.now() / 1000));
+  insert.run("m-r3", id, owner, "user", "Et en espagnol ?", "r3", Date.now());
+  insert.run("m-r3b", id, owner, "assistant", "En español", "r3#reply", Date.now());
   const back = await app.inject({ method: "POST", url: "/discussions/import", headers, payload: { vault_id: vaultId, turns: [turn("r3", "Et en espagnol ?", "En español", "2026-09-28T10:10:00Z")] } });
   assert.equal(back.json().added, 0);
   assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM messages WHERE discussion_id = ?").get(id) as { n: number }).n, 6);
@@ -96,7 +96,7 @@ test("an exchange already here, synchronised later, takes its ref instead of a c
 test("a question said here without its ref, its copy from the vault moments later: one exchange, not two", async () => {
   // Jimmy, 03/10/2026: « Salut, comment ça va ? » said aloud on the phone,
   // then shown twice once the phone's copy came back through the vault.
-  const at = Math.floor(Date.parse("2026-10-03T06:06:06Z") / 1000);
+  const at = Date.parse("2026-10-03T06:06:06Z");
   sqlite.prepare("INSERT INTO discussions (id, user_id, channel, title, created_at, last_activity_at) VALUES ('voice-1', ?, 'iPhone', 'Salut', ?, ?)").run(owner, at, at);
   const insert = sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, channel, created_at) VALUES (?, 'voice-1', ?, ?, ?, ?, ?)");
   insert.run("vq-1", owner, "user", "Salut, comment ça va ?", "recording", at);

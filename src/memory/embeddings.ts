@@ -23,7 +23,7 @@ import { inflight } from "../account/inflight.js";
 /// instruction, for the query side only).
 export const MEMORY_QUERY_INSTRUCTION = "Given a message to a personal assistant, retrieve facts about the user that help answer it.";
 
-type Row = { id: string; title: string | null; content: string; tags_json: string };
+type Row = { id: string; title: string | null; content: string; tags: string };
 
 /// The text a memory is embedded from: its line, as a prompt gives it.
 export function memoryEmbeddingText(memory: { title: string | null; content: string }): string {
@@ -35,9 +35,9 @@ export function memoryEmbeddingText(memory: { title: string | null; content: str
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 
 function prefsOf(userId: string): Record<string, unknown> {
-  const row = sqlite.prepare("SELECT prefs_json FROM users WHERE id = ?").get(userId) as { prefs_json: string } | undefined;
+  const row = sqlite.prepare("SELECT prefs FROM users WHERE id = ?").get(userId) as { prefs: string } | undefined;
   try {
-    const parsed = JSON.parse(row?.prefs_json || "{}");
+    const parsed = JSON.parse(row?.prefs || "{}");
     return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
   } catch {
     return {};
@@ -52,8 +52,8 @@ export function memoryEmbeddingsEnabled(userId: string): boolean {
 /// The memories a search would read: current, with something to say, not
 /// the whole answer an import keeps for the person to read.
 function candidates(userId: string): Row[] {
-  return (sqlite.prepare("SELECT id, title, content, tags_json FROM memories WHERE user_id = ? AND superseded_by_id IS NULL ORDER BY updated_at DESC, id").all(userId) as Row[])
-    .filter((row) => row.content.trim() && !/"archive"/.test(row.tags_json));
+  return (sqlite.prepare("SELECT id, title, content, tags FROM memories WHERE user_id = ? AND superseded_by_id IS NULL ORDER BY updated_at DESC, id").all(userId) as Row[])
+    .filter((row) => row.content.trim() && !/"archive"/.test(row.tags));
 }
 
 // ── the cache ─────────────────────────────────────────────────────────────

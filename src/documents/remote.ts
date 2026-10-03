@@ -190,7 +190,7 @@ export function remoteScope(access: DocumentAccess, computerId: string): SearchB
 }
 
 /// The computers of the verified roster this one is linked with, over the
-/// key the roster binds (never account_peers.trusted, never the listing).
+/// key the roster binds (never account_computers.trusted, never the listing).
 export function meshPeers(userId: string): PeerRow[] {
   return linkedPeers(userId).filter((peer) => !isSelf(peer.computerId) && trustedNow(peer.computerId, peer.tunnelKey));
 }

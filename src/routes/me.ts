@@ -17,13 +17,13 @@ import { memoriesChanged } from "../memory/changes.js";
 //   - quota = an "infinite remaining" snapshot (apps gracefully no-op
 //     when remaining is high)
 //   - prefs (default_provider, default_model, audio_voice, …) read
-//     from the user's prefs_json blob
+//     from the user's prefs blob
 //   - local_llm_enabled = always true here (the whole point of
 //     running this server is to route locally)
 //
 // The PATCH variant accepts the same shape the cloud accepts —
 // `{user: {default_voice_mode, default_provider, default_model, ...}}`
-// — and merges any provided keys into prefs_json. Keeping the wire
+// — and merges any provided keys into prefs. Keeping the wire
 // shape identical means the RN app can flip its `apiBaseUrl` to a
 // local server without re-implementing every PATCH /me call site.
 export async function meRoutes(app: FastifyInstance) {

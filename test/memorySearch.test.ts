@@ -84,7 +84,7 @@ test("« Aucune »: a conversation in it is never indexed — out when it goes t
   assert.deepEqual(await found("courgettes"), []);
   // Written while in « Aucune »: not indexed either.
   sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, created_at) SELECT ?, id, user_id, 'user', 'Les tomates cerises aussi ?', ? FROM discussions WHERE id = ?")
-    .run(randomUUID(), Math.floor(Date.now() / 1000), garden);
+    .run(randomUUID(), Date.now(), garden);
   assert.equal(indexed(garden), 0);
   assert.deepEqual(await found("tomates"), []);
   // « Profil seulement »: indexed again, every message.

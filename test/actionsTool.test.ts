@@ -76,7 +76,7 @@ test("« Rappelle-moi… »: a reminder, tied to the project, said under the ans
   const friday = zonedInstant(`${namedDay("vendredi", "Europe/Paris")}T18:00`, "Europe/Paris").toISOString();
   assert.deepEqual([action.type, action.title, action.at, action.project.title], ["reminder", "Comparer les prix du Mac mini", friday, "Achat d'un Mac mini"]);
   const row = sqlite.prepare("SELECT project_id, status, notify_at FROM reminders WHERE id = ?").get(action.id) as { project_id: string; status: string; notify_at: number };
-  assert.deepEqual([row.project_id, row.status, row.notify_at], [project.id, "active", Date.parse(friday) / 1000]);
+  assert.deepEqual([row.project_id, row.status, row.notify_at], [project.id, "active", Date.parse(friday)]);
   assert.match(final.message, /^OK: Done \(reminder/);
   assert.match(bodies.find((body) => body.tools)!.messages[0]!.content, /You can act for the user: create_reminder/);
   const opened = (await app.inject({ url: `/discussions/${final.discussion_id}`, headers })).json();

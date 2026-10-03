@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
 import { hostname as osHostname } from "node:os";
 import { eq } from "drizzle-orm";
-import { db, providers } from "../db.js";
+import { db, llmEndpoints } from "../db.js";
 import { offeredModels, probeRuntime } from "../localRuntime.js";
 import { engineModels, engineRoute } from "../engine.js";
 
@@ -52,8 +52,8 @@ export async function localLlmRoutes(app: FastifyInstance) {
 async function buildStatus(userId: string) {
   const configured = db
     .select()
-    .from(providers)
-    .where(eq(providers.userId, userId))
+    .from(llmEndpoints)
+    .where(eq(llmEndpoints.userId, userId))
     .all()
     .filter((provider) => provider.enabled && provider.kind === "local_openai" && provider.baseUrl);
   const chosen = configured.find((provider) => provider.isDefault) ?? configured[0];

@@ -7,7 +7,7 @@ import { backendCall, BackendError } from "../account/backend.js";
 import { openPairing } from "../account/pairingSeal.js";
 import { readStatus, type ComputerStatus } from "../account/status.js";
 import { computerName } from "../account/link.js";
-import { accountPeers, authSessions, db, tunnelPeers } from "../db.js";
+import { accountComputers as accountComputersTable, authSessions, db, tunnelPeers } from "../db.js";
 import { unpairSession } from "../pairing.js";
 import { KEY_BYTES, rendezvousId } from "../tunnel/channel.js";
 import { startTunnelClient, type TunnelClient } from "../tunnel/client.js";
@@ -26,7 +26,7 @@ import { isPrivateUrl, LOCAL_ONLY, relayFetch } from "../outbound.js";
 // sealed tunnel: its `/tunnel` socket on the local network first, the
 // account's relay when that does not answer.
 
-export type PeerRow = typeof accountPeers.$inferSelect;
+export type PeerRow = typeof accountComputersTable.$inferSelect;
 
 export class PeerUnavailableError extends Error {
   constructor(
@@ -39,7 +39,7 @@ export class PeerUnavailableError extends Error {
 }
 
 export function listPeers(userId: string): PeerRow[] {
-  return db.select().from(accountPeers).where(eq(accountPeers.userId, userId)).all();
+  return db.select().from(accountComputersTable).where(eq(accountComputersTable.userId, userId)).all();
 }
 
 /// Peers this computer may route to: paired, enabled.
@@ -48,7 +48,7 @@ export function linkedPeers(userId: string): PeerRow[] {
 }
 
 export function peerById(userId: string, computerId: string): PeerRow | null {
-  return db.select().from(accountPeers).where(and(eq(accountPeers.userId, userId), eq(accountPeers.computerId, computerId))).limit(1).all()[0] ?? null;
+  return db.select().from(accountComputersTable).where(and(eq(accountComputersTable.userId, userId), eq(accountComputersTable.computerId, computerId))).limit(1).all()[0] ?? null;
 }
 
 // ── links ────────────────────────────────────────────────────────────────
@@ -207,9 +207,9 @@ function markPeer(computerId: string, state: "revoked" | "removed", error: strin
   const poll = polls.get(computerId);
   if (poll) clearTimeout(poll);
   polls.delete(computerId);
-  db.update(accountPeers)
+  db.update(accountComputersTable)
     .set({ state, error, token: null, url: null, tunnelKey: null, requestId: null, updatedAt: new Date() })
-    .where(eq(accountPeers.computerId, computerId))
+    .where(eq(accountComputersTable.computerId, computerId))
     .run();
 }
 
@@ -660,16 +660,16 @@ export async function requestPeer(
     // A link asked for from « Appareils » stays one; one the roster asked
     // for becomes one when asked for from « Appareils ».
     const origin = options.origin === "mesh" && (existing.origin === "mesh" || existing.state !== "linked") ? "mesh" : options.origin === "mesh" ? existing.origin : null;
-    db.update(accountPeers)
+    db.update(accountComputersTable)
       .set(
         existing.state === "linked"
           ? { requestId, requestExpiresAt: values.requestExpiresAt, hostKey, expectedTunnelKey, ...(checked ? { checkedTunnelKey: checked } : {}), origin, updatedAt: now }
           : { ...values, origin },
       )
-      .where(eq(accountPeers.computerId, computerId))
+      .where(eq(accountComputersTable.computerId, computerId))
       .run();
   } else {
-    db.insert(accountPeers).values({ computerId, ...values, origin: options.origin ?? null, createdAt: now }).run();
+    db.insert(accountComputersTable).values({ computerId, ...values, origin: options.origin ?? null, createdAt: now }).run();
   }
   watchPeerRequest(userId, computerId);
   return { request_id: requestId, expires_at: values.requestExpiresAt.toISOString(), public_key: tunnelIdentity().publicKey.toString("hex") };
@@ -681,9 +681,9 @@ export async function checkPeerRequest(userId: string, computerId: string): Prom
   const creds = accountCredentials();
   if (!peer?.requestId || !creds) return "failed";
   const fail = (error: string) => {
-    db.update(accountPeers)
+    db.update(accountComputersTable)
       .set({ ...(peer.state === "linked" ? {} : { state: "failed" }), requestId: null, error, updatedAt: new Date() })
-      .where(eq(accountPeers.computerId, computerId))
+      .where(eq(accountComputersTable.computerId, computerId))
       .run();
     return "failed" as const;
   };
@@ -722,7 +722,7 @@ export async function checkPeerRequest(userId: string, computerId: string): Prom
     return fail("unreadable_answer");
   }
   closePeerLink(computerId);
-  db.update(accountPeers)
+  db.update(accountComputersTable)
     .set({
       state: "linked",
       url,
@@ -735,7 +735,7 @@ export async function checkPeerRequest(userId: string, computerId: string): Prom
       enabled: true,
       updatedAt: new Date(),
     })
-    .where(eq(accountPeers.computerId, computerId))
+    .where(eq(accountComputersTable.computerId, computerId))
     .run();
   await backendCall(userCreds, `${path}/consume`, { body: {} }).catch(() => undefined);
   const linked = peerById(userId, computerId);
@@ -778,6 +778,6 @@ export async function removePeer(userId: string, computerId: string): Promise<bo
   }
   closePeerLink(computerId);
   statuses.delete(computerId);
-  db.delete(accountPeers).where(eq(accountPeers.computerId, computerId)).run();
+  db.delete(accountComputersTable).where(eq(accountComputersTable.computerId, computerId)).run();
   return true;
 }

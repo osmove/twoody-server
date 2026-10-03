@@ -16,7 +16,7 @@ export const SIMILAR_COSINE = 0.85;
 const SIMILAR_WORDS = 0.6;
 const MAX_PAIRS = 12;
 
-interface Row { id: string; content: string; title: string | null; tags_json: string; source: string; source_ref: string | null; created_at: number }
+interface Row { id: string; content: string; title: string | null; tags: string; source: string; source_ref: string | null; created_at: number }
 
 export interface SimilarMemory { id: string; title: string | null; content: string; source: string; source_ref: string | null; created_at: string }
 export interface SimilarPair { score: number; by: "meaning" | "words"; memories: [SimilarMemory, SimilarMemory] }
@@ -42,8 +42,8 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 }
 
 export function similarMemories(userId: string): SimilarPair[] {
-  const rows = (sqlite.prepare("SELECT id, title, content, tags_json, source, source_ref, created_at FROM memories WHERE user_id = ? AND superseded_by_id IS NULL").all(userId) as Row[])
-    .filter((row) => row.content.trim() && !/"archive"/.test(row.tags_json));
+  const rows = (sqlite.prepare("SELECT id, title, content, tags, source, source_ref, created_at FROM memories WHERE user_id = ? AND superseded_by_id IS NULL").all(userId) as Row[])
+    .filter((row) => row.content.trim() && !/"archive"/.test(row.tags));
   const vectors = memoryVectors(userId);
   const words = new Map(rows.map((row) => [row.id, new Set(memoryWords(`${row.title ?? ""} ${row.content}`).filter((word) => word.length > 2))]));
   const skip = dismissed(userId);
@@ -62,7 +62,7 @@ export function similarMemories(userId: string): SimilarPair[] {
       }
     }
   }
-  const shown = (row: Row): SimilarMemory => ({ id: row.id, title: row.title, content: row.content, source: row.source, source_ref: row.source_ref, created_at: new Date(row.created_at * 1000).toISOString() });
+  const shown = (row: Row): SimilarMemory => ({ id: row.id, title: row.title, content: row.content, source: row.source, source_ref: row.source_ref, created_at: new Date(row.created_at).toISOString() });
   return pairs
     .sort((x, y) => y.score - x.score)
     .slice(0, MAX_PAIRS)

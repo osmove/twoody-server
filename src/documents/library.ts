@@ -191,7 +191,7 @@ export async function reindex(userId: string): Promise<IndexStatus> {
       const scan = await walk(folder.path, undefined, {
         skip: inside.map((other) => other.path),
         keep: new Set(indexed.map((row) => row.path)),
-        since: last === null ? null : last * 1000,
+        since: last,
       });
       ignoredByFolder.set(folder.id, scan.ignored);
       if (scan.limited) status.limited = true;

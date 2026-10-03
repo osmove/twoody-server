@@ -79,7 +79,7 @@ export function memoryModeFor(prefs: Record<string, unknown>, conversation?: unk
 }
 
 /// What a turn was given of the memories: the final event's `memory`, and
-/// messages.memory_json. `items` are the memories that rode on the
+/// messages.memory. `items` are the memories that rode on the
 /// message (the profile is counted, not listed); a score is the match's,
 /// null for a memory given as new.
 export interface MemoryUsage {
@@ -235,7 +235,7 @@ export interface ChatContextInput {
 }
 
 /// What a conversation keeps from one turn to the next, so that what the
-/// model is given only grows between refresh points (discussions.context_json).
+/// model is given only grows between refresh points (discussions.context).
 export interface ContextState {
   v: 1;
   /// The compaction this state was built on (its summaryThrough).

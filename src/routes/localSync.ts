@@ -6,6 +6,7 @@ import { requireAuth } from "../auth.js";
 import { isThisComputersApp } from "./usage.js";
 import type { PersonalContact, PersonalEvent } from "../personalContext.js";
 import { localCapabilities } from "../localCapabilities.js";
+import { storedValues, toStored } from "../contactFields.js";
 
 // Contacts and Calendar of this Mac, copied into the embedded server by the
 // desktop app when the person turns them on in « Capacités » (29/09/2026): the
@@ -51,9 +52,11 @@ function source(value: unknown): SyncSource {
 }
 
 /// A stable row id for what the Mac calls `externalId`, so an event keeps
-/// its id from one copy to the next.
-function rowId(userId: string, src: SyncSource, externalId: string): string {
-  return `${src}-${createHash("sha256").update(`${userId}\0${externalId}`).digest("hex").slice(0, 32)}`;
+/// its id from one copy to the next: a UUID (migration 2 turned the
+/// « macos-<hex> » of before into the UUID of that same hex).
+export function rowId(userId: string, src: SyncSource, externalId: string): string {
+  const hex = createHash("sha256").update(src === "macos" ? `${userId}\0${externalId}` : `${src}\0${userId}\0${externalId}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
 /// "1990-05-17" or "--05-17" (a birthday without its year).
@@ -143,10 +146,10 @@ export function replaceContacts(userId: string, src: SyncSource, rows: ReturnTyp
         source: src,
         externalId: row.externalId,
         organization: row.organization,
-        phonesJson: JSON.stringify(row.phones),
-        emailsJson: JSON.stringify(row.emails),
+        phonesJson: toStored(row.phones),
+        emailsJson: toStored(row.emails),
         birthday: row.birthday,
-        addressesJson: row.addresses.length ? JSON.stringify(row.addresses) : null,
+        addressesJson: row.addresses.length ? toStored(row.addresses) : null,
         createdAt: now,
         updatedAt: now,
       }).run();
@@ -180,16 +183,6 @@ export function replaceEvents(userId: string, src: SyncSource, rows: ReturnType<
   return rows.length;
 }
 
-function parseJsonList(value: string | null): string[] {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
 /// What the chat may draw on for one turn: every contact (they are matched
 /// by name in memory, accents and case aside), and the events from a month
 /// ago to a year ahead.
@@ -207,8 +200,8 @@ export function loadPersonalData(userId: string, now = new Date()): { contacts: 
       firstName: row.firstName,
       lastName: row.lastName,
       organization: row.organization,
-      phones: row.phonesJson ? parseJsonList(row.phonesJson) : [row.phoneNumber].filter((phone): phone is string => Boolean(phone)),
-      emails: row.emailsJson ? parseJsonList(row.emailsJson) : [row.email].filter((email): email is string => Boolean(email)),
+      phones: row.phonesJson ? storedValues(row.phonesJson) : [row.phoneNumber].filter((phone): phone is string => Boolean(phone)),
+      emails: row.emailsJson ? storedValues(row.emailsJson) : [row.email].filter((email): email is string => Boolean(email)),
       birthday: row.birthday,
     }));
   const from = new Date(now.getTime() - 31 * 86_400_000);

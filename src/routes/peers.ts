@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { eq } from "drizzle-orm";
 import { isOwnerSession, isPeerSessionKind, requireAuth } from "../auth.js";
 import { BackendError } from "../account/backend.js";
-import { accountPeers, authSessions, db } from "../db.js";
+import { accountComputers, authSessions, db } from "../db.js";
 import { ownerRequest } from "../localAccess.js";
 import { LocalOnlyError } from "../outbound.js";
 import { listPeers, peerById, peerRequest, peerStatus, PeerUnavailableError, removePeer, requestPeer } from "../peers/index.js";
@@ -192,14 +192,14 @@ export async function peersRoutes(app: FastifyInstance) {
       if ((enabled !== undefined && typeof enabled !== "boolean") || (trusted !== undefined && typeof trusted !== "boolean") || (enabled === undefined && trusted === undefined && checkedKey === undefined)) {
         return reply.code(422).send({ error: "enabled and trusted, when given, must be booleans; one of them is required" });
       }
-      db.update(accountPeers)
+      db.update(accountComputers)
         .set({
           ...(enabled !== undefined ? { enabled } : {}),
           ...(trusted !== undefined ? { trusted } : {}),
           ...(checkedKey !== undefined ? { checkedTunnelKey: checkedKey.toLowerCase(), expectedTunnelKey: checkedKey.toLowerCase() } : {}),
           updatedAt: new Date(),
         })
-        .where(eq(accountPeers.computerId, peer.computerId))
+        .where(eq(accountComputers.computerId, peer.computerId))
         .run();
       return reply.code(200).send(serialize(peerById(auth.userId, req.params.id)!));
     },

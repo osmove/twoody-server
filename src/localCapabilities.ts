@@ -8,7 +8,7 @@ import { sqlite } from "./db.js";
 // phone's. Web search, dictation and the Agent are clicked in the chat:
 // their switch only shows or hides the button.
 //
-// Kept in `users.prefs_json` as `local_capabilities: { documents: true }`.
+// Kept in `users.prefs` as `local_capabilities: { documents: true }`.
 // An installation from before the switches keeps what it was using: the
 // first read turns on documents when folders are granted, contacts and the
 // agenda when there are some.
@@ -21,7 +21,7 @@ export function isLocalCapability(value: unknown): value is LocalCapability {
 }
 
 function readPrefs(userId: string): Record<string, unknown> {
-  const row = sqlite.prepare("SELECT prefs_json AS prefs FROM users WHERE id = ?").get(userId) as { prefs: string } | undefined;
+  const row = sqlite.prepare("SELECT prefs AS prefs FROM users WHERE id = ?").get(userId) as { prefs: string } | undefined;
   try {
     const parsed = JSON.parse(row?.prefs || "{}") as unknown;
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
@@ -48,7 +48,7 @@ export function localCapabilities(userId: string): Record<LocalCapability, boole
       contacts: some("SELECT 1 FROM contacts WHERE user_id = ? LIMIT 1", userId),
       calendar: some("SELECT 1 FROM events WHERE user_id = ? LIMIT 1", userId),
     };
-    sqlite.prepare("UPDATE users SET prefs_json = ? WHERE id = ?").run(JSON.stringify({ ...prefs, local_capabilities: stored }), userId);
+    sqlite.prepare("UPDATE users SET prefs = ? WHERE id = ?").run(JSON.stringify({ ...prefs, local_capabilities: stored }), userId);
   }
   return Object.fromEntries(LOCAL_CAPABILITIES.map((id) => [id, stored![id] === true])) as Record<LocalCapability, boolean>;
 }
@@ -60,6 +60,6 @@ export function capabilityOn(userId: string, id: LocalCapability): boolean {
 export function setLocalCapability(userId: string, id: LocalCapability, enabled: boolean): Record<LocalCapability, boolean> {
   const current = localCapabilities(userId);
   const prefs = readPrefs(userId);
-  sqlite.prepare("UPDATE users SET prefs_json = ? WHERE id = ?").run(JSON.stringify({ ...prefs, local_capabilities: { ...current, [id]: enabled } }), userId);
+  sqlite.prepare("UPDATE users SET prefs = ? WHERE id = ?").run(JSON.stringify({ ...prefs, local_capabilities: { ...current, [id]: enabled } }), userId);
   return { ...current, [id]: enabled };
 }

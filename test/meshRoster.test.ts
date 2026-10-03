@@ -10,7 +10,7 @@ import { meshVault } from "./helpers/meshVault.js";
 // The verified mesh roster (docs/mesh-design.md §1, §4, lot S2): which
 // computers this one trusts comes from the vault's own signatures — v2
 // approvals, bindings, walked forward from the pinned iPhone — never from
-// the backend's listing or account_peers.trusted. What it drives: rules 4
+// the backend's listing or account_computers.trusted. What it drives: rules 4
 // and 5 of the approvals, the peer document trust, the links asked for,
 // what goes within 60 s when a computer leaves, and the router's trust.
 
@@ -28,7 +28,7 @@ const { BackendError } = await import("../src/account/backend.js");
 const { writeAccountFile } = await import("../src/account/store.js");
 const { newPairingKey } = await import("../src/account/keys.js");
 const { buildApp } = await import("../src/app.js");
-const { accountPeers, authSessions, db, users } = await import("../src/db.js");
+const { accountComputers: accountPeers, authSessions, db, users } = await import("../src/db.js");
 const { ensureLocalUser, pairDevice } = await import("../src/pairing.js");
 const { isTrustedComputer } = await import("../src/peerDocuments/trust.js");
 const { followRoster, peerById, setPeerStatus, startMeshLinks } = await import("../src/peers/index.js");
@@ -302,7 +302,7 @@ test("peer documents: the roster decides, and only for the session holding the b
   // The account labels another key's session with the Mac's id: not the Mac.
   const other = pairDevice({ deviceName: "Not the Mac", tunnelPublicKey: hex(), role: "peer", origin: "account", requesterComputerId: MAC });
   assert.equal(await isTrustedComputer(MAC, { sessionId: other.sessionId }), false);
-  // account_peers.trusted no longer counts.
+  // account_computers.trusted no longer counts.
   const now = new Date();
   db.insert(accountPeers).values({ computerId: LISTED, userId: user.id, name: "Ordinateur inséré", state: "linked", trusted: true, enabled: true, token: "t", tunnelKey: hex(), url: "http://192.168.1.9:3000", createdAt: now, updatedAt: now }).run();
   assert.equal(await isTrustedComputer(LISTED), false);
@@ -336,7 +336,7 @@ test("router: trusted from the roster over the bound key, a mesh link outside it
   db.insert(accountPeers).values({ computerId: "999", userId: user.id, name: "Ancien", state: "linked", trusted: true, origin: "mesh", enabled: true, token: "t", tunnelKey: hex(), url: "http://192.168.1.11:3000", createdAt: now, updatedAt: now }).run();
 
   assert.equal(peerTrusted(peerById(user.id, MAC)!), true);
-  assert.equal(peerTrusted(peerById(user.id, LISTED)!), false, "account_peers.trusted is not the roster");
+  assert.equal(peerTrusted(peerById(user.id, LISTED)!), false, "account_computers.trusted is not the roster");
   assert.equal(peerTrusted({ computerId: MAC, tunnelKey: hex() }), false, "the Mac's id under another key");
   assert.deepEqual(routablePeers(user.id).map((p) => p.computerId), [MAC], "one only the account vouches for lends nothing");
   // Added from « Appareils » with its security code checked: it lends its models.

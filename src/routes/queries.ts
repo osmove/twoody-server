@@ -22,7 +22,7 @@ import { VIA_TUNNEL_HEADER } from "../tunnel/host.js";
 import { documentAccess } from "../documents/access.js";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { requireAuth, generateId, PLACEHOLDER_USER_NAME } from "../auth.js";
-import { DATA_DIR, db, providers, discussions, messages, memories, sqlite, users } from "../db.js";
+import { DATA_DIR, db, llmEndpoints, discussions, messages, memories, sqlite, users } from "../db.js";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { transcribeSpeech, withoutNonSpeech, WhisperUnavailableError } from "../whisper.js";
 import { publish as publishEvent } from "../events.js";
@@ -1323,7 +1323,7 @@ class ComputerUnavailableError extends Error {
   }
 }
 
-/// Who wrote an answer: stored with it (messages.answered_by_json) and sent
+/// Who wrote an answer: stored with it (messages.answered_by) and sent
 /// in `final`. `auto` says the same as `routed` for clients that only want
 /// to know whether it was chosen for them.
 export interface AnsweredBy {
@@ -1360,7 +1360,7 @@ function retriable(err: unknown): boolean {
 
 function peerProvider(peer: PeerRow, model: string): Provider {
   // Trusted: in the verified vault roster over its bound key (router
-  // peerTrusted), never account_peers.trusted.
+  // peerTrusted), never account_computers.trusted.
   return { kind: "peer_openai", model, baseUrl: `peer:${peer.computerId}`, computerId: peer.computerId, computerName: peer.name, userId: peer.userId, trusted: peerTrusted(peer) };
 }
 
@@ -1461,8 +1461,8 @@ async function resolveProvider(userId: string, requestedModel?: string, options:
   }
   const configuredProviders = db
     .select()
-    .from(providers)
-    .where(eq(providers.userId, userId))
+    .from(llmEndpoints)
+    .where(eq(llmEndpoints.userId, userId))
     .all()
     .filter((provider) => provider.enabled);
 

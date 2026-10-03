@@ -200,9 +200,9 @@ export function projectDetail(userId: string, id: string) {
   const memoryIds = row.entity_id ? memoryIdsOf(row.entity_id) : [];
   const memories = memoryIds.length
     ? (sqlite.prepare(`SELECT id, kind, title, content, created_at FROM memories WHERE user_id = ? AND superseded_by_id IS NULL AND id IN (${memoryIds.map(() => "?").join(",")}) ORDER BY created_at DESC`).all(userId, ...memoryIds) as Array<{ id: string; kind: string; title: string | null; content: string; created_at: number }>)
-      .map((memory) => ({ ...memory, created_at: new Date(memory.created_at * 1000).toISOString() }))
+      .map((memory) => ({ ...memory, created_at: new Date(memory.created_at).toISOString() }))
     : [];
-  const at = (seconds: number | null) => (seconds === null ? null : new Date(seconds * 1000).toISOString());
+  const at = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
   return {
     ...serialize(row),
     memories,
@@ -249,14 +249,14 @@ export function projectCards(userId: string, text: string, memoryIds: Array<stri
   }
   if (!named.size) return [];
   const rows = sqlite.prepare(`SELECT * FROM projects WHERE user_id = ? AND status != 'dropped' AND entity_id IN (${[...named].map(() => "?").join(",")}) ORDER BY updated_at DESC LIMIT 2`).all(userId, ...named) as Row[];
-  const at = (seconds: number | null) => (seconds ? new Date(seconds * 1000).toISOString().slice(0, 10) : null);
+  const at = (ms: number | null) => (ms ? new Date(ms).toISOString().slice(0, 10) : null);
   return rows.map((row) => {
     const tasks = (sqlite.prepare("SELECT title, due_at FROM tasks WHERE project_id = ? AND user_id = ? AND done_at IS NULL ORDER BY due_at IS NULL, due_at LIMIT 4").all(row.id, userId) as Array<{ title: string; due_at: number | null }>)
       .map((task) => (task.due_at ? `${task.title} (${at(task.due_at)})` : task.title));
     const reminders = (sqlite.prepare("SELECT COALESCE(title, text) AS text, notify_at FROM reminders WHERE project_id = ? AND user_id = ? AND status = 'active' ORDER BY notify_at LIMIT 3").all(row.id, userId) as Array<{ text: string; notify_at: number | null }>)
       .map((reminder) => (reminder.notify_at ? `${reminder.text} (${at(reminder.notify_at)})` : reminder.text));
     const facts = row.entity_id
-      ? (sqlite.prepare(`SELECT m.content FROM memories m JOIN memory_entities l ON l.memory_id = m.id WHERE l.entity_id = ? AND m.user_id = ? AND m.superseded_by_id IS NULL AND m.tags_json NOT LIKE '%"sensitive"%' ORDER BY m.created_at DESC LIMIT 3`).all(row.entity_id, userId) as Array<{ content: string }>).map((fact) => fact.content.replace(/\s+/g, " ").slice(0, 160))
+      ? (sqlite.prepare(`SELECT m.content FROM memories m JOIN memory_entities l ON l.memory_id = m.id WHERE l.entity_id = ? AND m.user_id = ? AND m.superseded_by_id IS NULL AND m.tags NOT LIKE '%"sensitive"%' ORDER BY m.created_at DESC LIMIT 3`).all(row.entity_id, userId) as Array<{ content: string }>).map((fact) => fact.content.replace(/\s+/g, " ").slice(0, 160))
       : [];
     const head = [`${KIND_WORDS[row.kind] ?? "project"}`, (PROJECT_SIZES as readonly string[]).includes(row.size) ? row.size : "small", row.status, row.due_at ? `due ${day(row.due_at)}` : null, row.budget_cents ? `budget ${(row.budget_cents / 100).toFixed(0)} ${row.currency ?? ""}`.trim() : null].filter(Boolean).join(", ");
     const lines = [

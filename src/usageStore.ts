@@ -1,11 +1,11 @@
 import { and, asc, eq, gte, lt } from "drizzle-orm";
-import { db, sqlite, usageEvents, usageMachines, usageSamples } from "./db.js";
+import { db, sqlite, modelCalls, usageMachines, usageSamples } from "./db.js";
 import { generateId } from "./auth.js";
 
 // What this computer's models did and what it cost the machine, kept to be
 // added up and audited (Jimmy, 29/09/2026: tokens per day, week, month and
 // year, speed, CPU, GPU and memory). Every call to a model is one row of
-// usage_events, kept as long as the conversations are; the machine's load
+// model_calls, kept as long as the conversations are; the machine's load
 // is sampled every 15 s and thinned out with age (see compactUsageSamples).
 
 /// « peer »: an answer this computer wrote for another computer of the
@@ -33,11 +33,11 @@ const count = (value: number | null | undefined): number | null =>
   typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : null;
 
 export function recordUsageEvent(event: UsageEventInput): void {
-  db.insert(usageEvents)
+  db.insert(modelCalls)
     .values({
       id: generateId(),
       userId: event.userId,
-      at: event.at ?? new Date(),
+      occurredAt: event.at ?? new Date(),
       source: event.source,
       model: event.model,
       client: event.client,
@@ -53,7 +53,7 @@ export function recordUsageEvent(event: UsageEventInput): void {
     .run();
 }
 
-/// The answers written before usage_events existed carry their tokens:
+/// The answers written before model calls were recorded carry their tokens:
 /// they are copied once (source chat), so the history starts with them.
 /// Idempotent twice over: a marker, and one row per message at most.
 export function backfillUsageEvents(): number {
@@ -62,12 +62,12 @@ export function backfillUsageEvents(): number {
   const copy = sqlite.transaction(() => {
     const result = sqlite
       .prepare(
-        `INSERT INTO usage_events (id, user_id, at, source, model, client, prompt_tokens, completion_tokens, estimated, message_id)
-         SELECT 'backfill-' || m.id, m.user_id, m.created_at * 1000, 'chat', m.model, m.client,
+        `INSERT INTO model_calls (id, user_id, occurred_at, source, model, client, prompt_tokens, completion_tokens, estimated, message_id)
+         SELECT 'backfill-' || m.id, m.user_id, m.created_at, 'chat', m.model, m.client,
                 COALESCE(m.prompt_tokens, 0), m.completion_tokens, COALESCE(m.tokens_estimated, 0), m.id
            FROM messages m
           WHERE m.role = 'assistant' AND m.completion_tokens IS NOT NULL
-            AND NOT EXISTS (SELECT 1 FROM usage_events e WHERE e.message_id = m.id)`,
+            AND NOT EXISTS (SELECT 1 FROM model_calls e WHERE e.message_id = m.id)`,
       )
       .run();
     sqlite.prepare("INSERT OR REPLACE INTO usage_meta (key, value) VALUES ('backfill_messages', ?)").run(new Date().toISOString());
@@ -153,7 +153,7 @@ export function startUsageMaintenance(log: (message: string) => void = () => und
   };
   try {
     const copied = backfillUsageEvents();
-    if (copied > 0) log(`usage: ${copied} earlier answers copied into usage_events`);
+    if (copied > 0) log(`usage: ${copied} earlier answers copied into model_calls`);
   } catch (err) {
     log(`usage backfill failed: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -165,14 +165,14 @@ export function startUsageMaintenance(log: (message: string) => void = () => und
 
 // ── reading ─────────────────────────────────────────────────────────────────
 
-export type UsageEventRow = typeof usageEvents.$inferSelect;
+export type UsageEventRow = typeof modelCalls.$inferSelect;
 
 export function eventsBetween(userId: string, from: Date, to: Date): UsageEventRow[] {
   return db
     .select()
-    .from(usageEvents)
-    .where(and(eq(usageEvents.userId, userId), gte(usageEvents.at, from), lt(usageEvents.at, to)))
-    .orderBy(asc(usageEvents.at))
+    .from(modelCalls)
+    .where(and(eq(modelCalls.userId, userId), gte(modelCalls.occurredAt, from), lt(modelCalls.occurredAt, to)))
+    .orderBy(asc(modelCalls.occurredAt))
     .all();
 }
 

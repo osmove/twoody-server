@@ -13,7 +13,7 @@ import { BUILT_IN_CAPABILITIES, findCapability } from "../capabilities.js";
 //   PATCH  /built_in_capabilities/:slug              {enabled} → {slug, enabled}
 //   PATCH  /built_in_capabilities/:slug/tools/:tool  {enabled} → {slug, tool_name, enabled}
 //
-// Per-user opt-out lives in `users.prefs_json`:
+// Per-user opt-out lives in `users.prefs`:
 //   disabled_capabilities: string[]   (slugs)
 //   disabled_tools:        string[]   (tool names)
 // Everything is enabled by default; lists are pure opt-out so a fresh

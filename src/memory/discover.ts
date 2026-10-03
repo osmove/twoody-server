@@ -152,24 +152,25 @@ export function applyDiscovery(userId: string, chosen: Partial<Discovery>, now =
       status: (STATUSES.has(project.status) ? project.status : "active") as never,
     }, "learned", now));
   }
-  const seconds = Math.floor(now / 1000);
+  // Dates in milliseconds, as every table (migration 2).
+  const at = now;
   for (const contact of (chosen.contacts ?? []).slice(0, 200)) {
     if (typeof contact?.name !== "string" || !contact.name.trim()) continue;
     const name = contact.name.trim().slice(0, 120);
     if (sqlite.prepare("SELECT 1 FROM contacts WHERE user_id = ? AND lower(name) = lower(?)").get(userId, name)) continue;
     const id = randomUUID();
     sqlite.prepare("INSERT INTO contacts (id, user_id, name, relation_type, relation_subtype, origin, birthday, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'local', ?, ?, ?)")
-      .run(id, userId, name, contact.relation && RELATIONS.has(contact.relation) ? contact.relation : null, typeof contact.detail === "string" ? contact.detail.slice(0, 120) : null, validDate(contact.birthday), seconds, seconds);
+      .run(id, userId, name, contact.relation && RELATIONS.has(contact.relation) ? contact.relation : null, typeof contact.detail === "string" ? contact.detail.slice(0, 120) : null, validDate(contact.birthday), at, at);
     made.contacts.push(id);
   }
   for (const event of (chosen.events ?? []).slice(0, 100)) {
     const date = validDate(event?.date);
     if (typeof event?.name !== "string" || !event.name.trim() || !date) continue;
-    const start = Math.floor(Date.parse(`${date}T00:00:00Z`) / 1000);
+    const start = Date.parse(`${date}T00:00:00Z`);
     if (sqlite.prepare("SELECT 1 FROM events WHERE user_id = ? AND lower(name) = lower(?) AND start_time = ?").get(userId, event.name.trim(), start)) continue;
     const id = randomUUID();
     sqlite.prepare("INSERT INTO events (id, user_id, name, status, kind, start_time, all_day, created_at, updated_at) VALUES (?, ?, ?, 'confirmed', 'event', ?, 1, ?, ?)")
-      .run(id, userId, event.name.trim().slice(0, 160), start, seconds, seconds);
+      .run(id, userId, event.name.trim().slice(0, 160), start, at, at);
     made.events.push(id);
   }
   // The person chose to keep these people and dates: their Contacts and

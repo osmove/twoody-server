@@ -17,7 +17,7 @@ import { dismissPair, similarMemories } from "../memory/similar.js";
 // 204 on destroy. The iPhone's MemoriesScreen and the desktop's
 // Memories tab can drive both backends without branching.
 //
-// `tags` is serialized as a JSON array on disk (`tags_json` column);
+// `tags` is serialized as a JSON array on disk (`tags` column);
 // over the wire we expose it as `tags: string[]` so the cloud
 // jbuilder shape is preserved.
 

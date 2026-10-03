@@ -11,7 +11,7 @@ import { tunnelKeyOf } from "../vault/roster.js";
 // given here, over the tunnel key its binding names. Nobody else — not the
 // phone (it has /local_documents), not a firmware device, not a computer
 // the person devices did not vouch for, whatever the backend lists or a
-// switch flipped here says (account_peers.trusted no longer counts).
+// switch flipped here says (account_computers.trusted no longer counts).
 //
 // The one question every peer document route asks is isTrustedComputer().
 

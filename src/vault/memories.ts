@@ -52,10 +52,10 @@ export type MemoryVaultAccess = { api: EventsApi; userId: string; deviceId: stri
 type Context = MemoryVaultAccess & { epochOne: Uint8Array; streamId: string };
 
 type Row = {
-  id: string; user_id: string; kind: string; title: string | null; content: string; tags_json: string; source: string;
+  id: string; user_id: string; kind: string; title: string | null; content: string; tags: string; source: string;
   superseded_by_id: string | null; hlc: string | null; vault_event_id: string | null; created_at: number; updated_at: number;
 };
-type LogRow = { event_id: string; stream_id: string; memory_id: string; payload_json: string; own: number; sealed_json: string | null; sent: number; seq: number | null; stored_at: number | null };
+type LogRow = { event_id: string; stream_id: string; memory_id: string; payload: string; own: number; sealed: string | null; sent: number; seq: number | null; stored_at: number | null };
 
 /// A memory as the vault calls its source; « conversation » is what
 /// memoryLearning.ts writes for a learned fact.
@@ -139,12 +139,12 @@ export function createMemoryVault({ sqlite, owner, access, now = () => Date.now(
     if (known) {
       if (!known.own || known.sent) return;
       const a = readMemoryEvent(payload);
-      const b = readMemoryEvent(parse(known.payload_json));
+      const b = readMemoryEvent(parse(known.payload));
       // Two copies of one event here: the lesser, as the contract keeps it.
       if (a && b && compareMemoryEvents({ event_id: eventId, event: a }, { event_id: eventId, event: b }) >= 0) return;
     }
     sqlite.prepare(
-      "INSERT OR REPLACE INTO memory_vault_events (event_id, stream_id, memory_id, payload_json, own, sealed_json, sent, seq) VALUES (?, ?, ?, ?, 1, NULL, 0, NULL)",
+      "INSERT OR REPLACE INTO memory_vault_events (event_id, stream_id, memory_id, payload, own, sealed, sent, seq) VALUES (?, ?, ?, ?, 1, NULL, 0, NULL)",
     ).run(eventId, streamId, memoryId, JSON.stringify(payload));
   }
 
@@ -165,7 +165,7 @@ export function createMemoryVault({ sqlite, owner, access, now = () => Date.now(
       kind: (MEMORY_KINDS as readonly string[]).includes(row.kind) ? (row.kind as MemoryEvent["kind"]) : "user",
       title: row.title == null ? null : clip(row.title, 200),
       content: row.content,
-      tags: tagsOf(row.tags_json),
+      tags: tagsOf(row.tags),
       source,
       superseded_by: row.superseded_by_id && UUID.test(row.superseded_by_id) ? row.superseded_by_id : null,
       hlc, device,
@@ -257,14 +257,14 @@ export function createMemoryVault({ sqlite, owner, access, now = () => Date.now(
       if (rows.length === 0) return sent;
       const epoch = Math.max(...ctx.epochKeys.keys());
       const batch = rows.map((row) => {
-        if (row.sealed_json) return JSON.parse(row.sealed_json) as SealedEvent;
-        const payload = parse(row.payload_json) as { type?: unknown } | null;
+        if (row.sealed) return JSON.parse(row.sealed) as SealedEvent;
+        const payload = parse(row.payload) as { type?: unknown } | null;
         // Sealed once: a retry resends the same bytes (a duplicate, never a conflict).
         const sealed = sealEvent({
           epochKey: ctx.epochKeys.get(epoch)!, epoch, userId: ctx.userId, conversationId: ctx.streamId, eventId: row.event_id,
           kind: payload?.type === "tombstone" ? "tombstone" : "memory", createdAt: new Date(now()).toISOString(), payload, random,
         });
-        sqlite.prepare("UPDATE memory_vault_events SET sealed_json = ? WHERE event_id = ?").run(JSON.stringify(sealed), row.event_id);
+        sqlite.prepare("UPDATE memory_vault_events SET sealed = ? WHERE event_id = ?").run(JSON.stringify(sealed), row.event_id);
         return sealed;
       });
       const result = await ctx.api.postEvents(batch.map((event) => ({ ...event, stream: MEMORIES_STREAM })));
@@ -313,7 +313,7 @@ export function createMemoryVault({ sqlite, owner, access, now = () => Date.now(
           const stamp = (event as { stored_at?: unknown }).stored_at;
           const storedAt = typeof stamp === "string" ? Date.parse(stamp) : NaN;
           sqlite.prepare(
-            "INSERT OR REPLACE INTO memory_vault_events (event_id, stream_id, memory_id, payload_json, own, sealed_json, sent, seq, stored_at) VALUES (?, ?, ?, ?, 0, NULL, 1, ?, ?)",
+            "INSERT OR REPLACE INTO memory_vault_events (event_id, stream_id, memory_id, payload, own, sealed, sent, seq, stored_at) VALUES (?, ?, ?, ?, 0, NULL, 1, ?, ?)",
           ).run(event.event_id, ctx.streamId, memoryId, JSON.stringify(payload), Number(event.seq) || null, Number.isFinite(storedAt) ? storedAt : null);
           if (read) {
             try {
@@ -333,12 +333,12 @@ export function createMemoryVault({ sqlite, owner, access, now = () => Date.now(
   /// The memories table made what the events say.
   function apply(ctx: Context) {
     const me = owner();
-    const log = sqlite.prepare("SELECT event_id, memory_id, payload_json, stored_at FROM memory_vault_events WHERE stream_id = ?").all(ctx.streamId) as Array<Pick<LogRow, "event_id" | "memory_id" | "payload_json" | "stored_at">>;
-    const merged = mergeMemories(log.map((r) => ({ event_id: r.event_id, payload: parse(r.payload_json), stored_at_ms: r.stored_at })), { epochOne: ctx.epochOne, nowMs: now() });
+    const log = sqlite.prepare("SELECT event_id, memory_id, payload, stored_at FROM memory_vault_events WHERE stream_id = ?").all(ctx.streamId) as Array<Pick<LogRow, "event_id" | "memory_id" | "payload" | "stored_at">>;
+    const merged = mergeMemories(log.map((r) => ({ event_id: r.event_id, payload: parse(r.payload), stored_at_ms: r.stored_at })), { epochOne: ctx.epochOne, nowMs: now() });
     const tombstoned = new Set(merged.tombstoned);
     const hashes = new Set<string>();
     for (const r of log) {
-      const e = readMemoryEvent(parse(r.payload_json));
+      const e = readMemoryEvent(parse(r.payload));
       const hash = e?.type === "memory" && tombstoned.has(e.id) ? memoryContentHash(e.content) : null;
       if (hash) hashes.add(hash);
     }
@@ -355,15 +355,15 @@ export function createMemoryVault({ sqlite, owner, access, now = () => Date.now(
         const here = rowById(m.id);
         const tags = JSON.stringify(m.tags);
         const source = localSource(m.source);
-        if (here && here.hlc === m.hlc && here.vault_event_id === eventId && here.content === m.content && here.title === m.title && here.tags_json === tags && here.kind === m.kind && here.source === source && here.superseded_by_id === m.superseded_by) continue;
-        const at = Math.floor(parseHlc(m.hlc).wall / 1000);
+        if (here && here.hlc === m.hlc && here.vault_event_id === eventId && here.content === m.content && here.title === m.title && here.tags === tags && here.kind === m.kind && here.source === source && here.superseded_by_id === m.superseded_by) continue;
+        const at = parseHlc(m.hlc).wall;
         if (here) {
           if (here.user_id !== me) continue;
-          sqlite.prepare("UPDATE memories SET kind = ?, title = ?, content = ?, tags_json = ?, source = ?, superseded_by_id = ?, hlc = ?, vault_event_id = ?, updated_at = ? WHERE id = ?")
+          sqlite.prepare("UPDATE memories SET kind = ?, title = ?, content = ?, tags = ?, source = ?, superseded_by_id = ?, hlc = ?, vault_event_id = ?, updated_at = ? WHERE id = ?")
             .run(m.kind, m.title, m.content, tags, source, m.superseded_by, m.hlc, eventId, at, m.id);
         } else {
-          sqlite.prepare("INSERT INTO memories (id, user_id, kind, title, content, tags_json, source, superseded_by_id, hlc, vault_event_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-            .run(m.id, me, m.kind, m.title, m.content, tags, source, m.superseded_by, m.hlc, eventId, Math.floor(now() / 1000), at);
+          sqlite.prepare("INSERT INTO memories (id, user_id, kind, title, content, tags, source, superseded_by_id, hlc, vault_event_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .run(m.id, me, m.kind, m.title, m.content, tags, source, m.superseded_by, m.hlc, eventId, now(), at);
         }
         changed += 1;
       }

@@ -4,7 +4,7 @@
 // its tools on/off in lockstep; advanced users can toggle individual
 // tools via PATCH /built_in_capabilities/:slug/tools/:tool_name.
 //
-// Per-user enable/disable state lives in `users.prefs_json` under the
+// Per-user enable/disable state lives in `users.prefs` under the
 // keys `disabled_capabilities: string[]` and `disabled_tools: string[]`
 // — opt-out by default so freshly-paired users get the LAN-friendly
 // defaults without the operator pre-flipping anything.

@@ -32,7 +32,7 @@ const { buildApp } = await import("../src/app.js");
 const { sealPairing } = await import("../src/account/pairingSeal.js");
 const { newPairingKey } = await import("../src/account/keys.js");
 const { writeAccountFile } = await import("../src/account/store.js");
-const { accountPeers, db, documentFolders, documents } = await import("../src/db.js");
+const { accountComputers: accountPeers, db, documentFolders, documents } = await import("../src/db.js");
 const { ensureLocalUser, pairDevice } = await import("../src/pairing.js");
 const { checkPeerRequest, closeAllPeerLinks, peerById, requestPeer, PeerUnavailableError } = await import("../src/peers/index.js");
 /// Forgets the Pi here, without asking it anything (it is not there).

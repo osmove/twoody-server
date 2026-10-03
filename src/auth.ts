@@ -2,6 +2,7 @@ import {
   createHash,
   randomBytes,
   randomInt,
+  randomUUID,
   scrypt,
   timingSafeEqual,
 } from "crypto";
@@ -29,8 +30,10 @@ export function generateToken(): string {
   return randomBytes(32).toString("base64url");
 }
 
+/// A record's id: a UUID, as the account stores them (migration 2; the
+/// 32-hex ids of before are UUIDs to Postgres too, undashed).
 export function generateId(): string {
-  return randomBytes(16).toString("hex");
+  return randomUUID();
 }
 
 export function normalizePairingCode(code: string): string {

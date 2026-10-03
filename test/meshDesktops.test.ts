@@ -65,7 +65,7 @@ delete process.env.TWOODY_BACKEND_URL;
 
 const { buildApp } = await import("../src/app.js");
 const { ensureSetupToken } = await import("../src/auth.js");
-const { accountPeers, db } = await import("../src/db.js");
+const { accountComputers: accountPeers, db } = await import("../src/db.js");
 const { ensureLocalUser } = await import("../src/pairing.js");
 const { setDesktopAccount } = await import("../src/account/service.js");
 const { folderRisk } = await import("../src/documents/folderRisk.js");

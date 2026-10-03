@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { and, asc, eq, isNull, like, or } from "drizzle-orm";
 import { db, contacts } from "../db.js";
 import { requireAuth, generateId } from "../auth.js";
+import { storedValues } from "../contactFields.js";
 
 // Small local /contacts surface. It preserves the Rails JSON names the
 // clients use, but stores only the common fields needed for local search
@@ -48,23 +49,14 @@ function serialize(row: typeof contacts.$inferSelect): ContactRow {
     origin:             row.origin,
     source:             row.source,
     organization:       row.organization,
-    phones:             row.phonesJson ? jsonList(row.phonesJson) : [row.phoneNumber].filter((phone): phone is string => Boolean(phone)),
-    emails:             row.emailsJson ? jsonList(row.emailsJson) : [row.email].filter((email): email is string => Boolean(email)),
+    phones:             row.phonesJson ? storedValues(row.phonesJson) : [row.phoneNumber].filter((phone): phone is string => Boolean(phone)),
+    emails:             row.emailsJson ? storedValues(row.emailsJson) : [row.email].filter((email): email is string => Boolean(email)),
     birthday:           row.birthday,
     read_only:          row.source !== null,
     url:                `/contacts/${row.id}.json`,
     created_at:         row.createdAt.toISOString(),
     updated_at:         row.updatedAt.toISOString(),
   };
-}
-
-function jsonList(value: string): string[] {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
-  } catch {
-    return [];
-  }
 }
 
 function displayName(row: typeof contacts.$inferSelect): string {

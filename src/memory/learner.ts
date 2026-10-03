@@ -403,11 +403,11 @@ interface MessageRow { rowid: number; role: string; content: string; provider?: 
 /// person said.
 function knownFor(userId: string, said: string): KnownMemory[] {
   const rows = sqlite.prepare(
-    "SELECT id, title, content, tags_json FROM memories WHERE user_id = ? AND superseded_by_id IS NULL ORDER BY updated_at DESC LIMIT 2000",
-  ).all(userId) as Array<{ id: string; title: string | null; content: string; tags_json: string }>;
+    "SELECT id, title, content, tags FROM memories WHERE user_id = ? AND superseded_by_id IS NULL ORDER BY updated_at DESC LIMIT 2000",
+  ).all(userId) as Array<{ id: string; title: string | null; content: string; tags: string }>;
   const words = new Set(memoryWords(said));
   const scored = rows
-    .filter((row) => !row.tags_json.includes("\"archive\"") && row.content.length <= 600)
+    .filter((row) => !row.tags.includes("\"archive\"") && row.content.length <= 600)
     .map((row) => ({ row, shared: memoryWords(row.content).filter((word) => words.has(word)).length }))
     .filter((entry) => entry.shared > 0)
     .sort((a, b) => b.shared - a.shared)
@@ -573,7 +573,7 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
     }
     for (const project of judgedProjects.propose) result.proposed.push(proposeProject(row.user_id, project, row.id, options.now ?? Date.now()));
     if (result.saved.length || result.proposed.length) {
-      sqlite.prepare("INSERT INTO memory_notices (id, user_id, discussion_id, saved_json, proposed, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      sqlite.prepare("INSERT INTO memory_notices (id, user_id, discussion_id, saved, proposed, created_at) VALUES (?, ?, ?, ?, ?, ?)")
         .run(randomUUID(), row.user_id, row.id, JSON.stringify(result.saved), result.proposed.length, options.now ?? Date.now());
     }
     advance();
@@ -625,7 +625,7 @@ function proposeProject(userId: string, judged: JudgedProject, discussionId: str
   const payload = updates
     ? { project_id: updates.id, title: updates.title, status: project.status, due: project.due, previous_status: updates.status }
     : { title: project.title, name: project.name, kind: project.kind, size: project.size, status: project.status, due: project.due };
-  sqlite.prepare(`INSERT INTO memory_candidates (id, user_id, content, norm, kind, category, confidence, sensitive, evidence, supersedes_id, discussion_id, status, created_at, candidate_type, payload_json)
+  sqlite.prepare(`INSERT INTO memory_candidates (id, user_id, content, norm, kind, category, confidence, sensitive, evidence, supersedes_id, discussion_id, status, created_at, candidate_type, payload)
     VALUES (?, ?, ?, ?, 'project', NULL, ?, 0, ?, NULL, ?, 'pending', ?, ?, ?)`).run(
     id, userId, updates ? updates.title : project.title, `project:${normaliseMemoryContent(project.title)}`, judged.confidence,
     project.evidence.slice(0, 500), discussionId, now, updates ? "project_update" : "project", JSON.stringify(payload),
@@ -668,7 +668,7 @@ export function listCandidates(userId: string): CandidateRow[] {
     discussion_id: (row.discussion_id as string | null) ?? null,
     created_at: new Date(Number(row.created_at)).toISOString(),
     type: (row.candidate_type as CandidateRow["type"] | undefined) ?? "fact",
-    project: row.payload_json ? (() => { try { return JSON.parse(String(row.payload_json)); } catch { return null; } })() : null,
+    project: row.payload ? (() => { try { return JSON.parse(String(row.payload)); } catch { return null; } })() : null,
   }));
 }
 
@@ -684,10 +684,10 @@ export function acceptCandidate(userId: string, id: string, content?: string | n
   const row = sqlite.prepare("SELECT * FROM memory_candidates WHERE id = ? AND user_id = ? AND status = 'pending'").get(id, userId) as
     { content: string; kind: string; category: string | null; confidence: number; sensitive: number; evidence: string | null; supersedes_id: string | null; discussion_id: string | null } | undefined;
   if (!row) throw new CandidateError(404, "not_found");
-  const project = (sqlite.prepare("SELECT candidate_type, payload_json FROM memory_candidates WHERE id = ?").get(id) as { candidate_type: string; payload_json: string | null });
+  const project = (sqlite.prepare("SELECT candidate_type, payload FROM memory_candidates WHERE id = ?").get(id) as { candidate_type: string; payload: string | null });
   if (project.candidate_type === "project" || project.candidate_type === "project_update") {
     let payload: Record<string, unknown> = {};
-    try { payload = JSON.parse(project.payload_json ?? "{}"); } catch { /* empty */ }
+    try { payload = JSON.parse(project.payload ?? "{}"); } catch { /* empty */ }
     const title = typeof content === "string" && content.trim() ? content.trim().slice(0, 200) : String(payload.title ?? row.content);
     const due = typeof payload.due === "string" ? `${payload.due}T12:00:00.000Z` : undefined;
     let projectId: string;
@@ -752,7 +752,7 @@ export function rejectCandidate(userId: string, id: string, now = Date.now()): v
 /// (0: any), oldest first.
 export function pendingDiscussions(options: { userId?: string; idleMs: number; now?: number; except?: string | null; limit?: number }): string[] {
   const now = options.now ?? Date.now();
-  const before = Math.floor((now - options.idleMs) / 1000);
+  const before = now - options.idleMs;
   const rows = sqlite.prepare(`SELECT d.id FROM discussions d
     WHERE (? IS NULL OR d.user_id = ?) AND d.id IS NOT ? AND d.last_activity_at <= ?
       AND EXISTS (SELECT 1 FROM messages m WHERE m.discussion_id = d.id AND m.role = 'user' AND m.rowid > COALESCE(d.learned_through, 0))
@@ -857,11 +857,11 @@ export interface MemoryNotice {
   created_at: string;
 }
 
-function readNotices(rows: Array<{ id: string; discussion_id: string; title: string | null; saved_json: string; proposed: number; created_at: number }>, userId: string): MemoryNotice[] {
+function readNotices(rows: Array<{ id: string; discussion_id: string; title: string | null; saved: string; proposed: number; created_at: number }>, userId: string): MemoryNotice[] {
   const content = sqlite.prepare("SELECT content FROM memories WHERE id = ? AND user_id = ?");
   return rows.map((row) => {
     let ids: string[] = [];
-    try { ids = JSON.parse(row.saved_json); } catch { /* none */ }
+    try { ids = JSON.parse(row.saved); } catch { /* none */ }
     const saved = ids.flatMap((id) => {
       const memory = content.get(id, userId) as { content: string } | undefined;
       return memory ? [{ id, content: memory.content }] : [];
@@ -872,14 +872,14 @@ function readNotices(rows: Array<{ id: string; discussion_id: string; title: str
 
 /// What was learned from this conversation, oldest first.
 export function noticesOf(userId: string, discussionId: string): MemoryNotice[] {
-  return readNotices(sqlite.prepare(`SELECT n.id, n.discussion_id, d.title, n.saved_json, n.proposed, n.created_at FROM memory_notices n
+  return readNotices(sqlite.prepare(`SELECT n.id, n.discussion_id, d.title, n.saved, n.proposed, n.created_at FROM memory_notices n
     LEFT JOIN discussions d ON d.id = n.discussion_id WHERE n.user_id = ? AND n.discussion_id = ? ORDER BY n.created_at`).all(userId, discussionId) as never, userId);
 }
 
 /// What was learned and not told yet — told now, once, whichever device
 /// asks first. `except`: the conversation open (it says so itself).
 export function takeMemoryNews(userId: string, except: string | null = null): MemoryNotice[] {
-  const rows = sqlite.prepare(`SELECT n.id, n.discussion_id, d.title, n.saved_json, n.proposed, n.created_at FROM memory_notices n
+  const rows = sqlite.prepare(`SELECT n.id, n.discussion_id, d.title, n.saved, n.proposed, n.created_at FROM memory_notices n
     LEFT JOIN discussions d ON d.id = n.discussion_id WHERE n.user_id = ? AND n.announced = 0 AND n.discussion_id IS NOT ? ORDER BY n.created_at LIMIT 20`).all(userId, except) as Array<{ id: string }>;
   const mark = sqlite.prepare("UPDATE memory_notices SET announced = 1 WHERE id = ?");
   for (const row of rows) mark.run(row.id);

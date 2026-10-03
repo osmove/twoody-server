@@ -22,7 +22,7 @@ const cutting = await startFakeRuntime({ models: ["cut:1b"], reply: () => "Débu
 
 const { buildApp } = await import("../src/app.js");
 const { ensureSetupToken } = await import("../src/auth.js");
-const { accountPeers, db } = await import("../src/db.js");
+const { accountComputers: accountPeers, db } = await import("../src/db.js");
 const { pairDevice } = await import("../src/pairing.js");
 const { setPeerStatus } = await import("../src/peers/index.js");
 const { readStatus } = await import("../src/account/status.js");
@@ -157,7 +157,7 @@ test("« Tâches de fond »: an idle trusted peer set for it takes memory extrac
   assert.equal(await pickBackground({ userId: desktop.user_id, preference: "computer:77", model: "qwen3:8b" }), null, "not trusted: the work reads what is kept of the person");
   // The switch in « Appareils » alone trusts nothing: the vault roster does.
   db.update(accountPeers).set({ trusted: true }).where(eq(accountPeers.computerId, "77")).run();
-  assert.equal(await pickBackground({ userId: desktop.user_id, preference: "computer:77", model: "qwen3:8b" }), null, "account_peers.trusted is not the roster");
+  assert.equal(await pickBackground({ userId: desktop.user_id, preference: "computer:77", model: "qwen3:8b" }), null, "account_computers.trusted is not the roster");
   const vault = meshVault();
   const iphone = vault.person("iPhone");
   vault.computer("Raspberry Pi", "77", iphone, { tunnelKey: db.select().from(accountPeers).where(eq(accountPeers.computerId, "77")).all()[0]!.tunnelKey! });

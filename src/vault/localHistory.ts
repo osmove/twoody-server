@@ -35,19 +35,19 @@ export function sqliteHistory(userId: string): LocalHistory {
     // « vault »: it is context, never sealed again as this computer's).
     turn(discussionId, ref) {
       const questions = sqlite.prepare("SELECT content, created_at, channel FROM messages WHERE discussion_id = ? AND role = 'user' AND vault_ref = ? ORDER BY rowid LIMIT 2").all(discussionId, ref) as Array<{ content: string; created_at: number; channel: string | null }>;
-      const answers = sqlite.prepare("SELECT content, model, provider, sources_json, answered_by_json FROM messages WHERE discussion_id = ? AND role = 'assistant' AND vault_ref = ? ORDER BY rowid LIMIT 2").all(discussionId, `${ref}#reply`) as Array<{ content: string; model: string | null; provider: string | null; sources_json: string | null; answered_by_json: string | null }>;
+      const answers = sqlite.prepare("SELECT content, model, provider, sources, answered_by FROM messages WHERE discussion_id = ? AND role = 'assistant' AND vault_ref = ? ORDER BY rowid LIMIT 2").all(discussionId, `${ref}#reply`) as Array<{ content: string; model: string | null; provider: string | null; sources: string | null; answered_by: string | null }>;
       if (questions.length !== 1 || answers.length !== 1) return null;
       const [question, answer] = [questions[0]!, answers[0]!];
       if (!answer.provider || answer.provider === "vault") return null;
-      const sources = parse(answer.sources_json);
+      const sources = parse(answer.sources);
       return {
         text: question.content,
         reply: answer.content,
         model: answer.model,
-        // Stored in seconds (drizzle's timestamp mode).
-        created_at: new Date(Number(question.created_at) * 1000).toISOString(),
+        // Stored in milliseconds (drizzle's timestamp_ms mode).
+        created_at: new Date(Number(question.created_at)).toISOString(),
         sources: Array.isArray(sources) ? sources : [],
-        answered_by: parse(answer.answered_by_json),
+        answered_by: parse(answer.answered_by),
         ...(question.channel === "recording" ? { channel: "recording" } : {}),
       };
     },

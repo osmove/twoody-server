@@ -40,7 +40,7 @@ export class HomeError extends Error {
 }
 
 function prefsOf(userId: string): Record<string, unknown> {
-  const row = sqlite.prepare("SELECT prefs_json AS prefs FROM users WHERE id = ?").get(userId) as { prefs: string } | undefined;
+  const row = sqlite.prepare("SELECT prefs AS prefs FROM users WHERE id = ?").get(userId) as { prefs: string } | undefined;
   try {
     const parsed = JSON.parse(row?.prefs || "{}") as unknown;
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
@@ -50,7 +50,7 @@ function prefsOf(userId: string): Record<string, unknown> {
 }
 
 function writePrefs(userId: string, prefs: Record<string, unknown>): void {
-  sqlite.prepare("UPDATE users SET prefs_json = ? WHERE id = ?").run(JSON.stringify(prefs), userId);
+  sqlite.prepare("UPDATE users SET prefs = ? WHERE id = ?").run(JSON.stringify(prefs), userId);
 }
 
 /// « http://192.168.1.142:8123/ » → « http://192.168.1.142:8123 ».

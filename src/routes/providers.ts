@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
-import { db, providers } from "../db.js";
+import { db, llmEndpoints } from "../db.js";
 import { generateId, requireAuth } from "../auth.js";
 import { offeredModels, probeRuntime } from "../localRuntime.js";
 import { listComputers } from "../router/index.js";
@@ -14,7 +14,7 @@ type ProviderPatchBody = {
   enabled?: boolean;
 };
 
-function serializeProvider(provider: typeof providers.$inferSelect) {
+function serializeProvider(provider: typeof llmEndpoints.$inferSelect) {
   return {
     id: provider.id,
     kind: provider.kind,
@@ -49,7 +49,7 @@ function nonEmpty(value: string | undefined): string | null {
 /// address is not given (the built-in runtime's is a loopback port with a
 /// key). Left out when the Desktop runs the runtime, when no engine is
 /// resolved, and when a stored provider already points at it.
-async function engineProvider(stored: Array<typeof providers.$inferSelect>) {
+async function engineProvider(stored: Array<typeof llmEndpoints.$inferSelect>) {
   if (engine().managedByDesktop) return null;
   const resolved = await activeEngine();
   if (!resolved.id || !resolved.baseUrl) return null;
@@ -86,8 +86,8 @@ export async function providerRoutes(app: FastifyInstance) {
 
       const rows = db
         .select()
-        .from(providers)
-        .where(eq(providers.userId, auth.userId))
+        .from(llmEndpoints)
+        .where(eq(llmEndpoints.userId, auth.userId))
         .all();
 
       // One question to each runtime gives both its status and every
@@ -141,9 +141,9 @@ export async function providerRoutes(app: FastifyInstance) {
       }
 
       const duplicate = db
-        .select({ id: providers.id })
-        .from(providers)
-        .where(and(eq(providers.userId, auth.userId), eq(providers.baseUrl, baseUrl), eq(providers.model, model)))
+        .select({ id: llmEndpoints.id })
+        .from(llmEndpoints)
+        .where(and(eq(llmEndpoints.userId, auth.userId), eq(llmEndpoints.baseUrl, baseUrl), eq(llmEndpoints.model, model)))
         .limit(1)
         .all();
       if (duplicate.length > 0) {
@@ -151,15 +151,15 @@ export async function providerRoutes(app: FastifyInstance) {
       }
 
       const existing = db
-        .select({ id: providers.id })
-        .from(providers)
-        .where(eq(providers.userId, auth.userId))
+        .select({ id: llmEndpoints.id })
+        .from(llmEndpoints)
+        .where(eq(llmEndpoints.userId, auth.userId))
         .limit(1)
         .all();
 
       const now = new Date();
       const id = generateId();
-      db.insert(providers)
+      db.insert(llmEndpoints)
         .values({
           id,
           userId: auth.userId,
@@ -176,8 +176,8 @@ export async function providerRoutes(app: FastifyInstance) {
 
       const [provider] = db
         .select()
-        .from(providers)
-        .where(eq(providers.id, id))
+        .from(llmEndpoints)
+        .where(eq(llmEndpoints.id, id))
         .limit(1)
         .all();
 
@@ -199,14 +199,14 @@ export async function providerRoutes(app: FastifyInstance) {
 
         const [provider] = db
           .select()
-          .from(providers)
-          .where(and(eq(providers.id, req.params.id), eq(providers.userId, auth.userId)))
+          .from(llmEndpoints)
+          .where(and(eq(llmEndpoints.id, req.params.id), eq(llmEndpoints.userId, auth.userId)))
           .limit(1)
           .all();
 
         if (!provider) return reply.code(404).send({ error: "provider_not_found" });
 
-        const updates: Partial<typeof providers.$inferInsert> = {
+        const updates: Partial<typeof llmEndpoints.$inferInsert> = {
           updatedAt: new Date(),
         };
         if (req.body.name !== undefined) {
@@ -226,15 +226,15 @@ export async function providerRoutes(app: FastifyInstance) {
           updates.baseUrl = baseUrl;
         }
 
-        db.update(providers)
+        db.update(llmEndpoints)
           .set(updates)
-          .where(eq(providers.id, provider.id))
+          .where(eq(llmEndpoints.id, provider.id))
           .run();
 
         const [updated] = db
           .select()
-          .from(providers)
-          .where(eq(providers.id, provider.id))
+          .from(llmEndpoints)
+          .where(eq(llmEndpoints.id, provider.id))
           .limit(1)
           .all();
 
@@ -255,20 +255,20 @@ export async function providerRoutes(app: FastifyInstance) {
 
       const [provider] = db
         .select()
-        .from(providers)
-        .where(and(eq(providers.id, req.params.id), eq(providers.userId, auth.userId)))
+        .from(llmEndpoints)
+        .where(and(eq(llmEndpoints.id, req.params.id), eq(llmEndpoints.userId, auth.userId)))
         .limit(1)
         .all();
 
       if (!provider) return reply.code(404).send({ error: "provider_not_found" });
 
-      db.update(providers)
+      db.update(llmEndpoints)
         .set({ isDefault: false, updatedAt: new Date() })
-        .where(eq(providers.userId, auth.userId))
+        .where(eq(llmEndpoints.userId, auth.userId))
         .run();
-      db.update(providers)
+      db.update(llmEndpoints)
         .set({ isDefault: true, enabled: true, updatedAt: new Date() })
-        .where(eq(providers.id, provider.id))
+        .where(eq(llmEndpoints.id, provider.id))
         .run();
 
       reply.send({ ok: true });
@@ -287,26 +287,26 @@ export async function providerRoutes(app: FastifyInstance) {
 
       const [provider] = db
         .select()
-        .from(providers)
-        .where(and(eq(providers.id, req.params.id), eq(providers.userId, auth.userId)))
+        .from(llmEndpoints)
+        .where(and(eq(llmEndpoints.id, req.params.id), eq(llmEndpoints.userId, auth.userId)))
         .limit(1)
         .all();
 
       if (!provider) return reply.code(404).send({ error: "provider_not_found" });
 
-      db.delete(providers).where(eq(providers.id, provider.id)).run();
+      db.delete(llmEndpoints).where(eq(llmEndpoints.id, provider.id)).run();
 
       if (provider.isDefault) {
         const [nextProvider] = db
           .select()
-          .from(providers)
-          .where(and(eq(providers.userId, auth.userId), eq(providers.enabled, true)))
+          .from(llmEndpoints)
+          .where(and(eq(llmEndpoints.userId, auth.userId), eq(llmEndpoints.enabled, true)))
           .limit(1)
           .all();
         if (nextProvider) {
-          db.update(providers)
+          db.update(llmEndpoints)
             .set({ isDefault: true, updatedAt: new Date() })
-            .where(eq(providers.id, nextProvider.id))
+            .where(eq(llmEndpoints.id, nextProvider.id))
             .run();
         }
       }
