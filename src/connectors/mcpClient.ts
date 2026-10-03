@@ -27,6 +27,17 @@ export interface McpTransportConfig {
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
+  /// The access token of a signed-in connector (connectors/oauth.ts), and a
+  /// fresh one when the server refused it (null: none).
+  bearer?: () => Promise<string | null>;
+  renewBearer?: () => Promise<string | null>;
+}
+
+/// The server wants a sign-in (HTTP 401), and says where in `wwwAuthenticate`.
+export class McpAuthRequiredError extends Error {
+  constructor(public wwwAuthenticate: string | null) {
+    super("the service asks you to sign in");
+  }
 }
 
 /// One connection to an MCP server.
@@ -170,7 +181,7 @@ class HttpConnection implements McpConnection {
   async request(method: string, params: object, timeoutMs = CALL_TIMEOUT_MS): Promise<unknown> {
     const notification = method.startsWith("notifications/");
     const id = notification ? undefined : this.nextId++;
-    const response = await this.fetchImpl(this.config.url!, {
+    const send = (bearer: string | null) => this.fetchImpl(this.config.url!, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -178,13 +189,21 @@ class HttpConnection implements McpConnection {
         "MCP-Protocol-Version": PROTOCOL_VERSION,
         ...(this.session ? { "Mcp-Session-Id": this.session } : {}),
         ...(this.config.headers ?? {}),
+        ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
       },
       body: JSON.stringify({ jsonrpc: "2.0", ...(id !== undefined ? { id } : {}), method, params }),
       signal: AbortSignal.timeout(timeoutMs),
     });
+    let response = await send((await this.config.bearer?.()) ?? null);
+    // Refused: the token is renewed once, then a sign-in is asked for.
+    if (response.status === 401 && this.config.renewBearer) {
+      const renewed = await this.config.renewBearer().catch(() => null);
+      if (renewed) response = await send(renewed);
+    }
     const session = response.headers.get("mcp-session-id");
     if (session) this.session = session;
-    if (response.status === 401 || response.status === 403) throw new Error(`the server refused the connection (HTTP ${response.status}): check its token`);
+    if (response.status === 401) throw new McpAuthRequiredError(response.headers.get("www-authenticate"));
+    if (response.status === 403) throw new Error("the server refused the connection (HTTP 403): check its token or its rights");
     if (!response.ok && response.status !== 202) throw new Error(`the server answered HTTP ${response.status}`);
     if (notification || response.status === 202) return null;
     const type = response.headers.get("content-type") ?? "";
