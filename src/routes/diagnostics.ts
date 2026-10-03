@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
 import { requirePerson } from "./memories.js";
-import { listTraces, promptOfTrace, telemetrySince, traceOfMessage } from "../diagnostics/traces.js";
+import { fullTracesSince, listTraces, promptOfTrace, telemetrySince, traceOfMessage } from "../diagnostics/traces.js";
 
 // The Diagnostic screen (src/diagnostics/traces.ts): what happened in each
 // answer, learning and read-ahead on this computer. The person's own: the
@@ -41,6 +41,18 @@ export async function diagnosticsRoutes(app: FastifyInstance) {
       const trace = traceOfMessage(auth.userId, req.params.id);
       if (!trace) return reply.code(404).send({ error: "not_found" });
       reply.send({ trace, prompt: promptOfTrace(auth.userId, trace.id) });
+    },
+  });
+
+  // « Partager aussi le détail des réponses » (off unless ticked): the
+  // traces whole, with their prompts, for the account's audits.
+  app.get<{ Querystring: { after?: string; limit?: string } }>("/diagnostics/full", {
+    schema: { tags: ["diagnostics"], summary: "The traces whole, with their prompts, for audits on the account (when the person ticked it)", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
+      reply.send(fullTracesSince(auth.userId, Number(req.query.after) || 0, Number(req.query.limit) || 20));
     },
   });
 

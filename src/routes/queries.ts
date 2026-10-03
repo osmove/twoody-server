@@ -760,11 +760,15 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     const runConnectorTool = async (chosen: (typeof connectorTools)[number], args: Record<string, unknown>): Promise<string> => {
       const traced: ToolCallTrace = { name: chosen.definition.function.name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0 };
       toolCallsTraced.push(traced);
-      const approvalId = generateId();
-      startSse();
-      reply.raw.write(`event: approval\ndata: ${JSON.stringify({ id: approvalId, connector: chosen.connectorName, tool: chosen.tool, arguments: args })}\n\n`);
-      const allowed = await waitForApproval(auth.userId, approvalId, upstream.signal);
-      if (!upstream.signal.aborted) reply.raw.write(`event: approval_done\ndata: ${JSON.stringify({ id: approvalId, allowed })}\n\n`);
+      // « Toujours autoriser »: called at once; otherwise asked in the chat.
+      let allowed = chosen.always;
+      if (!allowed) {
+        const approvalId = generateId();
+        startSse();
+        reply.raw.write(`event: approval\ndata: ${JSON.stringify({ id: approvalId, connector: chosen.connectorName, tool: chosen.tool, arguments: args })}\n\n`);
+        allowed = await waitForApproval(auth.userId, approvalId, upstream.signal);
+        if (!upstream.signal.aborted) reply.raw.write(`event: approval_done\ndata: ${JSON.stringify({ id: approvalId, allowed })}\n\n`);
+      }
       if (!allowed) {
         traced.error = "refused";
         return "The user did not allow this call. Do not call it again; answer without it, briefly.";

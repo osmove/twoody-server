@@ -30,6 +30,9 @@ export interface Connector {
   enabled: boolean;
   /// The tools the person turned off.
   disabled_tools: string[];
+  /// The tools the person allowed once and for all: called without asking
+  /// (Jimmy, 03/10/2026: « Toujours autoriser », for the ones that only read).
+  auto_tools?: string[];
   /// Its tools when it last started, offered to the chat without starting it.
   tools: StoredTool[];
   error: string | null;
@@ -159,6 +162,7 @@ export function changeConnector(userId: string, id: string, body: unknown): Conn
     }
     if (typeof input.enabled === "boolean") next = { ...next, enabled: input.enabled };
     if (Array.isArray(input.disabled_tools)) next = { ...next, disabled_tools: input.disabled_tools.filter((tool): tool is string => typeof tool === "string").slice(0, 500) };
+    if (Array.isArray(input.auto_tools)) next = { ...next, auto_tools: input.auto_tools.filter((tool): tool is string => typeof tool === "string").slice(0, 500) };
     return next;
   });
   stopConnector(userId, id);
@@ -176,7 +180,7 @@ export function removeConnector(userId: string, id: string) {
 export function connectorView(userId: string, connector: Connector) {
   // What the chat really gets, across all the connectors (MAX_CHAT_TOOLS).
   const offered = new Set(connectorChatTools(userId).filter((tool) => tool.connectorId === connector.id).map((tool) => tool.tool));
-  const tools = connector.tools.map((tool) => ({ name: tool.name, description: tool.description, enabled: !connector.disabled_tools.includes(tool.name), offered: offered.has(tool.name), tokens: toolTokens(tool) }));
+  const tools = connector.tools.map((tool) => ({ name: tool.name, description: tool.description, enabled: !connector.disabled_tools.includes(tool.name), offered: offered.has(tool.name), tokens: toolTokens(tool), always: (connector.auto_tools ?? []).includes(tool.name) }));
   return {
     id: connector.id,
     name: connector.name,
@@ -371,6 +375,8 @@ export interface ConnectorChatTool {
   connectorId: string;
   connectorName: string;
   tool: string;
+  /// Allowed once and for all: called without asking.
+  always: boolean;
 }
 
 /// The tools of the connectors switched on, as the chat offers them: the
@@ -394,6 +400,7 @@ export function connectorChatTools(userId: string): ConnectorChatTool[] {
         connectorId: connector.id,
         connectorName: connector.name,
         tool: tool.name,
+        always: (connector.auto_tools ?? []).includes(tool.name),
       });
     }
   }

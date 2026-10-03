@@ -160,6 +160,18 @@ export function telemetryOf(row: TraceRow): Record<string, string | number | boo
   return Object.fromEntries(Object.entries(out).filter((entry): entry is [string, string | number | boolean] => entry[1] !== null && entry[1] !== undefined && entry[1] !== "").slice(0, 40));
 }
 
+/// « Partager aussi le détail des réponses » (Jimmy, 03/10/2026, for audits,
+/// off unless ticked): each trace whole — the person's words included — and
+/// the prompt its model was given, after a point, oldest first.
+export function fullTracesSince(userId: string, after: number, limit = 20) {
+  const rows = sqlite.prepare("SELECT * FROM turn_traces WHERE user_id = ? AND at > ? ORDER BY at ASC LIMIT ?").all(userId, after, Math.min(Math.max(limit, 1), 50)) as Array<Record<string, unknown>>;
+  const traces = rows.map((row) => {
+    const trace = rowOf(row);
+    return { event_uuid: trace.id, occurred_at: trace.at, kind: trace.kind, discussion_id: trace.discussion_id, message_id: trace.message_id, client: trace.client, model: trace.model, outcome: trace.outcome, error: trace.error, total_ms: trace.total_ms, trace: trace.detail, prompt: promptOfTrace(userId, trace.id) };
+  });
+  return { traces, next: rows.length ? Number(rows[rows.length - 1]!.at) : after };
+}
+
 /// Traces after a point, oldest first, as the account's app analytics take
 /// them (events of « assistant_turn », « assistant_learning »,
 /// « assistant_warmup »).

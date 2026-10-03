@@ -179,6 +179,27 @@ test("a search announced instead of called (« Voici vos offres : »): held back
   assert.match(bodies.at(-1)!.messages[0]!.content, /connected as tools \(their names start with mcp__\): Carnet/);
 });
 
+test("« Toujours autoriser »: that tool is called without asking; the others still ask", async () => {
+  await app.inject({ method: "PATCH", url: `/connectors/${connectorId}`, headers, payload: { enabled: true, disabled_tools: [], auto_tools: ["lookup"] } });
+  const listed = (await app.inject({ url: "/connectors", headers })).json().connectors.find((one: { id: string }) => one.id === connectorId);
+  assert.deepEqual(listed.tools.filter((tool: { always: boolean }) => tool.always).map((tool: { name: string }) => tool.name), ["lookup"]);
+  call = { name: chatToolName({ name: "Carnet" }, "lookup"), arguments: { word: "Zanzibar" } };
+  const response = await ask("Cherche Zanzibar dans mon carnet");
+  call = null;
+  assert.doesNotMatch(response.body, /event: approval/);
+  assert.match(finalOf(response.body).message, /found on page 12/);
+  await app.inject({ method: "PATCH", url: `/connectors/${connectorId}`, headers, payload: { auto_tools: [] } });
+});
+
+test("the traces whole, for audits: each with its prompt, after a point", async () => {
+  const full = (await app.inject({ url: "/diagnostics/full?after=0&limit=50", headers })).json() as { traces: Array<{ kind: string; prompt: { messages: unknown[] } | null; trace: { tool_calls?: unknown[] } }>; next: number };
+  const answered = full.traces.filter((trace) => trace.kind === "chat" && trace.prompt);
+  assert.ok(answered.length > 0);
+  assert.ok(answered[0]!.prompt!.messages.length > 0);
+  const later = (await app.inject({ url: `/diagnostics/full?after=${full.next}`, headers })).json() as { traces: unknown[] };
+  assert.equal(later.traces.length, 0);
+});
+
 test("what an announcement looks like, and what it does not", async () => {
   const { looksLikeAnnouncement } = await import("../src/routes/queries.js");
   for (const said of ["Voici vos 5 dernières offres créées :", "Je peux récupérer vos 5 dernières offres. Voulez-vous que je les affiche ?", "Je vais rechercher vos 5 dernières offres dans le système.", "Let me look that up."]) {
