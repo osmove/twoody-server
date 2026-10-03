@@ -72,7 +72,7 @@ export interface AuthorizationServer {
 
 /// Where to sign in for the MCP server at `serverUrl`, from what it said
 /// with its 401 (`wwwAuthenticate`).
-export async function discover(serverUrl: string, wwwAuthenticate: string | null, fetchImpl: Fetch = outboundFetch): Promise<AuthorizationServer> {
+export async function discover(serverUrl: string, wwwAuthenticate: string | null, fetchImpl: Fetch = outboundFetch, allowOrigin: (origin: string) => void = () => undefined): Promise<AuthorizationServer> {
   let prm: Record<string, unknown> | null = null;
   const named = resourceMetadataUrl(wwwAuthenticate);
   for (const url of named ? [named] : wellKnown(serverUrl, "oauth-protected-resource")) {
@@ -82,6 +82,8 @@ export async function discover(serverUrl: string, wwwAuthenticate: string | null
   const servers = Array.isArray(prm?.authorization_servers) ? (prm!.authorization_servers as unknown[]).filter((value): value is string => typeof value === "string") : [];
   // Without its metadata (an older server), the server's own origin.
   const issuer = servers[0] ?? new URL(serverUrl).origin;
+  // The sign-in service the connector names may be reached, as it.
+  if (issuer.startsWith("https://")) allowOrigin(new URL(issuer).origin);
   let meta: Record<string, unknown> | null = null;
   for (const url of [...wellKnown(issuer, "oauth-authorization-server"), ...wellKnown(issuer, "openid-configuration")]) {
     meta = await getJson(url, fetchImpl);

@@ -154,3 +154,24 @@ export async function relaySocketUrl(relayUrl: string | URL, ticket: string): Pr
   socket.searchParams.set("ticket", ticket);
   return socket;
 }
+
+// The door for connectors (Capacités → Connecteurs, 03/10/2026): the
+// services the person added themselves — the address of each, and the
+// sign-in service that address names (connectors/oauth.ts) — reached over
+// https, never redirected elsewhere. Asked for by the person, as a model's
+// download is: made in local-only mode too, to those origins only.
+export function connectorFetch(origins: Iterable<string>): typeof outboundFetch {
+  const allowed = new Set([...origins].filter(Boolean));
+  return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    let target: URL | null = null;
+    try {
+      target = new URL(input instanceof Request ? input.url : input);
+    } catch {
+      // Not a URL: the ordinary gate will say so.
+    }
+    if (target && allowed.has(target.origin) && (target.protocol === "https:" || (await isPrivateUrl(target)))) {
+      return fetch(input, { ...init, redirect: "error" });
+    }
+    return outboundFetch(input, init);
+  };
+}

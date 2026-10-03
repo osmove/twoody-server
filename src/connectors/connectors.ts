@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "../db.js";
+import { connectorFetch } from "../outbound.js";
 import { McpAuthRequiredError, McpClient, type McpToolInfo, type McpTransportConfig } from "./mcpClient.js";
 import { authorizationUrl, discover, exchangeCode, OAuthError, pkce, refreshTokens, register, rememberSignIn, takeSignIn, tokenFresh, type OAuthState } from "./oauth.js";
 
@@ -185,12 +186,27 @@ export function connectorView(userId: string, connector: Connector) {
   };
 }
 
+/// Where this connector may go: its address, and the sign-in service it
+/// named (outbound.ts connectorFetch).
+export function connectorOrigins(connector: Pick<Connector, "url" | "oauth">): string[] {
+  const origin = (url: string | null | undefined) => {
+    try {
+      return url ? new URL(url).origin : null;
+    } catch {
+      return null;
+    }
+  };
+  return [connector.url, connector.oauth?.issuer, connector.oauth?.token_endpoint, connector.oauth?.registration_endpoint]
+    .map(origin)
+    .filter((value): value is string => !!value);
+}
+
 // ── Running ────────────────────────────────────────────────────────────
 const clients = new Map<string, { client: McpClient; userId: string }>();
-let makeClient = (config: McpTransportConfig) => new McpClient(config);
+let makeClient = (config: McpTransportConfig, origins: string[] = []) => new McpClient(config, { fetchImpl: connectorFetch(origins) });
 
 /// For the tests: a client that does not start a process.
-export function useClientForTests(factory: (config: McpTransportConfig) => McpClient) {
+export function useClientForTests(factory: (config: McpTransportConfig, origins?: string[]) => McpClient) {
   makeClient = factory;
 }
 
@@ -210,7 +226,7 @@ export async function startConnector(userId: string, id: string): Promise<{ clie
   if (!connector) throw new ConnectorError("not_found", 404);
   const running = clients.get(runningKey(userId, id));
   if (running?.client.running) return { client: running.client, connector };
-  const client = makeClient({ command: connector.command, args: connector.args, env: connector.env, url: connector.url, headers: connector.headers, ...(connector.url ? { bearer: () => bearerFor(userId, id), renewBearer: () => renewBearer(userId, id) } : {}) });
+  const client = makeClient({ command: connector.command, args: connector.args, env: connector.env, url: connector.url, headers: connector.headers, ...(connector.url ? { bearer: () => bearerFor(userId, id), renewBearer: () => renewBearer(userId, id) } : {}) }, connectorOrigins(connector));
   try {
     await client.start();
     const listed = await client.listTools();
@@ -252,7 +268,7 @@ async function renewBearer(userId: string, id: string): Promise<string | null> {
   const connector = stored(userId, id);
   if (!connector?.oauth?.refresh_token || !connector.url) return null;
   try {
-    const fresh = await refreshTokens(connector.oauth, connector.url);
+    const fresh = await refreshTokens(connector.oauth, connector.url, connectorFetch(connectorOrigins(connector)));
     update(userId, id, (one) => ({ ...one, oauth: { ...one.oauth!, ...fresh } }));
     return fresh.access_token ?? null;
   } catch {
@@ -269,11 +285,17 @@ export async function beginSignIn(userId: string, id: string, redirectUri: strin
   if (!connector) throw new ConnectorError("not_found", 404);
   if (!connector.url) throw new ConnectorError("not_http");
   try {
-    const server = await discover(connector.url, connector.www_authenticate ?? null);
+    // Its address, then the sign-in service it names, may be reached.
+    const origins = new Set(connectorOrigins({ url: connector.url, oauth: null }));
+    const door: typeof fetch = (input, init) => connectorFetch(origins)(input, init);
+    const server = await discover(connector.url, connector.www_authenticate ?? null, door, (origin) => origins.add(origin));
+    for (const endpoint of [server.token_endpoint, server.registration_endpoint]) {
+      if (endpoint?.startsWith("https://")) origins.add(new URL(endpoint).origin);
+    }
     const given = connector.oauth_client;
     // Registered again when the address it comes back to changed.
     const reuse = connector.oauth && connector.oauth.issuer === server.issuer && connector.oauth.redirect_uri === redirectUri && (!given || connector.oauth.client_id === given.client_id);
-    const client = given ?? (reuse ? { client_id: connector.oauth!.client_id, client_secret: connector.oauth!.client_secret ?? null } : await register(server, redirectUri));
+    const client = given ?? (reuse ? { client_id: connector.oauth!.client_id, client_secret: connector.oauth!.client_secret ?? null } : await register(server, redirectUri, door));
     const oauth: OAuthState = {
       ...(reuse ? connector.oauth! : {}),
       issuer: server.issuer,
@@ -301,7 +323,7 @@ export async function completeSignIn(state: string, code: string): Promise<{ use
   if (!signIn) throw new ConnectorError("sign_in_expired", 400);
   const connector = stored(signIn.userId, signIn.connectorId);
   if (!connector?.oauth || !connector.url) throw new ConnectorError("not_found", 404);
-  const tokens = await exchangeCode(connector.oauth, { code, verifier: signIn.verifier, resource: connector.url }).catch((err: unknown) => {
+  const tokens = await exchangeCode(connector.oauth, { code, verifier: signIn.verifier, resource: connector.url }, connectorFetch(connectorOrigins(connector))).catch((err: unknown) => {
     throw new ConnectorError(`sign_in_failed: ${(err instanceof Error ? err.message : String(err)).slice(0, 200)}`, 502);
   });
   const signedIn = update(signIn.userId, signIn.connectorId, (one) => ({ ...one, oauth: { ...one.oauth!, ...tokens }, auth_required: false, error: null }));
