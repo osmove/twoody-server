@@ -622,7 +622,7 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   // French memories, 01/10/2026).
   const spoken = messageLanguage(current.text);
   const usual = (state.locale ?? "").split("-")[0]!.toLowerCase();
-  const languageHint = spoken && usual && spoken !== usual ? `[Reply in ${spoken === "en" ? "English" : "French"}, the language of this message.]` : null;
+  const languageHint = spoken && usual && spoken !== usual ? `[Reply in ${languageName(spoken)}, the language of this message.]` : null;
   const prompt = [remembered, ...formats, documentPolicy, newMemories, ...context, chatty ? null : library, chatty ? null : inventory, input.content, languageHint].filter(Boolean).join("\n\n");
 
   // A previous turn that failed mid-stream leaves a user message with
@@ -745,20 +745,36 @@ function basePrompt(local: boolean): string {
 const ENGLISH_WORDS = new Set(["the", "you", "your", "what", "how", "are", "is", "do", "does", "can", "could", "would", "please", "my", "me", "about", "know", "with", "and", "this", "that", "hello", "hi", "thanks", "thank", "where", "when", "why", "who", "which", "i", "it", "of", "to", "for", "have", "tell"]);
 const FRENCH_WORDS = new Set(["le", "la", "les", "un", "une", "des", "de", "du", "je", "tu", "vous", "il", "elle", "est", "et", "que", "qui", "quoi", "comment", "pourquoi", "mon", "ma", "mes", "ton", "ta", "tes", "sur", "avec", "pour", "dans", "pas", "bonjour", "salut", "merci", "oui", "non", "ça", "ca", "sais", "peux", "fais", "moi", "toi"]);
 
-/// The language a message is plainly written in, English or French, from
-/// its common words: null when it is short, mixed or neither (the person's
-/// usual language then holds).
-export function messageLanguage(text: string): "en" | "fr" | null {
-  const words = text.toLowerCase().replace(/[’']/g, " ").match(/[a-zàâçéèêëîïôûùüÿœ]+/g) ?? [];
-  let en = 0;
-  let fr = 0;
-  for (const word of words) {
-    if (ENGLISH_WORDS.has(word)) en += 1;
-    if (FRENCH_WORDS.has(word)) fr += 1;
-  }
-  if (en >= 2 && fr === 0) return "en";
-  if (fr >= 2 && en === 0) return "fr";
+// Words that mostly belong to one language (03/10/2026: a Spanish or
+// Portuguese question from a person whose usual language is French got a
+// French answer — only English and French were told apart).
+const SPANISH_WORDS = new Set(["el", "los", "las", "del", "y", "qué", "cómo", "cuál", "dónde", "está", "están", "quiere", "debe", "puede", "hay", "pero", "muy", "porque", "también", "usted", "sus", "al", "ella", "hola", "gracias", "mi", "tengo", "eso", "esto"]);
+const PORTUGUESE_WORDS = new Set(["o", "os", "do", "da", "dos", "das", "não", "um", "você", "ela", "ele", "qual", "quer", "em", "no", "na", "nas", "nos", "seu", "sua", "isso", "também", "ao", "pelo", "pela", "obrigado", "obrigada", "olá", "tenho", "deve", "é", "como"]);
+const ITALIAN_WORDS = new Set(["il", "gli", "della", "delle", "dello", "che", "non", "è", "per", "come", "quale", "deve", "vuole", "sono", "questo", "questa", "anche", "perché", "cosa", "dal", "nel", "nella", "ciao", "grazie", "mio", "mia", "ho", "lei", "lui", "di"]);
+const GERMAN_WORDS = new Set(["der", "die", "das", "und", "ist", "nicht", "ein", "eine", "einen", "mit", "wie", "welche", "welcher", "muss", "möchte", "sie", "er", "ich", "zu", "den", "dem", "auf", "für", "von", "im", "auch", "hallo", "danke", "mein", "meine", "was", "wann", "warum"]);
+const LANGUAGE_WORDS: Array<[MessageLanguage, Set<string>]> = [
+  ["en", ENGLISH_WORDS], ["fr", FRENCH_WORDS], ["es", SPANISH_WORDS], ["pt", PORTUGUESE_WORDS], ["it", ITALIAN_WORDS], ["de", GERMAN_WORDS],
+];
+export type MessageLanguage = "en" | "fr" | "es" | "pt" | "it" | "de";
+
+/// The language a message is plainly written in, from its common words: at
+/// least two of one language and clearly more than of any other; null when
+/// it is short, mixed or none of these (the person's usual language then).
+export function messageLanguage(text: string): MessageLanguage | null {
+  const words = text.toLowerCase().replace(/[’']/g, " ").match(/[a-zàáâãäçéèêëíìîïñóòôõöúùûüÿœß]+/g) ?? [];
+  const scores = LANGUAGE_WORDS.map(([language, set]) => [language, words.filter((word) => set.has(word)).length] as const).sort((a, b) => b[1] - a[1]);
+  const [best, second] = scores;
+  if (best![1] >= 2 && (second![1] === 0 || best![1] >= 2 * second![1])) return best![0];
   return null;
+}
+
+/// « Spanish » for « es ».
+export function languageName(code: string): string {
+  try {
+    return new Intl.DisplayNames(["en"], { type: "language" }).of(code) ?? code;
+  } catch {
+    return code;
+  }
 }
 
 /// Which language to answer in when a message does not tell: « Hello ca

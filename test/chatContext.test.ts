@@ -419,6 +419,13 @@ test("a message plainly in another language than the usual one is answered in it
   assert.equal(messageLanguage("Que sais-tu de mon ami David ?"), "fr");
   assert.equal(messageLanguage("Hello ca va?"), null);
   assert.equal(messageLanguage("Thanks!"), null);
+  // 03/10/2026: the languages of the site too, told from French and from each other.
+  assert.equal(messageLanguage("La Sra. Dupont quiere resolver el contrato de servicios. ¿Qué preaviso debe respetar y cómo debe notificarlo?"), "es");
+  assert.equal(messageLanguage("A Sra. Dupont quer rescindir o contrato de serviços. Qual aviso prévio ela deve respeitar, e de que forma deve comunicá-lo?"), "pt");
+  assert.equal(messageLanguage("La sig.ra Dupont vuole recedere dal contratto di servizi. Quale preavviso deve rispettare, e in che forma deve comunicarlo?"), "it");
+  assert.equal(messageLanguage("Frau Dupont möchte den Dienstleistungsvertrag kündigen. Welche Frist muss sie einhalten, und wie?"), "de");
+  assert.equal(messageLanguage("Mme Dupont veut résilier le contrat de prestation. Quel préavis doit-elle respecter, et sous quelle forme doit-elle l'envoyer ?"), "fr");
+  assert.equal(messageLanguage("Ms Dupont wants to end the services agreement. How much notice must she give, and how?"), "en");
   const english = buildChatTurn(input({ userName: null, locale: "fr-FR", content: "what do you know about my friend David?" }));
   assert.match(english.messages.at(-1)!.content, /what do you know about my friend David\?\n\n\[Reply in English, the language of this message\.\]$/);
   const french = buildChatTurn(input({ userName: null, locale: "fr-FR", content: "Que sais-tu de mon ami David ?" }));
