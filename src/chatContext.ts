@@ -171,6 +171,9 @@ export interface ChatContextInput {
   /// The model may create reminders and tasks, and change a project
   /// (projects/actions.ts), on the person's say.
   actionTools?: boolean;
+  /// The person's services connected as tools (Capacités → Connecteurs),
+  /// by name: the model is told to call them rather than announce a search.
+  connectorTools?: string[] | null;
   documentFiles?: Array<{name: string; modified_at: string; chars: number; folder?: string}>;
   documentFileTotal?: number;
   documentScan?: { running: boolean; limited?: boolean };
@@ -699,6 +702,17 @@ function buildSystemPrompt(input: ChatContextInput, profile: string | null, stat
         "Only when they ask (« rappelle-moi… », « note que je dois… », « c'est acheté »), never on your own. To create or change anything, call the tool: " +
         "never say a reminder, task or change is done unless a tool result says « Done »; then say it in one short sentence. " +
         `Times are in their time zone. The next days: ${nextDays(input.now ?? new Date(), input.timeZone ?? null)}.`,
+    );
+  }
+
+  // Jimmy, 03/10/2026: « tu peux me lister mes 5 dernières offres ? »
+  // answered « Voici vos 5 dernières offres créées : » and nothing — the
+  // tool was offered, never called (4 times in 6 without this, 5 with it).
+  if (input.connectorTools?.length) {
+    sections.push(
+      `The user's own services are connected as tools (their names start with mcp__): ${input.connectorTools.join(", ")}. ` +
+        "When a message asks about what those services hold — their offers, orders, vehicles, tickets, pages… — call the matching tool first and answer from what it returns, not from saved memories. " +
+        "Never say you will look something up, nor ask whether to: call the tool (the user is asked to allow each call).",
     );
   }
 

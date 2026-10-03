@@ -786,6 +786,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     };
     const chatTools: ChatTools = {
       ...(asked ? { required: true } : {}),
+      // A connector's tool may be announced instead of called: insisted on.
+      ...(connectorTools.length ? { insist: true } : {}),
       definitions: [...(offersDocuments ? [SEARCH_DOCUMENTS_TOOL] : []), ...(offersActions ? ACTION_TOOLS : []), ...(offersHome ? [HOME_TOOL] : []), ...connectorTools.map((tool) => tool.definition)],
       run: async (name, args) => {
         if (name === "search_documents") return documentTools.run(name, args);
@@ -878,6 +880,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       documentScan: indexStatus(auth.userId),
       documentTool: !!toolsFor(provider) && offersDocuments,
       actionTools: !!toolsFor(provider) && offersActions,
+      connectorTools: toolsFor(provider) && connectorTools.length ? [...new Set(connectorTools.map((tool) => tool.connectorName))] : null,
       // The projects the message is about (named, or through the memories
       // given with it): their cards, with the message.
       projectCards: memoryMode === "full" ? cards.map((card) => card.card) : [],
@@ -2073,6 +2076,21 @@ export interface ChatTools {
   run: (name: string, args: Record<string, unknown>) => Promise<string>;
   /// The first round must call a tool (the message asked for an action).
   required?: boolean;
+  /// A short first answer that only announces a search (« Voici vos
+  /// offres : », « Voulez-vous que je les affiche ? ») is held back and the
+  /// model asked again, made to call a tool (streamLocal).
+  insist?: boolean;
+}
+
+/// What a first answer held back may be: short, and announcing or offering
+/// a search rather than giving anything.
+const HOLD_CHARS = 280;
+export function looksLikeAnnouncement(text: string): boolean {
+  const said = text.trim();
+  if (!said || said.length > HOLD_CHARS) return false;
+  return /[:…]$/.test(said)
+    || /\b(voulez-vous|souhaitez-vous|veux-tu|tu veux que|vous voulez que|would you like|shall i|do you want me)\b/i.test(said)
+    || /\b(je vais|je peux|laissez-moi|laisse-moi|i(?:'ll| will| can)|let me)\s+(?:\S+\s+){0,2}(rechercher|chercher|récupérer|consulter|regarder|lister|afficher|vérifier|look|search|check|fetch|list|get)\b/i.test(said);
 }
 
 /// Tool calls a turn may make before it answers.
@@ -2226,9 +2244,22 @@ async function streamLocal(
         upstream.abort();
       }
     };
+    // A connector's tool insisted on: the first words are held back while
+    // they are few, in case they only announce a search.
+    let holding = !!options.tools?.insist && !forced.length;
+    let held = "";
+    const out = (text: string) => {
+      if (!holding) return onDelta(text);
+      held += text;
+      if (held.length > HOLD_CHARS) {
+        holding = false;
+        onDelta(held);
+        held = "";
+      }
+    };
     const filter = createThinkFilter((text) => {
       answered = true;
-      onDelta(text);
+      out(text);
     }, reason);
     // « Répondre maintenant »: the same cut, when the person says so.
     options.answerNow?.addEventListener(
@@ -2244,6 +2275,33 @@ async function streamLocal(
     try {
       const calls: ToolCallPieces[] = [...forced];
       let usage = res ? await consumeOpenAIStream(res, filter.push, reason, options.tools ? calls : undefined) : forcedUsage;
+      if (holding) {
+        filter.flush();
+        holding = false;
+        // Announced, not called: asked again, a tool call required; what
+        // was announced is not shown.
+        if (options.tools && !calls.length && looksLikeAnnouncement(held) && !signal.aborted) {
+          try {
+            const again = await post({ ...body, ...extras, max_tokens: FORCED_TOOL_TOKENS * 2, tool_choice: "required" });
+            if (again.ok) {
+              const pieces: ToolCallPieces[] = [];
+              await consumeOpenAIStream(again, () => undefined, () => undefined, pieces);
+              const valid = pieces.filter((piece) => {
+                if (!piece?.name) return false;
+                try { JSON.parse(piece.arguments || "{}"); return true; } catch { return false; }
+              });
+              if (valid.length) {
+                calls.push(...valid);
+                held = "";
+              }
+            }
+          } catch (err) {
+            if (signal.aborted) throw err;
+          }
+        }
+        if (held) onDelta(held);
+        held = "";
+      }
       // The model asked for a tool (documents, at most TOOL_ROUNDS times):
       // what it returns is given back, and the model goes on from there —
       // the prompt read so far is reused, only the result is new.

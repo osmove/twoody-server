@@ -16,9 +16,11 @@ delete process.env.BRIDGE_LOCAL_LLM_ENDPOINT;
 delete process.env.TWOODY_EMBEDDING_BINARY;
 delete process.env.TWOODY_EMBEDDING_MODEL;
 
-type Body = { messages: Array<{ role: string; content: string }>; tools?: Array<{ function: { name: string } }>; max_tokens?: number };
+type Body = { messages: Array<{ role: string; content: string }>; tools?: Array<{ function: { name: string } }>; max_tokens?: number; tool_choice?: string };
 const bodies: Body[] = [];
 let call: { name: string; arguments: object } | null = null;
+/// The model announces the search instead of calling the tool, unless made to.
+let announce = false;
 const llm = createServer((req: IncomingMessage, res: ServerResponse) => {
   if (req.method === "GET") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ data: [{ id: "qwen" }] })); return; }
   let raw = "";
@@ -29,7 +31,10 @@ const llm = createServer((req: IncomingMessage, res: ServerResponse) => {
     res.writeHead(200, { "content-type": "text/event-stream" });
     const send = (event: object) => res.write(`data: ${JSON.stringify(event)}\n\n`);
     const answered = body.messages.find((message) => message.role === "tool");
-    if (call && body.tools && !answered && body.max_tokens !== 1) {
+    if (call && body.tools && !answered && body.max_tokens !== 1 && announce && body.tool_choice !== "required") {
+      send({ choices: [{ delta: { content: "Voici vos 5 dernières offres créées :" } }] });
+      send({ choices: [{ delta: {}, finish_reason: "stop" }] });
+    } else if (call && body.tools && !answered && body.max_tokens !== 1) {
       send({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: call.name, arguments: JSON.stringify(call.arguments) } }] } }] });
       send({ choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else {
@@ -157,6 +162,31 @@ test("a connector with many tools: none offered until the person picks; what the
   assert.ok(picked.tools.some((tool) => tool.enabled && !tool.offered), "beyond the limit: on, but not offered");
   assert.ok(picked.offered_tokens > 0);
   await app.inject({ method: "DELETE", url: `/connectors/${big.id}`, headers });
+});
+
+test("a search announced instead of called (« Voici vos offres : »): held back, the model made to call the tool", async () => {
+  await app.inject({ method: "PATCH", url: `/connectors/${connectorId}`, headers, payload: { enabled: true, disabled_tools: [] } });
+  call = { name: chatToolName({ name: "Carnet" }, "lookup"), arguments: { word: "Zanzibar" } };
+  announce = true;
+  const [response] = await Promise.all([ask("Cherche Zanzibar dans mon carnet"), answerWhenAsked(true)]);
+  announce = false;
+  call = null;
+  const final = finalOf(response.body).message;
+  assert.match(final, /found on page 12/);
+  assert.doesNotMatch(final, /Voici vos 5 dernières offres/);
+  assert.equal(bodies.filter((body) => body.tool_choice === "required").length >= 1, true);
+  // The instruction rides on the system prompt while a connector is on.
+  assert.match(bodies.at(-1)!.messages[0]!.content, /connected as tools \(their names start with mcp__\): Carnet/);
+});
+
+test("what an announcement looks like, and what it does not", async () => {
+  const { looksLikeAnnouncement } = await import("../src/routes/queries.js");
+  for (const said of ["Voici vos 5 dernières offres créées :", "Je peux récupérer vos 5 dernières offres. Voulez-vous que je les affiche ?", "Je vais rechercher vos 5 dernières offres dans le système.", "Let me look that up."]) {
+    assert.equal(looksLikeAnnouncement(said), true, said);
+  }
+  for (const said of ["Bonjour Jimmy ! Comment puis-je t'aider ?", "La capitale de la France est Paris.", `Voici la liste :${" offre".repeat(80)}`]) {
+    assert.equal(looksLikeAnnouncement(said), false, said);
+  }
 });
 
 test("an answer over HTTP may come as an event stream", () => {
