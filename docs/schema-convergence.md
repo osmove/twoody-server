@@ -1,7 +1,8 @@
 # Converger la base locale (SQLite) et la base du compte (Postgres)
 
-Proposition du 3 octobre 2026. **Rien n'est encore appliqué.** Sources :
-`src/db.ts` (env. 50 tables) et `twoody-backend/db/schema.rb` (129 tables).
+Proposition du 3 octobre 2026, **approuvée et appliquée le même jour**
+(« applique tout »). Voir « Ce qui est fait » à la fin. Sources : `src/db.ts`
+(env. 50 tables) et `twoody-backend/db/schema.rb` (129 tables).
 
 ## Pourquoi maintenant
 
@@ -24,7 +25,9 @@ lignes sans migration délicate pour qui que ce soit.
 | Suppression | ligne effacée (ou `status`) | `status`, `archived_at`, `revoked_at`… pas de règle commune |
 
 Les mêmes noms désignent aussi des choses différentes :
-- `messages` : les tours de chat sur le Mac, les SMS/WhatsApp Vonage sur le compte ;
+- `messages` : les tours de chat sur le Mac ; sur le compte, les messages
+  **entrants** reçus par Vonage (WhatsApp, Messenger, SMS), chacun créant
+  une `query` (les SMS envoyés sont dans `textos`) ;
 - `providers` : les adresses de modèles configurées sur le Mac, le catalogue
   des fournisseurs sur le compte ;
 - `usage_events` : un appel de modèle (tokens) sur le Mac, un décompte de
@@ -107,7 +110,8 @@ Et une même chose porte des noms différents :
   (user / assistant / tool), `content`, `reasoning`, `model`,
   `prompt_tokens`, `completion_tokens`, `cached_tokens`, `sources` (⇄ sans
   `_json`), `memory`, `answered_by`, `client`.
-  - Rails : ✎ l'actuelle `messages` (SMS Vonage) devient `sms_messages` ;
+  - Rails : ✎ l'actuelle `messages` (messages entrants Vonage) devient
+    `vonage_messages`, comme les autres tables `vonage_*` ;
     une nouvelle `messages` identique à celle du Mac est créée.
   - `queries`/`responses` (110 et 60 colonnes, beaucoup d'héritage) sont
     figées : le pipeline cloud écrira dans `messages` et elles ne seront plus
@@ -221,7 +225,7 @@ L'API du serveur local garde la même forme JSON : le Mac, l'iPhone et le Pi
 ne voient aucune différence.
 
 **Étape 2 : nettoyer le compte (Rails).**
-- `messages` → `sms_messages` ;
+- `messages` → `vonage_messages` ;
 - `discussions.name` → `title` ;
 - colonnes des projets renommées ;
 - `memory_imports` → `memory_candidates` ;
@@ -273,3 +277,52 @@ chiffré (vault) reste le chemin par défaut. Voir la décision 3.
 4. **L'ordre.** Je propose de commencer par les étapes 0 et 1 (le Mac). Elles
    sont sans risque pour le compte et donnent le vocabulaire cible. Ensuite
    l'étape 2.
+
+## Ce qui est fait (3 octobre 2026)
+
+### Le Mac (twoody-server 3c93684)
+- **Migrations versionnées.**
+  - `src/migrations/` : `baseline.ts` contient l'ancien DDL, joué seulement à
+    la version 0 ; `0002_convergence.ts` ; `index.ts` est l'exécuteur
+    (`PRAGMA user_version`).
+  - Une copie `backups/local-v<N>-<date>.db` est faite avant de migrer une
+    base qui a des données ; elle n'est jamais effacée.
+  - Une base plus récente que le serveur est refusée.
+  - L'index plein texte est vérifié à chaque démarrage.
+- **Renommages.**
+  - `usage_events` → `model_calls` (`at` → `occurred_at`) ;
+  - `providers` → `llm_endpoints` ;
+  - `account_peers` → `account_computers` ;
+  - `turn_traces` + `turn_prompts` → `message_traces` (`trace`, `prompt`,
+    `occurred_at`) ;
+  - suffixes `_json` retirés de 15 colonnes.
+- **Dates en millisecondes** partout : 44 colonnes converties.
+- **Contacts** : `phones`, `emails` et `addresses` en `[{label, value}]`.
+- **Identifiants** : les `macos-<hex>` deviennent l'UUID de ce même hex, et
+  la synchro du Mac produit désormais ce même UUID. `generateId()` rend un
+  UUID.
+- **`memories.confidence`**, comme sur le compte.
+- **Contrat** `schema/contract.json` + `test/schemaContract.test.ts` ;
+  `test/migrations.test.ts`.
+- **Essai sur une copie de la vraie base de Jimmy** (480 Mo) : 4,8 s,
+  toutes les lignes gardées, `foreign_key_check` vide, `integrity_check`
+  OK. Tests : 716/716.
+
+### Ce qui a été tranché autrement que dans le plan, et pourquoi
+- **Les anciens ids de 32 hex ne sont pas réécrits.** Ils sont déjà des
+  UUID valides pour Postgres (sans tirets). Les réécrire casserait les
+  `document_id` des citations dans l'historique chiffré des autres
+  appareils, et les ids en cache sur l'iPhone. La synchronisation les
+  comparera sous forme canonique.
+- **L'importance des souvenirs reste dans les étiquettes** (`minor`,
+  `important`, `pinned`). C'est le format du coffre chiffré (contrat
+  `memory`) ; une colonne dupliquerait la même information.
+- **`deleted_at`, `hlc` et `origin_device_id`** sur toutes les tables, et
+  les clés étrangères manquantes (qui demandent de reconstruire des tables
+  SQLite) : reportés à l'étape 5. Ils n'ont de sens qu'avec la
+  synchronisation qui les lit ; les ajouter avant obligerait à filtrer
+  toutes les lectures pour rien.
+
+### Le compte (twoody-backend)
+Voir le compte rendu de l'étape 2-3 dans le dépôt du backend (commits du 3
+octobre).
