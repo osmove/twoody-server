@@ -20,6 +20,10 @@ type Message = { role: string; content: string; tool_calls?: unknown; tool_call_
 type Body = { messages: Message[]; tools?: Array<{ function: { name: string } }>; tool_choice?: string; max_tokens?: number };
 const bodies: Body[] = [];
 let callTool = true;
+/// What the model says before its call (« I need to search your documents
+/// for this. »): with the call in the same turn, or alone.
+let narrate: "with_call" | "alone" | null = null;
+const NARRATION = "I need to search your documents for this.";
 const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   if (req.method === "GET") {
     res.writeHead(200, { "content-type": "application/json" });
@@ -34,12 +38,17 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     res.writeHead(200, { "content-type": "text/event-stream" });
     const send = (event: object) => res.write(`data: ${JSON.stringify(event)}\n\n`);
     const answered = body.messages.some((message) => message.role === "tool");
-    if (body.tools && callTool && !answered && body.max_tokens !== 1) {
+    if (narrate === "alone" && body.tools && !answered && body.max_tokens !== 1 && body.tool_choice !== "required") {
+      for (const piece of ["I need to search ", "your documents ", "for this."]) send({ choices: [{ delta: { content: piece } }] });
+      send({ choices: [{ delta: {}, finish_reason: "stop" }] });
+    } else if (body.tools && callTool && !answered && body.max_tokens !== 1) {
+      if (narrate === "with_call") for (const piece of ["I need to search ", "your documents ", "for this.", "\n\n"]) send({ choices: [{ delta: { content: piece } }] });
       send({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "search_documents", arguments: "" } }] } }] });
       send({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "{\"query\":\"électricité\"}" } }] } }] });
       send({ choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else {
-      send({ choices: [{ delta: { content: answered ? "Vous payez 84 euros [1]." : "Réponse." } }] });
+      if (answered && narrate) for (const piece of ["You pay ", "84 euros [1]."]) send({ choices: [{ delta: { content: piece } }] });
+      else send({ choices: [{ delta: { content: answered ? "Vous payez 84 euros [1]." : "Réponse." } }] });
     }
     res.end("data: [DONE]\n\n");
   });
@@ -147,4 +156,74 @@ test("each answer leaves a trace: the documents decision, the tools offered and 
   assert.equal(sent.events[0].name, "assistant_turn");
   assert.doesNotMatch(JSON.stringify(sent), /électricité|facture|Combien|dîner/);
   assert.equal((await app.inject({ url: `/diagnostics/telemetry?after=${sent.next}`, headers })).json().events.length, 0, "sent once");
+});
+
+/// The answer's text as it was streamed (`event: message`).
+const streamed = (body: string) => body.split("\n\n").filter((block) => block.startsWith("event: message\n")).map((block) => block.slice("event: message\ndata: ".length)).join("");
+
+test("what the model says on its way to the tool (« I need to search your documents for this. ») is neither streamed nor kept", async () => {
+  narrate = "with_call";
+  const { final, sent, body } = await ask("How much do I pay for electricity?");
+  narrate = null;
+  assert.equal(sent.length, 2);
+  assert.equal(final.message, "You pay 84 euros [1].");
+  assert.equal(streamed(body), "You pay 84 euros [1].");
+  const call = sent[1]!.messages.find((message) => message.role === "assistant" && message.tool_calls)!;
+  assert.equal(call.content, "", "nor given back to the model with its call");
+});
+
+test("a search only announced, not called: not shown, the model made to call the documents' search alone", async () => {
+  narrate = "alone";
+  const { final, sent, body } = await ask("How much do I pay for electricity?");
+  narrate = null;
+  assert.equal(sent.length, 3);
+  assert.equal(sent[1]!.tool_choice, "required");
+  assert.deepEqual(sent[1]!.tools?.map((tool) => tool.function.name), ["search_documents"], "no action may be called on the way");
+  assert.equal(final.message, "You pay 84 euros [1].");
+  assert.equal(streamed(body), "You pay 84 euros [1].");
+});
+
+test("an answer that announces nothing goes out as it comes, sentence by sentence", async () => {
+  callTool = false;
+  const { final, body } = await ask("Une idée de dîner ?");
+  callTool = true;
+  assert.equal(final.message, "Réponse.");
+  assert.equal(streamed(body), "Réponse.");
+});
+
+test("what words announce a search, and what words do not", async () => {
+  const { onlyNarration } = await import("../src/routes/queries.js");
+  for (const said of [
+    "I need to search your documents for this.", "Let me look that up.", "I'll check your files first:", "Searching your documents…",
+    "Je vais chercher dans vos documents.", "Il faut que je consulte vos fichiers.", "Ich werde in Ihren Dokumenten nachsehen.",
+    "Voy a buscar en tus documentos.", "Lasciami cercare nei tuoi documenti.", "Vou procurar nos seus documentos.", "ドキュメントを検索します。", "문서를 검색하겠습니다.",
+  ]) assert.equal(onlyNarration(said), true, said);
+  for (const said of [
+    "Paris is the capital of France.", "Bonjour Jimmy ! Comment puis-je t'aider ?", "Let me know if you need anything else.",
+    "I can't find that in your documents.", "I checked your contract: the notice is three months.", "The notice period is one month.",
+    "I need to search your documents for this. The notice period is one month.",
+  ]) assert.equal(onlyNarration(said), false, said);
+});
+
+test("a message naming a kind of document reads them with it, in English and other languages as in French", async () => {
+  const { aboutDocuments } = await import("../src/routes/queries.js");
+  for (const said of [
+    "Mrs Dupont wants to end the services agreement before the end of the year. What notice period applies?",
+    "Mme Dupont veut résilier le contrat de prestation. Quel préavis ?",
+    "What does my lease say about pets?", "Find my last invoice from Orange", "my payslip for June", "my bank statement", "the amendment to the contract",
+    "mon relevé de compte", "Was steht in meinem Mietvertrag?", "die Kündigungsfrist", "¿Qué dice mi contrato de alquiler?", "la mia busta paga",
+    "a minha fatura da luz", "私の契約書の解約予告は？", "계약서를 확인해 주세요",
+  ]) assert.equal(aboutDocuments(said), true, said);
+  for (const said of [
+    "Hello, how are you?", "Une idée de dîner ?", "Combien je paie pour l'électricité ?", "Give me a quote from Einstein", "What's the weather report?",
+    "Write me a letter to thank my aunt", "Ich vertrage keine Milch", "Berechnung der Fläche", "una pasta al pomodoro", "プロファイルを見せて",
+  ]) assert.equal(aboutDocuments(said), false, said);
+
+  callTool = false;
+  const { sent } = await ask("Mrs Dupont wants to end the services agreement. What notice period applies?");
+  callTool = true;
+  assert.equal(sent.length, 1);
+  const trace = (await app.inject({ url: "/diagnostics/turns?kind=chat&limit=1", headers })).json().traces[0];
+  assert.equal(trace.detail.documents.decision, "read", "read up front, like « contrat de prestation »");
+  assert.equal(trace.detail.documents.reason, "named");
 });

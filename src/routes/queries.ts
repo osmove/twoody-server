@@ -657,13 +657,13 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       remote: fullFor !== null,
       requester,
     });
-    const plainlyDocuments = access.mode === "only" || !!intent || ABOUT_DOCUMENTS.test(typedText(content)) || citedBefore(history);
+    const plainlyDocuments = access.mode === "only" || !!intent || aboutDocuments(typedText(content)) || citedBefore(history);
     const documentsStarted = Date.now();
     const retrieved: MeshRetrieval = access.mode !== "off" && plainlyDocuments ? await retrieveFor(typedText(content)) : NO_DOCUMENTS;
     trace.documents = {
       mode: access.mode,
       decision: access.mode === "off" ? "off" : plainlyDocuments ? "read" : toolCapable(provider) && !conversationOnlyFor(provider) ? "tool" : "none",
-      reason: access.mode === "only" ? "only" : intent ? "listing" : ABOUT_DOCUMENTS.test(typedText(content)) ? "named" : citedBefore(history) ? "follow_up" : null,
+      reason: access.mode === "only" ? "only" : intent ? "listing" : aboutDocuments(typedText(content)) ? "named" : citedBefore(history) ? "follow_up" : null,
       passages: retrieved.passages.length,
       files: retrieved.files.length,
       computers: retrieved.computers.map((computer) => ({ name: computer.computer_name, status: computer.status, passages: computer.passages })),
@@ -2031,7 +2031,38 @@ function readEffort(value: unknown): Effort {
 
 /// A message that plainly asks about the person's files: their documents are
 /// read with it, without waiting for the model to ask (search_documents).
-const ABOUT_DOCUMENTS = /\b(?:documents?|fichiers?|dossiers?|pdfs?|files?|folders?|contrats?|factures?|devis|bail|baux|cv|relev[ée]s?|attestations?|fiches? de paie|bulletins? de (?:paie|salaire)|rapports?|t[ée]l[ée]chargements|downloads|pi[èe]ces? jointes?)\b/i;
+/// Kinds of documents in the languages Twoody answers in, not words of
+/// everyday talk: « services agreement » read the documents in English like
+/// « contrat de prestation » in French (03/10/2026); a word that is also
+/// common speech (« letter », « report », « quote ») only after « my ».
+/// Letters on both sides, not \b: « relevé », « Verträge » end in one that
+/// \b does not count.
+const ABOUT_DOCUMENTS = new RegExp(`(?<![\\p{L}\\p{N}])(?:${[
+  // French
+  "documents?", "fichiers?", "dossiers?", "pdfs?", "contrats?", "factures?", "devis", "bail", "baux", "cv", "relev[ée]s?", "attestations?",
+  "fiches? de paie", "bulletins? de (?:paie|salaire)", "rapports?", "t[ée]l[ée]chargements", "pi[èe]ces? jointes?", "avenants?", "pr[ée]avis",
+  "quittances?", "avis d['’]imp[ôo]ts?", "polices? d['’]assurance",
+  // English
+  "files?", "folders?", "downloads", "contracts?", "agreements?", "invoices?", "leases?", "notice periods?", "amendments?", "addend(?:um|a)",
+  "payslips?", "pay ?slips?", "pay ?stubs?", "receipts?", "bank statements?", "insurance polic(?:y|ies)", "tax returns?", "utility bills?", "attachments?",
+  "(?:my|our) (?:letters?|reports?|statements?|polic(?:y|ies)|quotes?|quotations?|estimates?|bills?|certificates?|resumes?|résumés?|paperwork|scans?)",
+  // German
+  "dokumente?n?", "dateien?", "unterlagen", "\\p{L}*vertr(?:ag|äge)s?", "(?:strom|telefon|handy|gas|wasser)?rechnung(?:en)?", "nebenkostenabrechnung(?:en)?", "k[üu]ndigungsfrist(?:en)?", "gehaltsabrechnung(?:en)?",
+  "lohnabrechnung(?:en)?", "kontoausz[üu]ge?", "kostenvoranschl[äa]ge?", "quittung(?:en)?", "lebenslauf", "nachtr[äa]ge?",
+  // Spanish
+  "documentos?", "archivos?", "carpetas?", "contratos?", "facturas?", "arrendamientos?", "n[óo]minas?", "recibos?", "extractos? bancarios?", "preavisos?", "p[óo]lizas?",
+  // Italian
+  "documenti", "contratt[oi]", "fattur[ae]", "bust[ae] paga", "preventiv[oi]", "ricevut[ae]", "preavvisi?", "polizz[ae]", "estratt[oi] conto",
+  // Portuguese
+  "arquivos?", "faturas?", "holerites?", "contracheques?", "arrendamentos?", "aviso pr[ée]vio", "ap[óo]lices?", "extratos? (?:banc[áa]rios?|de conta)",
+].join("|")})(?![\\p{L}\\p{N}])`, "iu");
+/// Japanese and Korean words have no space around them: found anywhere.
+const ABOUT_DOCUMENTS_CJK = /契約書|請求書|領収書|見積書|給与明細|賃貸借契約|書類|文書|(?<!プロ)ファイル|フォルダ|ドキュメント|解約予告|계약서|청구서|영수증|견적서|급여명세서|문서|파일(?!럿)|폴더/u;
+
+/// Whether a message plainly asks about the person's documents (read with it).
+export function aboutDocuments(text: string): boolean {
+  return ABOUT_DOCUMENTS.test(text) || ABOUT_DOCUMENTS_CJK.test(text);
+}
 
 /// The answer before this message cited the person's documents: a follow-up
 /// (« et la page 3 ? ») is about them too.
@@ -2094,7 +2125,59 @@ export function looksLikeAnnouncement(text: string): boolean {
   if (!said || said.length > HOLD_CHARS) return false;
   return /[:…]$/.test(said)
     || /\b(voulez-vous|souhaitez-vous|veux-tu|tu veux que|vous voulez que|would you like|shall i|do you want me)\b/i.test(said)
-    || /\b(je vais|je peux|laissez-moi|laisse-moi|i(?:'ll| will| can)|let me)\s+(?:\S+\s+){0,2}(rechercher|chercher|récupérer|consulter|regarder|lister|afficher|vérifier|look|search|check|fetch|list|get)\b/i.test(said);
+    || /\b(je vais|je peux|laissez-moi|laisse-moi|i(?:'ll| will| can)|let me)\s+(?:\S+\s+){0,2}(rechercher|chercher|récupérer|consulter|regarder|lister|afficher|vérifier|look|search|check|fetch|list|get)\b/i.test(said)
+    || NARRATION.test(said);
+}
+
+/// A sentence in which the model only says it is about to look something
+/// up — « I need to search your documents for this. », « Je vais chercher
+/// dans vos documents. » — in the languages Twoody answers in. Written
+/// before a tool call, it is no part of the answer (Qwen3.5 9B, iPhone,
+/// 03/10/2026).
+const NARRATION = new RegExp([
+  // English
+  String.raw`(?<!\p{L})(?:i(?:'ll|’ll| will| shall| need to| have to| must| should| want to| am going to|'m going to|’m going to| can| first need to)|let me|let's|let’s|allow me to|first,? i(?:'ll|’ll| will)?)\s+(?:\S+\s+){0,3}?(?:search|look|check|find|fetch|retriev|consult|review|scan|brows|query|go through|read|open|pull up)`,
+  String.raw`^\W*(?:searching|looking (?:up|through|into|in|for)|checking)(?!\p{L})`,
+  // French
+  String.raw`(?<!\p{L})(?:je vais|je dois|il (?:me )?faut (?:que je )?|laissez-moi|laisse-moi|permettez-moi de|je peux|je commence par|commençons par|d'abord,? je)\s+(?:\S+\s+){0,3}?(?:recherch|cherch|consult|regard|vérifi|verifi|parcour|fouill|lir|examin|récupér|recuper|ouvr)`,
+  String.raw`(?<!\p{L})je (?:recherche|cherche|consulte|regarde|vérifie|parcours|fouille)(?!\p{L})`,
+  // German
+  String.raw`(?<!\p{L})(?:ich (?:werde|muss|sollte|möchte|will|kann)|lass(?:en sie)? mich|zuerst)\s+(?:\S+\s+){0,4}?(?:such|durchsuch|nachseh|nachschau|nachschlag|prüf|überprüf|schau|les|öffn)`,
+  String.raw`(?<!\p{L})ich (?:suche|durchsuche|prüfe|überprüfe|schaue|sehe)(?!\p{L})`,
+  // Spanish
+  String.raw`(?<!\p{L})(?:voy a|déjame|dejame|necesito|tengo que|debo|permíteme|primero,?|puedo)\s+(?:\S+\s+){0,3}?(?:busc|revis|consult|comprob|verific|mir|examin|leer|abr)`,
+  String.raw`(?<!\p{L})(?:buscaré|revisaré|consultaré|busco en)(?!\p{L})`,
+  // Italian
+  String.raw`(?<!\p{L})(?:lasciami|fammi|devo|vado a|prima,?|posso)\s+(?:\S+\s+){0,3}?(?:cerc|controll|verific|consult|guard|esamin|legg|apr)`,
+  String.raw`(?<!\p{L})(?:cercherò|controllerò|verificherò|cerco nei|controllo nei)(?!\p{L})`,
+  // Portuguese
+  String.raw`(?<!\p{L})(?:vou|deixe-me|deixa-me|preciso|tenho que|devo|primeiro,?|posso)\s+(?:\S+\s+){0,3}?(?:procur|pesquis|busc|verific|consult|olh|examin|ler|abr)`,
+  String.raw`(?<!\p{L})(?:procurarei|pesquisarei|verificarei)(?!\p{L})`,
+  // Japanese, Korean, Chinese
+  String.raw`(?:検索|確認|調査|参照)(?:します|してみます|いたします|しましょう|する必要があります)|(?:探し|調べ)(?:ます|てみます|ましょう)|(?:探す|調べる)必要があります`,
+  String.raw`(?:검색|확인|찾아)\s?(?:하겠습니다|해\s?보겠습니다|볼게요|할게요|보겠습니다)`,
+  String.raw`(?:让我|我来|我将|我会|我需要|我先)[^。！？\n]{0,8}?(?:搜索|查找|查看|检索|查一下|找一下)`,
+].join("|"), "iu");
+
+/// Where the first sentence of `text` ends (past its stop), or -1.
+function sentenceEnd(text: string): number {
+  const found = /[.!?…:;](?=\s)|[。！？]|\n/.exec(text);
+  return found ? found.index + found[0].length : -1;
+}
+
+/// The model's words only announce a search, nothing else (« I need to
+/// search your documents for this. »).
+export function onlyNarration(text: string): boolean {
+  const said = text.trim();
+  if (!said || said.length > HOLD_CHARS) return false;
+  const sentences: string[] = [];
+  let rest = said;
+  for (let end = sentenceEnd(rest); end >= 0; end = sentenceEnd(rest)) {
+    sentences.push(rest.slice(0, end));
+    rest = rest.slice(end);
+  }
+  sentences.push(rest);
+  return sentences.map((sentence) => sentence.trim()).filter(Boolean).every((sentence) => NARRATION.test(sentence));
 }
 
 /// Tool calls a turn may make before it answers.
@@ -2248,23 +2331,68 @@ async function streamLocal(
         upstream.abort();
       }
     };
-    // A connector's tool insisted on: the first words are held back while
-    // they are few, in case they only announce a search.
-    let holding = !!options.tools?.insist && !forced.length;
+    // While the model may call a tool, what it writes first is held back
+    // sentence by sentence: words that only announce a search (« I need to
+    // search your documents for this. ») are no answer — dropped when a
+    // call follows in the same turn, the model made to call when none
+    // does (Qwen3.5 9B, iPhone, 03/10/2026). Other sentences go out as soon
+    // as they end. A connector's tool insisted on: all the first words
+    // are held back while they are few (« Voici vos offres : »).
+    const insist = !!options.tools?.insist;
+    let holding = false;
+    let narrating = false;
     let held = "";
+    let released = 0;
+    const hold = () => {
+      holding = !!options.tools;
+      narrating = insist;
+      held = "";
+      released = 0;
+    };
+    const letGo = () => {
+      holding = false;
+      if (held) onDelta(held);
+      held = "";
+    };
     const out = (text: string) => {
       if (!holding) return onDelta(text);
       held += text;
-      if (held.length > HOLD_CHARS) {
-        holding = false;
-        onDelta(held);
-        held = "";
+      while (holding) {
+        if (narrating) {
+          if (released + held.length > HOLD_CHARS) letGo();
+          return;
+        }
+        const end = sentenceEnd(held);
+        if (end < 0) {
+          if (released + held.length > HOLD_CHARS) letGo();
+          return;
+        }
+        const sentence = held.slice(0, end);
+        if (NARRATION.test(sentence)) {
+          narrating = true;
+          continue;
+        }
+        onDelta(sentence);
+        released += sentence.length;
+        held = held.slice(end);
+        if (released > HOLD_CHARS) letGo();
       }
     };
-    const filter = createThinkFilter((text) => {
+    /// The round is over: what was held back, unless a tool call came with
+    /// it (then it was only said on the way to the call).
+    const settle = (called: boolean): string => {
+      const rest = called ? "" : held;
+      holding = false;
+      narrating = false;
+      held = "";
+      return rest;
+    };
+    // One per answer the model writes: a <think> block may open each.
+    const thinkFilter = () => createThinkFilter((text) => {
       answered = true;
       out(text);
     }, reason);
+    let filter = thinkFilter();
     // « Répondre maintenant »: the same cut, when the person says so.
     options.answerNow?.addEventListener(
       "abort",
@@ -2278,34 +2406,37 @@ async function streamLocal(
     );
     try {
       const calls: ToolCallPieces[] = [...forced];
+      const called = () => calls.some((call) => call?.name);
+      if (res) hold();
       let usage = res ? await consumeOpenAIStream(res, filter.push, reason, options.tools ? calls : undefined) : forcedUsage;
-      if (holding) {
-        filter.flush();
-        holding = false;
-        // Announced, not called: asked again, a tool call required; what
-        // was announced is not shown.
-        if (options.tools && !calls.length && looksLikeAnnouncement(held) && !signal.aborted) {
-          try {
-            const again = await post({ ...body, ...extras, max_tokens: FORCED_TOOL_TOKENS * 2, tool_choice: "required" });
-            if (again.ok) {
-              const pieces: ToolCallPieces[] = [];
-              await consumeOpenAIStream(again, () => undefined, () => undefined, pieces);
-              const valid = pieces.filter((piece) => {
-                if (!piece?.name) return false;
-                try { JSON.parse(piece.arguments || "{}"); return true; } catch { return false; }
-              });
-              if (valid.length) {
-                calls.push(...valid);
-                held = "";
-              }
+      filter.flush();
+      let rest = settle(called());
+      // Announced, not called: asked again, a tool call required; what
+      // was announced is not shown. A connector's: any announcement, any
+      // tool; otherwise only words that say a search, and only the
+      // documents' search may then be called (not an action).
+      const searchOnly = options.tools?.definitions.filter((tool) => tool.function.name === "search_documents") ?? [];
+      const retryTools = insist ? options.tools?.definitions ?? [] : searchOnly;
+      if (rest && options.tools && !called() && retryTools.length && (insist ? looksLikeAnnouncement(rest) : onlyNarration(rest)) && !signal.aborted) {
+        try {
+          const again = await post({ ...body, ...extras, ...(insist ? {} : { tools: retryTools }), max_tokens: FORCED_TOOL_TOKENS * 2, tool_choice: "required" });
+          if (again.ok) {
+            const pieces: ToolCallPieces[] = [];
+            await consumeOpenAIStream(again, () => undefined, () => undefined, pieces);
+            const valid = pieces.filter((piece) => {
+              if (!piece?.name || !retryTools.some((tool) => tool.function.name === piece.name)) return false;
+              try { JSON.parse(piece.arguments || "{}"); return true; } catch { return false; }
+            });
+            if (valid.length) {
+              calls.splice(0, calls.length, ...valid);
+              rest = "";
             }
-          } catch (err) {
-            if (signal.aborted) throw err;
           }
+        } catch (err) {
+          if (signal.aborted) throw err;
         }
-        if (held) onDelta(held);
-        held = "";
       }
+      if (rest) onDelta(rest);
       // The model asked for a tool (documents, at most TOOL_ROUNDS times):
       // what it returns is given back, and the model goes on from there —
       // the prompt read so far is reused, only the result is new.
@@ -2329,12 +2460,23 @@ async function streamLocal(
         const next = await post({ ...body, ...extras, messages: followed, tool_choice: round + 1 >= TOOL_ROUNDS ? "none" : "auto" });
         if (!next.ok) throw new LocalLlmUnavailableError(`Local LLM provider returned ${next.status}`);
         const spent = usage?.completion_tokens ?? 0;
+        // It may call again: what it says before that is held back too.
+        if (round + 1 < TOOL_ROUNDS) hold();
+        filter = thinkFilter();
         usage = await consumeOpenAIStream(next, filter.push, reason, calls);
+        filter.flush();
+        const left = settle(called());
+        if (left) onDelta(left);
         if (usage) usage = { ...usage, completion_tokens: usage.completion_tokens + spent };
       }
-      filter.flush();
       if (!cut) return usage;
     } catch (err) {
+      // Broken or stopped mid-answer: what was held back was written, and
+      // is kept with the rest (an answer that broke after its first word
+      // is not given to another computer); a search only announced is not.
+      filter.flush();
+      const rest = settle(false);
+      if (rest && !onlyNarration(rest)) onDelta(rest);
       if (!cut || signal.aborted) throw err;
     }
 
