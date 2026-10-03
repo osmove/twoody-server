@@ -113,3 +113,20 @@ test("a question said aloud keeps it: the conversation shows its microphone agai
   const typedId = JSON.parse(typed.body.split("\n\n").find((block) => block.startsWith("event: final"))!.split("data: ")[1]!).discussion_id;
   assert.equal((await app.inject({ url: `/discussions/${typedId}`, headers })).json().messages[0].channel, "desktop");
 });
+
+test("a photo from the phone: a HEIC becomes a JPEG, a large one is made smaller, a small one goes as it is", async () => {
+  // Jimmy, 03/10/2026: « pourquoi il n'arrive pas à lire les images ? »
+  const { preparedImages, readImages } = await import("../src/routes/queries.js");
+  const shrunk: string[] = [];
+  const shrink = async (bytes: Buffer, extension: string) => { shrunk.push(extension); return Buffer.from("small"); };
+  const heic = `data:image/heic;base64,${Buffer.from("heic").toString("base64")}`;
+  assert.deepEqual(readImages([heic]), [heic], "a HEIC is taken");
+  const small = `data:image/jpeg;base64,${Buffer.from("x".repeat(1000)).toString("base64")}`;
+  const large = `data:image/jpeg;base64,${"A".repeat(1_600_000)}`;
+  const out = await preparedImages([heic, small, large], shrink);
+  assert.deepEqual(out, [`data:image/jpeg;base64,${Buffer.from("small").toString("base64")}`, small, `data:image/jpeg;base64,${Buffer.from("small").toString("base64")}`]);
+  assert.deepEqual(shrunk, ["heic", "jpeg"]);
+  // Nothing to convert a HEIC with (not a Mac): refused rather than sent unreadable.
+  assert.equal(await preparedImages([heic], async () => null), "unsupported");
+  assert.deepEqual(await preparedImages([large], async () => null), [large], "a large JPEG still goes");
+});

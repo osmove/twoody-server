@@ -1,5 +1,8 @@
 import { relative, isAbsolute, join } from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { clientOf } from "./usage.js";
 import { recordUsageEvent, type UsageEventInput } from "../usageStore.js";
 import { askedToRemember, rememberFacts } from "../memoryLearning.js";
@@ -389,8 +392,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     }
   }
 
-  const images = readImages(parsed.images ?? (parsed.query as { images?: unknown } | undefined)?.images);
-  if (images === "invalid") return reply.code(422).send({ error: "invalid_images", max_images: IMAGES_MAX });
+  const read = readImages(parsed.images ?? (parsed.query as { images?: unknown } | undefined)?.images);
+  if (read === "invalid") return reply.code(422).send({ error: "invalid_images", max_images: IMAGES_MAX });
+  const images = await preparedImages(read);
+  if (images === "unsupported") return reply.code(422).send({ error: "invalid_images", max_images: IMAGES_MAX });
   // An image alone is a question about it.
   if (!content && images.length) content = IMAGE_ONLY_QUESTION;
   if (!content) {
@@ -2670,7 +2675,11 @@ async function catchUp(userId: string, vaultId: string, knownRefs: string[], pri
 const IMAGES_MAX = 4;
 /// Some 7,5 MB of image once decoded: the app makes them smaller first.
 const IMAGE_MAX_CHARS = 10 * 1024 * 1024;
-const IMAGE_DATA_URL = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/;
+const IMAGE_DATA_URL = /^data:image\/(?:png|jpeg|webp|gif|heic|heif);base64,[A-Za-z0-9+/]+={0,2}$/;
+/// A photo from a phone, sent as it was taken (Jimmy, 03/10/2026): made
+/// smaller here above this, as the desktop app does before sending.
+const SHRINK_ABOVE_CHARS = 1_500_000;
+const LONGEST_SIDE = 1600;
 /// What a message keeps of its images, in the conversation.
 const IMAGE_MARK = "[image]";
 const IMAGE_ONLY_QUESTION = "Décris cette image.";
@@ -2693,6 +2702,43 @@ export function readImages(value: unknown): string[] | "invalid" {
     if (typeof image !== "string" || image.length > IMAGE_MAX_CHARS || !IMAGE_DATA_URL.test(image)) return "invalid";
   }
   return list as string[];
+}
+
+/// The images as the model is given them: a HEIC (an iPhone photo) turned
+/// into a JPEG, a large photo made 1600 pixels at most on its longest side —
+/// a few hundred tokens rather than thousands. With macOS's own sips; on
+/// another system, a HEIC is refused and a large photo goes as it is.
+export async function preparedImages(images: string[], shrink: (bytes: Buffer, extension: string) => Promise<Buffer | null> = sipsShrink): Promise<string[] | "unsupported"> {
+  const out: string[] = [];
+  for (const image of images) {
+    const [, type] = /^data:image\/([a-z]+);base64,/.exec(image) ?? [];
+    const heic = type === "heic" || type === "heif";
+    if (!heic && image.length <= SHRINK_ABOVE_CHARS) {
+      out.push(image);
+      continue;
+    }
+    const smaller = await shrink(Buffer.from(image.slice(image.indexOf(",") + 1), "base64"), type ?? "jpeg").catch(() => null);
+    if (smaller) out.push(`data:image/jpeg;base64,${smaller.toString("base64")}`);
+    else if (heic) return "unsupported";
+    else out.push(image);
+  }
+  return out;
+}
+
+async function sipsShrink(bytes: Buffer, extension: string): Promise<Buffer | null> {
+  if (process.platform !== "darwin") return null;
+  const dir = await mkdtemp(join(tmpdir(), "twoody-image-"));
+  try {
+    const input = join(dir, `in.${extension === "jpeg" ? "jpg" : extension}`);
+    const output = join(dir, "out.jpg");
+    await writeFile(input, bytes, { mode: 0o600 });
+    await new Promise<void>((resolve, reject) => {
+      execFile("/usr/bin/sips", ["-Z", String(LONGEST_SIDE), "-s", "format", "jpeg", "-s", "formatOptions", "80", input, "--out", output], { timeout: 20_000 }, (err) => (err ? reject(err) : resolve()));
+    });
+    return await readFile(output);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 /// The last message with its images, as OpenAI-compatible servers take
