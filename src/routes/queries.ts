@@ -766,7 +766,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         const approvalId = generateId();
         startSse();
         reply.raw.write(`event: approval\ndata: ${JSON.stringify({ id: approvalId, connector: chosen.connectorName, tool: chosen.tool, arguments: args })}\n\n`);
-        allowed = await waitForApproval(auth.userId, approvalId, upstream.signal);
+        allowed = await waitForApproval(auth.userId, approvalId, upstream.signal, undefined, { connectorId: chosen.connectorId, tool: chosen.tool });
         if (!upstream.signal.aborted) reply.raw.write(`event: approval_done\ndata: ${JSON.stringify({ id: approvalId, allowed })}\n\n`);
       }
       if (!allowed) {

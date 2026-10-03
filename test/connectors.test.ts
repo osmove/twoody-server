@@ -68,10 +68,10 @@ const finalOf = (body: string) => {
   const block = body.split("\n\n").find((b) => b.startsWith("event: final"))!;
   return JSON.parse(block.slice(block.indexOf("data: ") + 6)) as { message: string };
 };
-async function answerWhenAsked(allow: boolean) {
+async function answerWhenAsked(allow: boolean, always = false) {
   for (let i = 0; i < 200; i += 1) {
     const [id] = waitingApprovals(userId);
-    if (id) return app.inject({ method: "POST", url: "/queries/approval", headers, payload: { id, allow } });
+    if (id) return app.inject({ method: "POST", url: "/queries/approval", headers, payload: { id, allow, always } });
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error("no approval asked");
@@ -188,6 +188,21 @@ test("« Toujours autoriser »: that tool is called without asking; the others s
   call = null;
   assert.doesNotMatch(response.body, /event: approval/);
   assert.match(finalOf(response.body).message, /found on page 12/);
+  await app.inject({ method: "PATCH", url: `/connectors/${connectorId}`, headers, payload: { auto_tools: [] } });
+});
+
+test("« Toujours autoriser » from the chat: this call goes on, the next ones are not asked", async () => {
+  await app.inject({ method: "PATCH", url: `/connectors/${connectorId}`, headers, payload: { enabled: true, disabled_tools: [], auto_tools: [] } });
+  call = { name: chatToolName({ name: "Carnet" }, "lookup"), arguments: { word: "Zanzibar" } };
+  const [first] = await Promise.all([ask("Cherche Zanzibar dans mon carnet"), answerWhenAsked(true, true)]);
+  assert.match(first.body, /event: approval\n/);
+  assert.match(finalOf(first.body).message, /found on page 12/);
+  const listed = (await app.inject({ url: "/connectors", headers })).json().connectors.find((one: { id: string }) => one.id === connectorId);
+  assert.equal(listed.running, true, "choosing the tools leaves the server running");
+  assert.deepEqual(listed.tools.filter((tool: { always: boolean }) => tool.always).map((tool: { name: string }) => tool.name), ["lookup"]);
+  const second = await ask("Cherche Zanzibar dans mon carnet");
+  call = null;
+  assert.doesNotMatch(second.body, /event: approval/);
   await app.inject({ method: "PATCH", url: `/connectors/${connectorId}`, headers, payload: { auto_tools: [] } });
 });
 

@@ -13,7 +13,7 @@ import { addConnector, answerApproval, beginSignIn, changeConnector, completeSig
 //   POST   /connectors/:id/oauth/start → { authorization_url }: the service's sign-in page
 //   GET    /connectors/oauth/callback  where that page sends the browser back
 //   POST   /connectors/:id/oauth/sign_out
-//   POST   /queries/approval           { id, allow } — a tool call asked in the chat
+//   POST   /queries/approval           { id, allow, always? } — a tool call asked in the chat
 // Read by any of the person's devices; added, changed, started and removed
 // only from this computer's app — a connector is a command this computer
 // runs, or an address it calls with the person's token.
@@ -149,13 +149,13 @@ export async function connectorRoutes(app: FastifyInstance) {
     },
   });
 
-  app.post<{ Body: { id?: unknown; allow?: unknown } }>("/queries/approval", {
+  app.post<{ Body: { id?: unknown; allow?: unknown; always?: unknown } }>("/queries/approval", {
     schema: { tags: ["queries"], summary: "Allow or refuse a connector's tool call asked in the chat", security },
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
       const id = typeof req.body?.id === "string" ? req.body.id : "";
-      if (!answerApproval(auth.userId, id, req.body?.allow === true)) return reply.code(404).send({ error: "nothing_waiting" });
+      if (!answerApproval(auth.userId, id, req.body?.allow === true, req.body?.always === true)) return reply.code(404).send({ error: "nothing_waiting" });
       reply.send({ ok: true });
     },
   });

@@ -165,7 +165,10 @@ export function changeConnector(userId: string, id: string, body: unknown): Conn
     if (Array.isArray(input.auto_tools)) next = { ...next, auto_tools: input.auto_tools.filter((tool): tool is string => typeof tool === "string").slice(0, 500) };
     return next;
   });
-  stopConnector(userId, id);
+  // Which tools are offered or asked about changes nothing of the server
+  // itself: it keeps running (a call may be under way).
+  const restart = Object.keys(input).some((key) => !["disabled_tools", "auto_tools"].includes(key));
+  if (restart) stopConnector(userId, id);
   return changed;
 }
 
@@ -421,11 +424,11 @@ export async function callConnectorTool(userId: string, connectorId: string, too
 
 // ── The person's say, asked in the chat ────────────────────────────────
 const APPROVAL_TIMEOUT_MS = 120_000;
-const approvals = new Map<string, { userId: string; resolve: (allowed: boolean) => void; timer: NodeJS.Timeout }>();
+const approvals = new Map<string, { userId: string; resolve: (allowed: boolean) => void; timer: NodeJS.Timeout; connectorId?: string; tool?: string }>();
 
 /// Waits for the person to allow or refuse this call (or for the chat to
 /// close, or two minutes): refused unless allowed.
-export function waitForApproval(userId: string, id: string, signal?: AbortSignal, timeoutMs = APPROVAL_TIMEOUT_MS): Promise<boolean> {
+export function waitForApproval(userId: string, id: string, signal?: AbortSignal, timeoutMs = APPROVAL_TIMEOUT_MS, call?: { connectorId: string; tool: string }): Promise<boolean> {
   return new Promise((resolve) => {
     const done = (allowed: boolean) => {
       const entry = approvals.get(id);
@@ -434,7 +437,7 @@ export function waitForApproval(userId: string, id: string, signal?: AbortSignal
       approvals.delete(id);
       resolve(allowed);
     };
-    approvals.set(id, { userId, resolve: done, timer: setTimeout(() => done(false), timeoutMs) });
+    approvals.set(id, { userId, resolve: done, timer: setTimeout(() => done(false), timeoutMs), ...call });
     signal?.addEventListener("abort", () => done(false), { once: true });
   });
 }
@@ -444,10 +447,20 @@ export function waitingApprovals(userId: string): string[] {
   return [...approvals].filter(([, entry]) => entry.userId === userId).map(([id]) => id);
 }
 
-/// The person's answer; false when nothing waits for it (too late, or not theirs).
-export function answerApproval(userId: string, id: string, allowed: boolean): boolean {
+/// The person's answer; false when nothing waits for it (too late, or not
+/// theirs). « Toujours autoriser » (`always`) allows this call and, from
+/// now on, every call of that tool without asking.
+export function answerApproval(userId: string, id: string, allowed: boolean, always = false): boolean {
   const entry = approvals.get(id);
   if (!entry || entry.userId !== userId) return false;
+  if (allowed && always && entry.connectorId && entry.tool) {
+    const tool = entry.tool;
+    try {
+      update(userId, entry.connectorId, (connector) => ({ ...connector, auto_tools: [...new Set([...(connector.auto_tools ?? []), tool])] }));
+    } catch {
+      /* removed meanwhile: this call is still allowed */
+    }
+  }
   entry.resolve(allowed);
   return true;
 }
