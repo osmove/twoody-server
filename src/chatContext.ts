@@ -755,12 +755,18 @@ const GERMAN_WORDS = new Set(["der", "die", "das", "und", "ist", "nicht", "ein",
 const LANGUAGE_WORDS: Array<[MessageLanguage, Set<string>]> = [
   ["en", ENGLISH_WORDS], ["fr", FRENCH_WORDS], ["es", SPANISH_WORDS], ["pt", PORTUGUESE_WORDS], ["it", ITALIAN_WORDS], ["de", GERMAN_WORDS],
 ];
-export type MessageLanguage = "en" | "fr" | "es" | "pt" | "it" | "de";
+export type MessageLanguage = "en" | "fr" | "es" | "pt" | "it" | "de" | "ja" | "ko";
 
 /// The language a message is plainly written in, from its common words: at
 /// least two of one language and clearly more than of any other; null when
 /// it is short, mixed or none of these (the person's usual language then).
 export function messageLanguage(text: string): MessageLanguage | null {
+  // Japanese and Korean are told by their scripts: kana (Japanese) and
+  // hangul (Korean), a few of them enough in a short question.
+  const kana = (text.match(/[\u3040-\u30ff]/g) ?? []).length;
+  const hangul = (text.match(/[\uac00-\ud7af]/g) ?? []).length;
+  if (kana >= 2 && kana >= hangul) return "ja";
+  if (hangul >= 2) return "ko";
   const words = text.toLowerCase().replace(/[’']/g, " ").match(/[a-zàáâãäçéèêëíìîïñóòôõöúùûüÿœß]+/g) ?? [];
   const scores = LANGUAGE_WORDS.map(([language, set]) => [language, words.filter((word) => set.has(word)).length] as const).sort((a, b) => b[1] - a[1]);
   const [best, second] = scores;
