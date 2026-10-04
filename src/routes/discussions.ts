@@ -11,7 +11,7 @@ import { publish as publishEvent } from "../events.js";
 import { discussionContext } from "./queries.js";
 import { readMemoryMode } from "../chatContext.js";
 import { discussionTitle } from "../documentBlocks.js";
-import { dossierOfDiscussion } from "../dossiers/dossiers.js";
+import { isolatedProjectOf } from "../projects/isolation.js";
 import { isThisComputersApp } from "./usage.js";
 
 // `/discussions` mirrors the cloud's chat-history surface. The RN app
@@ -40,7 +40,7 @@ export async function discussionRoutes(app: FastifyInstance) {
   await importDiscussion(app);
   await patchDiscussion(app);
   app.get<{
-    Querystring: { q?: string; limit?: string; before?: string; dossier?: string };
+    Querystring: { q?: string; limit?: string; before?: string; project?: string; outside_isolated?: string };
   }>("/discussions", {
     schema: {
       tags: ["session"],
@@ -52,7 +52,8 @@ export async function discussionRoutes(app: FastifyInstance) {
           q:      { type: "string", description: "Substring match against title and any message body" },
           limit:  { type: "string", description: "Max rows to return (default 50, capped at 200)" },
           before: { type: "string", description: "ISO8601 cursor — return rows whose last_activity_at is strictly before this" },
-          dossier: { type: "string", description: "« none »: outside the client files; a client file's id: its conversations (this computer's app)" },
+          project: { type: "string", description: "A project's id: its conversations (an isolated project's: this computer's app only)" },
+          outside_isolated: { type: "string", description: "« 1 »: only the conversations outside the isolated projects (client files)" },
         },
       },
     },
@@ -78,12 +79,13 @@ export async function discussionRoutes(app: FastifyInstance) {
         .where(eq(discussions.userId, auth.userId))
         .all();
       if (rows.some((row) => row.vaultId) && !(await mayReachHistory(req, auth))) rows = rows.filter((row) => !row.vaultId);
-      // A client file's conversations are this computer's app's only
-      // (src/dossiers/); it asks for the ones outside the files, or a file's.
-      if (!isThisComputersApp(auth)) rows = rows.filter((row) => !row.dossierId);
-      const dossier = req.query.dossier;
-      if (dossier === "none") rows = rows.filter((row) => !row.dossierId);
-      else if (dossier) rows = rows.filter((row) => row.dossierId === dossier);
+      // An isolated project's conversations are this computer's app's only
+      // (src/projects/isolation.ts); it asks for the ones outside them, or
+      // one project's.
+      const walled = new Set((sqlite.prepare("SELECT id FROM projects WHERE user_id = ? AND isolated = 1").all(auth.userId) as Array<{ id: string }>).map((row) => row.id));
+      const isolatedRow = (row: { projectId: string | null }) => !!row.projectId && walled.has(row.projectId);
+      if (!isThisComputersApp(auth) || req.query.outside_isolated === "1") rows = rows.filter((row) => !isolatedRow(row));
+      if (req.query.project) rows = rows.filter((row) => row.projectId === req.query.project);
 
       if (queryStr) {
         // Title hits are free (already in `rows`). For body hits we
@@ -141,8 +143,10 @@ export async function discussionRoutes(app: FastifyInstance) {
           channel:          row.channel,
           vault_id:         row.vaultId ?? null,
           memory_mode:      readMemoryMode(row.memoryMode),
-          // The client file it is in (src/dossiers/), null for none.
-          dossier_id:       row.dossierId ?? null,
+          // The project it is about; `isolated` when that one is a client
+          // file (src/projects/isolation.ts).
+          project_id:       row.projectId ?? null,
+          isolated:         isolatedRow(row),
           created_at:       row.createdAt.toISOString(),
           last_activity_at: row.lastActivityAt.toISOString(),
         })),
@@ -195,7 +199,8 @@ export async function discussionRoutes(app: FastifyInstance) {
         ))
         .limit(1)
         .all();
-      if (!discussion || (discussion.vaultId && !(await mayReachHistory(req, auth))) || (discussion.dossierId && !isThisComputersApp(auth))) {
+      const isolated = discussion ? isolatedProjectOf(discussion.id, auth.userId) : null;
+      if (!discussion || (discussion.vaultId && !(await mayReachHistory(req, auth))) || (isolated && !isThisComputersApp(auth))) {
         return reply.code(404).send({ error: "not_found" });
       }
 
@@ -220,8 +225,9 @@ export async function discussionRoutes(app: FastifyInstance) {
         vault_id:         discussion.vaultId ?? null,
         // Its own memory mode (Mémoire v2); null follows the person's (/me).
         memory_mode:      readMemoryMode(discussion.memoryMode),
-        // The client file it is in (src/dossiers/): its title, for the chat.
-        dossier:          dossierOfDiscussion(discussion.id, auth.userId),
+        // The isolated project (client file) it is in: its title, for the
+        // chat (src/projects/isolation.ts).
+        isolated_project: isolated,
         // What was learned from it (« Mémoire mise à jour »): the person's.
         memory_notices:   (await mayReachHistory(req, auth)) ? noticesOf(auth.userId, discussion.id) : [],
         summary:          context.summary,
@@ -397,17 +403,18 @@ export type ImportBody = { vault_id: string; discussion_id?: string; title?: str
 /// POST /discussions/import's work, for this computer's own vault sync too
 /// (src/vault/sync.ts): the same conversation by its vault id, the same
 /// exchange by its ref, so importing again adds only what is new.
-export function importVaultConversation(userId: string, body: ImportBody): { error: "unknown_discussion" | "already_synchronised" | "invalid_vault_id" | "dossier_conversation" } | { id: string; added: number; created: boolean } {
+export function importVaultConversation(userId: string, body: ImportBody): { error: "unknown_discussion" | "already_synchronised" | "invalid_vault_id" | "isolated_conversation" } | { id: string; added: number; created: boolean } {
   const vaultId = body.vault_id.toLowerCase();
   if (!VAULT_ID.test(vaultId)) return { error: "invalid_vault_id" };
   const run = sqlite.transaction(() => {
     let found = sqlite.prepare("SELECT id FROM discussions WHERE user_id = ? AND vault_id = ?").get(userId, vaultId) as { id: string } | undefined;
     if (found && body.discussion_id && found.id !== body.discussion_id) return { error: "already_synchronised" as const };
     if (!found && body.discussion_id) {
-      const own = sqlite.prepare("SELECT id, vault_id, dossier_id FROM discussions WHERE user_id = ? AND id = ?").get(userId, body.discussion_id) as { id: string; vault_id: string | null; dossier_id: string | null } | undefined;
+      const own = sqlite.prepare("SELECT id, vault_id FROM discussions WHERE user_id = ? AND id = ?").get(userId, body.discussion_id) as { id: string; vault_id: string | null } | undefined;
       if (!own) return { error: "unknown_discussion" as const };
-      // A client file's conversation is never synchronised (src/dossiers/).
-      if (own.dossier_id) return { error: "dossier_conversation" as const };
+      // An isolated project's conversation is never synchronised
+      // (src/projects/isolation.ts).
+      if (isolatedProjectOf(own.id, userId)) return { error: "isolated_conversation" as const };
       if (own.vault_id && own.vault_id !== vaultId) return { error: "already_synchronised" as const };
       sqlite.prepare("UPDATE discussions SET vault_id = ? WHERE id = ?").run(vaultId, own.id);
       found = { id: own.id };

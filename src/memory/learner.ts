@@ -8,7 +8,7 @@ import { isForgottenFact, learnedFactId, memoryWritten } from "../vault/memories
 import { firstPerson, memoryWords, sameWord } from "./rank.js";
 import { askedToRemember } from "../memoryLearning.js";
 import { recordTrace } from "../diagnostics/traces.js";
-import { createProject, knownProjects, PROJECT_SIZES, updateProject, type ProjectSize } from "../projects/projects.js";
+import { createProject, knownProjects, PROJECT_SIZES, updateProject, type ProjectSize, projectIsolated } from "../projects/projects.js";
 import { languageName, messageLanguage, readContextState } from "../chatContext.js";
 
 // What Twoody learns from a conversation, once it is over (Mémoire v2, L6,
@@ -486,11 +486,13 @@ export function conversationLanguage(userId: string, discussionId: string, perso
 /// Learns from what was said in this conversation since last time.
 export async function learnDiscussion(discussionId: string, options: { ask?: LearningModel | null; now?: number } = {}): Promise<LearnResult | null> {
   const ask = options.ask ?? model;
-  const row = sqlite.prepare("SELECT id, user_id, learned_through, dossier_id FROM discussions WHERE id = ?").get(discussionId) as
-    { id: string; user_id: string; learned_through: number | null; dossier_id: string | null } | undefined;
-  // A client file's conversation is never learned into the person's memory
-  // (src/dossiers/): what is said there may be about one client only.
-  if (!row || row.dossier_id || busyDiscussions.has(discussionId)) return null;
+  const row = sqlite.prepare(`SELECT d.id, d.user_id, d.learned_through, COALESCE(p.isolated, 0) AS isolated FROM discussions d
+    LEFT JOIN projects p ON p.id = d.project_id WHERE d.id = ?`).get(discussionId) as
+    { id: string; user_id: string; learned_through: number | null; isolated: number } | undefined;
+  // An isolated project's conversation is never learned into the person's
+  // memory (src/projects/isolation.ts): what is said there may be about one
+  // client only.
+  if (!row || row.isolated === 1 || busyDiscussions.has(discussionId)) return null;
   const result: LearnResult = { discussion_id: row.id, read: 0, saved: [], proposed: [], dropped: 0 };
   const rows = sqlite.prepare("SELECT rowid, role, content, provider FROM messages WHERE discussion_id = ? AND rowid > ? ORDER BY rowid").all(row.id, row.learned_through ?? 0) as MessageRow[];
   if (!rows.length) return result;
@@ -715,6 +717,11 @@ export function acceptCandidate(userId: string, id: string, content?: string | n
     let projectId: string;
     if (project.candidate_type === "project_update" && typeof payload.project_id === "string") {
       projectId = payload.project_id;
+      // Never an isolated project (they are not shown to the learner): left as it is.
+      if (projectIsolated(userId, projectId) === true) {
+        sqlite.prepare("UPDATE memory_candidates SET status = 'rejected', decided_at = ? WHERE id = ?").run(now, id);
+        return projectId;
+      }
       updateProject(userId, projectId, { status: payload.status as never, ...(due ? { due_at: due } : {}) }, now);
     } else {
       projectId = createProject(userId, {
@@ -776,7 +783,8 @@ export function pendingDiscussions(options: { userId?: string; idleMs: number; n
   const now = options.now ?? Date.now();
   const before = now - options.idleMs;
   const rows = sqlite.prepare(`SELECT d.id FROM discussions d
-    WHERE (? IS NULL OR d.user_id = ?) AND d.id IS NOT ? AND d.last_activity_at <= ? AND d.dossier_id IS NULL
+    WHERE (? IS NULL OR d.user_id = ?) AND d.id IS NOT ? AND d.last_activity_at <= ?
+      AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = d.project_id AND p.isolated = 1)
       AND EXISTS (SELECT 1 FROM messages m WHERE m.discussion_id = d.id AND m.role = 'user' AND m.rowid > COALESCE(d.learned_through, 0))
     ORDER BY d.last_activity_at LIMIT ?`).all(options.userId ?? null, options.userId ?? null, options.except ?? null, before, options.limit ?? 10) as Array<{ id: string }>;
   return rows

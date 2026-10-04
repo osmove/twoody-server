@@ -83,7 +83,7 @@ export function listFolders(userId: string) {
     .where(eq(documentFolders.userId, userId))
     .all()
     .sort((a, b) => a.path.localeCompare(b.path));
-  const dossierOf = folderDossiers(rows);
+  const projectOf = folderProjects(rows);
   return rows.map((folder) => {
     const count = byFolder.get(folder.id);
     return {
@@ -95,19 +95,19 @@ export function listFolders(userId: string) {
       without_text: count?.empty ?? 0,
       failed: count?.failed ?? 0,
       ignored: ignoredByFolder.get(folder.id) ?? 0,
-      // The client file it belongs to (src/dossiers/): searched in that
-      // file's conversations only, never elsewhere.
-      dossier_id: dossierOf.get(folder.id) ?? null,
+      // The isolated project it belongs to (src/projects/isolation.ts):
+      // searched in that project's conversations only, never elsewhere.
+      project_id: projectOf.get(folder.id) ?? null,
     };
   });
 }
 
-/// The client file each granted folder belongs to: its own, else that of a
-/// client file's folder holding it — a folder granted inside a file's folder
-/// is that file's too, whatever was granted first.
-export function folderDossiers(rows: ReadonlyArray<{ id: string; path: string; dossierId: string | null }>): Map<string, string | null> {
-  const filed = rows.filter((row) => row.dossierId).sort((a, b) => b.path.length - a.path.length);
-  return new Map(rows.map((row) => [row.id, row.dossierId ?? filed.find((folder) => within(folder.path, row.path))?.dossierId ?? null]));
+/// The isolated project each granted folder belongs to: its own, else that
+/// of an isolated project's folder holding it — a folder granted inside one
+/// is that project's too, whatever was granted first.
+export function folderProjects(rows: ReadonlyArray<{ id: string; path: string; projectId: string | null }>): Map<string, string | null> {
+  const owned = rows.filter((row) => row.projectId).sort((a, b) => b.path.length - a.path.length);
+  return new Map(rows.map((row) => [row.id, row.projectId ?? owned.find((folder) => within(folder.path, row.path))?.projectId ?? null]));
 }
 
 /// Grants a folder. Its first entry is read before it is kept, so that
@@ -165,8 +165,8 @@ export interface IndexStatus {
 }
 
 const jobs = new Map<string, IndexStatus>();
-/// Asked again while a pass ran (a folder granted, a client file's folder
-/// set, src/dossiers/): another pass follows it, which knows the new folder.
+/// Asked again while a pass ran (a folder granted, an isolated project's
+/// folder set): another pass follows it, which knows the new folder.
 const askedAgain = new Set<string>();
 
 export function indexStatus(userId: string): IndexStatus {
@@ -265,8 +265,8 @@ export function indexOnDemand(userId: string, folderId: string, path: string): P
 
 async function indexFile(userId: string, given: string, path: string): Promise<void> {
   // The deepest granted folder holding it now, not the one the pass started
-  // with: a folder granted meanwhile inside it (a client file's, which no
-  // other conversation may search) takes its files at once.
+  // with: a folder granted meanwhile inside it (an isolated project's, which
+  // no other conversation may search) takes its files at once.
   const folderId = holderOf(userId, path) ?? given;
   let info;
   try {

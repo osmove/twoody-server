@@ -2,11 +2,19 @@ import { randomUUID } from "node:crypto";
 import { sqlite } from "../db.js";
 import { memoryIdsOf, projectEntity, findEntity, aliasesOf, entitiesInText } from "../memory/entities.js";
 import { memoriesChanged } from "../memory/changes.js";
+import { removeFolder } from "../documents/library.js";
+import { isolatedFolders, listProjectNotes } from "./isolation.js";
 
 // Projects (docs/projects-design.md, lot P1): what the person is working
 // towards — a house, a Mac mini, a wedding, a move — and what hangs off it:
 // the memories naming it (through its entity in the memory graph), its
 // tasks, reminders, events, conversations and documents.
+//
+// An isolated project (Jimmy, 04/10/2026, Twoody Pro: a client file) is the
+// opposite of a personal one in one respect: nothing of it spreads. It has
+// no entity in the memory graph, is in no profile line nor card, is never
+// proposed, changed or named by the learner or the chat's actions, and its
+// conversations, documents and notes stay in it (isolation.ts).
 
 export const PROJECT_KINDS = ["purchase", "event", "home", "travel", "work", "health", "learning", "admin", "other"] as const;
 /// How much a project matters (Jimmy, 02/10/2026: « petit et grand…
@@ -29,6 +37,10 @@ export class ProjectError extends Error {
 
 export interface ProjectInput {
   title?: string;
+  /// A client file (isolation.ts): set when it is made, never changed.
+  isolated?: boolean;
+  /// The firm's own number for it (« 2026-014 »).
+  reference?: string | null;
   /// How the person names it in a sentence (« le Mac mini »), and other names.
   name?: string;
   aliases?: string[];
@@ -44,7 +56,7 @@ export interface ProjectInput {
 interface Row {
   id: string; user_id: string; entity_id: string | null; title: string; kind: string; size: string; status: string; brief: string | null;
   started_at: number | null; due_at: number | null; done_at: number | null; budget_cents: number | null; currency: string | null;
-  source: string; created_at: number; updated_at: number;
+  source: string; created_at: number; updated_at: number; isolated: number; reference: string | null;
 }
 
 const iso = (ms: number | null) => (ms === null || ms === undefined ? null : new Date(ms).toISOString());
@@ -71,6 +83,15 @@ export function readProjectInput(raw: unknown, creating: boolean): ProjectInput 
     if (!(allowed as readonly string[]).includes(String(body[key]))) throw new ProjectError(422, `invalid_${key}`);
     (out as Record<string, unknown>)[key] = body[key];
   }
+  if (body.isolated !== undefined) {
+    if (typeof body.isolated !== "boolean") throw new ProjectError(422, "invalid_isolated");
+    out.isolated = body.isolated;
+  }
+  if (body.reference !== undefined) {
+    const reference = typeof body.reference === "string" ? body.reference.trim().replace(/\s+/g, " ") : null;
+    if (body.reference !== null && (typeof body.reference !== "string" || reference!.length > 100)) throw new ProjectError(422, "invalid_reference");
+    out.reference = reference || null;
+  }
   if (body.brief !== undefined) {
     if (body.brief !== null && (typeof body.brief !== "string" || body.brief.length > MAX_BRIEF)) throw new ProjectError(422, "invalid_brief");
     out.brief = typeof body.brief === "string" && body.brief.trim() ? body.brief.trim() : null;
@@ -96,6 +117,19 @@ function byId(userId: string, id: string): Row | undefined {
 
 export function createProject(userId: string, input: ProjectInput, source: "manual" | "learned" | "account" = "manual", now = Date.now()): string {
   const title = input.title!;
+  // An isolated project: no entity, so that its name reaches no memory,
+  // graph line or card; never merged with another of the same name.
+  if (input.isolated) {
+    const id = randomUUID();
+    const status = input.status ?? "active";
+    sqlite.prepare(`INSERT INTO projects (id, user_id, entity_id, title, kind, size, status, brief, started_at, due_at, done_at, budget_cents, currency, source, created_at, updated_at, isolated, reference)
+      VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, 1, ?)`).run(
+      id, userId, title, input.kind ?? "work", input.size ?? "medium", status, input.brief ?? null,
+      status === "active" ? now : null, input.due_at ? Date.parse(input.due_at) : null, status === "done" ? now : null,
+      source, now, now, input.reference ?? null,
+    );
+    return id;
+  }
   const entity = projectEntity(userId, input.name ?? title, [...(input.name && input.name !== title ? [title] : []), ...(input.aliases ?? [])], source, now);
   // The same entity already has a project: that one.
   const existing = sqlite.prepare("SELECT id FROM projects WHERE user_id = ? AND entity_id = ? AND status != 'dropped'").get(userId, entity.id) as { id: string } | undefined;
@@ -116,9 +150,12 @@ export function createProject(userId: string, input: ProjectInput, source: "manu
 export function updateProject(userId: string, id: string, input: ProjectInput, now = Date.now()) {
   const row = byId(userId, id);
   if (!row) throw new ProjectError(404, "not_found");
+  // Walling a project off, or opening it, afterwards would take its
+  // conversations out of what was learned — or let them out.
+  if (input.isolated !== undefined && input.isolated !== (row.isolated === 1)) throw new ProjectError(422, "isolated_fixed");
   const status = input.status ?? row.status;
   sqlite.prepare(`UPDATE projects SET title = ?, kind = ?, size = ?, status = ?, brief = ?, due_at = ?, budget_cents = ?, currency = ?,
-    started_at = ?, done_at = ?, updated_at = ? WHERE id = ?`).run(
+    started_at = ?, done_at = ?, reference = ?, updated_at = ? WHERE id = ?`).run(
     input.title ?? row.title, input.kind ?? row.kind, input.size ?? row.size, status,
     input.brief !== undefined ? input.brief : row.brief,
     input.due_at !== undefined ? (input.due_at ? Date.parse(input.due_at) : null) : row.due_at,
@@ -126,16 +163,26 @@ export function updateProject(userId: string, id: string, input: ProjectInput, n
     input.currency !== undefined ? input.currency : row.currency,
     row.started_at ?? (status === "active" ? now : null),
     status === "done" ? row.done_at ?? now : null,
+    input.reference !== undefined ? input.reference : row.reference,
     now, id,
   );
+  if (row.isolated === 1) return;
   if (input.name || input.aliases?.length) projectEntity(userId, input.name ?? row.title, input.aliases ?? [], row.source, now);
   memoriesChanged(userId);
 }
 
-/// The project goes; what hung off it stays, unlinked.
+/// The project goes; what hung off it stays, unlinked. An isolated project
+/// only while it holds no conversation nor note: unlinked, they would be
+/// out of it (archive it instead, status « done »); its folder's grant goes
+/// with it (the files stay).
 export function deleteProject(userId: string, id: string) {
   const row = byId(userId, id);
   if (!row) throw new ProjectError(404, "not_found");
+  if (row.isolated === 1) {
+    const held = sqlite.prepare("SELECT (SELECT COUNT(*) FROM discussions WHERE project_id = ?) + (SELECT COUNT(*) FROM project_notes WHERE project_id = ?) AS n").get(id, id) as { n: number };
+    if (held.n > 0) throw new ProjectError(409, "isolated_not_empty");
+    for (const folder of sqlite.prepare("SELECT id FROM document_folders WHERE project_id = ? AND user_id = ?").all(id, userId) as Array<{ id: string }>) removeFolder(userId, folder.id);
+  }
   sqlite.transaction(() => {
     for (const table of ["tasks", "reminders", "events", "discussions"]) sqlite.prepare(`UPDATE ${table} SET project_id = NULL WHERE project_id = ? AND user_id = ?`).run(id, userId);
     sqlite.prepare("DELETE FROM project_documents WHERE project_id = ?").run(id);
@@ -149,11 +196,19 @@ const LINKS = { task_id: "tasks", reminder_id: "reminders", event_id: "events", 
 /// Ties a task, reminder, event or conversation to the project — or unties
 /// it (`project: null` on the item's own route does the same).
 export function linkToProject(userId: string, id: string, body: Record<string, unknown>, unlink = false) {
-  if (!byId(userId, id)) throw new ProjectError(404, "not_found");
+  const project = byId(userId, id);
+  if (!project) throw new ProjectError(404, "not_found");
   let linked = 0;
   for (const [key, table] of Object.entries(LINKS)) {
     const target = body[key];
     if (typeof target !== "string") continue;
+    // A conversation is in an isolated project from its start to its end:
+    // never brought into one (what it said was learned already), never
+    // taken out of one (what it said would be found elsewhere).
+    if (table === "discussions") {
+      const current = sqlite.prepare("SELECT p.isolated FROM discussions d LEFT JOIN projects p ON p.id = d.project_id WHERE d.id = ? AND d.user_id = ?").get(target, userId) as { isolated: number | null } | undefined;
+      if (project.isolated === 1 || current?.isolated === 1) throw new ProjectError(409, "isolated_conversation");
+    }
     const result = sqlite.prepare(`UPDATE ${table} SET project_id = ? WHERE id = ? AND user_id = ?`).run(unlink ? null : id, target, userId);
     if (result.changes === 0) throw new ProjectError(404, `${key}_not_found`);
     linked += 1;
@@ -171,8 +226,13 @@ export function linkToProject(userId: string, id: string, body: Record<string, u
 function serialize(row: Row) {
   const entity = row.entity_id ? findEntity(row.user_id, row.entity_id) : null;
   const count = (sql: string) => (sqlite.prepare(sql).get(row.id, row.user_id) as { n: number }).n;
+  const lastTalk = (sqlite.prepare("SELECT MAX(last_activity_at) AS at FROM discussions WHERE project_id = ? AND user_id = ?").get(row.id, row.user_id) as { at: number | null }).at;
   return {
     id: row.id, title: row.title, kind: row.kind, size: row.size, status: row.status, brief: row.brief, source: row.source,
+    isolated: row.isolated === 1, reference: row.reference,
+    // An isolated project's documents: the folders it owns (isolation.ts).
+    folders: row.isolated === 1 ? isolatedFolders(row.user_id, row.id) : [],
+    last_activity_at: iso(Math.max(row.updated_at, lastTalk ?? 0)),
     name: entity?.name ?? null, aliases: entity ? aliasesOf(entity.id) : [], entity_id: row.entity_id,
     started_at: iso(row.started_at), due_at: iso(row.due_at), done_at: iso(row.done_at),
     budget_cents: row.budget_cents, currency: row.currency,
@@ -183,6 +243,7 @@ function serialize(row: Row) {
       events: count("SELECT COUNT(*) AS n FROM events WHERE project_id = ? AND user_id = ?"),
       conversations: count("SELECT COUNT(*) AS n FROM discussions WHERE project_id = ? AND user_id = ?"),
       documents: (sqlite.prepare("SELECT COUNT(*) AS n FROM project_documents WHERE project_id = ?").get(row.id) as { n: number }).n,
+      notes: (sqlite.prepare("SELECT COUNT(*) AS n FROM project_notes WHERE project_id = ?").get(row.id) as { n: number }).n,
     },
     created_at: iso(row.created_at), updated_at: iso(row.updated_at),
   };
@@ -190,8 +251,18 @@ function serialize(row: Row) {
 
 const STATUS_ORDER = "CASE status WHEN 'active' THEN 0 WHEN 'idea' THEN 1 WHEN 'paused' THEN 2 WHEN 'done' THEN 3 ELSE 4 END";
 
-export function listProjects(userId: string) {
-  return (sqlite.prepare(`SELECT * FROM projects WHERE user_id = ? ORDER BY ${STATUS_ORDER}, updated_at DESC LIMIT 500`).all(userId) as Row[]).map(serialize);
+/// `isolated`: true for the client files only, false for the others, null
+/// for all.
+export function listProjects(userId: string, isolated: boolean | null = null) {
+  return (sqlite.prepare(`SELECT * FROM projects WHERE user_id = ? AND (? IS NULL OR isolated = ?) ORDER BY ${STATUS_ORDER}, updated_at DESC LIMIT 500`)
+    .all(userId, isolated === null ? null : isolated ? 1 : 0, isolated === null ? null : isolated ? 1 : 0) as Row[]).map(serialize);
+}
+
+/// Whether a project is isolated (a client file); null when it is not the
+/// person's.
+export function projectIsolated(userId: string, id: string): boolean | null {
+  const row = byId(userId, id);
+  return row ? row.isolated === 1 : null;
 }
 
 export function projectDetail(userId: string, id: string) {
@@ -215,13 +286,14 @@ export function projectDetail(userId: string, id: string) {
     conversations: (sqlite.prepare("SELECT id, title, last_activity_at FROM discussions WHERE project_id = ? AND user_id = ? ORDER BY last_activity_at DESC LIMIT 50").all(id, userId) as Array<{ id: string; title: string | null; last_activity_at: number }>)
       .map((discussion) => ({ id: discussion.id, title: discussion.title, last_activity_at: at(discussion.last_activity_at) })),
     documents: sqlite.prepare("SELECT computer_id, document_id, name FROM project_documents WHERE project_id = ? ORDER BY created_at").all(id),
+    notes: listProjectNotes(userId, id),
   };
 }
 
 /// The projects a learner is shown, so that it names them and does not
 /// propose them again: the ones not dropped, newest first.
 export function knownProjects(userId: string): Array<{ ref: string; id: string; title: string; status: string; name: string | null }> {
-  return (sqlite.prepare("SELECT id, title, status, entity_id FROM projects WHERE user_id = ? AND status != 'dropped' ORDER BY updated_at DESC LIMIT 30").all(userId) as Array<{ id: string; title: string; status: string; entity_id: string | null }>)
+  return (sqlite.prepare("SELECT id, title, status, entity_id FROM projects WHERE user_id = ? AND status != 'dropped' AND isolated = 0 ORDER BY updated_at DESC LIMIT 30").all(userId) as Array<{ id: string; title: string; status: string; entity_id: string | null }>)
     .map((row, index) => ({ ref: `p${index + 1}`, id: row.id, title: row.title, status: row.status, name: row.entity_id ? findEntity(userId, row.entity_id)?.name ?? null : null }));
 }
 
@@ -232,7 +304,7 @@ const day = (ms: number | null) => (ms ? new Date(ms).toISOString().slice(0, 10)
 /// profile (docs/projects-design.md §4): changes only with the projects, so
 /// the prompt cache holds.
 export function projectsLine(userId: string): string | null {
-  const rows = sqlite.prepare("SELECT title, due_at, size FROM projects WHERE user_id = ? AND size IN ('large', 'critical') AND status IN ('active', 'idea') ORDER BY size = 'critical' DESC, created_at LIMIT 6").all(userId) as Array<{ title: string; due_at: number | null; size: string }>;
+  const rows = sqlite.prepare("SELECT title, due_at, size FROM projects WHERE user_id = ? AND isolated = 0 AND size IN ('large', 'critical') AND status IN ('active', 'idea') ORDER BY size = 'critical' DESC, created_at LIMIT 6").all(userId) as Array<{ title: string; due_at: number | null; size: string }>;
   if (!rows.length) return null;
   return `Projects under way: ${rows.map((row) => `${row.title}${row.size === "critical" ? " (critical)" : ""}${row.due_at ? ` (due ${day(row.due_at)})` : ""}`).join("; ")}.`;
 }
@@ -248,7 +320,7 @@ export function projectCards(userId: string, text: string, memoryIds: Array<stri
     for (const row of sqlite.prepare(`SELECT entity_id FROM memory_entities WHERE memory_id IN (${viaMemories.map(() => "?").join(",")})`).all(...viaMemories) as Array<{ entity_id: string }>) named.add(row.entity_id);
   }
   if (!named.size) return [];
-  const rows = sqlite.prepare(`SELECT * FROM projects WHERE user_id = ? AND status != 'dropped' AND entity_id IN (${[...named].map(() => "?").join(",")}) ORDER BY updated_at DESC LIMIT 2`).all(userId, ...named) as Row[];
+  const rows = sqlite.prepare(`SELECT * FROM projects WHERE user_id = ? AND status != 'dropped' AND isolated = 0 AND entity_id IN (${[...named].map(() => "?").join(",")}) ORDER BY updated_at DESC LIMIT 2`).all(userId, ...named) as Row[];
   const at = (ms: number | null) => (ms ? new Date(ms).toISOString().slice(0, 10) : null);
   return rows.map((row) => {
     const tasks = (sqlite.prepare("SELECT title, due_at FROM tasks WHERE project_id = ? AND user_id = ? AND done_at IS NULL ORDER BY due_at IS NULL, due_at LIMIT 4").all(row.id, userId) as Array<{ title: string; due_at: number | null }>)

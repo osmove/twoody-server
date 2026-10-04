@@ -76,8 +76,9 @@ import { sqliteHistory } from "../vault/localHistory.js";
 import { pathlessSource } from "../vault/sync.js";
 import { noteMemoryUse, profileHints, retrieveMemories } from "../memory/retrieve.js";
 import { titleAfterFirstAnswer, type TitleCall } from "../discussionTitles.js";
-import { DossierError, dossierContext, dossierForNewConversation, dossierOfDiscussion, rememberInDossier, type DossierRef } from "../dossiers/dossiers.js";
-import { inDossierScope } from "../documents/retrieval.js";
+import { isolatedProjectContext, isolatedProjectOf, projectForConversation, rememberInProject, type IsolatedProjectRef } from "../projects/isolation.js";
+import { ProjectError } from "../projects/projects.js";
+import { inProjectScope } from "../documents/retrieval.js";
 
 interface QueryBody {
   document_access?: unknown;
@@ -85,14 +86,15 @@ interface QueryBody {
   /// (« home », « connectors », « contacts », « calendar »…): off for it
   /// alone, whatever Capabilities says.
   capabilities_off?: unknown;
-  /// In a client file's conversation (src/dossiers/), the capabilities
+  /// In an isolated project's conversation (a client file,
+  /// src/projects/isolation.ts), the capabilities
   /// that reach outside it — e-mails, calendar, contacts, the bank, the
   /// home, connectors, the web — are left out unless this names them:
   /// switched on for this message by their icons.
   capabilities_on?: unknown;
-  /// The client file a new conversation starts in (src/dossiers/): the
-  /// conversation's own from then on, never changed.
-  dossier_id?: string;
+  /// The project a new conversation starts in: an isolated one's
+  /// (src/projects/isolation.ts) from then on, never changed.
+  project_id?: string;
   /// Images given with the message, as data URLs (PNG, JPEG, WebP, GIF):
   /// for a model that reads them (its vision file, catalog.ts).
   images?: unknown;
@@ -190,18 +192,18 @@ export async function queryRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      // In a client file (src/dossiers/), its own start: another tool set
-      // and its summary and notes.
-      const asked = (req.body as { dossier_id?: unknown } | null)?.dossier_id;
-      let dossierId: string | null = null;
+      // In an isolated project, its own start: another tool set, its
+      // summary and notes (src/projects/isolation.ts).
+      const asked = (req.body as { project_id?: unknown } | null)?.project_id;
+      let isolatedId: string | null = null;
       if (typeof asked === "string" && asked && isThisComputersApp(auth)) {
         try {
-          dossierId = dossierForNewConversation(auth.userId, asked).id;
+          isolatedId = projectForConversation(auth.userId, asked).isolated?.id ?? null;
         } catch {
           return reply.code(202).send({ status: "skipped" });
         }
       }
-      const key = warmKey(auth, dossierId);
+      const key = warmKey(auth, isolatedId);
       await restoreWarmSeed(key);
       // Asked by the person (typing, a recording started): the runtime is
       // woken if it slept, since a question follows.
@@ -279,13 +281,13 @@ export function discussionContext(
 ): { summary: string | null; summaryThrough: string | null; tokensEstimate: number } {
   const compacted = discussionSummary(discussionId);
   const userContext = loadUserContext(userId);
-  const dossier = dossierOfDiscussion(discussionId, userId);
-  if (dossier) userContext.memories = userContext.memories.filter(ownWords);
+  const isolated = isolatedProjectOf(discussionId, userId);
+  if (isolated) userContext.memories = userContext.memories.filter(ownWords);
   const chatMessages = buildChatMessages({
     ...userContext,
     memoryMode: memoryModeFor(userContext.prefs, compacted.memoryMode),
-    profileHints: turnHints(userId, userContext.memories, dossier),
-    dossier: dossier ? dossierContext(userId, dossier.id) : null,
+    profileHints: turnHints(userId, userContext.memories, isolated),
+    isolatedProject: isolated ? isolatedProjectContext(userId, isolated.id) : null,
     history: loadHistory(discussionId, compacted.summaryThrough),
     summary: compacted.summary,
     summaryThrough: compacted.summaryThrough,
@@ -335,19 +337,20 @@ async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body:
     }
     // The conversation as a turn gives it (the runtime reuses what it
     // already read), then the demand for the summary.
-    // A client file's conversation, as its turns are given (src/dossiers/).
-    const dossier = dossierOfDiscussion(discussion.id, auth.userId);
-    if (dossier && !onThisComputer(provider)) throw new DossierModelError("A client file's conversation is summarised by a model of this computer");
-    const documentFolders = listFolders(auth.userId).filter((folder) => inDossierScope(folder.dossier_id, { dossier: dossier?.id ?? null }));
+    // An isolated project's conversation, as its turns are given
+    // (src/projects/isolation.ts).
+    const isolated = isolatedProjectOf(discussion.id, auth.userId);
+    if (isolated && !onThisComputer(provider)) throw new IsolatedModelError("An isolated project's conversation is summarised by a model of this computer");
+    const documentFolders = listFolders(auth.userId).filter((folder) => inProjectScope(folder.project_id, { project: isolated?.id ?? null }));
     const userContext = loadUserContext(auth.userId);
-    if (dossier) userContext.memories = userContext.memories.filter(ownWords);
+    if (isolated) userContext.memories = userContext.memories.filter(ownWords);
     const chatMessages = buildChatMessages({
       ...userContext,
       memoryMode: memoryModeFor(userContext.prefs, compacted.memoryMode),
       // The same profile as a turn's (the runtime reuses what it read); no
       // memory rides on the demand for a summary.
-      profileHints: turnHints(auth.userId, userContext.memories, dossier),
-      dossier: dossier ? dossierContext(auth.userId, dossier.id, dossierScale(readWindow(req.body?.context_window))) : null,
+      profileHints: turnHints(auth.userId, userContext.memories, isolated),
+      isolatedProject: isolated ? isolatedProjectContext(auth.userId, isolated.id, isolatedScale(readWindow(req.body?.context_window))) : null,
       relevant: { items: [], retrieval: "skipped", ms: 0 },
       history,
       summary: compacted.summary,
@@ -388,7 +391,7 @@ async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body:
     const message = err instanceof Error ? err.message : "Unknown error";
     const [status, code] =
       err instanceof LocalLlmUnavailableError ? [503, "local_llm_unavailable"]
-      : err instanceof DossierModelError ? [409, "dossier_local_model_only"]
+      : err instanceof IsolatedModelError ? [409, "project_local_model_only"]
       : err instanceof RuntimeError ? [err.status, err.code]
       : err instanceof LocalOnlyError ? [403, "local_only"]
       : err instanceof VisionUnavailableError ? [422, "vision_unavailable"]
@@ -469,20 +472,21 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // it had named none: nothing of it reaches the vault.
   // The same who reaches the other computers' documents (documents/remote.ts).
   const requester = await meshRequester(req, auth, () => meshRoster().get());
-  // A client file's conversation (src/dossiers/): this computer's app only,
-  // and never synchronised — nothing of it reaches the vault.
-  let askedDossier: DossierRef | null = null;
-  if (typeof parsed.dossier_id === "string" && parsed.dossier_id) {
+  // A conversation of an isolated project (a client file,
+  // src/projects/isolation.ts): this computer's app only, and never
+  // synchronised — nothing of it reaches the vault.
+  let askedProject: ReturnType<typeof projectForConversation> | null = null;
+  if (typeof parsed.project_id === "string" && parsed.project_id) {
     try {
-      askedDossier = dossierForNewConversation(auth.userId, parsed.dossier_id);
+      askedProject = projectForConversation(auth.userId, parsed.project_id);
     } catch (err) {
-      if (err instanceof DossierError) return reply.code(err.status).send({ error: err.code });
+      if (err instanceof ProjectError) return reply.code(err.status).send({ error: err.code });
       throw err;
     }
   }
-  const filedRequest = !!askedDossier || (!!parsed.discussion_id && dossierOfDiscussion(parsed.discussion_id, auth.userId) !== null);
-  if (filedRequest && !isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
-  const vaultMember = requester !== null && !filedRequest;
+  const isolatedRequest = !!askedProject?.isolated || (!!parsed.discussion_id && isolatedProjectOf(parsed.discussion_id, auth.userId) !== null);
+  if (isolatedRequest && !isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
+  const vaultMember = requester !== null && !isolatedRequest;
   const vaultConversationId = vaultMember ? askedVaultConversationId : null;
   const priorTurns = vaultMember ? askedPriorTurns : null;
   const vaultRef = vaultMember ? askedVaultRef : null;
@@ -502,16 +506,17 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     caughtUp?.discussionId ?? parsed.discussion_id ?? null,
     channel,
     caughtUp ? false : readBool(parsed.force_new_discussion ?? parsed.query?.force_new_discussion, false),
-    askedDossier?.id ?? null,
+    askedProject?.id ?? null,
+    askedProject?.isolated?.id ?? null,
   );
-  // The file the conversation is in, if any: its documents, its notes, and
-  // nothing that reaches outside it unless the message asks (src/dossiers/).
-  const dossier = dossierOfDiscussion(discussion.id, auth.userId);
-  if (dossier && !isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
-  if (dossier?.status === "archived") return reply.code(409).send({ error: "dossier_archived" });
-  if (dossier) {
+  // The isolated project the conversation is in, if any: its documents, its
+  // notes, and nothing that reaches outside it unless the message asks.
+  const isolated = isolatedProjectOf(discussion.id, auth.userId);
+  if (isolated && !isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
+  if (isolated?.closed) return reply.code(409).send({ error: "project_closed" });
+  if (isolated) {
     const asked = capabilitiesOff(parsed.capabilities_on);
-    for (const id of OUTSIDE_A_DOSSIER) if (!asked.has(id)) left.add(id);
+    for (const id of OUTSIDE_AN_ISOLATED_PROJECT) if (!asked.has(id)) left.add(id);
   }
 
   // The memory mode asked for is the conversation's from now on.
@@ -646,10 +651,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // order — one unless « Automatique » found several.
     // A client file's conversation is answered on this computer, or on a
     // computer of the account trusted with what it holds — never by a model
-    // in the cloud (src/dossiers/).
+    // in the cloud (src/projects/isolation.ts).
     const routes = await planRoute(auth.userId, model, routing, previousComputer(discussion.id));
-    const plan = dossier ? routes.filter((entry) => onThisComputer(entry.provider)) : routes;
-    if (!plan.length) throw new DossierModelError("A client file's conversation is answered by a model of this computer");
+    const plan = isolated ? routes.filter((entry) => onThisComputer(entry.provider)) : routes;
+    if (!plan.length) throw new IsolatedModelError("An isolated project's conversation is answered by a model of this computer");
     let provider = plan[0]!.provider;
     answeredBy = { kind: provider.kind, model: "model" in provider ? provider.model : null };
     answeredByComputer = plan[0]!.answeredBy;
@@ -659,7 +664,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
     }
     const userContext = loadUserContext(auth.userId);
-    if (dossier) userContext.memories = userContext.memories.filter(ownWords);
+    if (isolated) userContext.memories = userContext.memories.filter(ownWords);
     // A computer of the account that is not trusted with what this one
     // knows of its person (not in the verified vault roster,
     // vault/roster.ts) is given the conversation only: no memories, no
@@ -678,9 +683,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     const learning = memoryMode !== "none" && access.mode !== "only";
     const remembered = learning ? askedToRemember(typedText(content)) : null;
     // « Mémoire enregistrée » under the answer; « déjà en mémoire » when known.
-    // In a client file, a note of the file, never a memory of the person.
+    // In an isolated project, a note of the project, never a memory of the
+    // person.
     const rememberedAdded = remembered
-      ? dossier ? rememberInDossier(auth.userId, dossier.id, remembered, discussion.id) : rememberFacts(auth.userId, [remembered], vaultRef ?? null) > 0
+      ? isolated ? rememberInProject(auth.userId, isolated.id, remembered, discussion.id) : rememberFacts(auth.userId, [remembered], vaultRef ?? null) > 0
       : false;
     // Passages from the user's own documents that match this prompt.
     // The model sees them numbered; the client gets the same list to
@@ -692,10 +698,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // for 1.5 s on the local network, 3 s through the relay
     // (documents/remote.ts, docs/mesh-design.md §2). The access asked for
     // applies to all of them; this computer's folders are the bare ids.
-    // A client file's conversation reads its folders only; any other, none
-    // of a client file's (src/dossiers/).
+    // An isolated project's conversation reads its folders only; any other,
+    // none of an isolated project's (src/projects/isolation.ts).
     const everyFolder = listFolders(auth.userId);
-    const granted = everyFolder.filter((folder) => inDossierScope(folder.dossier_id, { dossier: dossier?.id ?? null }));
+    const granted = everyFolder.filter((folder) => inProjectScope(folder.project_id, { project: isolated?.id ?? null }));
     const localIds = localFolderIds(access);
     const selected = granted.filter(folder => localIds?.includes(folder.id));
     const allowedFolders = granted.filter(folder => access.mode !== "off" && (!localIds || selected.some(parent => {
@@ -714,7 +720,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
           access,
           roots: allowedFolders,
           granted,
-          remote: fullFor !== null && !dossier,
+          remote: fullFor !== null && !isolated,
           requester,
         }).catch((err) => {
           req.log.warn({ err: err instanceof Error ? err.message : String(err) }, "file listing failed");
@@ -737,7 +743,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       localFolders: allowedFolders.map(folder => folder.id),
       budgetChars: contextBudget(readWindow(parsed.context_window) ?? 32_768),
       // A computer given the conversation only would see no excerpt.
-      remote: fullFor !== null && !dossier,
+      remote: fullFor !== null && !isolated,
       requester,
     });
     const plainlyDocuments = access.mode === "only" || !!intent || aboutDocuments(typedText(content)) || citedBefore(history);
@@ -1008,7 +1014,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       mode: memoryMode,
       documentMode: access.mode,
     });
-    const cards = memoryMode === "full" && access.mode !== "only" && !dossier ? projectCards(auth.userId, typedText(content), relevant.items.map((item) => item.id)) : [];
+    const cards = memoryMode === "full" && access.mode !== "only" && !isolated ? projectCards(auth.userId, typedText(content), relevant.items.map((item) => item.id)) : [];
     trace.projects = cards.map((card) => card.title);
     const turnInput: ChatContextInput = {
       ...userContext,
@@ -1024,10 +1030,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       state: compacted.state,
       memoryMode,
       relevant,
-      profileHints: memoryMode === "none" ? null : turnHints(auth.userId, userContext.memories, dossier),
-      // The client file's own: what it is, its summary, its notes — at the
-      // end of the system prompt (src/dossiers/).
-      dossier: dossier ? dossierContext(auth.userId, dossier.id, dossierScale(readWindow(parsed.context_window))) : null,
+      profileHints: memoryMode === "none" ? null : turnHints(auth.userId, userContext.memories, isolated),
+      // The isolated project's own: what it is, its summary, its notes — at
+      // the end of the system prompt (src/projects/isolation.ts).
+      isolatedProject: isolated ? isolatedProjectContext(auth.userId, isolated.id, isolatedScale(readWindow(parsed.context_window))) : null,
       currentId: promptId,
       discussionId: discussion.id,
       contextWindow: readWindow(parsed.context_window),
@@ -1082,7 +1088,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // What a new conversation would start with, kept ready in the runtime
     // (warmNewConversation): the facts of this request, and what was sent.
     if (provider.kind === "local_openai") {
-      const key = warmKey(auth, dossier?.id);
+      const key = warmKey(auth, isolated?.id);
       lastTurnInputs.set(key, { input: turnInput, provider, tools: toolsFor(provider)?.definitions ?? null });
       saveWarmSeed(key, turnInput, provider, toolsFor(provider)?.definitions ?? null);
       noteSystemSent(key, provider, chatMessages[0]?.content ?? "", toolsFor(provider)?.definitions ?? null);
@@ -1323,10 +1329,11 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     if (discussion.created) learnSoon(auth.userId, discussion.id);
     // And what was just said in this one, at once: « Mémoire enregistrée »
     // seconds after the answer, stopped by the next message.
-    // A client file's conversation is never learned into the person's memory.
-    if (!left.has("memory") && !dossier) learnAfterAnswer(discussion.id);
+    // An isolated project's conversation is never learned into the person's
+    // memory.
+    if (!left.has("memory") && !isolated) learnAfterAnswer(discussion.id);
     // What the next new conversation starts with, read ahead if it changed.
-    scheduleWarm(warmKey(auth, dossier?.id));
+    scheduleWarm(warmKey(auth, isolated?.id));
   } catch (err) {
     if (upstream.signal.aborted) {
       // Keep what was written: the conversation would otherwise show a
@@ -1368,7 +1375,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       err instanceof ComputerUnavailableError ? [503, "computer_unavailable"]
       : err instanceof PeerUnavailableError ? [503, "computer_unavailable"]
       : err instanceof LocalLlmUnavailableError ? [503, "local_llm_unavailable"]
-      : err instanceof DossierModelError ? [409, "dossier_local_model_only"]
+      : err instanceof IsolatedModelError ? [409, "project_local_model_only"]
       : err instanceof RuntimeError ? [err.status, err.code]
       : err instanceof LocalOnlyError ? [403, "local_only"]
       : err instanceof VisionUnavailableError ? [422, "vision_unavailable"]
@@ -1439,7 +1446,7 @@ async function parseMultipartBody(req: FastifyRequest): Promise<ParsedBody | nul
     document_access: nested.document_access ?? fields.document_access,
     capabilities_off: nested.capabilities_off ?? fields.capabilities_off,
     capabilities_on: nested.capabilities_on ?? fields.capabilities_on,
-    dossier_id:         (nested.dossier_id as string) ?? (fields.dossier_id as string),
+    project_id:         (nested.project_id as string) ?? (fields.project_id as string),
     text:               (nested.text as string) ?? (fields.text as string),
     content:            (nested.content as string) ?? (fields.content as string),
     channel:            (nested.channel as string) ?? (fields.channel as string),
@@ -1485,31 +1492,32 @@ type Provider =
 
 class LocalLlmUnavailableError extends Error {}
 
-/// A client file's conversation asked of a model that is neither on this
-/// computer nor on one trusted with what it holds (src/dossiers/).
-class DossierModelError extends Error {}
+/// An isolated project's conversation asked of a model that is neither on
+/// this computer nor on one trusted with what it holds
+/// (src/projects/isolation.ts).
+class IsolatedModelError extends Error {}
 
-/// What a client file's conversation leaves out unless the message switches
-/// it on (`capabilities_on`): what reaches outside the file.
-const OUTSIDE_A_DOSSIER: LocalCapability[] = ["contacts", "calendar", "email", "bank", "home", "connectors", "web"];
+/// What an isolated project's conversation leaves out unless the message
+/// switches it on (`capabilities_on`): what reaches outside the project.
+const OUTSIDE_AN_ISOLATED_PROJECT: LocalCapability[] = ["contacts", "calendar", "email", "bank", "home", "connectors", "web"];
 
-/// Of the person's own memory, what a client file's conversation is given:
+/// Of the person's own memory, what an isolated project's conversation is given:
 /// what they wrote or pinned themselves, and how they like answers — never
 /// a fact learned from another conversation, which may be another client's.
 function ownWords(memory: MemoryRow): boolean {
   return !!memory.manual || !!memory.pinned || memory.kind === "feedback";
 }
 
-/// The profile's hints; in a client file, without the lines of the
+/// The profile's hints; in an isolated project, without the lines of the
 /// person's people and projects (their graph, their projects).
-function turnHints(userId: string, memories: MemoryRow[], dossier: DossierRef | null) {
+function turnHints(userId: string, memories: MemoryRow[], isolated: IsolatedProjectRef | null) {
   const hints = profileHints(userId, memories);
-  return dossier ? { ...hints, graph: null, projects: null } : hints;
+  return isolated ? { ...hints, graph: null, projects: null } : hints;
 }
 
-/// How much of a client file's summary and notes a window holds: as given
-/// for 32k tokens, half for 16k or less, twice for 64k or more.
-function dossierScale(contextWindow: number | null): number {
+/// How much of an isolated project's summary and notes a window holds: as
+/// given for 32k tokens, half for 16k or less, twice for 64k or more.
+function isolatedScale(contextWindow: number | null): number {
   return Math.min(2, Math.max(0.5, (contextWindow ?? 32_768) / 32_768));
 }
 
@@ -1813,21 +1821,21 @@ const RUNTIME_SLEEPS_AFTER_MS = 29 * 60_000;
 
 /// Whose start of a new conversation: the person's, in this computer's app
 /// (their id), or on another device (their id + « |remote »).
-/// A client file's conversation (this computer's app only) starts with its
-/// own: their id + « |dossier:<id> ».
-function warmKey(auth: { userId: string } & Parameters<typeof isThisComputersApp>[0], dossierId: string | null = null): string {
+/// An isolated project's conversation (this computer's app only) starts with
+/// its own: their id + « |project:<id> ».
+function warmKey(auth: { userId: string } & Parameters<typeof isThisComputersApp>[0], isolatedId: string | null = null): string {
   if (!isThisComputersApp(auth)) return `${auth.userId}|remote`;
-  return dossierId ? `${auth.userId}|dossier:${dossierId}` : auth.userId;
+  return isolatedId ? `${auth.userId}|project:${isolatedId}` : auth.userId;
 }
 
 const userOfKey = (key: string) => key.split("|")[0]!;
-const dossierOfKey = (key: string): string | null => /\|dossier:(.+)$/.exec(key)?.[1] ?? null;
+const projectOfKey = (key: string): string | null => /\|project:(.+)$/.exec(key)?.[1] ?? null;
 
 /// The keys read ahead in the background (a memory changed, the watch):
-/// never a client file's — read ahead only when the person is about to
-/// ask in one (/queries/warm), the runtime holding one start at a time.
+/// never an isolated project's — read ahead only when the person is about
+/// to ask in one (/queries/warm), the runtime holding one start at a time.
 function warmKeysOf(userId: string): string[] {
-  return [...new Set([...lastTurnInputs.keys(), ...Object.keys(readWarmSeeds())])].filter((key) => userOfKey(key) === userId && !dossierOfKey(key));
+  return [...new Set([...lastTurnInputs.keys(), ...Object.keys(readWarmSeeds())])].filter((key) => userOfKey(key) === userId && !projectOfKey(key));
 }
 
 function systemKey(provider: Provider): string {
@@ -1856,15 +1864,16 @@ export function newConversationSystem(key: string): { system: string; provider: 
   const userId = userOfKey(key);
   const context = loadUserContext(userId);
   const memoryMode = memoryModeFor(context.prefs);
-  // A client file's: as its conversations start (routes above).
-  const dossierId = dossierOfKey(key);
-  let dossier: DossierRef | null = null;
-  if (dossierId) {
+  // An isolated project's: as its conversations start (routes above).
+  const isolatedId = projectOfKey(key);
+  let isolated: IsolatedProjectRef | null = null;
+  if (isolatedId) {
     try {
-      dossier = dossierForNewConversation(userId, dossierId);
+      isolated = projectForConversation(userId, isolatedId).isolated;
     } catch {
       return null;
     }
+    if (!isolated) return null;
     context.memories = context.memories.filter(ownWords);
   }
   const turn = buildChatTurn({
@@ -1872,8 +1881,8 @@ export function newConversationSystem(key: string): { system: string; provider: 
     ...context,
     userName: last.input.userName,
     memoryMode,
-    profileHints: memoryMode === "none" ? null : turnHints(userId, context.memories, dossier),
-    dossier: dossier ? dossierContext(userId, dossier.id, dossierScale(last.input.contextWindow ?? null)) : null,
+    profileHints: memoryMode === "none" ? null : turnHints(userId, context.memories, isolated),
+    isolatedProject: isolated ? isolatedProjectContext(userId, isolated.id, isolatedScale(last.input.contextWindow ?? null)) : null,
     history: [],
     content: "",
     summary: null,
@@ -1932,7 +1941,7 @@ export async function warmNewConversation(key: string, { wake = false }: { wake?
 // read again at each turn (history, memories, documents, the message).
 const WARM_SEEDS_FILE = join(DATA_DIR, "warm-seeds.json");
 const WARM_WATCH_MS = 10 * 60_000;
-const SEED_LEFT_OUT = ["dossier", "prefs", "history", "memories", "content", "excerpts", "documentFiles", "documentFileTotal", "fileListings", "documentNote", "personal", "homeDevices", "homeDone", "emailFound", "projectCards", "remembered", "summary", "summaryThrough", "state", "currentId", "discussionId", "relevant", "profileHints", "now", "documentScan"];
+const SEED_LEFT_OUT = ["isolatedProject", "prefs", "history", "memories", "content", "excerpts", "documentFiles", "documentFileTotal", "fileListings", "documentNote", "personal", "homeDevices", "homeDone", "emailFound", "projectCards", "remembered", "summary", "summaryThrough", "state", "currentId", "discussionId", "relevant", "profileHints", "now", "documentScan"];
 
 type WarmSeed = { input: Record<string, unknown>; tools: ChatTools["definitions"] | null; model: string | null };
 
@@ -1959,17 +1968,17 @@ function saveWarmSeed(seedKey: string, input: ChatContextInput, provider: Provid
 /// After a restart, what the last turn was built from, from disk.
 export async function restoreWarmSeed(key: string): Promise<boolean> {
   if (lastTurnInputs.has(key)) return true;
-  // A client file asked for the first time starts as another file's
+  // An isolated project asked for the first time starts as another one's
   // conversation did (the same tools): only its summary and notes differ.
-  if (dossierOfKey(key)) {
-    const sibling = [...lastTurnInputs.entries()].reverse().find(([other]) => other !== key && userOfKey(other) === userOfKey(key) && dossierOfKey(other));
+  if (projectOfKey(key)) {
+    const sibling = [...lastTurnInputs.entries()].reverse().find(([other]) => other !== key && userOfKey(other) === userOfKey(key) && projectOfKey(other));
     if (sibling) {
       lastTurnInputs.set(key, sibling[1]);
       return true;
     }
   }
   const seeds = readWarmSeeds();
-  const sibling = dossierOfKey(key) ? Object.keys(seeds).reverse().find((other) => userOfKey(other) === userOfKey(key) && dossierOfKey(other)) : undefined;
+  const sibling = projectOfKey(key) ? Object.keys(seeds).reverse().find((other) => userOfKey(other) === userOfKey(key) && projectOfKey(other)) : undefined;
   const seed = seeds[key] ?? (sibling ? seeds[sibling] : undefined);
   if (!seed?.input) return false;
   const provider = await resolveProvider(userOfKey(key), seed.model ?? undefined).catch(() => null);
@@ -1996,7 +2005,7 @@ function startWarmWatch() {
   const check = async () => {
     for (const key of new Set([...Object.keys(readWarmSeeds()), ...lastTurnInputs.keys()])) {
       if (inflight() > 0) return;
-      if (dossierOfKey(key)) continue;
+      if (projectOfKey(key)) continue;
       if (await restoreWarmSeed(key)) await warmNewConversation(key).catch(() => "none");
     }
   };
@@ -2941,16 +2950,19 @@ function resolveDiscussion(
   requestedId: string | null,
   channel: string,
   forceNew: boolean,
-  dossierId: string | null = null,
+  projectId: string | null = null,
+  isolatedId: string | null = null,
 ): { id: string; title: string | null; created?: boolean } {
   const own = db.select().from(discussions).where(eq(discussions.userId, userId));
   const explicit = requestedId && !forceNew
     ? own.all().find((row) => row.id === requestedId) ?? null
     : null;
   // Only a voice surface ever continues a conversation it did not name —
-  // one of the same client file, or of none (src/dossiers/).
+  // one of the same isolated project, or of none (src/projects/isolation.ts).
+  const walled = new Set((sqlite.prepare("SELECT id FROM projects WHERE user_id = ? AND isolated = 1").all(userId) as Array<{ id: string }>).map((row) => row.id));
+  const inScope = (row: { projectId: string | null }) => (isolatedId ? row.projectId === isolatedId : !(row.projectId && walled.has(row.projectId)));
   const mostRecent = !forceNew && reuseWindowMs(channel) !== null
-    ? own.all().filter((row) => (row.dossierId ?? null) === dossierId).sort((a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime())[0] ?? null
+    ? own.all().filter(inScope).sort((a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime())[0] ?? null
     : null;
 
   const chosen = chooseDiscussion({ channel, forceNew, explicit, mostRecent });
@@ -2964,7 +2976,7 @@ function resolveDiscussion(
       userId,
       channel,
       title: null,
-      dossierId,
+      projectId,
       createdAt: now,
       lastActivityAt: now,
     })

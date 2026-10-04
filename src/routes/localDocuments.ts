@@ -61,9 +61,10 @@ function rejectionStatus(err: FolderRejected): number {
 }
 
 /// A browse of this computer's granted folders, as every route answers it;
-/// a client file's folders for this computer's app only (src/dossiers/).
-async function sendBrowse(reply: FastifyReply, userId: string, request: BrowseRequest, withDossiers: boolean) {
-  const result = await browseGranted(userId, scopedFolders(userId, {mode: "all"}, {withDossiers}), request);
+/// an isolated project's folders for this computer's app only
+/// (src/projects/isolation.ts).
+async function sendBrowse(reply: FastifyReply, userId: string, request: BrowseRequest, withIsolated: boolean) {
+  const result = await browseGranted(userId, scopedFolders(userId, {mode: "all"}, {withIsolated}), request);
   if ("error" in result) return reply.code(result.error === "invalid_path" ? 400 : 404).send({error: result.error === "invalid_path" ? "invalid_directory" : "folder_unavailable"});
   return reply.send({computer_id: selfIdentity().id, computer_name: selfIdentity().name, ...result});
 }
@@ -110,7 +111,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply); if (!auth) return;
       if (!auth.sessionId) return reply.code(403).send({error: "session_required"});
-      await serveBrowsedFile(req, reply, {userId: auth.userId, roots: scopedFolders(auth.userId, {mode: "all"}, {withDossiers: isThisComputersApp(auth)}), root: req.query.root, path: req.query.path});
+      await serveBrowsedFile(req, reply, {userId: auth.userId, roots: scopedFolders(auth.userId, {mode: "all"}, {withIsolated: isThisComputersApp(auth)}), root: req.query.root, path: req.query.path});
       return reply;
     },
   });
@@ -141,7 +142,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply); if (!auth) return;
       if (!auth.sessionId) return reply.code(403).send({error: "session_required"});
       if (isSelf(req.params.computer_id)) {
-        await serveBrowsedFile(req, reply, {userId: auth.userId, roots: scopedFolders(auth.userId, {mode: "all"}, {withDossiers: isThisComputersApp(auth)}), root: req.query.root, path: req.query.path});
+        await serveBrowsedFile(req, reply, {userId: auth.userId, roots: scopedFolders(auth.userId, {mode: "all"}, {withIsolated: isThisComputersApp(auth)}), root: req.query.root, path: req.query.path});
         return reply;
       }
       const requester = await meshRequester(req, auth, () => meshRoster().get());
@@ -156,7 +157,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
       const mine = isThisComputersApp(auth);
-      reply.send({ folders: listFolders(auth.userId).filter((folder) => mine || folder.dossier_id === null), index: indexStatus(auth.userId) });
+      reply.send({ folders: listFolders(auth.userId).filter((folder) => mine || folder.project_id === null), index: indexStatus(auth.userId) });
     },
   });
 
@@ -176,9 +177,9 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       let access;
       try { access = documentAccess(req.body.document_access); }
       catch { return reply.code(422).send({error: "invalid_document_access"}); }
-      // A client file's documents never go to a conversation held elsewhere
-      // (src/dossiers/).
-      const granted = listFolders(auth.userId).filter(folder => folder.dossier_id === null);
+      // An isolated project's documents never go to a conversation held
+      // elsewhere (src/projects/isolation.ts).
+      const granted = listFolders(auth.userId).filter(folder => folder.project_id === null);
       const selected = granted.filter(folder => access.folderIds?.includes(folder.id));
       const folders = granted.filter(folder => access.mode !== "off" && (!access.folderIds || selected.some(parent => {
         const path = relative(parent.path, folder.path);
@@ -230,7 +231,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
     handler:async(req,reply)=>{
       const auth=await requireAuth(req,reply);if(!auth)return;
       if(!auth.sessionId)return reply.code(403).send({error:"session_required"});
-      await serveRawDocument(req,reply,{userId:auth.userId,documentId:req.params.id,folderIds:scopedFolders(auth.userId,{mode:"all"},{withDossiers:isThisComputersApp(auth)}).map(f=>f.id)});
+      await serveRawDocument(req,reply,{userId:auth.userId,documentId:req.params.id,folderIds:scopedFolders(auth.userId,{mode:"all"},{withIsolated:isThisComputersApp(auth)}).map(f=>f.id)});
       return reply;
     },
   });
@@ -328,7 +329,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       if (!auth) return;
       const q=req.query.q ?? "";
       const mine = isThisComputersApp(auth);
-      const folderIds = listFolders(auth.userId).filter((folder) => mine || folder.dossier_id === null).map((folder) => folder.id);
+      const folderIds = listFolders(auth.userId).filter((folder) => mine || folder.project_id === null).map((folder) => folder.id);
       const passages = fusePassages(searchPassages(auth.userId, q, 8, folderIds), q.trim() ? await semanticPassages(auth.userId, q, folderIds) : [], 8);
       reply.send({
         passages: passages.map(({ text, ...passage }) => ({ ...passage, location: passageLocation(passage.name, passage.page, text) })),
@@ -396,11 +397,11 @@ export async function localDocumentRoutes(app: FastifyInstance) {
   });
 }
 
-/// A client file's folder, or a document in one (src/dossiers/): shown to
-/// this computer's app only.
+/// An isolated project's folder, or a document in one
+/// (src/projects/isolation.ts): shown to this computer's app only.
 function folderShown(auth: { userId: string; sessionId?: string; deviceId?: string }, folderId: string): boolean {
   if (isThisComputersApp(auth)) return true;
-  return listFolders(auth.userId).find((folder) => folder.id === folderId)?.dossier_id == null;
+  return listFolders(auth.userId).find((folder) => folder.id === folderId)?.project_id == null;
 }
 
 function documentShown(auth: { userId: string; sessionId?: string; deviceId?: string }, documentId: string): boolean {

@@ -184,10 +184,11 @@ export interface ChatContextInput {
   /// The model may read the bank statements the person imported
   /// (Capacités → Banque, src/bank/tools.ts).
   bankTools?: boolean;
-  /// The client file the conversation is in (src/dossiers/dossiers.ts
-  /// dossierContext): what it is, that nothing else is reachable, its
-  /// summary and notes — the end of the system prompt.
-  dossier?: string | null;
+  /// The isolated project (client file) the conversation is in
+  /// (src/projects/isolation.ts isolatedProjectContext): what it is, that
+  /// nothing else is reachable, its summary and notes — the end of the
+  /// system prompt.
+  isolatedProject?: string | null;
   documentFiles?: Array<{name: string; modified_at: string; chars: number; folder?: string}>;
   documentFileTotal?: number;
   documentScan?: { running: boolean; limited?: boolean };
@@ -620,7 +621,7 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   // What this message asked to be remembered, just saved: the answer
   // confirms it rather than saying it cannot remember.
   const remembered = input.remembered
-    ? input.dossier
+    ? input.isolatedProject
       ? `[Just saved in this client file's notes, as their message asks: « ${input.remembered} ». ` +
         "Confirm it briefly in their language. You do remember it in this file's conversations.]"
       : `[Just saved in the user's Memories on this computer, as their message asks: « ${input.remembered} ». ` +
@@ -765,7 +766,7 @@ function buildSystemPrompt(input: ChatContextInput, profile: string | null, stat
 
   // Last: what comes before it stays the same as in the person's other
   // conversations, and the runtime reuses it (the tools come first).
-  if (input.dossier) sections.push(input.dossier);
+  if (input.isolatedProject) sections.push(input.isolatedProject);
 
   return sections.join("\n\n");
 }

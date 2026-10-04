@@ -76,13 +76,15 @@ export const ACTION_TOOLS = [
 export class ActionError extends Error {}
 
 /// The project a name means: its title or one of its entity's names, the
-/// same or one inside the other; not a dropped one.
+/// same or one inside the other; not a dropped one, never an isolated one
+/// (isolation.ts: no other conversation acts on a client file, nor learns
+/// its name).
 export function resolveProject(userId: string, name: unknown): { id: string; title: string } | null {
   if (typeof name !== "string" || !name.trim()) return null;
   const wanted = normaliseName(name);
   if (!wanted) return null;
   const rows = sqlite.prepare(`SELECT p.id, p.title, e.norm AS entity_norm FROM projects p LEFT JOIN entities e ON e.id = p.entity_id
-    WHERE p.user_id = ? AND p.status != 'dropped' ORDER BY p.updated_at DESC`).all(userId) as Array<{ id: string; title: string; entity_norm: string | null }>;
+    WHERE p.user_id = ? AND p.status != 'dropped' AND p.isolated = 0 ORDER BY p.updated_at DESC`).all(userId) as Array<{ id: string; title: string; entity_norm: string | null }>;
   const aliases = (id: string) => (sqlite.prepare("SELECT a.norm FROM projects p JOIN entity_aliases a ON a.entity_id = p.entity_id WHERE p.id = ?").all(id) as Array<{ norm: string }>).map((row) => row.norm);
   for (const row of rows) {
     const names = [normaliseName(row.title), row.entity_norm, ...aliases(row.id)].filter((value): value is string => !!value);

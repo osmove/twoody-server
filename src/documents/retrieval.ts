@@ -36,16 +36,16 @@ type Retrieved<P, F> = { passages: P[]; files: F[]; total: number; semantic?: Se
  * the grants nested in it, and never a folder folderRisk refuses on this
  * machine now, whatever was granted before. Unknown ids are ignored.
  *
- * A client file's folders (src/dossiers/) are left out — for another
- * computer, the account's tools, a conversation outside the file — unless
- * `dossier` names that file (its conversations), or `withDossiers` is set
+ * An isolated project's folders (src/projects/isolation.ts) are left out —
+ * for another computer, the account's tools, a conversation outside it —
+ * unless `project` names it (its conversations), or `withIsolated` is set
  * (this computer's own app, browsing or opening a document it cited).
  */
 export function scopedFolders(userId: string, scope: Pick<DocumentAccess, "mode" | "folderIds">, options: FolderScopeOptions = {}): Array<{ id: string; name: string; path: string; documents: number; indexed: number }> {
   // Documents switched off in Capabilities: no folder is searched, for
   // anyone (localCapabilities.ts).
   if (scope.mode === "off" || !capabilityOn(userId, "documents")) return [];
-  const granted = listFolders(userId).filter((folder) => inDossierScope(folder.dossier_id, options));
+  const granted = listFolders(userId).filter((folder) => inProjectScope(folder.project_id, options));
   const selected = scope.mode === "all" && !scope.folderIds ? granted : granted.filter(folder => scope.folderIds?.includes(folder.id));
   const within = granted.filter(folder => scope.mode === "all" && !scope.folderIds ? true : selected.some(parent => {
     const path = relative(parent.path, folder.path);
@@ -58,16 +58,17 @@ export function scopedFolders(userId: string, scope: Pick<DocumentAccess, "mode"
 }
 
 export interface FolderScopeOptions {
-  /// The client file whose conversation searches: its folders only.
-  dossier?: string | null;
-  /// Every folder, client files' included: this computer's own app.
-  withDossiers?: boolean;
+  /// The isolated project whose conversation searches: its folders only.
+  project?: string | null;
+  /// Every folder, isolated projects' included: this computer's own app.
+  withIsolated?: boolean;
 }
 
-/// Whether a folder of this client file (null: none) may be read here.
-export function inDossierScope(folderDossier: string | null, options: FolderScopeOptions = {}): boolean {
-  if (options.withDossiers) return true;
-  return (options.dossier ?? null) === folderDossier;
+/// Whether a folder of this isolated project (null: of none) may be read
+/// here.
+export function inProjectScope(folderProject: string | null, options: FolderScopeOptions = {}): boolean {
+  if (options.withIsolated) return true;
+  return (options.project ?? null) === folderProject;
 }
 
 /** `path` said from its granted folder, with forward slashes; the bare name if it is not inside. */

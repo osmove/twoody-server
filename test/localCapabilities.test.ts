@@ -30,7 +30,7 @@ test("a new installation has every capability off, but Mémoire, on as Twoody al
   // The app asks under /api/v1, as for everything else.
   assert.equal((await app.inject({ method: "GET", url: "/api/v1/local_capabilities", headers: desktop })).statusCode, 200);
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.json().capabilities, { documents: false, contacts: false, calendar: false, web: false, dictation: false, agent: false, home: false, connectors: false, memory: true, email: false, bank: false, dossiers: false });
+  assert.deepEqual(response.json().capabilities, { documents: false, contacts: false, calendar: false, web: false, dictation: false, agent: false, home: false, connectors: false, memory: true, email: false, bank: false, isolated_projects: false });
 });
 
 test("off, documents, contacts and the agenda are not read; on, they are", async (t) => {
@@ -66,7 +66,7 @@ test("an installation from before the switches keeps what it used", () => {
   const seconds = Date.now();
   sqlite.prepare("INSERT INTO users (id, email, name, prefs, created_at) VALUES (?, 'ancien@example.com', 'Ancien', '{}', ?)").run(user, seconds);
   sqlite.prepare("INSERT INTO contacts (id, user_id, name, origin, created_at, updated_at) VALUES ('c-old', ?, 'Paul', 'local', ?, ?)").run(user, seconds, seconds);
-  assert.deepEqual(localCapabilities(user), { documents: false, contacts: true, calendar: false, web: false, dictation: false, agent: false, home: false, connectors: false, memory: true, email: false, bank: false, dossiers: false });
+  assert.deepEqual(localCapabilities(user), { documents: false, contacts: true, calendar: false, web: false, dictation: false, agent: false, home: false, connectors: false, memory: true, email: false, bank: false, isolated_projects: false });
 });
 
 test("people and dates kept after an import switch Contacts and Agenda on", () => {

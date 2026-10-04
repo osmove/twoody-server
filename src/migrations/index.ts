@@ -6,7 +6,7 @@ import { convergence } from "./0002_convergence.js";
 import { titleSource } from "./0003_title_source.js";
 import { emailsSchema } from "./0004_emails.js";
 import { bank } from "./0005_bank.js";
-import { dossiers } from "./0006_dossiers.js";
+import { isolatedProjects } from "./0006_isolated_projects.js";
 
 // Versioned migrations (03/10/2026, docs/schema-convergence.md): the
 // database's version is SQLite's `user_version`. A database at 0 — fresh,
@@ -30,7 +30,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 3, name: "title_source", up: titleSource },
   { version: 4, name: "emails", up: emailsSchema },
   { version: 5, name: "bank", up: bank },
-  { version: 6, name: "dossiers", up: dossiers },
+  { version: 6, name: "isolated_projects", up: isolatedProjects },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;
