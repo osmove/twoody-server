@@ -129,3 +129,34 @@ export function setCapabilityOrder(userId: string, order: unknown): LocalCapabil
   sqlite.prepare("UPDATE users SET prefs = ? WHERE id = ?").run(JSON.stringify({ ...prefs, capability_order: list.length ? list : null }), userId);
   return capabilityOrder(userId);
 }
+
+// How the person uses Twoody (Jimmy, 04/10/2026: « voulez-vous utiliser
+// Twoody pour votre usage personnel, ou votre entreprise, organisation »),
+// asked at the first launch and changed in Settings: « pro » is Twoody Pro
+// — client files first, the hobby capabilities set aside, diagnostics asked
+// rather than assumed. Null until answered (an installation from before the
+// question counts as personal). Kept in `users.prefs` as `usage_profile`.
+export const USAGE_KINDS = ["personal", "pro"] as const;
+export type UsageKind = (typeof USAGE_KINDS)[number];
+export const PROFESSIONS = ["lawyer", "health", "accounting", "notary", "consulting", "business", "other"] as const;
+export type Profession = (typeof PROFESSIONS)[number];
+export interface UsageProfile { kind: UsageKind | null; team: boolean; profession: Profession | null }
+
+export function usageProfile(userId: string): UsageProfile {
+  const stored = readPrefs(userId).usage_profile as Partial<UsageProfile> | undefined;
+  const kind = stored && (USAGE_KINDS as readonly string[]).includes(String(stored.kind)) ? stored.kind as UsageKind : null;
+  const profession = stored && (PROFESSIONS as readonly string[]).includes(String(stored.profession)) ? stored.profession as Profession : null;
+  return { kind, team: stored?.team === true, profession };
+}
+
+export function setUsageProfile(userId: string, patch: { kind?: unknown; team?: unknown; profession?: unknown }): UsageProfile {
+  const current = usageProfile(userId);
+  const next: UsageProfile = {
+    kind: (USAGE_KINDS as readonly string[]).includes(String(patch.kind)) ? patch.kind as UsageKind : current.kind,
+    team: typeof patch.team === "boolean" ? patch.team : current.team,
+    profession: patch.profession === null ? null : (PROFESSIONS as readonly string[]).includes(String(patch.profession)) ? patch.profession as Profession : current.profession,
+  };
+  const prefs = readPrefs(userId);
+  sqlite.prepare("UPDATE users SET prefs = ? WHERE id = ?").run(JSON.stringify({ ...prefs, usage_profile: next }), userId);
+  return next;
+}

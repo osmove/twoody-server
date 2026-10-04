@@ -123,3 +123,14 @@ test("Mémoire is the person's memory_enabled; the menu's order is kept, unknown
   assert.equal((await app.inject({ method: "PUT", url: "/local_capabilities_order", headers: phone, payload: { order: [] } })).statusCode, 403);
   assert.equal((await app.inject({ method: "PUT", url: "/local_capabilities_order", headers: desktop, payload: { order: null } })).json().order, null);
 });
+
+test("how the person uses Twoody: unanswered at first, personal or pro, alone or as a team, set from this computer's app only (04/10/2026)", async () => {
+  assert.deepEqual((await app.inject({ method: "GET", url: "/local_capabilities", headers: desktop })).json().usage, { kind: null, team: false, profession: null });
+  const pro = await app.inject({ method: "PUT", url: "/local_usage", headers: desktop, payload: { kind: "pro", team: true, profession: "lawyer" } });
+  assert.equal(pro.statusCode, 200);
+  assert.deepEqual(pro.json().usage, { kind: "pro", team: true, profession: "lawyer" });
+  assert.deepEqual((await app.inject({ method: "PUT", url: "/local_usage", headers: desktop, payload: { team: false } })).json().usage, { kind: "pro", team: false, profession: "lawyer" });
+  assert.equal((await app.inject({ method: "PUT", url: "/local_usage", headers: desktop, payload: { kind: "boss" } })).statusCode, 400);
+  assert.equal((await app.inject({ method: "PUT", url: "/local_usage", headers: phone, payload: { kind: "personal" } })).statusCode, 403);
+  assert.equal((await app.inject({ method: "GET", url: "/local_capabilities", headers: phone })).json().usage.kind, "pro", "a phone reads it");
+});
