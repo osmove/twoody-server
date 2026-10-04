@@ -976,7 +976,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         toolCallsTraced.push(traced);
         let result: string;
         try {
-          const action = runAction(auth.userId, name, args, validTimeZone(parsed.time_zone), new Date(), typedText(content));
+          const action = runAction(auth.userId, name, args, validTimeZone(parsed.time_zone), new Date(), typedText(content), isolated ? { id: isolated.id, title: isolated.title } : null);
           actionsDone.push(action);
           result = `Done (${action.type} « ${action.title} »${action.at ? `, ${action.at}` : ""}${action.project ? `, project « ${action.project.title} »` : ""}). Tell the user in one short sentence.`;
         } catch (err) {

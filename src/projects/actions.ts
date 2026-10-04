@@ -112,8 +112,11 @@ export function zonedInstant(local: string, timeZone: string | null): Date {
   return new Date(asUtc - (shown - asUtc));
 }
 
-export function runAction(userId: string, name: string, args: Record<string, unknown>, timeZone: string | null, now = new Date(), said = ""): ChatAction {
-  const project = resolveProject(userId, args.project);
+/// `within`: the isolated project (client file) the conversation is in —
+/// what is created there is its own (its deadlines), and no other project is
+/// named or changed from it (isolation.ts).
+export function runAction(userId: string, name: string, args: Record<string, unknown>, timeZone: string | null, now = new Date(), said = "", within: { id: string; title: string } | null = null): ChatAction {
+  const project = within ?? resolveProject(userId, args.project);
   // The day the person named wins over the model's reading of it.
   const day = namedDay(said, timeZone, now);
   if (name === "create_reminder") {
@@ -139,7 +142,7 @@ export function runAction(userId: string, name: string, args: Record<string, unk
     return { type: "task", id, title, at: due?.toISOString() ?? null, project };
   }
   if (name === "update_project") {
-    if (!project) throw new ActionError("no_such_project");
+    if (!project || within) throw new ActionError("no_such_project");
     const status = typeof args.status === "string" && (PROJECT_STATUSES as readonly string[]).includes(args.status) ? (args.status as ProjectStatus) : undefined;
     const due = typeof args.due === "string" && /^\d{4}-\d{2}-\d{2}$/.test(args.due) ? `${args.due}T12:00:00.000Z` : undefined;
     if (!status && !due) throw new ActionError("nothing_to_change");

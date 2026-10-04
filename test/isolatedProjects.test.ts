@@ -44,7 +44,7 @@ const { indexStatus, listFolders, reindex } = await import("../src/documents/lib
 const { scopedFolders } = await import("../src/documents/retrieval.js");
 const { isolatedProjectContext } = await import("../src/projects/isolation.js");
 const { knownProjects, projectsLine } = await import("../src/projects/projects.js");
-const { resolveProject } = await import("../src/projects/actions.js");
+const { resolveProject, runAction } = await import("../src/projects/actions.js");
 const { pendingDiscussions, learnDiscussion } = await import("../src/memory/learner.js");
 const { searchConversations } = await import("../src/memory/search.js");
 const { newConversationSystem } = await import("../src/routes/queries.js");
@@ -286,4 +286,12 @@ test("nothing of an isolated project spreads: no profile line, never shown to th
   assert.equal(resolveProject(owner, "Dupont c/ SCI Les Lilas"), null);
   assert.equal(resolveProject(owner, "Martin"), null);
   assert.equal((sqlite.prepare("SELECT entity_id FROM projects WHERE id = ?").get(dupont.id) as { entity_id: string | null }).entity_id, null, "no entity in the memory graph");
+});
+
+test("in its conversations, a reminder or a task asked for is the isolated project's own (its deadlines); no other project is changed from there", () => {
+  const within = { id: dupont.id, title: "Dupont c/ SCI Les Lilas" };
+  const task = runAction(owner, "create_task", { title: "Relancer Me Durand", project: "Achat d'un Mac mini" }, "Europe/Paris", new Date("2026-10-04T10:00:00Z"), "", within);
+  assert.equal(task.project?.id, dupont.id);
+  assert.equal((sqlite.prepare("SELECT project_id FROM tasks WHERE id = ?").get(task.id) as { project_id: string }).project_id, dupont.id);
+  assert.throws(() => runAction(owner, "update_project", { project: "Achat d'un Mac mini", status: "done" }, "Europe/Paris", new Date(), "", within), /no_such_project/);
 });
