@@ -78,3 +78,15 @@ test("people and dates kept after an import switch Contacts and Agenda on", () =
   assert.equal(localCapabilities(user).contacts, true);
   assert.equal(localCapabilities(user).calendar, true);
 });
+
+test("adding a folder turns Documents on (Jimmy, 04/10/2026); turning it off stays possible", async (t) => {
+  const folder = mkdtempSync(join(process.cwd(), "tmp-capabilities-add-"));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  await app.inject({ method: "PATCH", url: "/local_capabilities/documents", headers: desktop, payload: { enabled: false } });
+  assert.equal(localCapabilities(owner).documents, false);
+  const added = await app.inject({ method: "POST", url: "/local_documents/folders", headers: desktop, payload: { path: folder } });
+  assert.equal(added.statusCode, 201);
+  assert.equal(localCapabilities(owner).documents, true);
+  await app.inject({ method: "PATCH", url: "/local_capabilities/documents", headers: desktop, payload: { enabled: false } });
+  assert.equal(localCapabilities(owner).documents, false);
+});

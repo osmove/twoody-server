@@ -27,6 +27,15 @@ import {
   searchPassages,
 } from "../documents/library.js";
 import { MAX_FILES_PER_FOLDER, SKIPPED_BUNDLES, SKIPPED_DIRECTORIES } from "../documents/walk.js";
+import { setLocalCapability } from "../localCapabilities.js";
+
+/// Adding a folder turns Documents on (Jimmy, 04/10/2026: « il faudrait les
+/// activer quand on ajoute un dossier »): the person who gives Twoody a
+/// folder wants the chat to read it. Turning it off stays theirs, in
+/// Capabilities; the next folder turns it on again.
+function documentsOnWithAFolder(userId: string): void {
+  setLocalCapability(userId, "documents", true);
+}
 
 // Document library: the folders the user granted, the state of their
 // index, and a search endpoint (the same one /queries uses, exposed so a
@@ -248,6 +257,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply); if (!auth) return;
       try {
         const folder = await addFolder(auth.userId, homedir(), true);
+        documentsOnWithAFolder(auth.userId);
         void reindex(auth.userId).catch(err => app.log.error(err, "document indexing failed"));
         reply.code(201).send({folder});
       } catch (err) {
@@ -272,6 +282,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
 
       try {
         const folder = await addFolder(auth.userId, path);
+        documentsOnWithAFolder(auth.userId);
         void reindex(auth.userId).catch((err) => app.log.error(err, "document indexing failed"));
         reply.code(201).send({ folder });
       } catch (err) {
