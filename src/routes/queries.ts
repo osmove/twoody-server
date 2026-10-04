@@ -2071,7 +2071,7 @@ function readEffort(value: unknown): Effort {
 /// \b does not count.
 const ABOUT_DOCUMENTS = new RegExp(`(?<![\\p{L}\\p{N}])(?:${[
   // French
-  "documents?", "fichiers?", "dossiers?", "pdfs?", "contrats?", "factures?", "devis", "bail", "baux", "cv", "relev[ée]s?", "attestations?",
+  "documents?", "fichiers?", "dossiers?", "pdfs?", "contrats?", "factures?", "devis", "bail", "baux", "cvs?", "relev[ée]s?", "attestations?",
   "fiches? de paie", "bulletins? de (?:paie|salaire)", "rapports?", "t[ée]l[ée]chargements", "pi[èe]ces? jointes?", "avenants?", "pr[ée]avis",
   "quittances?", "avis d['’]imp[ôo]ts?", "polices? d['’]assurance",
   // English
@@ -2152,6 +2152,11 @@ export interface ChatTools {
 /// What a first answer held back may be: short, and announcing or offering
 /// a search rather than giving anything.
 const HOLD_CHARS = 280;
+/// …and at most this long without a sentence ending: an answer that opens
+/// with a list, a table or code, which never ends a sentence, is not kept
+/// back (a search announced takes far less: Qwen3.5 9B writes one in about
+/// half a second).
+const HOLD_MS = 1_200;
 export function looksLikeAnnouncement(text: string): boolean {
   const said = text.trim();
   if (!said || said.length > HOLD_CHARS) return false;
@@ -2374,6 +2379,7 @@ async function streamLocal(
     let holding = false;
     let narrating = false;
     let held = "";
+    let heldSince = 0;
     let released = 0;
     const hold = () => {
       holding = !!options.tools;
@@ -2388,6 +2394,7 @@ async function streamLocal(
     };
     const out = (text: string) => {
       if (!holding) return onDelta(text);
+      if (!held) heldSince = Date.now();
       held += text;
       while (holding) {
         if (narrating) {
@@ -2396,7 +2403,7 @@ async function streamLocal(
         }
         const end = sentenceEnd(held);
         if (end < 0) {
-          if (released + held.length > HOLD_CHARS) letGo();
+          if (released + held.length > HOLD_CHARS || Date.now() - heldSince > HOLD_MS) letGo();
           return;
         }
         const sentence = held.slice(0, end);

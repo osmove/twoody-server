@@ -1,3 +1,13 @@
 # Findings reviewed and known not to be secrets (fingerprint: commit:file:rule:line).
 # A fake token in a test of the admin gate.
 bfb3f67eb009e5a2ac7b60779730f8467dd58d8d:test/adminAccess.test.ts:generic-api-key:7
+# Test vectors of the multi-computer crypto (docs/multi-computer-design.md): keys made for the tests, published with them on purpose (04/10/2026).
+a139b16a13201ae2f790070f9b7fc4e17961e432:test/fixtures/account-pairing-v1.json:generic-api-key:10
+a139b16a13201ae2f790070f9b7fc4e17961e432:test/fixtures/account-pairing-v1.json:generic-api-key:11
+e62fe5b38f77b9bced88f19d238b85be894f7e6b:test/fixtures/login-approver-v1.json:generic-api-key:13
+e62fe5b38f77b9bced88f19d238b85be894f7e6b:test/meshContracts.test.ts:generic-api-key:339
+eb94e3139519f342a4c616063cf506890f194472:test/fixtures/memory-lww-vectors.json:generic-api-key:16
+fc6dab0e541bd043f31f5dfaa8a06b414f48fe31:test/fixtures/endorsement-v1.json:generic-api-key:26
+fc6dab0e541bd043f31f5dfaa8a06b414f48fe31:test/fixtures/endorsement-v1.json:generic-api-key:36
+fc6dab0e541bd043f31f5dfaa8a06b414f48fe31:test/fixtures/endorsement-v1.json:generic-api-key:46
+fc6dab0e541bd043f31f5dfaa8a06b414f48fe31:test/fixtures/endorsement-v1.json:generic-api-key:56

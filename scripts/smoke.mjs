@@ -503,7 +503,8 @@ try {
     expectedStatus: 201,
     body: JSON.stringify({ kind: "search", args: { query: "contrat Dupont" } }),
   });
-  if (!/^[0-9a-f]{32}$/.test(enqueued.id)) {
+  // A random UUID since the schema convergence (03/10/2026, src/auth.ts generateId).
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(enqueued.id)) {
     throw new Error(`Smoke test failed: bridge task id is not a random 128-bit id: ${enqueued.id}`);
   }
 
