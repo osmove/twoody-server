@@ -6,14 +6,16 @@ import { capabilityOn } from "../localCapabilities.js";
 
 // The link to Microsoft Graph, and the copies of Outlook's or Microsoft 365's
 // calendar and contacts made with it (src/microsoft/), from the Agenda and
-// Contacts pages of this computer's app:
+// Contacts pages of this computer's app (the mailbox read with it is set up
+// from E-mails, /email/account):
 //   GET    /microsoft_graph/status    the link (never its token): the account's address, the permissions granted
 //                                     (the union of what each capability asked), each copy (capability on,
-//                                     granted, rows, last sync, last error)
+//                                     granted, rows, last sync, last error), the mailbox read with it
 //   POST   /microsoft_graph/account   { address, refresh_token, scopes } → tried, kept, read at once; sent by the
 //                                     app's main process after Microsoft's sign-in (the page never holds a token)
 //   POST   /microsoft_graph/sync      read now
-//   DELETE /microsoft_graph/account   the sign-in forgotten, both copies removed
+//   DELETE /microsoft_graph/account   the sign-in forgotten, both copies removed, the mailbox read with it
+//                                     stopped (its copy kept)
 // All for this computer's app only. No answer carries a token.
 
 const security: Array<Record<string, string[]>> = [{ bearerAuth: [] }, { userTokenAuth: [] }];

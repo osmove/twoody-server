@@ -369,6 +369,13 @@ Tables **propres au Mac** : pas dans `schema/contract.json`, le compte lisant
 Gmail lui-même. À y ajouter le jour où une boîte IMAP vivra aussi sur le
 compte.
 
+Une boîte Outlook.com ou Microsoft 365 lue par Microsoft Graph
+(`src/email/graphMailbox.ts`, `auth: "graph"` dans `email_sources.metadata`)
+n'a demandé aucune migration : un message n'y a pas d'UID (`uid` vide),
+son identifiant Graph est dans `emails.metadata.graph_id`, et où en est la
+synchronisation de chaque dossier (le lien `@odata.deltaLink` de Graph) dans
+`email_sources.metadata.graph_folders`.
+
 ## Migration 5 : la banque (4 octobre 2026)
 
 La capacité « Banque » (Jimmy : « import de relevés pour la banque », sans

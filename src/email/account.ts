@@ -1,6 +1,9 @@
 import { capabilityOn } from "../localCapabilities.js";
+import { forgetGraphLink, GRAPH_CAPABILITIES, GRAPH_SCOPES, graphLink, graphPermissions, linkGrants, releaseGraphPermissions } from "../microsoft/link.js";
+import { keepMicrosoftLink } from "../microsoft/sync.js";
 import { isLoopbackHost, mailHostKey, validMailHost, type MailSecurity } from "../outbound.js";
 import { forgetMailSecret, keepMailSecret, mailSecret, openMailbox, renewMailRefreshToken, type MailSecret } from "./credentials.js";
+import { keepGraphFolders, mailboxLink, testGraphMailbox, type GraphGrant, type GraphMailErrorCode, type GraphTested } from "./graphMailbox.js";
 import { mailErrorCode, type MailErrorCode, type MailSession } from "./imap.js";
 import { MICROSOFT_IMAP } from "./microsoft.js";
 import { cleanAddress, pickFolders } from "./parse.js";
@@ -12,17 +15,24 @@ import { DEFAULT_WINDOW_DAYS, needsThePerson, SYNC_INTERVAL_MS, syncMailbox, syn
 // src/outbound.ts — then kept: the settings in the database, the password
 // apart (credentials.ts). Twoody connects to no mail server before this.
 // An Outlook.com or Microsoft 365 mailbox gives no password: the Desktop's
-// main process signs in with Microsoft and gives the refresh token
-// instead, kept in the password's place (microsoft.ts).
+// main process signs in with Microsoft and hands over the sign-in, which
+// becomes the link to Microsoft Graph the mailbox is read through
+// (graphMailbox.ts) — the one Agenda and Contacts use too. One linked by
+// Twoody 0.13.76 kept Microsoft's refresh token in the password's place and
+// is read over IMAP (microsoft.ts) until the person signs in again.
 
 const DAY_MS = 86_400_000;
 const MIN_WINDOW_DAYS = 7;
 const MAX_WINDOW_DAYS = 3_650;
 const REFRESH_TOKEN_MAX_CHARS = 16_384;
 
-export type AccountError = MailErrorCode | "address_required" | "invalid_address" | "host_required" | "invalid_host" | "invalid_port" | "password_required" | "invalid_window";
+export type AccountError = MailErrorCode | GraphMailErrorCode | "address_required" | "invalid_address" | "host_required" | "invalid_host" | "invalid_port" | "password_required" | "invalid_window";
 
-export interface AccountInput {
+/// What the person gave: a mailbox read over IMAP, or through Microsoft Graph.
+export type AccountInput = ImapAccountInput | GraphAccountInput;
+
+export interface ImapAccountInput {
+  kind: "imap";
   settings: SourceSettings;
   /// Given now, or the one already kept for this mailbox.
   secret: MailSecret;
@@ -31,6 +41,13 @@ export interface AccountInput {
   /// The mailbox whose kept secret it is: a refresh token Microsoft gives
   /// back in its place, even during a test, is kept there.
   keptFor: string | null;
+}
+
+export interface GraphAccountInput {
+  kind: "graph";
+  settings: SourceSettings;
+  /// The sign-in just done, to link; null: the link kept serves.
+  grant: GraphGrant | null;
 }
 
 /// The first moment of the day `days` days ago, on this computer's clock.
@@ -52,6 +69,7 @@ export function readAccountInput(userId: string, body: unknown, now = Date.now()
   if (!Number.isInteger(days) || days < MIN_WINDOW_DAYS || days > MAX_WINDOW_DAYS) return { ok: false, error: "invalid_window" };
   const preset = typeof given.preset === "string" && /^[a-z0-9_-]{1,30}$/.test(given.preset) ? given.preset : null;
   if (given.auth === "microsoft") return readMicrosoftInput(userId, given, { address, days, preset, now });
+  if (given.auth === "graph") return readGraphInput(userId, given, { address, days, preset, now });
   const host = typeof given.host === "string" ? mailHostKey(given.host) : "";
   if (!host) return { ok: false, error: "host_required" };
   if (!validMailHost(host)) return { ok: false, error: "invalid_host" };
@@ -67,16 +85,16 @@ export function readAccountInput(userId: string, body: unknown, now = Date.now()
   let password = typeof given.password === "string" ? given.password.trim() : "";
   if (host === "imap.gmail.com") password = password.replace(/\s+/g, "");
   if (password.length > 1_000) return { ok: false, error: "password_required" };
-  if (password) return { ok: true, input: { settings, secret: { kind: "password", password }, newSecret: true, keptFor: null } };
+  if (password) return { ok: true, input: { kind: "imap", settings, secret: { kind: "password", password }, newSecret: true, keptFor: null } };
   const current = activeSource(userId);
   const kept = current && current.email_address.toLowerCase() === address.toLowerCase() && current.imap_host === host && current.username === username ? mailSecret(current.id) : null;
-  return kept?.kind === "password" ? { ok: true, input: { settings, secret: kept, newSecret: false, keptFor: current!.id } } : { ok: false, error: "password_required" };
+  return kept?.kind === "password" ? { ok: true, input: { kind: "imap", settings, secret: kept, newSecret: false, keptFor: current!.id } } : { ok: false, error: "password_required" };
 }
 
-/// « Se connecter avec Microsoft »: Microsoft's IMAP server, the address as
-/// username, and the refresh token the Desktop's main process got
-/// (twoody-desktop src/main/microsoftSignIn.ts) — or, without one, the one
-/// kept for this mailbox.
+/// Microsoft's sign-in read over IMAP (Twoody 0.13.76, kept as it was):
+/// Microsoft's IMAP server, the address as username, and the refresh token
+/// the Desktop's main process got — or, without one, the one kept for this
+/// mailbox.
 function readMicrosoftInput(userId: string, given: Record<string, unknown>, read: { address: string; days: number; preset: string | null; now: number }): { ok: true; input: AccountInput } | { ok: false; error: AccountError } {
   const { address } = read;
   const settings: SourceSettings = {
@@ -85,10 +103,35 @@ function readMicrosoftInput(userId: string, given: Record<string, unknown>, read
   };
   const refreshToken = typeof given.refresh_token === "string" ? given.refresh_token.trim() : "";
   if (refreshToken.length > REFRESH_TOKEN_MAX_CHARS) return { ok: false, error: "signin_failed" };
-  if (refreshToken) return { ok: true, input: { settings, secret: { kind: "microsoft", refreshToken }, newSecret: true, keptFor: null } };
+  if (refreshToken) return { ok: true, input: { kind: "imap", settings, secret: { kind: "microsoft", refreshToken }, newSecret: true, keptFor: null } };
   const current = activeSource(userId);
   const kept = current && current.auth === "microsoft" && current.email_address.toLowerCase() === address.toLowerCase() ? mailSecret(current.id) : null;
-  return kept?.kind === "microsoft" ? { ok: true, input: { settings, secret: kept, newSecret: false, keptFor: current!.id } } : { ok: false, error: "signin_required" };
+  return kept?.kind === "microsoft" ? { ok: true, input: { kind: "imap", settings, secret: kept, newSecret: false, keptFor: current!.id } } : { ok: false, error: "signin_required" };
+}
+
+/// « Se connecter avec Microsoft »: the mailbox read through Microsoft Graph,
+/// with the sign-in the Desktop's main process just got (twoody-desktop
+/// src/main/microsoftSignIn.ts: its refresh token, and the permissions
+/// Microsoft granted) — or, without one, the link kept, when it is this
+/// account's and holds the mailbox's permission. Microsoft's IMAP server
+/// stays its server of record, never connected to: the same mailbox as one
+/// linked by 0.13.76, whose copy it carries on.
+function readGraphInput(userId: string, given: Record<string, unknown>, read: { address: string; days: number; preset: string | null; now: number }): { ok: true; input: AccountInput } | { ok: false; error: AccountError } {
+  const { address } = read;
+  const settings: SourceSettings = {
+    email_address: address, imap_host: MICROSOFT_IMAP.host, imap_port: MICROSOFT_IMAP.port, imap_security: MICROSOFT_IMAP.security, username: address,
+    import_after: windowStart(read.days, read.now), window_days: read.days, preset: read.preset ?? "outlook", auth: "graph",
+  };
+  const refreshToken = typeof given.refresh_token === "string" ? given.refresh_token.trim() : "";
+  if (refreshToken.length > REFRESH_TOKEN_MAX_CHARS) return { ok: false, error: "signin_failed" };
+  if (refreshToken) {
+    const scopes = graphPermissions(given.scopes);
+    // The mailbox's permission refused at Microsoft's page: nothing to link.
+    if (!GRAPH_SCOPES.email.every((permission) => scopes.includes(permission))) return { ok: false, error: "scope_missing" };
+    return { ok: true, input: { kind: "graph", settings, grant: { refreshToken, scopes } } };
+  }
+  const kept = mailboxLink(userId, address);
+  return kept.ok ? { ok: true, input: { kind: "graph", settings, grant: null } } : { ok: false, error: kept.error };
 }
 
 export interface FoundFolders {
@@ -97,10 +140,27 @@ export interface FoundFolders {
   drafts: string | null;
 }
 
-/// Connects once with these settings — the person asked — and finds the
-/// folders Twoody uses. Nothing is read or written. `secret`: the one to
-/// keep, a refresh token Microsoft gave back in place of the one used.
-export async function testMailbox(userId: string, input: AccountInput): Promise<{ ok: true; folders: FoundFolders; secret: MailSecret } | { ok: false; error: AccountError }> {
+/// Tries the mailbox once — the person asked — and finds the folders Twoody
+/// uses. Nothing is read or written.
+export async function testMailbox(userId: string, input: AccountInput): Promise<{ ok: true; folders: FoundFolders } | { ok: false; error: AccountError }> {
+  if (input.kind === "graph") {
+    const tested = await testGraphMailbox(userId, input.settings, input.grant);
+    return tested.ok ? { ok: true, folders: graphFound(tested.tested) } : tested;
+  }
+  const tested = await testImapMailbox(userId, input);
+  return tested.ok ? { ok: true, folders: tested.folders } : tested;
+}
+
+/// The folders found through Graph, by the names the person sees.
+function graphFound(tested: GraphTested): FoundFolders {
+  const { inbox, sent, drafts } = tested.folders;
+  return { inbox: inbox.name ?? "Inbox", sent: sent ? sent.name ?? "Sent Items" : null, drafts: drafts ? drafts.name ?? "Drafts" : null };
+}
+
+/// Connects once with these settings and finds the folders Twoody uses.
+/// `secret`: the one to keep, a refresh token Microsoft gave back in place
+/// of the one used.
+async function testImapMailbox(userId: string, input: ImapAccountInput): Promise<{ ok: true; folders: FoundFolders; secret: MailSecret } | { ok: false; error: AccountError }> {
   let session: MailSession | null = null;
   let secret = input.secret;
   try {
@@ -127,27 +187,57 @@ export async function testMailbox(userId: string, input: AccountInput): Promise<
 export async function setUpMailbox(userId: string, body: unknown): Promise<{ ok: true; source: EmailSource; folders: FoundFolders } | { ok: false; error: AccountError }> {
   const read = readAccountInput(userId, body);
   if (!read.ok) return read;
-  const tested = await testMailbox(userId, read.input);
+  if (read.input.kind === "graph") return setUpGraphMailbox(userId, read.input);
+  const tested = await testImapMailbox(userId, read.input);
   if (!tested.ok) return tested;
   const { source, replaced } = saveSource(userId, read.input.settings);
   // The secret given, or the one Microsoft gave back during the test.
   if (read.input.newSecret || tested.secret !== read.input.secret || !mailSecret(source.id)) keepMailSecret(source.id, tested.secret);
   // Another mailbox before it: its copy stays, its password or sign-in goes.
   if (replaced && replaced.id !== source.id) forgetMailSecret(replaced.id);
+  if (replaced?.auth === "graph") releaseMailboxLink(userId);
   void syncMailbox(userId).catch(() => undefined);
   return { ok: true, source, folders: tested.folders };
 }
 
+/// Read through Microsoft Graph: tried, then kept — the sign-in just done
+/// as the link to Microsoft, for Agenda and Contacts too — and read at once.
+/// A mailbox linked by 0.13.76 at the same address carries on, its copy
+/// kept, its own sign-in forgotten.
+async function setUpGraphMailbox(userId: string, input: GraphAccountInput): Promise<{ ok: true; source: EmailSource; folders: FoundFolders } | { ok: false; error: AccountError }> {
+  const tested = await testGraphMailbox(userId, input.settings, input.grant);
+  if (!tested.ok) return tested;
+  const { source, replaced } = saveSource(userId, input.settings);
+  // No password nor sign-in of its own: the link holds it.
+  forgetMailSecret(source.id);
+  if (replaced && replaced.id !== source.id) forgetMailSecret(replaced.id);
+  if (input.grant) keepMicrosoftLink(userId, { address: input.settings.email_address, scopes: input.grant.scopes, refreshToken: tested.tested.refreshToken ?? input.grant.refreshToken });
+  keepGraphFolders(source.id, tested.tested.folders);
+  void syncMailbox(userId).catch(() => undefined);
+  return { ok: true, source, folders: graphFound(tested.tested) };
+}
+
 /// The mailbox removed: no more sync, its password or its Microsoft sign-in
 /// forgotten; its copy on this computer kept (searchable) or deleted, as
-/// the person chose.
+/// the person chose; one read through Graph lets go of the link.
 export function removeMailbox(userId: string, keepMessages: boolean): boolean {
   const source = activeSource(userId);
   if (!source) return false;
   forgetMailSecret(source.id);
   if (keepMessages) markRemoved(source.id);
   else deleteSource(source.id);
+  if (source.auth === "graph") releaseMailboxLink(userId);
   return true;
+}
+
+/// No mailbox read through Graph any more: the link stays for Agenda and
+/// Contacts while it serves them — without the mailbox's permission, no
+/// longer asked — and is forgotten when nothing uses it.
+function releaseMailboxLink(userId: string): void {
+  const link = graphLink(userId);
+  if (!link) return;
+  if (GRAPH_CAPABILITIES.some((capability) => capability !== "email" && linkGrants(link, capability))) releaseGraphPermissions(userId, "email");
+  else forgetGraphLink(userId);
 }
 
 /// A copy kept from a mailbox removed earlier, deleted.
@@ -183,8 +273,9 @@ export function mailboxStatus(userId: string) {
       window_days: days,
       auth: source.auth,
       password_kept: secret?.kind === "password",
-      // A Microsoft sign-in kept (without one, a new sign-in is needed).
-      signin_kept: secret?.kind === "microsoft",
+      // A Microsoft sign-in kept (without one, a new sign-in is needed): the
+      // mailbox's own, over IMAP, or the link it is read through.
+      signin_kept: source.auth === "graph" ? mailboxLink(userId, source.email_address).ok : secret?.kind === "microsoft",
     },
     sync: {
       ...progress,
@@ -195,11 +286,17 @@ export function mailboxStatus(userId: string) {
       next_at: enabled && source.last_synced_at && !needsThePerson(source.last_error) ? source.last_synced_at + SYNC_INTERVAL_MS : null,
     },
     counts: countsOf(source.id),
+    // Through Graph, the names the person sees (« Boîte de réception »).
     folders: {
-      inbox: folderFor(source.id, "inbox")?.path ?? null,
-      sent: folderFor(source.id, "sent")?.path ?? null,
-      drafts: folderFor(source.id, "drafts")?.path ?? null,
+      inbox: folderShown(source, "inbox"),
+      sent: folderShown(source, "sent"),
+      drafts: folderShown(source, "drafts"),
     },
     kept,
   };
+}
+
+function folderShown(source: EmailSource, role: "inbox" | "sent" | "drafts"): string | null {
+  const folder = folderFor(source.id, role);
+  return folder ? (source.auth === "graph" ? folder.name ?? folder.path : folder.path) : null;
 }

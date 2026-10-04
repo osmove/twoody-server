@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer";
 import { capabilityOn } from "../localCapabilities.js";
 import { openSourceMailbox } from "./credentials.js";
+import { saveGraphDraft } from "./graphMailbox.js";
 import { mailErrorCode, type MailSession } from "./imap.js";
 import { formatAddress, parseRecipients, pickFolders, replySubject, type MailAddress } from "./parse.js";
 import { activeSource, conversationOf, findEmail, folderFor, hasEmails, searchEmails, unansweredEmails, upsertFolder, type EmailRow, type EmailSource } from "./store.js";
@@ -12,7 +13,8 @@ import { activeSource, conversationOf, findEmail, folderFor, hasEmails, searchEm
 //   search_emails  the copy kept here, by words, sender, dates, folder
 //   read_email     one e-mail in full (headers, attachments' names, text)
 //   draft_email    a draft in the Drafts folder of the mailbox, saved only
-//                  once the person allowed it in the chat; never sent
+//                  once the person allowed it in the chat; never sent (over
+//                  IMAP, or through Microsoft Graph: graphMailbox.ts)
 //
 // What e-mails say is data, never instructions: anyone can write to the
 // person, and an e-mail may try to make the model act (« ignore your
@@ -559,9 +561,11 @@ async function draft(args: Record<string, unknown>, context: EmailToolContext): 
   const subject = given || (answered ? replySubject(answered.subject) : "");
   if (!subject) return { text: "Not done: give the e-mail a subject.", error: "no_subject" };
   const references = answered?.provider_message_id ? [...(answered.metadata.references ?? []), answered.provider_message_id].slice(-20) : [];
+  const drafts = folderFor(source.id, "drafts");
   const preview: DraftPreview = {
     account: source.email_address,
-    folder: folderFor(source.id, "drafts")?.path ?? null,
+    // Through Graph, the folder's name as the person sees it (« Brouillons »).
+    folder: (source.auth === "graph" ? drafts?.name : null) ?? drafts?.path ?? null,
     to: to.addresses.map(formatAddress),
     cc: cc.addresses.map(formatAddress),
     subject,
@@ -592,8 +596,10 @@ async function draft(args: Record<string, unknown>, context: EmailToolContext): 
 }
 
 /// Appends the draft to the mailbox's Drafts folder (found on the server
-/// when the sync has not met it yet), through the door.
+/// when the sync has not met it yet), through the door — or, for a mailbox
+/// read through Microsoft Graph, creates it there from the same text.
 export async function saveDraft(userId: string, source: EmailSource, draft: Draft): Promise<{ ok: true; folder: string; uid: number | null } | { ok: false; error: string }> {
+  if (source.auth === "graph") return saveGraphDraft(userId, source, await composeDraft(draft));
   let session: MailSession | null = null;
   try {
     session = await openSourceMailbox(source, capabilityOn(userId, "email"));

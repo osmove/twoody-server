@@ -241,8 +241,8 @@ export function mailServerDoor(target: MailServer, configured: { host: string; p
 // And for Microsoft's sign-in (src/microsoft/token.ts), renewed at its token
 // endpoint — that address and no other (no other path of the host, no other
 // host), over https, never redirected — for one of two grants, each with its
-// own life: a mailbox that signs in with Microsoft (« Se connecter avec
-// Microsoft », src/email/microsoft.ts), only while E-mails is on and the
+// own life: a mailbox linked with Microsoft's sign-in by Twoody 0.13.76 and
+// read over IMAP (src/email/microsoft.ts), only while E-mails is on and the
 // mailbox set up, or being set up, is one; and the link to Microsoft Graph
 // (src/microsoft/), only while a capability that reads Graph is on and the
 // link is kept, or being made. Made in local-only mode too, as the
@@ -252,9 +252,9 @@ export function mailServerDoor(target: MailServer, configured: { host: string; p
 export const MICROSOFT_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
 
 /// The capabilities that read Microsoft Graph (ids of src/localCapabilities.ts):
-/// Agenda and Contacts, today. Each declares its paths below (GRAPH_PATHS) and
-/// its permissions in src/microsoft/link.ts (GRAPH_SCOPES).
-export type GraphCapability = "calendar" | "contacts";
+/// Agenda, Contacts and E-mails. Each declares its paths below (GRAPH_PATHS)
+/// and its permissions in src/microsoft/link.ts (GRAPH_SCOPES).
+export type GraphCapability = "calendar" | "contacts" | "email";
 
 /// The capabilities that read Graph, each on or off, as they stand now.
 export type GraphCapabilitiesOn = Partial<Record<GraphCapability, boolean>>;
@@ -297,10 +297,13 @@ export async function microsoftTokenFetch(target: string | URL, init: RequestIni
 // to https://graph.microsoft.com/v1.0/me/ and, below it, the paths each
 // capability that reads Graph declares here, with what may be done there —
 // Agenda the calendars and each one's view (a repeating event there once per
-// occurrence), Contacts the contacts and their folders, read only — never
+// occurrence), Contacts the contacts and their folders, both read only;
+// E-mails the Inbox, Sent Items and Drafts folders, the changes of the two
+// read (delta), a message's attachments' names, and one write: a draft,
+// created in Drafts — never sent, changed, moved or deleted — never
 // redirected, only while that capability is on and the link is kept. The
-// pages Graph links to (@odata.nextLink) go through it like the first. A
-// capability that comes to read Graph (the mailbox, say) adds its paths
+// pages Graph links to (@odata.nextLink, @odata.deltaLink) go through it
+// like the first. A capability that comes to read Graph adds its paths
 // here, and its permissions to src/microsoft/link.ts. Asked for by the
 // person when they link their account, as the mail server is: made in
 // local-only mode too.
@@ -330,6 +333,17 @@ const GRAPH_PATHS: Record<GraphCapability, ReadonlyArray<{ path: RegExp; methods
     { path: /^\/contacts$/i, methods: ["GET"] },
     { path: /^\/contactFolders$/i, methods: ["GET"] },
     { path: /^\/contactFolders\/[^/]+\/contacts$/i, methods: ["GET"] },
+  ],
+  email: [
+    // The three folders Twoody uses, by their well-known names.
+    { path: /^\/mailFolders\/(?:inbox|sentitems|drafts)$/i, methods: ["GET"] },
+    // A folder's changes: the first page asked by the folder's id, the next
+    // ones as Graph writes them (`mailfolders('…')`, its quotes as they come).
+    { path: /^\/mailFolders(?:\/[^/()']+|\((?:'|%27)[^/()']+(?:'|%27)\))\/messages\/delta$/i, methods: ["GET"] },
+    // What a message's attachments are called, their type and size.
+    { path: /^\/messages\/[^/()']+\/attachments$/i, methods: ["GET"] },
+    // A draft, created in Drafts: the only write, and never a send.
+    { path: /^\/messages$/i, methods: ["POST"] },
   ],
 };
 

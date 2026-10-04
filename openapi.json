@@ -2634,12 +2634,17 @@
                     "type": "string",
                     "enum": [
                       "password",
-                      "microsoft"
+                      "microsoft",
+                      "graph"
                     ]
                   },
                   "refresh_token": {
                     "type": "string",
                     "maxLength": 16384
+                  },
+                  "scopes": {
+                    "type": "string",
+                    "maxLength": 4096
                   }
                 }
               }
@@ -2713,12 +2718,17 @@
                     "type": "string",
                     "enum": [
                       "password",
-                      "microsoft"
+                      "microsoft",
+                      "graph"
                     ]
                   },
                   "refresh_token": {
                     "type": "string",
                     "maxLength": 16384
+                  },
+                  "scopes": {
+                    "type": "string",
+                    "maxLength": 4096
                   }
                 }
               }
@@ -9067,12 +9077,17 @@
                     "type": "string",
                     "enum": [
                       "password",
-                      "microsoft"
+                      "microsoft",
+                      "graph"
                     ]
                   },
                   "refresh_token": {
                     "type": "string",
                     "maxLength": 16384
+                  },
+                  "scopes": {
+                    "type": "string",
+                    "maxLength": 4096
                   }
                 }
               }
@@ -9146,12 +9161,17 @@
                     "type": "string",
                     "enum": [
                       "password",
-                      "microsoft"
+                      "microsoft",
+                      "graph"
                     ]
                   },
                   "refresh_token": {
                     "type": "string",
                     "maxLength": 16384
+                  },
+                  "scopes": {
+                    "type": "string",
+                    "maxLength": 4096
                   }
                 }
               }

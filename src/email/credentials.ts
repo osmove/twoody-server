@@ -126,6 +126,8 @@ export async function openMailbox(
 
 /// The mailbox set up, opened with the secret kept for it.
 export function openSourceMailbox(source: EmailSource, emailOn: boolean): Promise<MailSession> {
+  // One read through Microsoft Graph opens no IMAP session (graphMailbox.ts).
+  if (source.auth === "graph") return Promise.reject(new MailError("failed"));
   const secret = mailSecret(source.id);
   if (!secret) return Promise.reject(new MailError(source.auth === "microsoft" ? "signin_required" : "password_missing"));
   return openMailbox(

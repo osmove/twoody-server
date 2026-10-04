@@ -1,5 +1,7 @@
 import { capabilityOn } from "../localCapabilities.js";
+import { graphHeldUntil } from "../microsoft/graph.js";
 import { openSourceMailbox } from "./credentials.js";
+import { graphMailErrorCode, syncGraphMailbox, type GraphMailErrorCode } from "./graphMailbox.js";
 import { MailError, mailErrorCode, type FetchedMail, type MailErrorCode, type MailSession } from "./imap.js";
 import {
   attachmentsOf, automatedSender, envelopeAddresses, flagState, parseEmail, pickFolders, textMayBeCut, threadIdOf, validDate,
@@ -14,7 +16,9 @@ import {
 // last 90 days at first (the window the person chose), then what is new,
 // by UID — every 10 minutes while E-mails is on, and when the person asks.
 // Read-only on the server: folders opened with EXAMINE, messages read with
-// BODY.PEEK; nothing is marked, moved or deleted there.
+// BODY.PEEK; nothing is marked, moved or deleted there. A mailbox read
+// through Microsoft Graph is kept up to date the same way, with Graph's
+// changes instead of UIDs (graphMailbox.ts).
 
 export const SYNC_INTERVAL_MS = 10 * 60_000;
 export const DEFAULT_WINDOW_DAYS = 90;
@@ -35,10 +39,13 @@ export interface SyncProgress {
   to_fetch: number;
   /// New messages kept by the last sync.
   imported: number;
-  error: MailErrorCode | null;
+  error: MailboxErrorCode | null;
 }
 
-export type SyncOutcome = { ok: true; imported: number } | { ok: false; error: MailErrorCode };
+/// What goes wrong with a mailbox: over IMAP, or through Graph.
+export type MailboxErrorCode = MailErrorCode | GraphMailErrorCode;
+
+export type SyncOutcome = { ok: true; imported: number } | { ok: false; error: MailboxErrorCode };
 
 const progress = new Map<string, SyncProgress>();
 const running = new Map<string, Promise<SyncOutcome>>();
@@ -71,11 +78,21 @@ function stillWanted(userId: string, sourceId: string): boolean {
   return capabilityOn(userId, "email") && activeSource(userId)?.id === sourceId;
 }
 
+/// No failure of the mailbox: E-mails turned off, or the link to Microsoft
+/// Graph changed, while it was read.
+const STOPPED = new Set<string>(["email_off", "not_linked"]);
+
 async function runSync(userId: string, source: EmailSource): Promise<SyncOutcome> {
   const state: SyncProgress = { ...idle(), running: true, started_at: Date.now() };
   progress.set(source.id, state);
   let session: MailSession | null = null;
   try {
+    if (source.auth === "graph") {
+      await syncGraphMailbox(userId, source, state, () => stillWanted(userId, source.id));
+      const now = Date.now();
+      noteSync(source.id, { status: "active", last_error: null, last_synced_at: now, ...(state.imported ? { last_imported_at: now } : {}) });
+      return { ok: true, imported: state.imported };
+    }
     session = await openSourceMailbox(source, stillWanted(userId, source.id));
     const picked = pickFolders(await session.listFolders());
     if (!picked.inbox) throw new MailError("no_inbox");
@@ -94,10 +111,9 @@ async function runSync(userId: string, source: EmailSource): Promise<SyncOutcome
     noteSync(source.id, { status: "active", last_error: null, last_synced_at: now, ...(state.imported ? { last_imported_at: now } : {}) });
     return { ok: true, imported: state.imported };
   } catch (err) {
-    const code = mailErrorCode(err);
+    const code: MailboxErrorCode = source.auth === "graph" ? graphMailErrorCode(err) : mailErrorCode(err);
     state.error = code;
-    // E-mails switched off is no failure of the mailbox.
-    if (code !== "email_off") noteSync(source.id, { status: "error", last_error: code, last_synced_at: Date.now() });
+    if (!STOPPED.has(code)) noteSync(source.id, { status: "error", last_error: code, last_synced_at: Date.now() });
     return { ok: false, error: code };
   } finally {
     state.running = false;
@@ -205,8 +221,9 @@ async function keep(userId: string, source: EmailSource, folder: EmailFolder, ui
 
 /// What only the person can mend: a password refused or missing, a
 /// Microsoft sign-in to do again or an approval it waits for, IMAP access
-/// refused to Twoody.
-const PERSON_ERRORS = new Set(["auth_failed", "password_missing", "signin_required", "admin_consent_required", "imap_refused"]);
+/// refused to Twoody; through Graph, the mailbox refused to Twoody, the link
+/// without the mailbox's permission, an account without an Outlook mailbox.
+const PERSON_ERRORS = new Set(["auth_failed", "password_missing", "signin_required", "admin_consent_required", "imap_refused", "graph_refused", "scope_missing", "no_mailbox"]);
 
 export function needsThePerson(error: string | null | undefined): boolean {
   return !!error && PERSON_ERRORS.has(error);
@@ -230,6 +247,8 @@ export function startEmailSync(options: { checkEveryMs?: number; intervalMs?: nu
       if (stopped) return;
       const source = activeSource(userId);
       if (!source || !capabilityOn(userId, "email") || !syncDue(source, Date.now(), options.intervalMs)) continue;
+      // Microsoft Graph asked to wait past a round (graph.ts): not before then.
+      if (source.auth === "graph" && graphHeldUntil(userId) !== null) continue;
       await syncMailbox(userId).catch(() => undefined);
     }
   };

@@ -1,4 +1,6 @@
 import { cleanAddress } from "../email/parse.js";
+import { activeSource, markRemoved, noteSync } from "../email/store.js";
+import { needsThePerson as mailboxNeedsThePerson, syncMailbox } from "../email/sync.js";
 import { capabilityOn } from "../localCapabilities.js";
 import type { GraphCapability } from "../outbound.js";
 import { copySize, InvalidCopy, readContacts, readEvents, replaceContacts, replaceEvents } from "../personalSync.js";
@@ -10,14 +12,21 @@ import {
 
 // Outlook's or Microsoft 365's calendar and contacts, copied into the same
 // tables as the Mac's (src/personalSync.ts, source « microsoft »), with the
-// link to the person's Microsoft account (link.ts) — made from the Agenda or
-// the Contacts page of this computer's app after Microsoft's sign-in, in the
-// app's main process, and shared by every capability that reads Graph. Read
-// every 15 minutes while Agenda or Contacts is on — each copy only while its
-// own capability is — and when the person asks; each copy replaces the
-// last, never the Mac's rows nor the person's. A capability turned off
-// removes its copy, as the Mac's switch does; unlinking forgets the sign-in
-// and removes both. Nothing is written at Microsoft.
+// link to the person's Microsoft account (link.ts) — made from the Agenda,
+// the Contacts or the E-mails page of this computer's app after Microsoft's
+// sign-in, in the app's main process, and shared by every capability that
+// reads Graph. Read every 15 minutes while Agenda or Contacts is on — each
+// copy only while its own capability is — and when the person asks; each
+// copy replaces the last, never the Mac's rows nor the person's. A
+// capability turned off removes its copy, as the Mac's switch does;
+// unlinking forgets the sign-in and removes both. Nothing is written at
+// Microsoft for them.
+//
+// The mailbox read with the link (src/email/graphMailbox.ts) keeps its own
+// copy and its own rounds (src/email/sync.ts); here it follows the link: the
+// link made again for its account, it reads again if it waited for the
+// person; made for another account, or unlinked, it stops — its copy kept,
+// as when another mailbox is set up.
 
 export const GRAPH_SYNC_INTERVAL_MS = 15 * 60_000;
 
@@ -143,6 +152,31 @@ export function graphCapabilityChanged(userId: string, kind: CopyKind, enabled: 
   if (graphLink(userId)) void syncMicrosoftGraph(userId, { kinds: [kind] }).catch(() => undefined);
 }
 
+/// A sign-in kept as the link, in place of the one before, and what follows
+/// from it: the copies of another account, or of what the new link no longer
+/// grants, removed; a mailbox read with the link before, of another account,
+/// stopped — its copy kept — and the same one reading again if it waited for
+/// the person; everything read at once.
+export function keepMicrosoftLink(userId: string, given: { address: string; scopes: readonly string[]; refreshToken: string }): GraphLink {
+  const before = graphLink(userId);
+  const link = keepGraphLink(userId, given);
+  const otherAccount = !!before && before.address.toLowerCase() !== link.address.toLowerCase();
+  for (const kind of COPY_KINDS) {
+    if (otherAccount || !linkGrants(link, kind)) removeCopy(userId, kind);
+  }
+  const mailbox = activeSource(userId);
+  if (mailbox?.auth === "graph") {
+    if (mailbox.email_address.toLowerCase() !== link.address.toLowerCase()) markRemoved(mailbox.id);
+    else if (!linkGrants(link, "email")) noteSync(mailbox.id, { status: "error", last_error: "scope_missing" });
+    else if (mailboxNeedsThePerson(mailbox.last_error)) {
+      noteSync(mailbox.id, { status: "active", last_error: null });
+      void syncMailbox(userId).catch(() => undefined);
+    }
+  }
+  void syncMicrosoftGraph(userId).catch(() => undefined);
+  return link;
+}
+
 export type LinkError = GraphErrorCode | "address_required" | "invalid_address" | "scope_missing";
 
 /// The link the app's main process hands over after Microsoft's sign-in:
@@ -169,19 +203,17 @@ export async function linkMicrosoftGraph(userId: string, body: unknown): Promise
   } catch (err) {
     return { ok: false, error: graphErrorCode(err) };
   }
-  const before = graphLink(userId);
-  const link = keepGraphLink(userId, { address, scopes, refreshToken: session.newestRefreshToken });
-  for (const kind of COPY_KINDS) {
-    if ((before && before.address.toLowerCase() !== address.toLowerCase()) || !linkGrants(link, kind)) removeCopy(userId, kind);
-  }
-  void syncMicrosoftGraph(userId).catch(() => undefined);
-  return { ok: true, link };
+  return { ok: true, link: keepMicrosoftLink(userId, { address, scopes, refreshToken: session.newestRefreshToken }) };
 }
 
-/// The link removed: its sign-in forgotten, both copies removed.
+/// The link removed: its sign-in forgotten, both copies removed; the mailbox
+/// read with it stops too (the pages say so before), its copy kept, to
+/// search or delete from E-mails.
 export function unlinkMicrosoftGraph(userId: string): boolean {
   const had = forgetGraphLink(userId);
   for (const kind of COPY_KINDS) removeCopy(userId, kind);
+  const mailbox = activeSource(userId);
+  if (mailbox?.auth === "graph") markRemoved(mailbox.id);
   return had;
 }
 
@@ -202,12 +234,15 @@ export function microsoftGraphStatus(userId: string) {
       next_at: on && state?.last_attempt_at && !needsThePerson(state.last_error) ? state.last_attempt_at + GRAPH_SYNC_INTERVAL_MS : null,
     };
   };
+  // The mailbox read with the link: removing the link stops it too.
+  const mailbox = activeSource(userId);
   return {
     linked: !!link,
     account: link ? { address: link.address, scopes: link.scopes, linked_at: link.linked_at } : null,
     running: !!link && graphSyncRunning(link.id),
     calendar: copy("calendar"),
     contacts: copy("contacts"),
+    mailbox: link && mailbox?.auth === "graph" ? { address: mailbox.email_address } : null,
   };
 }
 

@@ -14,7 +14,8 @@ import { sqlite } from "./db.js";
 // agenda when there are some.
 
 // « email »: the person's mailbox, read over IMAP from this computer
-// (src/email/, Jimmy, 04/10/2026: « IMAP d'abord »).
+// (src/email/, Jimmy, 04/10/2026: « IMAP d'abord ») — an Outlook.com or
+// Microsoft 365 one through Microsoft Graph (src/email/graphMailbox.ts).
 // « bank »: the bank statements the person imports, read and kept on this
 // computer (src/bank/, Jimmy, 04/10/2026: « import de relevés pour la banque »).
 // « isolated_projects »: client files, projects walled off from everything

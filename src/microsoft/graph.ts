@@ -5,22 +5,24 @@ import { MAX_CONTACTS, MAX_EVENTS } from "../personalSync.js";
 import { GRAPH_CAPABILITIES, graphRefreshToken, renewGraphRefreshToken } from "./link.js";
 import { microsoftAccess, MicrosoftSignInError, type MicrosoftSignInCode } from "./token.js";
 
-// Microsoft Graph, read with the link's access token (link.ts, token.ts) —
+// Microsoft Graph, with the link's access token (link.ts, token.ts) —
 // through the door of src/outbound.ts, which opens only the addresses each
 // capability declares, while it is on and the link is kept: GraphSession,
-// and graphRefusal, the one place where Graph's refusals become codes. Here
-// for Outlook's calendar and contacts:
+// the one place that sends a request to Graph, and graphRefusal, the one
+// place where Graph's refusals become codes. Here for Outlook's calendar and
+// contacts:
 //   - the calendars (/me/calendars), then each one's view
 //     (/me/calendars/{id}/calendarView) from 30 days ago to 365 days ahead,
 //     as the Mac's helper reads its Calendar: a repeating event there once
 //     per occurrence, every time in UTC (Prefer: outlook.timezone="UTC");
 //   - the contacts (/me/contacts), and those of the folders made in them
 //     (/me/contactFolders, one level down).
-// Each page Graph links to (@odata.nextLink) goes through the door like the
-// first. Asked to slow down (429, or 503 with Retry-After), it waits what
-// Graph says before asking again — or, for longer than a round, stops until
-// then. Nothing is ever written there. What Graph refuses is said as a
-// code, never its text.
+// The mailbox's folders and messages are read in mail.ts, with the same
+// session. Each page Graph links to (@odata.nextLink) goes through the door
+// like the first. Asked to slow down (429, or 503 with Retry-After), it
+// waits what Graph says before asking again — or, for longer than a round,
+// stops until then. The one thing ever written there is a draft the person
+// allowed (post). What Graph refuses is said as a code, never its text.
 
 /// The view's window, the Mac's (twoody-desktop personalDataSync.ts).
 export const PAST_DAYS = 30;
@@ -43,8 +45,9 @@ export type GraphErrorCode =
   // the account has no mailbox there (no calendar, contacts or mail); an item
   // listed earlier is gone since (a calendar, a folder: skipped); Graph asks
   // to wait longer than a round, cannot be reached, answers something else;
-  // or the copy would hold more than a copy may.
-  | "graph_refused" | "no_mailbox" | "gone" | "throttled" | "graph_unreachable" | "graph_failed" | "too_many";
+  // or the copy would hold more than a copy may; or a round of changes
+  // (delta) Graph can no longer continue, to start again from the start.
+  | "graph_refused" | "no_mailbox" | "gone" | "throttled" | "graph_unreachable" | "graph_failed" | "too_many" | "sync_reset";
 
 export class GraphError extends Error {
   constructor(public code: GraphErrorCode, public status: number | null = null) {
@@ -102,13 +105,17 @@ export function retryAfterMs(value: string | null, now = Date.now()): number | n
 /// What a refusal of Graph means — the one place where Graph's answers
 /// become codes, from its status, its error's code (never its message,
 /// which may name the account) and the address asked. An account Graph has
-/// no mailbox for (MailboxNotEnabledForRESTAPI, MailboxNotFound; or nothing
-/// found at a whole collection: /me/calendars, /me/contacts, and so would
-/// /me/mailFolders) is `no_mailbox`; nothing found below one — a calendar or
-/// a folder listed earlier, removed since — `gone`.
+/// no mailbox for (MailboxNotEnabledForRESTAPI, MailboxNotFound,
+/// NonExistentMailbox; or nothing found at a whole collection —
+/// /me/calendars, /me/contacts, /me/mailFolders — nor at a folder every
+/// mailbox has: its Inbox, Sent Items, Drafts) is `no_mailbox`; nothing
+/// found below one — a calendar or a folder listed earlier, a message
+/// removed since — `gone`. A round of changes Graph can no longer continue
+/// (410, or its state token forgotten: syncStateNotFound) is `sync_reset`.
 export function graphRefusal(status: number, body: unknown, target: string): GraphError {
   const code = (body as { error?: { code?: unknown } } | null)?.error?.code;
-  if (typeof code === "string" && /^(?:MailboxNotEnabledForRESTAPI|MailboxNotFound)$/i.test(code)) return new GraphError("no_mailbox", status);
+  if (typeof code === "string" && /^(?:Error)?(?:MailboxNotEnabledForRESTAPI|MailboxNotFound|NonExistentMailbox)$/i.test(code)) return new GraphError("no_mailbox", status);
+  if (status === 410 || (typeof code === "string" && /^(?:syncStateNotFound|syncStateInvalid|resyncRequired)$/i.test(code))) return new GraphError("sync_reset", status);
   if (status === 401 || status === 403) return new GraphError("graph_refused", status);
   if (status === 404) {
     let below: string | null = null;
@@ -117,7 +124,7 @@ export function graphRefusal(status: number, body: unknown, target: string): Gra
     } catch {
       // Not an address: said as anything else, below.
     }
-    if (below !== null) return new GraphError(/^\/[^/]+$/.test(below) ? "no_mailbox" : "gone", status);
+    if (below !== null) return new GraphError(/^\/[^/]+$/.test(below) || /^\/mailFolders\/(?:inbox|sentitems|drafts)$/i.test(below) ? "no_mailbox" : "gone", status);
   }
   if (status === 429 || status === 503 || status === 504) return new GraphError("throttled", status);
   return new GraphError("graph_failed", status);
@@ -168,19 +175,38 @@ export class GraphSession {
     return got.accessToken;
   }
 
-  /// One page, as JSON. A token Graph refuses was perhaps withdrawn before
-  /// its time: a new one is got, once. Asked to wait, it waits.
-  async get(url: string): Promise<Record<string, unknown>> {
+  /// One page, as JSON — every time in UTC unless `prefer` says otherwise.
+  get(url: string, options: { prefer?: string } = {}): Promise<Record<string, unknown>> {
+    return this.request("GET", url, { prefer: options.prefer ?? 'outlook.timezone="UTC"' });
+  }
+
+  /// A draft created (E-mails, once the person allowed it): the only thing
+  /// ever written at Graph. Never sent again once it may have reached Graph.
+  post(url: string, body: string, contentType: string): Promise<Record<string, unknown>> {
+    return this.request("POST", url, { body, contentType });
+  }
+
+  /// One request, through the door as it stands, answered as JSON. A token
+  /// Graph refuses was perhaps withdrawn before its time: a new one is got,
+  /// once. Asked to wait, it waits — a write only when Graph says it did
+  /// nothing (429), a read whenever it says how long.
+  private async request(method: "GET" | "POST", url: string, options: { prefer?: string; body?: string; contentType?: string }): Promise<Record<string, unknown>> {
     let renewed = false;
     for (let attempt = 1; ; attempt += 1) {
       const token = this.access ?? (await this.accessToken());
       let response: Response;
       try {
         // The door first, whoever answers.
-        graphDoor(url, "GET", this.door());
+        graphDoor(url, method, this.door());
         response = await transport(url, {
-          method: "GET",
-          headers: { authorization: `Bearer ${token}`, accept: "application/json", prefer: 'outlook.timezone="UTC"' },
+          method,
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: "application/json",
+            ...(options.prefer ? { prefer: options.prefer } : {}),
+            ...(options.contentType ? { "content-type": options.contentType } : {}),
+          },
+          ...(options.body !== undefined ? { body: options.body } : {}),
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         }, this.door());
       } catch (err) {
@@ -193,7 +219,8 @@ export class GraphSession {
         await this.accessToken(true);
         continue;
       }
-      if (response.status === 429 || ((response.status === 503 || response.status === 504) && response.headers.has("retry-after"))) {
+      const waitAsked = response.status === 429 || (method === "GET" && (response.status === 503 || response.status === 504) && response.headers.has("retry-after"));
+      if (waitAsked) {
         await response.body?.cancel().catch(() => undefined);
         const asked = retryAfterMs(response.headers.get("retry-after")) ?? 2 ** attempt * 1_000;
         if (asked > MAX_WAIT_MS) {
@@ -211,13 +238,13 @@ export class GraphSession {
   }
 
   /// Every page of a list, following @odata.nextLink.
-  async *pages(first: string): AsyncGenerator<Array<Record<string, unknown>>> {
+  async *pages(first: string, options: { prefer?: string } = {}): AsyncGenerator<Array<Record<string, unknown>>> {
     const seen = new Set<string>();
     let next: string | null = first;
     while (next) {
       if (seen.size >= MAX_PAGES || seen.has(next)) throw new GraphError("graph_failed");
       seen.add(next);
-      const body = await this.get(next);
+      const body = await this.get(next, options);
       yield Array.isArray(body.value) ? body.value.filter((item): item is Record<string, unknown> => !!item && typeof item === "object" && !Array.isArray(item)) : [];
       next = typeof body["@odata.nextLink"] === "string" ? body["@odata.nextLink"] : null;
     }

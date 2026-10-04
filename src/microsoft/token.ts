@@ -4,10 +4,11 @@ import { GraphDoorClosedError, MailDoorClosedError, MICROSOFT_TOKEN_URL, microso
 // Microsoft's sign-in, renewed (04/10/2026). Twoody's app at Microsoft is a
 // public client; the Desktop's main process signs the person in (twoody-
 // desktop src/main/microsoftSignIn.ts: the browser, PKCE, a loopback
-// redirect) and hands this server a refresh token and nothing else — for
-// their mailbox (src/email/microsoft.ts, read over IMAP), or for their
-// calendar and contacts (src/microsoft/sync.ts, read through Microsoft
-// Graph). Two grants, each kept apart with its own life.
+// redirect) and hands this server a refresh token and nothing else — the
+// link to Microsoft Graph, for their calendar, contacts and mailbox
+// (src/microsoft/); or, as Twoody 0.13.76 linked one, a mailbox's own,
+// read over IMAP (src/email/microsoft.ts). Two grants, each kept apart with
+// its own life.
 //
 // Here an access token is got with a refresh token, for one resource — the
 // scope says which — at Microsoft's token endpoint, the one address the door

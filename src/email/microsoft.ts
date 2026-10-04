@@ -2,10 +2,13 @@ import { MailDoorClosedError } from "../outbound.js";
 import { microsoftAccess as accessFor, MicrosoftSignInError, type MicrosoftAccess } from "../microsoft/token.js";
 import { MailError } from "./imap.js";
 
-// « Se connecter avec Microsoft » (Capacités → E-mails, 04/10/2026): an
-// Outlook.com or Microsoft 365 mailbox takes no password over IMAP, only
-// Microsoft's own sign-in (OAuth 2.0). It is linked with that sign-in and
-// read over IMAP with XOAUTH2.
+// « Se connecter avec Microsoft » as Twoody 0.13.76 linked a mailbox
+// (Capacités → E-mails, 04/10/2026): an Outlook.com or Microsoft 365 mailbox
+// takes no password over IMAP, only Microsoft's own sign-in (OAuth 2.0). It
+// was linked with that sign-in and is read over IMAP with XOAUTH2 — kept
+// working as it was. Signing in again moves it to Microsoft Graph, without
+// IMAP (graphMailbox.ts), its copy kept; a mailbox linked since is read
+// through Graph from the start.
 //
 // The sign-in itself runs in the Desktop's main process (twoody-desktop
 // src/main/microsoftSignIn.ts: the browser, PKCE, a loopback redirect),

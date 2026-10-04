@@ -574,9 +574,16 @@ test("Graph's refusals become codes in one place: an account without a mailbox t
   assert.equal(code(400, "MailboxNotEnabledForRESTAPI", "/contacts"), "no_mailbox");
   assert.equal(code(404, "MailboxNotFound", "/contactFolders/x/contacts"), "no_mailbox");
   assert.equal(code(404, "ResourceNotFound", "/calendars"), "no_mailbox");
-  // So will the mailbox's own, when it comes to read Graph (not opened by the door today).
+  // The mailbox's: nothing at all its folders, nor at one every mailbox has.
   assert.equal(code(404, "ResourceNotFound", "/mailFolders"), "no_mailbox");
+  assert.equal(code(404, "ResourceNotFound", "/mailFolders/inbox"), "no_mailbox");
+  assert.equal(code(404, null, "/mailFolders/SentItems"), "no_mailbox");
+  assert.equal(code(404, "ErrorNonExistentMailbox", "/mailFolders/AQMk/messages/delta"), "no_mailbox");
   assert.equal(code(404, "ResourceNotFound", "/mailFolders/inbox/messages"), "gone");
+  assert.equal(code(404, "ErrorItemNotFound", "/messages/AAMk/attachments"), "gone", "a message removed since");
+  // A round of changes Graph can no longer carry on: started again.
+  assert.equal(code(410, null, "/mailFolders/AQMk/messages/delta"), "sync_reset");
+  assert.equal(code(400, "syncStateNotFound", "/mailFolders/AQMk/messages/delta"), "sync_reset");
   // Something listed earlier, gone since.
   assert.equal(code(404, "ErrorItemNotFound", "/calendars/AAMk=/calendarView"), "gone");
   assert.equal(code(404, null, "/contactFolders/AQMk/contacts"), "gone");
@@ -592,10 +599,13 @@ test("Graph's refusals become codes in one place: an account without a mailbox t
 });
 
 test("one link for every capability that reads Graph: each declares its permissions, the link holds their union, a refresh asks them all", () => {
-  assert.deepEqual(GRAPH_SCOPES, { calendar: ["Calendars.Read"], contacts: ["Contacts.Read"] });
-  assert.deepEqual([...GRAPH_CAPABILITIES].sort(), ["calendar", "contacts"]);
+  // The mailbox: Mail.ReadWrite, which a draft needs — never Mail.Send.
+  assert.deepEqual(GRAPH_SCOPES, { calendar: ["Calendars.Read"], contacts: ["Contacts.Read"], email: ["Mail.ReadWrite"] });
+  assert.deepEqual([...GRAPH_CAPABILITIES].sort(), ["calendar", "contacts", "email"]);
+  assert.doesNotMatch(JSON.stringify(GRAPH_SCOPES), /Send/);
   // Only what a capability declares is kept, however Microsoft writes it.
-  assert.deepEqual(graphPermissions("openid profile email offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/contacts.read Calendars.Read Mail.Read"), ["Calendars.Read", "Contacts.Read"]);
+  assert.deepEqual(graphPermissions("openid profile email offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/contacts.read Calendars.Read Mail.Read Mail.Send"), ["Calendars.Read", "Contacts.Read"]);
+  assert.deepEqual(graphPermissions("https://graph.microsoft.com/Mail.ReadWrite openid"), ["Mail.ReadWrite"]);
   assert.deepEqual(graphPermissions(["Contacts.Read", 42]), ["Contacts.Read"]);
   assert.deepEqual(graphPermissions(null), []);
   assert.equal(graphScope(["Calendars.Read", "Contacts.Read"]), `${CALENDARS_READ} ${CONTACTS_READ} offline_access`);

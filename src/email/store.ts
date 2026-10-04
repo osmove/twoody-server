@@ -8,13 +8,20 @@ import { asksSomething, automatedSender, type AttachmentInfo, type FlagState, ty
 // The copy of the person's mailbox on this computer (migration 4,
 // src/migrations/0004_emails.ts): the mailbox set up, its folders, its
 // messages and their full-text index. Nothing here talks to a server.
+//
+// A mailbox read through Microsoft Graph (graphMailbox.ts) needs no column
+// of its own: a message's Graph id is kept in its metadata (`graph_id`; it
+// has no IMAP UID), and where each folder's round of changes stands in the
+// mailbox's metadata (`graph_folders`).
 
 export type SourceStatus = "active" | "error" | "removed";
 
-/// How the mailbox signs in: its password, or Microsoft's sign-in (an
-/// Outlook.com or Microsoft 365 mailbox, microsoft.ts). Kept in its
-/// metadata; a mailbox set up before Microsoft's has a password.
-export type MailAuth = "password" | "microsoft";
+/// How the mailbox is opened: its password, over IMAP; Microsoft's sign-in,
+/// over IMAP (an Outlook.com or Microsoft 365 mailbox linked by Twoody
+/// 0.13.76, microsoft.ts, kept working as it was until the person signs in
+/// again); or the link to Microsoft Graph, no IMAP at all (graphMailbox.ts).
+/// Kept in its metadata; a mailbox set up before Microsoft's has a password.
+export type MailAuth = "password" | "microsoft" | "graph";
 
 export interface EmailSource {
   id: string;
@@ -79,7 +86,8 @@ export interface EmailRow {
   size: number | null;
   attachments: AttachmentInfo[];
   labels: string[];
-  metadata: { in_reply_to?: string | null; references?: string[]; automated?: boolean };
+  /// `graph_id`: the message's id at Microsoft Graph, for a mailbox read through it.
+  metadata: { in_reply_to?: string | null; references?: string[]; automated?: boolean; graph_id?: string };
   trashed_at: number | null;
 }
 
@@ -108,7 +116,7 @@ function sourceOf(row: Record<string, unknown> | undefined): EmailSource | null 
   return {
     ...(row as unknown as EmailSource),
     imap_security: row.imap_security === "starttls" ? "starttls" : "tls",
-    auth: metadata.auth === "microsoft" ? "microsoft" : "password",
+    auth: metadata.auth === "microsoft" || metadata.auth === "graph" ? metadata.auth : "password",
     metadata,
   };
 }
@@ -157,15 +165,20 @@ const sameMailbox = (a: Pick<EmailSource, "email_address" | "imap_host" | "usern
 export function saveSource(userId: string, settings: SourceSettings, now = Date.now()): { source: EmailSource; replaced: EmailSource | null } {
   ensure();
   const current = activeSource(userId);
-  const metadata = JSON.stringify({ preset: settings.preset ?? null, window_days: settings.window_days ?? null, auth: settings.auth ?? "password" });
-  const write = (id: string) => {
+  // The same mailbox still read through Graph keeps where its folders'
+  // rounds of changes stand: signed in again, it does not read them anew.
+  const metadataFor = (before: EmailSource | null) => JSON.stringify({
+    preset: settings.preset ?? null, window_days: settings.window_days ?? null, auth: settings.auth ?? "password",
+    ...(before?.auth === "graph" && settings.auth === "graph" && before.metadata.graph_folders ? { graph_folders: before.metadata.graph_folders } : {}),
+  });
+  const write = (before: EmailSource) => {
     sqlite.prepare(`UPDATE email_sources SET email_address = ?, display_name = ?, imap_host = ?, imap_port = ?, imap_security = ?, username = ?,
       import_after = ?, status = 'active', last_error = NULL, metadata = ?, updated_at = ? WHERE id = ?`)
-      .run(settings.email_address, settings.display_name ?? null, settings.imap_host, settings.imap_port, settings.imap_security, settings.username, settings.import_after, metadata, now, id);
+      .run(settings.email_address, settings.display_name ?? null, settings.imap_host, settings.imap_port, settings.imap_security, settings.username, settings.import_after, metadataFor(before), now, before.id);
   };
   return sqlite.transaction(() => {
     if (current && sameMailbox(current, settings)) {
-      write(current.id);
+      write(current);
       return { source: sourceById(userId, current.id)!, replaced: null };
     }
     if (current) sqlite.prepare("UPDATE email_sources SET status = 'removed', updated_at = ? WHERE id = ?").run(now, current.id);
@@ -173,13 +186,13 @@ export function saveSource(userId: string, settings: SourceSettings, now = Date.
       .map(sourceOf)
       .find((source) => source && source.id !== current?.id && sameMailbox(source, settings));
     if (before) {
-      write(before.id);
+      write(before);
       return { source: sourceById(userId, before.id)!, replaced: current };
     }
     const id = randomUUID();
     sqlite.prepare(`INSERT INTO email_sources (id, user_id, provider, email_address, display_name, imap_host, imap_port, imap_security, username, status, import_after, metadata, created_at, updated_at)
       VALUES (?, ?, 'imap', ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
-      .run(id, userId, settings.email_address, settings.display_name ?? null, settings.imap_host, settings.imap_port, settings.imap_security, settings.username, settings.import_after, metadata, now, now);
+      .run(id, userId, settings.email_address, settings.display_name ?? null, settings.imap_host, settings.imap_port, settings.imap_security, settings.username, settings.import_after, metadataFor(null), now, now);
     return { source: sourceById(userId, id)!, replaced: current };
   })();
 }
@@ -298,18 +311,158 @@ export function saveEmail(email: NewEmail, now = Date.now()): boolean {
         .run(email.uid, email.uid_validity, email.is_read ? 1 : 0, email.is_replied ? 1 : 0, email.important ? 1 : 0, email.trashed_at, now, existing.id);
       return false;
     }
-    sqlite.prepare(`INSERT INTO emails (id, user_id, email_source_id, email_folder_id, uid, uid_validity, provider_message_id, provider_thread_id, provider_label_ids,
-        direction, status, subject, from_name, from_email, to_name, to_email, recipients, people, text_body, body_format, body_truncated,
-        is_read, is_replied, important, provider_internal_date, sent_at, size, attachment_metadata, metadata, trashed_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(
-        randomUUID(), email.user_id, email.email_source_id, email.email_folder_id, email.uid, email.uid_validity, email.provider_message_id, email.provider_thread_id, JSON.stringify(email.labels),
-        email.direction, email.status, email.subject, email.from_name, email.from_email, email.to_name, email.to_email, JSON.stringify(email.recipients),
-        peopleLine(email), email.text_body, email.body_format, email.body_truncated ? 1 : 0,
-        email.is_read ? 1 : 0, email.is_replied ? 1 : 0, email.important ? 1 : 0, email.provider_internal_date, email.sent_at, email.size,
-        JSON.stringify({ attachments: email.attachments }), JSON.stringify(email.metadata), email.trashed_at, now, now,
-      );
+    insertEmail(email, now);
     return true;
+  })();
+}
+
+/// A new message, as it is: its row's id.
+function insertEmail(email: NewEmail, now: number): string {
+  const id = randomUUID();
+  sqlite.prepare(`INSERT INTO emails (id, user_id, email_source_id, email_folder_id, uid, uid_validity, provider_message_id, provider_thread_id, provider_label_ids,
+      direction, status, subject, from_name, from_email, to_name, to_email, recipients, people, text_body, body_format, body_truncated,
+      is_read, is_replied, important, provider_internal_date, sent_at, size, attachment_metadata, metadata, trashed_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(
+      id, email.user_id, email.email_source_id, email.email_folder_id, email.uid, email.uid_validity, email.provider_message_id, email.provider_thread_id, JSON.stringify(email.labels),
+      email.direction, email.status, email.subject, email.from_name, email.from_email, email.to_name, email.to_email, JSON.stringify(email.recipients),
+      peopleLine(email), email.text_body, email.body_format, email.body_truncated ? 1 : 0,
+      email.is_read ? 1 : 0, email.is_replied ? 1 : 0, email.important ? 1 : 0, email.provider_internal_date, email.sent_at, email.size,
+      JSON.stringify({ attachments: email.attachments }), JSON.stringify(email.metadata), email.trashed_at, now, now,
+    );
+  return id;
+}
+
+// ─── Through Microsoft Graph ─────────────────────────────────────────────
+
+/// Where a folder's round of changes stands, for a mailbox read through
+/// Microsoft Graph: the start of the window the round was asked with, the
+/// next page of a round under way, and where the next round starts.
+export interface GraphFolderState {
+  since: number;
+  next_link: string | null;
+  delta_link: string | null;
+}
+
+/// The folders read through Graph.
+export type GraphReadRole = "inbox" | "sent";
+
+function sourceMetadata(sourceId: string): Record<string, unknown> | null {
+  const row = sqlite.prepare("SELECT metadata FROM email_sources WHERE id = ? AND status != 'removed'").get(sourceId) as { metadata: string } | undefined;
+  return row ? json<Record<string, unknown>>(row.metadata, {}) : null;
+}
+
+export function graphFolderState(sourceId: string, role: GraphReadRole): GraphFolderState | null {
+  ensure();
+  const kept = (sourceMetadata(sourceId)?.graph_folders as Record<string, Partial<GraphFolderState>> | undefined)?.[role];
+  if (!kept || typeof kept.since !== "number") return null;
+  return { since: kept.since, next_link: typeof kept.next_link === "string" ? kept.next_link : null, delta_link: typeof kept.delta_link === "string" ? kept.delta_link : null };
+}
+
+/// Noted for the mailbox (null: none, to start a new round) — never for one
+/// removed meanwhile.
+export function saveGraphFolderState(sourceId: string, role: GraphReadRole, state: GraphFolderState | null, now = Date.now()): void {
+  ensure();
+  sqlite.transaction(() => {
+    const metadata = sourceMetadata(sourceId);
+    if (!metadata) return;
+    const folders = { ...((metadata.graph_folders as Record<string, unknown> | undefined) ?? {}) };
+    if (state) folders[role] = state;
+    else delete folders[role];
+    sqlite.prepare("UPDATE email_sources SET metadata = ?, updated_at = ? WHERE id = ? AND status != 'removed'").run(JSON.stringify({ ...metadata, graph_folders: folders }), now, sourceId);
+  })();
+}
+
+const SPECIAL_USE: Record<FolderRole, string> = { inbox: "\\Inbox", sent: "\\Sent", drafts: "\\Drafts" };
+
+/// A folder of a mailbox read through Graph: the one kept for its role (from
+/// IMAP before the mailbox moved to Graph: its messages are the same), else
+/// a new one under Graph's well-known name; the name the person sees, Graph's.
+export function graphFolder(sourceId: string, role: FolderRole, wellKnown: string, name: string | null, now = Date.now()): EmailFolder {
+  ensure();
+  const existing = folderFor(sourceId, role);
+  if (!existing) return upsertFolder(sourceId, { path: wellKnown, name, special_use: SPECIAL_USE[role], role }, now);
+  if (name && name !== existing.name) sqlite.prepare("UPDATE email_folders SET name = ?, updated_at = ? WHERE id = ?").run(name, now, existing.id);
+  return { ...existing, name: name ?? existing.name };
+}
+
+/// A round of a folder's changes finished.
+export function noteGraphFolder(folderId: string, state: { synced_after: number; message_count: number | null; last_synced_at: number }): void {
+  ensure();
+  sqlite.prepare("UPDATE email_folders SET synced_after = ?, message_count = coalesce(?, message_count), last_synced_at = ?, updated_at = ? WHERE id = ?")
+    .run(state.synced_after, state.message_count, state.last_synced_at, state.last_synced_at, folderId);
+}
+
+/// The folder's messages read through Graph: their Graph id, and their row.
+export function graphIdsIn(folderId: string): Map<string, string> {
+  ensure();
+  const rows = sqlite.prepare("SELECT id, json_extract(metadata, '$.graph_id') AS graph_id FROM emails WHERE email_folder_id = ? AND json_extract(metadata, '$.graph_id') IS NOT NULL").all(folderId) as Array<{ id: string; graph_id: string }>;
+  return new Map(rows.map((row) => [row.graph_id, row.id]));
+}
+
+/// The row of the folder a message read through Graph already is, by its
+/// Message-ID: one kept from IMAP before the mailbox moved to Graph, or one
+/// removed from the folder and back since (under another Graph id).
+function counterpart(folderId: string, messageId: string | null): string | null {
+  if (!messageId) return null;
+  const row = sqlite.prepare(`SELECT id FROM emails WHERE email_folder_id = ? AND provider_message_id = ?
+      AND (json_extract(metadata, '$.graph_id') IS NULL OR trashed_at IS NOT NULL)
+    ORDER BY json_extract(metadata, '$.graph_id') IS NULL DESC, provider_internal_date DESC LIMIT 1`).get(folderId, messageId) as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
+/// Whether a message read through Graph is already here, kept another way.
+export function graphCounterpart(folderId: string, messageId: string | null): boolean {
+  ensure();
+  return counterpart(folderId, messageId) !== null;
+}
+
+/// What a change of Graph says of one message.
+export interface GraphChange {
+  graphId: string;
+  /// Gone from the folder: deleted, or moved elsewhere.
+  removed: boolean;
+  /// The message as it is kept when new; null for a removal.
+  email: NewEmail | null;
+  /// Read and flagged now (null: the change does not say).
+  isRead: boolean | null;
+  flagged: boolean | null;
+}
+
+/// A page of changes kept, all or none: what is new added, what was here
+/// brought up to date (read, flagged, back in the folder), what left the
+/// folder hidden — kept, as a message flagged deleted is, never purged.
+/// `known` (Graph id → row) follows. How many messages are new.
+export function saveGraphChanges(folderId: string, changes: GraphChange[], known: Map<string, string>, now = Date.now()): number {
+  ensure();
+  return sqlite.transaction(() => {
+    let added = 0;
+    for (const change of changes) {
+      const row = known.get(change.graphId);
+      if (change.removed) {
+        if (row) sqlite.prepare("UPDATE emails SET trashed_at = coalesce(trashed_at, ?), updated_at = ? WHERE id = ?").run(now, now, row);
+        continue;
+      }
+      const flags = [change.isRead === null ? null : change.isRead ? 1 : 0, change.flagged === null ? null : change.flagged ? 1 : 0] as const;
+      if (row) {
+        sqlite.prepare("UPDATE emails SET is_read = coalesce(?, is_read), important = coalesce(?, important), trashed_at = NULL, updated_at = ? WHERE id = ?").run(...flags, now, row);
+        continue;
+      }
+      const email = change.email;
+      if (!email) continue;
+      const before = counterpart(folderId, email.provider_message_id);
+      if (before) {
+        // The same e-mail: it takes its Graph id and conversation, its UID goes.
+        sqlite.prepare(`UPDATE emails SET uid = NULL, uid_validity = NULL, provider_thread_id = coalesce(?, provider_thread_id), is_read = coalesce(?, is_read), important = coalesce(?, important),
+            trashed_at = NULL, metadata = json_set(metadata, '$.graph_id', ?), updated_at = ? WHERE id = ?`)
+          .run(email.provider_thread_id, ...flags, change.graphId, now, before);
+        known.set(change.graphId, before);
+        continue;
+      }
+      known.set(change.graphId, insertEmail(email, now));
+      added += 1;
+    }
+    return added;
   })();
 }
 

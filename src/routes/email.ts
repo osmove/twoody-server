@@ -12,8 +12,10 @@ import { formatAddress } from "../email/parse.js";
 //   GET    /email/folders     INBOX, Sent and Drafts as found on the server
 //   GET    /email/recent      the latest messages (?folder=inbox|sent&limit=)
 //   POST   /email/test        { address, host, port, security?, username?, password } → the connection tried once;
-//                             { auth: "microsoft", address, refresh_token? } for an Outlook.com or Microsoft 365
-//                             mailbox (the refresh token the Desktop's main process got, or the one kept)
+//                             { auth: "graph", address, refresh_token?, scopes? } for an Outlook.com or Microsoft 365
+//                             mailbox read through Microsoft Graph (the sign-in the Desktop's main process got, which
+//                             becomes the link to Microsoft, or the link kept); { auth: "microsoft", address,
+//                             refresh_token? } for one read over IMAP, as Twoody 0.13.76 linked them
 //   POST   /email/account     the same, tried then kept; read at once
 //   POST   /email/sync        read what is new, now
 //   DELETE /email/account     ?keep_messages=true|false: stops, forgets the password or sign-in, keeps or deletes the copy
@@ -27,8 +29,12 @@ const security: Array<Record<string, string[]>> = [{ bearerAuth: [] }, { userTok
 /// How a refusal is answered.
 function statusFor(error: string): number {
   if (error === "email_off") return 403;
-  if (["not_configured", "signin_required"].includes(error)) return 409;
-  if (["auth_failed", "host_not_found", "unreachable", "tls_failed", "timeout", "no_inbox", "failed", "admin_consent_required", "signin_failed", "signin_unreachable", "imap_refused"].includes(error)) return 502;
+  if (["not_configured", "signin_required", "not_linked"].includes(error)) return 409;
+  if ([
+    "auth_failed", "host_not_found", "unreachable", "tls_failed", "timeout", "no_inbox", "failed", "admin_consent_required", "signin_failed", "signin_unreachable", "imap_refused",
+    // Through Microsoft Graph.
+    "no_mailbox", "graph_refused", "throttled", "graph_unreachable", "graph_failed", "gone", "sync_reset", "other_address", "method_not_allowed",
+  ].includes(error)) return 502;
   return 422;
 }
 
@@ -43,8 +49,9 @@ const accountBody = {
     password: { type: "string", maxLength: 1000 },
     window_days: { type: "integer" },
     preset: { type: "string", maxLength: 30 },
-    auth: { type: "string", enum: ["password", "microsoft"] },
+    auth: { type: "string", enum: ["password", "microsoft", "graph"] },
     refresh_token: { type: "string", maxLength: 16384 },
+    scopes: { type: "string", maxLength: 4096 },
   },
 };
 
