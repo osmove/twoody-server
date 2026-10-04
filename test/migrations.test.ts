@@ -50,6 +50,8 @@ test("a database from before migrations comes out converged, every row kept, a c
   assert.equal((db.prepare("SELECT prefs FROM users").get() as { prefs: string }).prefs, '{"memory_mode":"full"}');
   assert.equal((db.prepare("SELECT created_at FROM users").get() as { created_at: number }).created_at, s * 1000);
   assert.deepEqual(db.prepare("SELECT created_at, last_activity_at FROM discussions").get(), { created_at: s * 1000, last_activity_at: s * 1000 });
+  // Migration 3: where a title comes from; unknown for the ones before.
+  assert.deepEqual(db.prepare("SELECT title, title_source FROM discussions").get(), { title: "Bonjour", title_source: null });
 
   const uuid = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   assert.deepEqual(db.prepare("SELECT id, phones, emails FROM contacts").get(), { id: uuid, phones: '[{"label":null,"value":"0612"}]', emails: "[]" });

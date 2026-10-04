@@ -10,6 +10,7 @@ import { generateId } from "../auth.js";
 import { publish as publishEvent } from "../events.js";
 import { discussionContext } from "./queries.js";
 import { readMemoryMode } from "../chatContext.js";
+import { discussionTitle } from "../documentBlocks.js";
 
 // `/discussions` mirrors the cloud's chat-history surface. The RN app
 // hits this on chat boot to render the recent-conversations drawer
@@ -125,6 +126,9 @@ export async function discussionRoutes(app: FastifyInstance) {
         discussions: page.map((row) => ({
           id:               row.id,
           title:            row.title ?? null,
+          // "question" (the first question's, for now), "model" (written
+          // by the model), "given" (set on purpose); null for older ones.
+          title_source:     row.titleSource ?? null,
           channel:          row.channel,
           vault_id:         row.vaultId ?? null,
           memory_mode:      readMemoryMode(row.memoryMode),
@@ -200,6 +204,7 @@ export async function discussionRoutes(app: FastifyInstance) {
       reply.send({
         id:               discussion.id,
         title:            discussion.title ?? null,
+        title_source:     discussion.titleSource ?? null,
         channel:          discussion.channel,
         vault_id:         discussion.vaultId ?? null,
         // Its own memory mode (Mémoire v2); null follows the person's (/me).
@@ -394,11 +399,26 @@ export function importVaultConversation(userId: string, body: ImportBody): { err
     }
     const nowMs = Date.now();
     const id = found?.id ?? generateId();
+    let retitled: string | null = null;
+    // A title the vault only made from the first question (no device sealed
+    // one: src/vault/sync.ts mergeInto) is no title given on purpose.
+    const firstAsked = (sqlite.prepare("SELECT content FROM messages WHERE discussion_id = ? AND role = 'user' ORDER BY rowid LIMIT 1").get(id) as { content: string } | undefined)?.content;
+    const firstTurn = [...body.turns].sort((a, b) => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")))[0]?.text;
+    const derived = (title: string) => [firstAsked, firstTurn].some((text) => text != null && (title === text.slice(0, 60) || title === discussionTitle(text)));
     if (!found) {
-      sqlite.prepare("INSERT INTO discussions (id, user_id, channel, title, created_at, last_activity_at, vault_id) VALUES (?, ?, 'vault', ?, ?, ?, ?)")
-        .run(id, userId, body.title?.slice(0, 200) || body.turns[0]?.text.slice(0, 60) || null, nowMs, nowMs, vaultId);
+      const title = body.title?.slice(0, 200) || body.turns[0]?.text.slice(0, 60) || null;
+      sqlite.prepare("INSERT INTO discussions (id, user_id, channel, title, title_source, created_at, last_activity_at, vault_id) VALUES (?, ?, 'vault', ?, ?, ?, ?, ?)")
+        .run(id, userId, title, title === null ? null : body.title && !derived(body.title) ? "given" : "question", nowMs, nowMs, vaultId);
     } else if (body.title) {
-      sqlite.prepare("UPDATE discussions SET title = ? WHERE id = ?").run(body.title.slice(0, 200), id);
+      const title = body.title.slice(0, 200);
+      const here = sqlite.prepare("SELECT title, title_source FROM discussions WHERE id = ?").get(id) as { title: string | null; title_source: string | null };
+      const auto = derived(title);
+      // The model's title here, or one given, is not replaced by the first
+      // question's.
+      if (here.title !== title && !(auto && (here.title_source === "model" || here.title_source === "given"))) {
+        sqlite.prepare("UPDATE discussions SET title = ?, title_source = ? WHERE id = ?").run(title, auto ? (here.title_source ?? "question") : "given", id);
+        retitled = title;
+      }
     }
     const known = new Set((sqlite.prepare("SELECT vault_ref FROM messages WHERE discussion_id = ? AND vault_ref IS NOT NULL").all(id) as Array<{ vault_ref: string }>).map((row) => row.vault_ref));
     const insert = sqlite.prepare("INSERT INTO messages (id, discussion_id, user_id, role, content, provider, model, vault_ref, created_at, sources, answered_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
@@ -438,12 +458,15 @@ export function importVaultConversation(userId: string, body: ImportBody): { err
       added += 1;
     }
     if (latest) sqlite.prepare("UPDATE discussions SET last_activity_at = MAX(last_activity_at, ?) WHERE id = ?").run(latest, id);
-    return { id, added, created: !found };
+    return { id, added, created: !found, retitled };
   });
-  const result = run();
-  if ("error" in result) return result;
+  const outcome = run();
+  if ("error" in outcome) return outcome;
+  const { retitled, ...result } = outcome;
   if (result.created) publishEvent({ kind: "discussion.created", userId, discussionId: result.id, title: body.title ?? null });
   else if (result.added > 0) publishEvent({ kind: "discussion.touched", userId, discussionId: result.id, lastActivityAt: new Date().toISOString() });
+  // Another device's title for it: the lists show it.
+  if (retitled !== null) publishEvent({ kind: "discussion.updated", userId, discussionId: result.id, title: retitled });
   return result;
 }
 

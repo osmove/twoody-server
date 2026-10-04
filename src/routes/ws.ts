@@ -11,6 +11,10 @@ import { subscribe } from "../events.js";
 //     {"type":"hello", "user_id":"…"}
 //     {"type":"discussion.created",  "discussion_id":"…", "title":"…"}
 //     {"type":"discussion.touched",  "discussion_id":"…", "last_activity_at":"…"}
+//     {"type":"discussion.updated",  "discussion_id":"…", "title":"…"}
+//         its title changed: the model wrote one after the first answer
+//         (src/discussionTitles.ts), or another device's came with the
+//         synchronised history; GET /discussions lists it from then on
 //     {"type":"message.appended",    "discussion_id":"…", "role":"user|assistant"}
 //
 //   client → server
@@ -82,6 +86,11 @@ type SerializedEvent =
       last_activity_at: string;
     }
   | {
+      type: "discussion.updated";
+      discussion_id: string;
+      title: string | null;
+    }
+  | {
       type: "message.appended";
       discussion_id: string;
       role: "user" | "assistant";
@@ -91,6 +100,8 @@ function serializeEvent(event: Parameters<Parameters<typeof subscribe>[0]>[0]): 
   switch (event.kind) {
     case "discussion.created":
       return { type: "discussion.created", discussion_id: event.discussionId, title: event.title };
+    case "discussion.updated":
+      return { type: "discussion.updated", discussion_id: event.discussionId, title: event.title };
     case "discussion.touched":
       return { type: "discussion.touched", discussion_id: event.discussionId, last_activity_at: event.lastActivityAt };
     case "message.appended":

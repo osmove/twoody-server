@@ -379,6 +379,18 @@ export function createConversationBridge({ sync, local, userId, trusted, self }:
     return { sealed: true as const, eventId, pending: await sync.pending() };
   }
 
+  /// The title the model wrote for a synchronised conversation of this
+  /// computer (src/discussionTitles.ts): sealed and sent like a rename, so
+  /// that the person's other devices list it too.
+  async function sealTitle(discussionId: string, title: string) {
+    if (!(await trusted())) return { sealed: false as const, reason: "not_trusted" };
+    const vaultId = local.vaultIdOf(discussionId);
+    if (!vaultId) return { sealed: false as const, reason: "not_synchronised" };
+    const eventId = await sync.recordTitle(vaultId, title);
+    await sync.flush().catch(() => null);
+    return { sealed: true as const, eventId };
+  }
+
   /// Catch-up (docs/mesh-design.md §3, for S4): a question comes for vault
   /// conversation `vaultConversationId`, whose sender knows the exchanges
   /// `knownRefs` (its last three). When some are not here, one pull is
@@ -412,7 +424,7 @@ export function createConversationBridge({ sync, local, userId, trusted, self }:
     return { status: state.missing.length === 0 && state.discussionId ? "complete" : "missing", ...state };
   }
 
-  return { reconcile, run, sealOwnTurn, ensureConversation };
+  return { reconcile, run, sealOwnTurn, sealTitle, ensureConversation };
 }
 
 export type ConversationBridge = ReturnType<typeof createConversationBridge>;

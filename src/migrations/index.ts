@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync } from "fs";
 import { join } from "path";
 import { legacyBaseline } from "./baseline.js";
 import { convergence } from "./0002_convergence.js";
+import { titleSource } from "./0003_title_source.js";
 
 // Versioned migrations (03/10/2026, docs/schema-convergence.md): the
 // database's version is SQLite's `user_version`. A database at 0 — fresh,
@@ -23,6 +24,7 @@ export const MIGRATIONS: Migration[] = [
   // The baseline itself: nothing to do beyond what legacyBaseline did.
   { version: 1, name: "baseline", up: () => undefined },
   { version: 2, name: "convergence", up: convergence },
+  { version: 3, name: "title_source", up: titleSource },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

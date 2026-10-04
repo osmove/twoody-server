@@ -28,10 +28,11 @@ import { startMeshLinks, startPeerStatusPoller } from "./peers/index.js";
 import { startRosterRefresh } from "./vault/roster.js";
 import { desktopVaultAccount } from "./vault/desktopAccount.js";
 import { relayAccountThroughDesktop } from "./account/desktopRelay.js";
-import { setDesktopVault, startVaultService } from "./vault/service.js";
+import { sealDiscussionTitle, setDesktopVault, startVaultService } from "./vault/service.js";
 import { startMemorySync } from "./vault/memories.js";
 import { startMemoryWork } from "./memory/changes.js";
 import { startLearning } from "./memory/learner.js";
+import { onTitled, startTitles } from "./discussionTitles.js";
 import { builtinAddress, initEngine, preloadBuiltin, stopEngine } from "./engine.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -314,6 +315,10 @@ try {
   const memoryWork = startMemoryWork();
   // What was said in passing, learned once a conversation is over.
   const learning = startLearning();
+  // A new conversation's title, written by the model after its first
+  // answer; a synchronised one's sealed for the other devices (headless).
+  const titles = startTitles();
+  onTitled((discussionId, title) => void sealDiscussionTitle(discussionId, title));
   if (parentPort && process.env.TWOODY_TUNNEL === "1") {
     parentPort.on("message", ({ data }) => {
       if ((data as { type?: unknown } | null)?.type !== "tunnel") return;
@@ -375,6 +380,7 @@ try {
         memorySync.stop();
         memoryWork.stop();
         learning.stop();
+        titles.stop();
         stopPeerPoller();
         stopMeshLinks();
         stopRoster();

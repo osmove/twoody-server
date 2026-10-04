@@ -79,8 +79,10 @@ test("catch-up pulls and imports a conversation, still without writing the vault
   // Twice: nothing added.
   assert.equal((await service.ensureConversation(VAULT_ID, ["q1"], 2000)).status, "complete");
   assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM messages WHERE discussion_id = ?").get(caught.discussionId) as { n: number }).n, 2);
-  // The Desktop seals its own turns (recordLocalTurn): not here as well.
+  // The Desktop seals its own turns (recordLocalTurn): not here as well;
+  // nor the titles the model writes (its conversation sync does).
   assert.equal((await service.sealAnsweredTurn(caught.discussionId!, "q1")).sealed, false);
+  assert.equal((await service.sealDiscussionTitle(caught.discussionId!, "Train de 8 h 12")).sealed, false);
   assert.deepEqual(vaultFiles(), []);
 });
 

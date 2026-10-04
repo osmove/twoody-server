@@ -37,7 +37,8 @@ import { sqliteHistory } from "./localHistory.js";
 // What other lots use: vaultIdentity() (GET /api/v1/peer/vault/identity),
 // pinVaultAnchor() (POST /api/v1/peer/vault/anchor),
 // vaultEpochKeys() and vaultContext() (S5 memories), ensureConversation()
-// (S4 catch-up), sealAnsweredTurn() (called after an answer is written).
+// (S4 catch-up), sealAnsweredTurn() (called after an answer is written),
+// sealDiscussionTitle() (a title the model wrote).
 
 const TICK_MS = 60_000;
 const FIRST_TICK_MS = 5_000;
@@ -410,6 +411,15 @@ export async function ensureConversation(vaultConversationId: string, knownRefs:
 export async function sealAnsweredTurn(discussionId: string, ref: string | null) {
   if (!ref || mode.kind !== "headless" || mode.status !== "trusted" || !mode.bridge) return { sealed: false as const };
   return mode.bridge.sealOwnTurn(discussionId, ref).catch((err) => ({ sealed: false as const, reason: err instanceof VaultError ? err.code : "error" }));
+}
+
+/// A synchronised conversation's title, written by the model here
+/// (src/discussionTitles.ts): a headless computer seals it for the person's
+/// other devices. Inside Twoody Desktop the Desktop does (its conversation
+/// sync), so nothing is sealed twice.
+export async function sealDiscussionTitle(discussionId: string, title: string) {
+  if (mode.kind !== "headless" || mode.status !== "trusted" || !mode.bridge) return { sealed: false as const };
+  return mode.bridge.sealTitle(discussionId, title).catch((err) => ({ sealed: false as const, reason: err instanceof VaultError ? err.code : "error" }));
 }
 
 /// What the mesh roster is built from (vault/roster.ts): the account's

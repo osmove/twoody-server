@@ -70,6 +70,7 @@ import { ensureConversation, sealAnsweredTurn } from "../vault/service.js";
 import { sqliteHistory } from "../vault/localHistory.js";
 import { pathlessSource } from "../vault/sync.js";
 import { noteMemoryUse, profileHints, retrieveMemories } from "../memory/retrieve.js";
+import { titleAfterFirstAnswer, type TitleCall } from "../discussionTitles.js";
 
 interface QueryBody {
   document_access?: unknown;
@@ -1153,6 +1154,11 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       ...(vaultConversationId ? { vault_conversation_id: vaultConversationId, catch_up: { status: caughtUp!.status, missing_refs: caughtUp!.missing } } : {}),
     };
     reply.raw.write(`event: final\ndata: ${JSON.stringify(finalPayload)}\n\n`);
+    // Its first answer stored: a short title the model writes replaces the
+    // first question's (src/discussionTitles.ts), once nothing generates.
+    if (wasNewDiscussion && aggregated.trim()) {
+      titleAfterFirstAnswer({ userId: auth.userId, discussionId: discussion.id, question: content, answer: aggregated, call: titleCall(auth.userId, provider) });
+    }
     // A new conversation, its first answer written: what was said in the
     // ones before is learned now (src/memory/learner.ts), once nothing
     // generates — never alongside this answer.
@@ -1547,7 +1553,7 @@ async function streamFromProvider(
   temperature: number | undefined,
   onDelta: (text: string) => void,
   signal: AbortSignal,
-  options: { effort?: Effort; onReasoning?: (text: string) => void; answerNow?: AbortSignal; purpose?: Purpose; tools?: ChatTools; images?: string[]; earlierImages?: string[] } = {},
+  options: { effort?: Effort; onReasoning?: (text: string) => void; answerNow?: AbortSignal; purpose?: Purpose; tools?: ChatTools; images?: string[]; earlierImages?: string[]; maxTokens?: number } = {},
 ): Promise<Usage | null> {
   // Images go to a model of the person's computers only.
   if (options.images?.length && provider.kind !== "local_openai" && provider.kind !== "peer_openai") throw new VisionUnavailableError(null);
@@ -1782,6 +1788,32 @@ async function learningCall(userId: string, prompt: LearnMessages, signal?: Abor
     }
   }
   return run(answered.kind === "peer_openai" ? await resolveProvider(userId) : answered);
+}
+
+/// What writes a new conversation's title (src/discussionTitles.ts): the
+/// model of this computer that answered, else this computer's default one
+/// — never another computer nor a cloud provider, so that nothing leaves
+/// this computer for a title (a private conversation's included). No
+/// reasoning (the default effort), a few tokens, the background slot.
+const TITLE_MAX_TOKENS = 64;
+function titleCall(userId: string, answered: Provider): TitleCall {
+  return async (prompt, signal) => {
+    // Counted from the start, so that the learner waits for it.
+    const done = beginGeneration("background");
+    try {
+      const target = answered.kind === "local_openai" ? answered : await resolveProvider(userId).catch(() => null);
+      if (target?.kind !== "local_openai") return "";
+      let text = "";
+      const asked = Date.now();
+      let first = 0;
+      const spent = await streamFromProvider(target, prompt, 0, (delta) => { first ||= Date.now(); text += delta; }, signal, { purpose: "background", maxTokens: TITLE_MAX_TOKENS });
+      // Counted with the chat it names, as a compaction is.
+      recordModelCall(userId, "chat", target.model, "this-computer", spent, messagesChars(prompt), text.length, asked, first, Date.now());
+      return text;
+    } finally {
+      done();
+    }
+  };
 }
 
 /// One call to a model other than the answer itself (a memory extraction,
@@ -2770,13 +2802,13 @@ function insertMessage(args: {
 }
 
 function setDiscussionTitle(id: string, prompt: string) {
-  // Cap at ~60 chars so the index list reads cleanly. Don't try to
-  // generate a "real" title via a separate LLM call — self-hosted
-  // mode optimises for token cost over polish.
+  // Cap at ~60 chars so the index list reads cleanly. Shown at once; the
+  // model's own title replaces it after the first answer
+  // (src/discussionTitles.ts), this one staying when it cannot.
   const trimmed = discussionTitle(prompt);
   if (!trimmed) return;
   db.update(discussions)
-    .set({ title: trimmed })
+    .set({ title: trimmed, titleSource: "question" })
     .where(eq(discussions.id, id))
     .run();
 }

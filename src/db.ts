@@ -180,11 +180,16 @@ export const discussions = sqliteTable("discussions", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull().references(() => users.id),
   channel: text("channel").notNull().default("cli"),
-  // Cached title for the index list — set on first message via the
-  // first ~60 chars of the user's prompt. Avoids a round-trip to
-  // generate "real" titles in self-hosted mode (no LLM budget for
-  // a separate naming call).
+  // Title for the index list — set on first message via the first ~60
+  // chars of the user's prompt, then replaced by a short one the model
+  // writes once the first answer is in (src/discussionTitles.ts).
   title: text("title"),
+  // Where `title` comes from: "question" (the first ~60 chars, given at
+  // once), "model" (written by the model after the first answer,
+  // src/discussionTitles.ts) or "given" (brought with a synchronised
+  // conversation, a rename); null before migration 3. Only a "question"
+  // title is ever replaced by the model.
+  titleSource: text("title_source"),
   // A compaction's summary of the conversation up to `summaryThrough` (a
   // message id): the model is given it instead of those messages.
   summary: text("summary"),

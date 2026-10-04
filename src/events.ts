@@ -24,6 +24,15 @@ export type ServerEvent =
       title: string | null;
     }
   | {
+      /// A conversation's title changed after it was created: the model
+      /// wrote one (src/discussionTitles.ts), or a synchronised
+      /// conversation brought another device's.
+      kind: "discussion.updated";
+      userId: string;
+      discussionId: string;
+      title: string | null;
+    }
+  | {
       kind: "message.appended";
       userId: string;
       discussionId: string;

@@ -211,6 +211,18 @@ test("a turn the Pi answers is sealed for the iPhone, with who answered and no p
   assert.equal((await service.sealAnsweredTurn(discussion, null)).sealed, false);
 });
 
+test("a title the model wrote on the Pi is sealed for the iPhone, like a rename", async () => {
+  const discussion = (sqlite.prepare("SELECT id FROM discussions WHERE vault_id = ?").get(VAULT_ID) as { id: string }).id;
+  const sealed = await service.sealDiscussionTitle(discussion, "Contrat et CV");
+  assert.equal(sealed.sealed, true);
+  await phoneSync.pull();
+  assert.equal((await phoneSync.conversations()).find((c) => c.id === VAULT_ID)?.name, "Contrat et CV");
+  assert.doesNotMatch(JSON.stringify(fake.events), /Contrat et CV/, "ciphertext only on the account");
+  // A conversation of the Pi's own (not synchronised): nothing leaves it.
+  sqlite.prepare("INSERT INTO discussions (id, user_id, channel, title, created_at, last_activity_at) VALUES ('pi-own', ?, 'cli', 'Ici', 1, 1)").run(owner);
+  assert.equal((await service.sealDiscussionTitle("pi-own", "Titre privé")).sealed, false);
+});
+
 test("catch-up: a question naming turns the Pi has not seen pulls them first", async () => {
   await phoneSync.recordTurn(VAULT_ID, { ref: "r3", text: "Et la période d'essai ?", reply: "Trois mois.", created_at: "2026-09-30T09:10:00.000Z" });
   await phoneSync.flush();

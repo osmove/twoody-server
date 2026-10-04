@@ -326,3 +326,20 @@ chiffré (vault) reste le chemin par défaut. Voir la décision 3.
 ### Le compte (twoody-backend)
 Voir le compte rendu de l'étape 2-3 dans le dépôt du backend (commits du 3
 octobre).
+
+## Migration 3 : d'où vient le titre (4 octobre 2026)
+
+Les titres des conversations sont désormais écrits par le modèle après la
+première réponse (`src/discussionTitles.ts`), comme ChatGPT et Claude.
+`src/migrations/0003_title_source.ts` ajoute `discussions.title_source` :
+
+- `question` : les ~60 premiers caractères de la première question, montrés
+  tout de suite ; le modèle peut les remplacer ;
+- `model` : écrit par le modèle ;
+- `given` : donné exprès (le titre qu'un autre appareil a scellé dans
+  l'historique chiffré, un futur renommage) ; jamais remplacé par le modèle ;
+- `NULL` : conversations d'avant la migration.
+
+Colonne **propre au Mac** : elle n'est pas dans `schema/contract.json`, le
+compte n'écrivant pas de titres. À y ajouter (avec `title_source` côté
+Rails) le jour où le cloud en générera.
