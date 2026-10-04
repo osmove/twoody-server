@@ -12,7 +12,7 @@ import { recordTrace, type ToolCallTrace, type TurnPrompt, type TurnTrace } from
 import { projectCards } from "../projects/projects.js";
 import { ACTION_TOOLS, askedAction, runAction, type ChatAction } from "../projects/actions.js";
 import { createHash } from "node:crypto";
-import { inflight } from "../account/inflight.js";
+import { idleForMs, inflight } from "../account/inflight.js";
 import { citationLink, folderOf, localFolderIds, meshPeers, retrieveAcrossComputers, type MeshPassage, type MeshRetrieval } from "../documents/remote.js";
 import { listingIntent } from "../documents/fileListing.js";
 import { listFilesAcrossComputers, type MeshListing } from "../documents/remoteListing.js";
@@ -162,7 +162,7 @@ export async function queryRoutes(app: FastifyInstance) {
   setLearningModel(learningCall);
   // A memory saved, edited or learned: the next new conversation's start,
   // read ahead.
-  onMemoriesChanged((userId) => scheduleWarm(userId));
+  onMemoriesChanged((userId) => { for (const key of warmKeysOf(userId)) scheduleWarm(key); });
   // A new day (« Today is… »), a restart: the start of a new conversation
   // read ahead before anyone asks (Jimmy, 03/10/2026: the first spoken
   // question of the morning read 2 477 tokens from nothing, 5 s).
@@ -175,8 +175,11 @@ export async function queryRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      await restoreWarmSeed(auth.userId);
-      scheduleWarm(auth.userId, 0);
+      const key = warmKey(auth);
+      await restoreWarmSeed(key);
+      // Asked by the person (typing, a recording started): the runtime is
+      // woken if it slept, since a question follows.
+      scheduleWarm(key, 0, true);
       reply.code(202).send({ status: "scheduled" });
     },
   });
@@ -934,9 +937,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // What a new conversation would start with, kept ready in the runtime
     // (warmNewConversation): the facts of this request, and what was sent.
     if (provider.kind === "local_openai") {
-      lastTurnInputs.set(auth.userId, { input: turnInput, provider, tools: toolsFor(provider)?.definitions ?? null });
-      saveWarmSeed(auth.userId, turnInput, provider, toolsFor(provider)?.definitions ?? null);
-      noteSystemSent(provider, chatMessages[0]?.content ?? "", toolsFor(provider)?.definitions ?? null);
+      lastTurnInputs.set(warmKey(auth), { input: turnInput, provider, tools: toolsFor(provider)?.definitions ?? null });
+      saveWarmSeed(warmKey(auth), turnInput, provider, toolsFor(provider)?.definitions ?? null);
+      noteSystemSent(warmKey(auth), provider, chatMessages[0]?.content ?? "", toolsFor(provider)?.definitions ?? null);
     }
     let conversationOnly: ChatMessage[] | null = null;
     const messagesFor = (candidate: Provider): ChatMessage[] => {
@@ -1176,7 +1179,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // seconds after the answer, stopped by the next message.
     if (!left.has("memory")) learnAfterAnswer(discussion.id);
     // What the next new conversation starts with, read ahead if it changed.
-    scheduleWarm(auth.userId);
+    scheduleWarm(warmKey(auth));
   } catch (err) {
     if (upstream.signal.aborted) {
       // Keep what was written: the conversation would otherwise show a
@@ -1615,11 +1618,32 @@ async function streamFromProvider(
 // conversation finds it ready. Built from the facts of the person's last
 // request (language, first name, time zone, window, model).
 
+// Kept per person and per surface (warmKey): this computer's app and a
+// phone are offered different tools (the connectors are the app's), so the
+// start of their new conversations differs, and each is read ahead for
+// itself (04/10/2026: the phone's question found the app's start, 0 cached).
 const lastTurnInputs = new Map<string, { input: ChatContextInput; provider: Provider; tools: ChatTools["definitions"] | null }>();
 const systemsSent = new Map<string, string>();
 const warmTimers = new Map<string, NodeJS.Timeout>();
 const WARM_DELAY_MS = 4_000;
 const WARM_BUSY_RETRY_MS = 5_000;
+
+/// The runtime of Twoody Desktop puts its model to sleep after 30 minutes
+/// without a request, and forgets what it read: past that, nothing read
+/// ahead is still there.
+const RUNTIME_SLEEPS_AFTER_MS = 29 * 60_000;
+
+/// Whose start of a new conversation: the person's, in this computer's app
+/// (their id), or on another device (their id + « |remote »).
+function warmKey(auth: { userId: string } & Parameters<typeof isThisComputersApp>[0]): string {
+  return isThisComputersApp(auth) ? auth.userId : `${auth.userId}|remote`;
+}
+
+const userOfKey = (key: string) => key.split("|")[0]!;
+
+function warmKeysOf(userId: string): string[] {
+  return [...new Set([...lastTurnInputs.keys(), ...Object.keys(readWarmSeeds())])].filter((key) => userOfKey(key) === userId);
+}
 
 function systemKey(provider: Provider): string {
   return "baseUrl" in provider ? `${provider.baseUrl}\n${"model" in provider ? provider.model : ""}` : provider.kind;
@@ -1629,14 +1653,15 @@ function digestOf(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-function noteSystemSent(provider: Provider, system: string, tools: ChatTools["definitions"] | null) {
-  systemsSent.set(systemKey(provider), digestOf(`${system}\n${JSON.stringify(tools ?? [])}`));
+function noteSystemSent(key: string, provider: Provider, system: string, tools: ChatTools["definitions"] | null) {
+  systemsSent.set(`${systemKey(provider)}\n${key}`, digestOf(`${system}\n${JSON.stringify(tools ?? [])}`));
 }
 
 /// The system prompt a new conversation of this person would start with now.
-export function newConversationSystem(userId: string): { system: string; provider: Provider; tools: ChatTools["definitions"] | null } | null {
-  const last = lastTurnInputs.get(userId);
+export function newConversationSystem(key: string): { system: string; provider: Provider; tools: ChatTools["definitions"] | null } | null {
+  const last = lastTurnInputs.get(key);
   if (!last) return null;
+  const userId = userOfKey(key);
   const context = loadUserContext(userId);
   const memoryMode = memoryModeFor(context.prefs);
   const turn = buildChatTurn({
@@ -1666,18 +1691,27 @@ export function newConversationSystem(userId: string): { system: string; provide
 }
 
 /// Reads ahead what the next new conversation starts with, when it changed.
-export async function warmNewConversation(userId: string): Promise<"warmed" | "unchanged" | "busy" | "none"> {
-  const next = newConversationSystem(userId);
+/// `wake`: the person is about to ask (typing, a recording) — read ahead
+/// even if the runtime slept, which loads its model again. Otherwise (a
+/// memory saved, the watch) a sleeping runtime is left asleep.
+export async function warmNewConversation(key: string, { wake = false }: { wake?: boolean } = {}): Promise<"warmed" | "unchanged" | "busy" | "none" | "asleep"> {
+  const next = newConversationSystem(key);
   if (!next || next.provider.kind !== "local_openai") return "none";
   const digest_ = digestOf(`${next.system}\n${JSON.stringify(next.tools ?? [])}`);
-  if (systemsSent.get(systemKey(next.provider)) === digest_) return "unchanged";
+  const sentKey = `${systemKey(next.provider)}\n${key}`;
+  // Since 02/10/2026 a new conversation's first message read everything
+  // again after a pause: read ahead before the runtime slept, the start was
+  // taken as still there.
+  const slept = idleForMs() > RUNTIME_SLEEPS_AFTER_MS;
+  if (systemsSent.get(sentKey) === digest_ && !slept) return "unchanged";
+  if (slept && !wake) return "asleep";
   if (inflight() > 0) return "busy";
   const warmStarted = Date.now();
   const done = beginGeneration("chat");
   try {
     await streamLocal(next.provider.baseUrl, [{ role: "system", content: next.system }, { role: "user", content: "" }], next.provider.model, 0, () => undefined, AbortSignal.timeout(120_000), { purpose: "chat", maxTokens: 1, ...(next.tools ? { tools: { definitions: next.tools, run: async () => "" } } : {}) });
-    systemsSent.set(systemKey(next.provider), digest_);
-    recordTrace(userId, { kind: "warm", model: next.provider.model, outcome: "answered", totalMs: Date.now() - warmStarted, detail: { system_chars: next.system.length, tools: next.tools?.map((tool) => tool.function.name) ?? [] } });
+    systemsSent.set(sentKey, digest_);
+    recordTrace(userOfKey(key), { kind: "warm", model: next.provider.model, outcome: "answered", totalMs: Date.now() - warmStarted, detail: { system_chars: next.system.length, tools: next.tools?.map((tool) => tool.function.name) ?? [] } });
     return "warmed";
   } catch {
     return "none";
@@ -1705,10 +1739,10 @@ function readWarmSeeds(): Record<string, WarmSeed> {
   }
 }
 
-function saveWarmSeed(userId: string, input: ChatContextInput, provider: Provider, tools: ChatTools["definitions"] | null) {
+function saveWarmSeed(seedKey: string, input: ChatContextInput, provider: Provider, tools: ChatTools["definitions"] | null) {
   const kept = Object.fromEntries(Object.entries(input).filter(([key]) => !SEED_LEFT_OUT.includes(key)));
   const seeds = readWarmSeeds();
-  seeds[userId] = { input: kept, tools, model: "model" in provider ? provider.model : null };
+  seeds[seedKey] = { input: kept, tools, model: "model" in provider ? provider.model : null };
   try {
     writeFileSync(WARM_SEEDS_FILE, JSON.stringify(seeds), { mode: 0o600 });
   } catch {
@@ -1717,14 +1751,14 @@ function saveWarmSeed(userId: string, input: ChatContextInput, provider: Provide
 }
 
 /// After a restart, what the last turn was built from, from disk.
-export async function restoreWarmSeed(userId: string): Promise<boolean> {
-  if (lastTurnInputs.has(userId)) return true;
-  const seed = readWarmSeeds()[userId];
+export async function restoreWarmSeed(key: string): Promise<boolean> {
+  if (lastTurnInputs.has(key)) return true;
+  const seed = readWarmSeeds()[key];
   if (!seed?.input) return false;
-  const provider = await resolveProvider(userId, seed.model ?? undefined).catch(() => null);
-  if (!provider || provider.kind !== "local_openai" || lastTurnInputs.has(userId)) return lastTurnInputs.has(userId);
+  const provider = await resolveProvider(userOfKey(key), seed.model ?? undefined).catch(() => null);
+  if (!provider || provider.kind !== "local_openai" || lastTurnInputs.has(key)) return lastTurnInputs.has(key);
   const input = { ...seed.input, prefs: {}, history: [], memories: [], content: "" } as unknown as ChatContextInput;
-  lastTurnInputs.set(userId, { input, provider, tools: seed.tools });
+  lastTurnInputs.set(key, { input, provider, tools: seed.tools });
   return true;
 }
 
@@ -1742,9 +1776,9 @@ let warmWatch: NodeJS.Timeout | null = null;
 function startWarmWatch() {
   if (warmWatch || process.env.NODE_ENV === "test") return;
   const check = async () => {
-    for (const userId of new Set([...Object.keys(readWarmSeeds()), ...lastTurnInputs.keys()])) {
+    for (const key of new Set([...Object.keys(readWarmSeeds()), ...lastTurnInputs.keys()])) {
       if (inflight() > 0) return;
-      if (await restoreWarmSeed(userId)) await warmNewConversation(userId).catch(() => "none");
+      if (await restoreWarmSeed(key)) await warmNewConversation(key).catch(() => "none");
     }
   };
   const first = setTimeout(() => void check(), 30_000);
@@ -1753,17 +1787,17 @@ function startWarmWatch() {
   warmWatch.unref?.();
 }
 
-function scheduleWarm(userId: string, delayMs = WARM_DELAY_MS) {
-  const pending = warmTimers.get(userId);
+function scheduleWarm(key: string, delayMs = WARM_DELAY_MS, wake = false) {
+  const pending = warmTimers.get(key);
   if (pending) clearTimeout(pending);
   const timer = setTimeout(() => {
-    warmTimers.delete(userId);
-    void warmNewConversation(userId).then((outcome) => {
-      if (outcome === "busy") scheduleWarm(userId, WARM_BUSY_RETRY_MS);
+    warmTimers.delete(key);
+    void warmNewConversation(key, { wake }).then((outcome) => {
+      if (outcome === "busy") scheduleWarm(key, WARM_BUSY_RETRY_MS, wake);
     });
   }, delayMs);
   timer.unref?.();
-  warmTimers.set(userId, timer);
+  warmTimers.set(key, timer);
 }
 
 /// The learner's model call (src/memory/learner.ts): the person's model, on

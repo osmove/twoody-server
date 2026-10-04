@@ -39,6 +39,7 @@ const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
 const { buildApp } = await import("../src/app.js");
 const { ensureSetupToken } = await import("../src/auth.js");
 const { forgetWarmStateForTests, restoreWarmSeed, warmNewConversation } = await import("../src/routes/queries.js");
+const { setIdleForTests } = await import("../src/account/inflight.js");
 const app = await buildApp();
 test.after(async () => {
   await app.close();
@@ -112,4 +113,23 @@ test("« the person is about to ask » (a recording started on the phone): read 
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(warms().length, count + 1, "unchanged: not read twice");
   assert.equal((await app.inject({ method: "POST", url: "/queries/warm" })).statusCode, 401);
+});
+
+test("the runtime slept (30 minutes without a request): what was read ahead is gone — read again when the person is about to ask, never by the watch alone (04/10/2026)", async () => {
+  await ask("Bonjour encore");
+  assert.equal(await warmNewConversation(userId), "unchanged");
+  setIdleForTests(31 * 60_000);
+  assert.equal(await warmNewConversation(userId), "asleep", "a memory saved or the watch do not wake the model");
+  const count = warms().length;
+  assert.equal(await warmNewConversation(userId, { wake: true }), "warmed");
+  assert.equal(warms().length, count + 1);
+  assert.equal(await warmNewConversation(userId), "unchanged");
+});
+
+test("a phone's new conversation has its own start, read ahead for itself", async () => {
+  const { createAuthSession } = await import("../src/auth.js");
+  const phone = { authorization: `Bearer ${createAuthSession(userId, "pair:iPhone").token}` };
+  await app.inject({ method: "POST", url: "/queries", headers: phone, payload: { text: "Salut", channel: "device", force_new_discussion: true, context_window: 16_384, locale: "fr" } });
+  assert.equal(await warmNewConversation(`${userId}|remote`), "unchanged", "the phone's own start, just read");
+  assert.equal(await warmNewConversation(userId), "unchanged", "the app's start is still known as read");
 });

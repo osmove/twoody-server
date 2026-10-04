@@ -12,6 +12,21 @@ export function inflight(purpose?: Purpose): number {
   return purpose ? running[purpose] : running.chat + running.background;
 }
 
+/// When something was last generated here (or the server started: the app
+/// loads the model as it opens). The runtime of Twoody Desktop puts its
+/// model to sleep after 30 minutes without a request (--sleep-idle-seconds),
+/// and what it had read is gone with it.
+let lastActivity = Date.now();
+
+export function idleForMs(now = Date.now()): number {
+  return running.chat + running.background > 0 ? 0 : now - lastActivity;
+}
+
+/// For the tests: as if nothing had run for that long.
+export function setIdleForTests(ms: number) {
+  lastActivity = Date.now() - ms;
+}
+
 const onChat: Array<() => void> = [];
 
 /// Called when an answer starts here (the learner stops for it).
@@ -22,12 +37,14 @@ export function onChatGeneration(fn: () => void) {
 /// Counts one generation until the returned function is called (once).
 export function beginGeneration(purpose: Purpose): () => void {
   running[purpose] += 1;
+  lastActivity = Date.now();
   if (purpose === "chat") for (const fn of onChat) fn();
   let ended = false;
   return () => {
     if (ended) return;
     ended = true;
     running[purpose] = Math.max(0, running[purpose] - 1);
+    lastActivity = Date.now();
   };
 }
 
