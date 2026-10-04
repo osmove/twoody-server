@@ -186,6 +186,7 @@ test("memory: the project's notes in its conversations only; of the person's mem
   assert.match(prompt, /Maître Claire Martin/);
   assert.doesNotMatch(prompt, /Lefèvre/, "learned in another conversation: maybe another client's");
   assert.match(prompt, /client file « Dupont c\/ SCI Les Lilas » \(ref\. 2026-014\)/);
+  assert.match(prompt, /Cite every document you use like \[1\]/);
   assert.match(prompt, /Bail d'habitation, impayés depuis mars\./);
   assert.match(prompt, /- Le bailleur refuse toute transaction avant l'audience\./);
   assert.ok(prompt.trimEnd().endsWith("- Le bailleur refuse toute transaction avant l'audience."), "the file's block is the end of the system prompt");

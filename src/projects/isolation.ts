@@ -249,7 +249,11 @@ export function isolatedProjectContext(userId: string, projectId: string, scale 
       "Everything in it stays in this file: answer from this file's documents and notes and from what the user says here; " +
       "you know nothing of the user's other client files nor of their conversations outside this one, so never bring anything in from them. " +
       "The user's e-mails, calendar, contacts, the web and their connected services are not used in a client file unless the user switches them on for a message with their icons under the message box: " +
-      "if a message needs one of them, say so in one sentence.",
+      "if a message needs one of them, say so in one sentence. " +
+      // Its promise (« les réponses citent la pièce et la page »): said last,
+      // where a small model heeds it (04/10/2026: Qwen3.5 9B answered from
+      // the file's documents without [1]).
+      "Cite every document you use like [1], and say its page, slide or sheet when it helps.",
   ];
   const brief = row.brief?.trim();
   if (brief) {
