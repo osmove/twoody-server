@@ -149,4 +149,13 @@ test("on: the chat switches the light at once, says what it did, and never touch
   assert.ok(asked[0]!.tools?.some((tool) => tool.function.name === "control_home"));
   assert.doesNotMatch(asked[0]!.messages.at(-1)!.content, /lock\.porte/);
   assert.equal((await app.inject({ method: "POST", url: "/api/v1/home/control", headers: desktop, payload: { entity_id: "lock.porte", action: "off" } })).statusCode, 404);
+
+  // Left out of this message by its icon in the chat (capabilities_off,
+  // 04/10/2026): nothing switched, no device nor tool given to the model.
+  called.length = 0;
+  asked.length = 0;
+  await app.inject({ method: "POST", url: "/queries", headers: desktop, payload: { text: "Allume la lumière du salon", channel: "desktop", force_new_discussion: true, capabilities_off: ["home"] } });
+  assert.deepEqual(called, []);
+  assert.ok(!asked[0]!.tools?.some((tool) => tool.function.name === "control_home"));
+  assert.doesNotMatch(asked[0]!.messages.at(-1)!.content, /Lumière Salon/);
 });
