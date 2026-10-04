@@ -2509,7 +2509,10 @@ async function streamLocal(
       held += text;
       while (holding) {
         if (narrating) {
-          if (released + held.length > HOLD_CHARS) letGo();
+          // The same time limit (04/10/2026): with a connector, every answer
+          // was held from its first word up to 280 characters, 4 to 5 s on
+          // the MacBook Air before anything showed.
+          if (released + held.length > HOLD_CHARS || Date.now() - heldSince > HOLD_MS) letGo();
           return;
         }
         const end = sentenceEnd(held);
