@@ -176,7 +176,7 @@ families, by file in `src/routes/`:
 | Bank (Capacités) | `/bank`, `/bank/transactions*`, `/bank/imports*` (CSV, OFX/QFX, QIF; `/bank/imports/preview` reads without keeping), `/bank/accounts/:id` — statements kept on this computer, read and changed from this computer's app only | `bank.ts` (and `src/bank/`) |
 | Account link | `/account/link`, `/account/approvals*` | `accountLink.ts` |
 | Other computers (mesh) | `/api/v1/peer/*`, `/api/v1/peers*` | `peer.ts`, `peers.ts`, `peerVault.ts`, `peerDocuments.ts` |
-| Usage and diagnostics | `/usage*`, `/diagnostics/turns`, `/diagnostics/telemetry` | `usage.ts`, `diagnostics.ts` |
+| Usage and diagnostics | `/usage*`, `/diagnostics/turns`, `/diagnostics/telemetry`, `/diagnostics/installation` | `usage.ts`, `diagnostics.ts` |
 | Desktop-only gateways | `/api/v1/mobile_agent`, `/code/sessions*` (refused with `desktop_required` / `desktop_unavailable` when the server runs alone) | `mobileAgent.ts`, `remoteCode.ts` |
 | Bridge | `/bridge/tasks*`, `/bridge/presence` | `bridge.ts` |
 | Voice and household | `/audio/transcriptions`, `/realtime_sessions`, `/tool_calls`, `/members*`, `/voices/*` | `transcriptions.ts`, `realtime.ts`, `toolCalls.ts`, `members.ts`, `voices.ts` |

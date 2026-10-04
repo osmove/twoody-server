@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { sqlite } from "../db.js";
+import { modelLabel } from "./installation.js";
 
 // What happened in each answer (Jimmy, 01/10/2026: « ne faudrait-il pas
 // logguer les function calls, et tout ce qui peut être utile pour
@@ -125,7 +126,7 @@ export function traceOfMessage(userId: string, messageId: string): TraceRow | nu
 export function telemetryOf(row: TraceRow): Record<string, string | number | boolean> {
   const detail = row.detail as Record<string, any>;
   const out: Record<string, string | number | boolean | null | undefined> = {
-    model: row.model, outcome: row.outcome, error: row.error ? row.error.split(":")[0] : null, total_ms: row.total_ms,
+    model: modelLabel(row.model), outcome: row.outcome, error: row.error ? row.error.split(":")[0] : null, total_ms: row.total_ms,
   };
   if (row.kind === "chat") {
     const calls = Array.isArray(detail.tool_calls) ? (detail.tool_calls as ToolCallTrace[]) : [];

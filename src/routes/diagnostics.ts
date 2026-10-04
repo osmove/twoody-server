@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
 import { requirePerson } from "./memories.js";
 import { fullTracesSince, listTraces, promptOfTrace, telemetrySince, traceOfMessage } from "../diagnostics/traces.js";
+import { installationFacts } from "../diagnostics/installation.js";
 
 // The Diagnostic screen (src/diagnostics/traces.ts): what happened in each
 // answer, learning and read-ahead on this computer. The person's own: the
@@ -66,6 +67,19 @@ export async function diagnosticsRoutes(app: FastifyInstance) {
       if (!auth) return;
       if (!(await requirePerson(req, reply, auth))) return;
       reply.send(telemetrySince(auth.userId, Number(req.query.after) || 0, Number(req.query.limit) || 50));
+    },
+  });
+
+  // What this installation is, without anything that names the person
+  // (src/diagnostics/installation.ts): Twoody Desktop's daily
+  // `installation_active`, sent only while « Partager des diagnostics » is on.
+  app.get("/diagnostics/installation", {
+    schema: { tags: ["diagnostics"], summary: "This installation's capabilities, setup, providers and paired phones, without content, for the account's app analytics", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      if (!(await requirePerson(req, reply, auth))) return;
+      reply.send(installationFacts(auth.userId));
     },
   });
 }

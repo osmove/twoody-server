@@ -3956,6 +3956,27 @@
         }
       }
     },
+    "/diagnostics/installation": {
+      "get": {
+        "summary": "This installation's capabilities, setup, providers and paired phones, without content, for the account's app analytics",
+        "tags": [
+          "diagnostics"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/projects": {
       "get": {
         "summary": "The person's projects, active first",
@@ -10381,6 +10402,27 @@
     "/api/v1/diagnostics/telemetry": {
       "get": {
         "summary": "The traces without their content, for the account's app analytics",
+        "tags": [
+          "diagnostics"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/diagnostics/installation": {
+      "get": {
+        "summary": "This installation's capabilities, setup, providers and paired phones, without content, for the account's app analytics",
         "tags": [
           "diagnostics"
         ],
