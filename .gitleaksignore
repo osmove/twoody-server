@@ -11,3 +11,5 @@ fc6dab0e541bd043f31f5dfaa8a06b414f48fe31:test/fixtures/endorsement-v1.json:gener
 fc6dab0e541bd043f31f5dfaa8a06b414f48fe31:test/fixtures/endorsement-v1.json:generic-api-key:36
 fc6dab0e541bd043f31f5dfaa8a06b414f48fe31:test/fixtures/endorsement-v1.json:generic-api-key:46
 fc6dab0e541bd043f31f5dfaa8a06b414f48fe31:test/fixtures/endorsement-v1.json:generic-api-key:56
+# A made-up Graph delta token in a test of the Graph door (04/10/2026): a paging cursor, not a secret.
+32b5f4501c5975dac7040b2f1c05783a63d9a9a7:test/graphDoor.test.ts:generic-api-key:43
