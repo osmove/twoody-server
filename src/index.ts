@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// First: failures are written down from here on (crashReports.ts).
+import "./crashReports.js";
 import { buildApp } from "./app.js";
 import { ensureSetupToken, getActivePairingCode } from "./auth.js";
 import { startBonjour } from "./bonjour.js";
