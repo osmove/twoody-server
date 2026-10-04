@@ -21,7 +21,8 @@ interface ContactRow {
   relation_type:     string | null;
   relation_subtype:  string | null;
   origin:            string;
-  /// "macos" for a card copied from the Mac's Contacts: read-only here.
+  /// "macos" for a card copied from the Mac's Contacts, "microsoft" for one
+  /// from Outlook or Microsoft 365: read-only here.
   source:            string | null;
   organization:      string | null;
   phones:            string[];

@@ -319,7 +319,8 @@ export const contacts = sqliteTable("contacts", {
   relationSubtype: text("relation_subtype"),
   origin: text("origin").notNull().default("local"),
   /// Null for a contact the person added here; "macos" for one copied
-  /// from the Mac's Contacts app, which the next copy replaces.
+  /// from the Mac's Contacts app, "microsoft" for one from Outlook or
+  /// Microsoft 365 — which the next copy of that source replaces.
   source: text("source"),
   externalId: text("external_id"),
   organization: text("organization"),
@@ -347,7 +348,8 @@ export const calendarEvents = sqliteTable("events", {
   allDay: integer("all_day", { mode: "boolean" }).notNull().default(false),
   location: text("location"),
   /// Null for an event made here; "macos" for one copied from the Mac's
-  /// Calendar app, which the next copy replaces.
+  /// Calendar app, "microsoft" for one from Outlook or Microsoft 365 —
+  /// which the next copy of that source replaces.
   source: text("source"),
   externalId: text("external_id"),
   calendar: text("calendar"),

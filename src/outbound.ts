@@ -238,21 +238,42 @@ export function mailServerDoor(target: MailServer, configured: { host: string; p
   if (target.security !== "tls" && !isLoopbackHost(target.host)) throw new MailDoorClosedError("tls_required");
 }
 
-// And for a mailbox that signs in with Microsoft (« Se connecter avec
-// Microsoft », src/email/microsoft.ts): its sign-in is renewed before each
-// session at Microsoft's token endpoint — that address and no other (no
-// other path of the host, no other host), over https, never redirected —
-// only while E-mails is on and the mailbox set up, or being set up, is
-// one. Made in local-only mode too, as the connection to the mail server.
+// And for Microsoft's sign-in (src/microsoft/token.ts), renewed at its token
+// endpoint — that address and no other (no other path of the host, no other
+// host), over https, never redirected — for one of two grants, each with its
+// own life: a mailbox that signs in with Microsoft (« Se connecter avec
+// Microsoft », src/email/microsoft.ts), only while E-mails is on and the
+// mailbox set up, or being set up, is one; and the link to Microsoft Graph
+// (src/microsoft/), only while a capability that reads Graph is on and the
+// link is kept, or being made. Made in local-only mode too, as the
+// connection to the mail server.
 
 /// The one address this door opens to.
 export const MICROSOFT_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
 
-/// Throws unless Microsoft's token endpoint may be called now: E-mails on,
-/// a mailbox that signs in with Microsoft, and that address exactly.
-export function microsoftTokenDoor(target: string | URL, microsoftMailbox: boolean, emailOn: boolean): void {
-  if (!emailOn) throw new MailDoorClosedError("email_off");
-  if (!microsoftMailbox) throw new MailDoorClosedError("not_configured");
+/// The capabilities that read Microsoft Graph (ids of src/localCapabilities.ts):
+/// Agenda and Contacts, today. Each declares its paths below (GRAPH_PATHS) and
+/// its permissions in src/microsoft/link.ts (GRAPH_SCOPES).
+export type GraphCapability = "calendar" | "contacts";
+
+/// The capabilities that read Graph, each on or off, as they stand now.
+export type GraphCapabilitiesOn = Partial<Record<GraphCapability, boolean>>;
+
+/// Whose sign-in is renewed: the mailbox's, or the link to Graph.
+export type MicrosoftTokenDoorState =
+  | { microsoftMailbox: boolean; emailOn: boolean }
+  | { graphLinked: boolean; capabilitiesOn: GraphCapabilitiesOn };
+
+/// Throws unless Microsoft's token endpoint may be called now for this
+/// grant, at that address exactly.
+export function microsoftTokenDoor(target: string | URL, door: MicrosoftTokenDoorState): void {
+  if ("emailOn" in door) {
+    if (!door.emailOn) throw new MailDoorClosedError("email_off");
+    if (!door.microsoftMailbox) throw new MailDoorClosedError("not_configured");
+  } else {
+    if (!Object.values(door.capabilitiesOn).some((on) => on === true)) throw new GraphDoorClosedError("capability_off");
+    if (!door.graphLinked) throw new GraphDoorClosedError("not_linked");
+  }
   let url: URL | null = null;
   try {
     url = new URL(target);
@@ -261,13 +282,97 @@ export function microsoftTokenDoor(target: string | URL, microsoftMailbox: boole
   }
   // Compared once parsed: a port, a user, a query or another path is
   // another address; « .. » and the case of the host are not.
-  if (!url || url.href !== MICROSOFT_TOKEN_URL) throw new MailDoorClosedError("other_server");
+  if (!url || url.href !== MICROSOFT_TOKEN_URL) throw "emailOn" in door ? new MailDoorClosedError("other_server") : new GraphDoorClosedError("other_address");
 }
 
 /// A request to Microsoft's token endpoint, through that door.
-export async function microsoftTokenFetch(target: string | URL, init: RequestInit, door: { microsoftMailbox: boolean; emailOn: boolean }): Promise<Response> {
-  microsoftTokenDoor(target, door.microsoftMailbox, door.emailOn);
+export async function microsoftTokenFetch(target: string | URL, init: RequestInit, door: MicrosoftTokenDoorState): Promise<Response> {
+  microsoftTokenDoor(target, door);
   // Never followed: the refresh token in the body would go wherever a
+  // redirect pointed.
+  return fetch(target, { ...init, redirect: "error" });
+}
+
+// The door for Microsoft Graph (04/10/2026), with the link's access token:
+// to https://graph.microsoft.com/v1.0/me/ and, below it, the paths each
+// capability that reads Graph declares here, with what may be done there —
+// Agenda the calendars and each one's view (a repeating event there once per
+// occurrence), Contacts the contacts and their folders, read only — never
+// redirected, only while that capability is on and the link is kept. The
+// pages Graph links to (@odata.nextLink) go through it like the first. A
+// capability that comes to read Graph (the mailbox, say) adds its paths
+// here, and its permissions to src/microsoft/link.ts. Asked for by the
+// person when they link their account, as the mail server is: made in
+// local-only mode too.
+
+export const GRAPH_ORIGIN = "https://graph.microsoft.com";
+/// Where every address this door opens starts.
+export const GRAPH_ME = `${GRAPH_ORIGIN}/v1.0/me`;
+
+export type GraphDoorReason = "capability_off" | "not_linked" | "other_address" | "method_not_allowed";
+
+export class GraphDoorClosedError extends Error {
+  constructor(public reason: GraphDoorReason) {
+    super(`Refused on the way to Microsoft Graph: ${reason}`);
+    this.name = "GraphDoorClosedError";
+  }
+}
+
+/// The paths opened below /v1.0/me, by the capability each serves, and what
+/// may be done there. An id is one segment; Graph does not mind the case of
+/// the rest.
+const GRAPH_PATHS: Record<GraphCapability, ReadonlyArray<{ path: RegExp; methods: readonly string[] }>> = {
+  calendar: [
+    { path: /^\/calendars$/i, methods: ["GET"] },
+    { path: /^\/calendars\/[^/]+\/calendarView$/i, methods: ["GET"] },
+  ],
+  contacts: [
+    { path: /^\/contacts$/i, methods: ["GET"] },
+    { path: /^\/contactFolders$/i, methods: ["GET"] },
+    { path: /^\/contactFolders\/[^/]+\/contacts$/i, methods: ["GET"] },
+  ],
+};
+
+/// What the door opens to at a Graph address — the capability it serves,
+/// what may be done there — or null: another origin (scheme, host, port), a
+/// user in it, a path no capability declares. Judged once parsed, « .. »
+/// resolved.
+export function graphRoute(target: string | URL): { capability: GraphCapability; methods: readonly string[] } | null {
+  let url: URL;
+  try {
+    url = new URL(target);
+  } catch {
+    return null;
+  }
+  if (url.origin !== GRAPH_ORIGIN || url.username || url.password) return null;
+  const root = "/v1.0/me/";
+  if (url.pathname.slice(0, root.length).toLowerCase() !== root) return null;
+  const rest = url.pathname.slice(root.length - 1);
+  // No slash, backslash or dot hidden in an id, to be read as a path there.
+  if (/%2f|%5c|%2e|\\/i.test(rest)) return null;
+  for (const [capability, routes] of Object.entries(GRAPH_PATHS) as Array<[GraphCapability, (typeof GRAPH_PATHS)[GraphCapability]]>) {
+    const route = routes.find((one) => one.path.test(rest));
+    if (route) return { capability, methods: route.methods };
+  }
+  return null;
+}
+
+/// Throws unless this request may go to Graph now: an address the door
+/// opens, what may be done there, the capability it serves on, the link
+/// kept. Says which capability it serves.
+export function graphDoor(target: string | URL, method: string | undefined, door: { linked: boolean; capabilitiesOn: GraphCapabilitiesOn }): GraphCapability {
+  const route = graphRoute(target);
+  if (!route) throw new GraphDoorClosedError("other_address");
+  if (!route.methods.includes((method ?? "GET").toUpperCase())) throw new GraphDoorClosedError("method_not_allowed");
+  if (door.capabilitiesOn[route.capability] !== true) throw new GraphDoorClosedError("capability_off");
+  if (!door.linked) throw new GraphDoorClosedError("not_linked");
+  return route.capability;
+}
+
+/// A request to Microsoft Graph, through that door.
+export async function graphFetch(target: string | URL, init: RequestInit, door: { linked: boolean; capabilitiesOn: GraphCapabilitiesOn }): Promise<Response> {
+  graphDoor(target, init.method, door);
+  // Never followed: the access token in its headers would go wherever a
   // redirect pointed.
   return fetch(target, { ...init, redirect: "error" });
 }

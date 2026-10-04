@@ -4,6 +4,7 @@ import { reindex } from "../documents/library.js";
 import { capabilityOrder, capabilityPlaces, isLocalCapability, LOCAL_CAPABILITIES, localCapabilities, setCapabilityOrder, setCapabilityPlace, setLocalCapability, setUsageProfile, usageProfile } from "../localCapabilities.js";
 import { isThisComputersApp } from "./usage.js";
 import { homeOn } from "../home/homeAssistant.js";
+import { graphCapabilityChanged } from "../microsoft/sync.js";
 
 //   GET   /local_capabilities        → { capabilities: { documents: false, … }, places: { documents: { menu, chat }, … } }
 //   PATCH /local_capabilities/:id    { enabled?, menu?, chat? } → the same
@@ -38,9 +39,13 @@ export async function localCapabilityRoutes(app: FastifyInstance) {
       const body = req.body ?? {};
       let capabilities = localCapabilities(auth.userId);
       if (typeof body.enabled === "boolean") {
+        const was = capabilities[id];
         capabilities = setLocalCapability(auth.userId, id, body.enabled);
         // Documents back on: the folders are read again for what changed.
         if (id === "documents" && body.enabled) void reindex(auth.userId).catch(() => undefined);
+        // Agenda or Contacts off: its copy of Outlook's goes; back on, it is
+        // read at once (src/microsoft/sync.ts).
+        if ((id === "calendar" || id === "contacts") && was !== body.enabled) graphCapabilityChanged(auth.userId, id, body.enabled);
       }
       const place = { ...(typeof body.menu === "boolean" ? { menu: body.menu } : {}), ...(typeof body.chat === "boolean" ? { chat: body.chat } : {}) };
       const places = Object.keys(place).length ? setCapabilityPlace(auth.userId, id, place) : capabilityPlaces(auth.userId);

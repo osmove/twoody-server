@@ -33,6 +33,7 @@ import { startMemorySync } from "./vault/memories.js";
 import { startMemoryWork } from "./memory/changes.js";
 import { startLearning } from "./memory/learner.js";
 import { startEmailSync } from "./email/sync.js";
+import { startMicrosoftGraphSync } from "./microsoft/sync.js";
 import { onTitled, startTitles } from "./discussionTitles.js";
 import { builtinAddress, initEngine, preloadBuiltin, stopEngine } from "./engine.js";
 import { fileURLToPath } from "node:url";
@@ -323,6 +324,9 @@ try {
   // The person's mailbox, brought up to date every 10 minutes while
   // E-mails is on and a mailbox is set up (src/email/sync.ts).
   const emailSync = startEmailSync();
+  // Outlook's calendar and contacts, read every 15 minutes while Agenda or
+  // Contacts is on and the person linked their account (src/microsoft/).
+  const graphSync = startMicrosoftGraphSync();
   if (parentPort && process.env.TWOODY_TUNNEL === "1") {
     parentPort.on("message", ({ data }) => {
       if ((data as { type?: unknown } | null)?.type !== "tunnel") return;
@@ -386,6 +390,7 @@ try {
         learning.stop();
         titles.stop();
         emailSync.stop();
+        graphSync.stop();
         stopPeerPoller();
         stopMeshLinks();
         stopRoster();

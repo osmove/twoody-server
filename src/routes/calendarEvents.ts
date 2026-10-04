@@ -27,9 +27,10 @@ interface CalendarEventRow {
 interface AgendaEventRow extends CalendarEventRow {
   local_id:     string;
   provider_id:  null;
-  provider:     "twoody" | "apple";
-  /// "macos": copied from the Mac's Calendar app, changed there only.
-  source:       "twoody" | "macos";
+  provider:     "twoody" | "apple" | "microsoft";
+  /// "macos": copied from the Mac's Calendar app; "microsoft": from Outlook
+  /// or Microsoft 365 (src/microsoft/sync.ts). Changed there only.
+  source:       "twoody" | "macos" | "microsoft";
   source_label: string;
   calendar:     string | null;
   read_only:    boolean;
@@ -57,15 +58,15 @@ function serialize(row: typeof calendarEvents.$inferSelect): CalendarEventRow {
 }
 
 function serializeAgenda(row: typeof calendarEvents.$inferSelect): AgendaEventRow {
-  const fromMac = row.source === "macos";
+  const source = row.source === "macos" || row.source === "microsoft" ? row.source : "twoody";
   return {
     ...serialize(row),
-    id:           fromMac ? `macos:${row.id}` : `twoody:${row.id}`,
+    id:           `${source}:${row.id}`,
     local_id:     row.id,
     provider_id:  null,
-    provider:     fromMac ? "apple" : "twoody",
-    source:       fromMac ? "macos" : "twoody",
-    source_label: fromMac ? (row.calendar ?? "Calendar") : "Twoody",
+    provider:     source === "macos" ? "apple" : source,
+    source,
+    source_label: source === "twoody" ? "Twoody" : (row.calendar ?? (source === "macos" ? "Calendar" : "Outlook")),
     calendar:     row.calendar,
     read_only:    row.source !== null,
   };
@@ -102,7 +103,7 @@ function agendaRange(query: { start_time?: string; start_date?: string; end_time
 }
 
 function normalizeId(id: string): string {
-  return id.replace(/^(?:twoody|macos):/, "");
+  return id.replace(/^(?:twoody|macos|microsoft):/, "");
 }
 
 function readBody(raw: unknown): {
@@ -263,7 +264,7 @@ export async function calendarEventRoutes(app: FastifyInstance) {
         .limit(1)
         .all();
       if (!existing) return reply.code(404).send({ error: "not_found" });
-      // An event copied from the Mac is changed in the Mac's Calendar app.
+      // An event copied from the Mac or Outlook is changed there.
       if (existing.source !== null) return reply.code(409).send({ error: "read_only", source: existing.source });
 
       const body = readBody(req.body);

@@ -53,7 +53,7 @@ test("the door opens only while E-mails is on, towards the server set up, over T
 
 test("Microsoft's token endpoint: that address only, while E-mails is on and the mailbox signs in with Microsoft", () => {
   const token = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
-  const door = (target: string, microsoftMailbox = true, emailOn = true) => refusal(() => microsoftTokenDoor(target, microsoftMailbox, emailOn));
+  const door = (target: string, microsoftMailbox = true, emailOn = true) => refusal(() => microsoftTokenDoor(target, { microsoftMailbox, emailOn }));
   assert.equal(MICROSOFT_TOKEN_URL, token);
   assert.equal(door(token), null);
   assert.equal(door("https://LOGIN.microsoftonline.com:443/common/oauth2/v2.0/x/../token"), null, "the same address, however written");
@@ -141,9 +141,10 @@ test("one file opens a connection to a mail server, and none opens a raw socket 
   // And that file asks the door before it connects.
   const text = readFileSync(imap, "utf8");
   assert.ok(text.indexOf("mailServerDoor(settings") < text.indexOf("await connector(settings)"));
-  // Microsoft's sign-in is renewed in one place, after its own door; its
-  // address is written nowhere else.
-  const microsoft = readFileSync(join(srcDir, "email", "microsoft.ts"), "utf8");
+  // Microsoft's sign-in is renewed in one place (shared with the link to
+  // Outlook's calendar and contacts), after its own door; its address is
+  // written nowhere else.
+  const microsoft = readFileSync(join(srcDir, "microsoft", "token.ts"), "utf8");
   assert.ok(microsoft.indexOf("microsoftTokenDoor(MICROSOFT_TOKEN_URL") > 0 && microsoft.indexOf("microsoftTokenDoor(MICROSOFT_TOKEN_URL") < microsoft.indexOf("await transport("));
   assert.deepEqual(sources().filter(({ text: one }) => /microsoftonline/i.test(one)).map(({ path }) => path), [join(srcDir, "outbound.ts")]);
 });

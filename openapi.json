@@ -3063,6 +3063,112 @@
         }
       }
     },
+    "/microsoft_graph/status": {
+      "get": {
+        "summary": "The link to Outlook's calendar and contacts (never its token), and each copy (this computer's app only)",
+        "tags": [
+          "microsoft"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/microsoft_graph/account": {
+      "post": {
+        "summary": "Link Outlook's calendar and contacts after Microsoft's sign-in: tried, kept, then read (this computer's app only)",
+        "tags": [
+          "microsoft"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "address": {
+                    "type": "string",
+                    "maxLength": 320
+                  },
+                  "refresh_token": {
+                    "type": "string",
+                    "maxLength": 16384
+                  },
+                  "scopes": {
+                    "type": "string",
+                    "maxLength": 4096
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Unlink Outlook's calendar and contacts: the sign-in forgotten, both copies removed (this computer's app only)",
+        "tags": [
+          "microsoft"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/microsoft_graph/sync": {
+      "post": {
+        "summary": "Read Outlook's calendar and contacts now (this computer's app only)",
+        "tags": [
+          "microsoft"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/discussions/{id}": {
       "delete": {
         "summary": "Delete a discussion and its messages",
@@ -9381,6 +9487,112 @@
         "security": [
           {
             "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/microsoft_graph/status": {
+      "get": {
+        "summary": "The link to Outlook's calendar and contacts (never its token), and each copy (this computer's app only)",
+        "tags": [
+          "microsoft"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/microsoft_graph/account": {
+      "post": {
+        "summary": "Link Outlook's calendar and contacts after Microsoft's sign-in: tried, kept, then read (this computer's app only)",
+        "tags": [
+          "microsoft"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "address": {
+                    "type": "string",
+                    "maxLength": 320
+                  },
+                  "refresh_token": {
+                    "type": "string",
+                    "maxLength": 16384
+                  },
+                  "scopes": {
+                    "type": "string",
+                    "maxLength": 4096
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Unlink Outlook's calendar and contacts: the sign-in forgotten, both copies removed (this computer's app only)",
+        "tags": [
+          "microsoft"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/microsoft_graph/sync": {
+      "post": {
+        "summary": "Read Outlook's calendar and contacts now (this computer's app only)",
+        "tags": [
+          "microsoft"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
           }
         ],
         "responses": {
