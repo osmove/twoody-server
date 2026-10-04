@@ -1,18 +1,28 @@
 import { chmodSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "../db.js";
+import type { MailServer } from "../outbound.js";
+import { MailError, openMailSession, type MailSession } from "./imap.js";
+import { forgetMicrosoftAccess, microsoftAccess } from "./microsoft.js";
+import type { EmailSource, MailAuth } from "./store.js";
 
-// The mailbox's password — an app password — kept as the connectors keep
-// their tokens (connectors.json): on this computer, in a file of its own
-// that only this account can read (0600), apart from the database and the
-// copies saved before each migration. Never sent back to a screen, never
-// given to a model, never written to a log. Removing the mailbox forgets
-// it.
+// What opens the person's mailbox: its password — an app password — or,
+// for a mailbox that signs in with Microsoft, the refresh token of that
+// sign-in (microsoft.ts), the newest Microsoft gave. Kept as the connectors
+// keep their tokens (connectors.json): on this computer, in a file of its
+// own that only this account can read (0600), apart from the database and
+// the copies saved before each migration. Never sent back to a screen,
+// never given to a model, never written to a log. Removing the mailbox
+// forgets it.
 
 interface Kept {
-  password: string;
+  password?: string;
+  refresh_token?: string;
   saved_at: number;
 }
+
+/// A mailbox's secret.
+export type MailSecret = { kind: "password"; password: string } | { kind: "microsoft"; refreshToken: string };
 
 const FILE = () => join(DATA_DIR, "email-credentials.json");
 
@@ -44,18 +54,83 @@ function writeAll(all: Record<string, Kept>) {
   renameSync(temporary, path);
 }
 
-export function mailPassword(sourceId: string): string | null {
+export function mailSecret(sourceId: string): MailSecret | null {
   const kept = readAll()[sourceId];
-  return typeof kept?.password === "string" && kept.password ? kept.password : null;
+  if (typeof kept?.refresh_token === "string" && kept.refresh_token) return { kind: "microsoft", refreshToken: kept.refresh_token };
+  if (typeof kept?.password === "string" && kept.password) return { kind: "password", password: kept.password };
+  return null;
 }
 
-export function keepMailPassword(sourceId: string, password: string): void {
-  writeAll({ ...readAll(), [sourceId]: { password, saved_at: Date.now() } });
+/// Kept in place of whatever was kept for this mailbox.
+export function keepMailSecret(sourceId: string, secret: MailSecret): void {
+  const kept: Kept = secret.kind === "password" ? { password: secret.password, saved_at: Date.now() } : { refresh_token: secret.refreshToken, saved_at: Date.now() };
+  writeAll({ ...readAll(), [sourceId]: kept });
 }
 
-export function forgetMailPassword(sourceId: string): void {
+/// The refresh token Microsoft gave back in place of `used`, kept — if
+/// `used` is still the one kept: never after the mailbox was removed, nor
+/// over a sign-in done again meanwhile.
+export function renewMailRefreshToken(sourceId: string, used: string, newest: string): void {
+  if (used === newest) return;
   const all = readAll();
-  if (!(sourceId in all)) return;
+  if (all[sourceId]?.refresh_token !== used) return;
+  all[sourceId] = { refresh_token: newest, saved_at: Date.now() };
+  writeAll(all);
+}
+
+export function forgetMailSecret(sourceId: string): void {
+  const all = readAll();
+  const kept = all[sourceId];
+  if (!kept) return;
+  // The access tokens got with it, from memory too.
+  if (kept.refresh_token) forgetMicrosoftAccess(kept.refresh_token);
   delete all[sourceId];
   writeAll(all);
+}
+
+/// A session on a mailbox, opened with its secret: its password, or an
+/// access token got with its Microsoft sign-in — the newest refresh token
+/// Microsoft gave is handed to `renewed`, to keep in place of the one used.
+/// A token from memory that the server refuses was perhaps withdrawn before
+/// its time (a new password): a new one is got, once. Refused again, or
+/// refused when new, it is the mailbox's IMAP access that is refused.
+export async function openMailbox(
+  mailbox: MailServer & { username: string; secret: MailSecret },
+  door: { configured: { host: string; port: number; auth: MailAuth } | null; emailOn: boolean },
+  renewed: (used: string, newest: string) => void = () => undefined,
+): Promise<MailSession> {
+  const { secret, ...server } = mailbox;
+  if (secret.kind === "password") return openMailSession({ ...server, password: secret.password }, door);
+  // Microsoft's token endpoint: for a mailbox set up (or being set up) to
+  // sign in with Microsoft, while E-mails is on (outbound.ts).
+  const tokenDoor = { microsoftMailbox: door.configured?.auth === "microsoft", emailOn: door.emailOn };
+  let access = await microsoftAccess(secret.refreshToken, tokenDoor);
+  if (access.refreshToken !== secret.refreshToken) renewed(secret.refreshToken, access.refreshToken);
+  try {
+    return await openMailSession({ ...server, accessToken: access.accessToken }, door);
+  } catch (err) {
+    if (!(err instanceof MailError) || err.code !== "auth_failed") throw err;
+  }
+  if (access.cached) {
+    const used = access.refreshToken;
+    access = await microsoftAccess(used, tokenDoor, { fresh: true });
+    if (access.refreshToken !== used) renewed(used, access.refreshToken);
+    try {
+      return await openMailSession({ ...server, accessToken: access.accessToken }, door);
+    } catch (err) {
+      if (!(err instanceof MailError) || err.code !== "auth_failed") throw err;
+    }
+  }
+  throw new MailError("imap_refused");
+}
+
+/// The mailbox set up, opened with the secret kept for it.
+export function openSourceMailbox(source: EmailSource, emailOn: boolean): Promise<MailSession> {
+  const secret = mailSecret(source.id);
+  if (!secret) return Promise.reject(new MailError(source.auth === "microsoft" ? "signin_required" : "password_missing"));
+  return openMailbox(
+    { host: source.imap_host, port: source.imap_port, security: source.imap_security, username: source.username, secret },
+    { configured: { host: source.imap_host, port: source.imap_port, auth: source.auth }, emailOn },
+    (used, newest) => renewMailRefreshToken(source.id, used, newest),
+  );
 }

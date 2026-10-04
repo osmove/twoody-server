@@ -11,6 +11,11 @@ import { asksSomething, automatedSender, type AttachmentInfo, type FlagState, ty
 
 export type SourceStatus = "active" | "error" | "removed";
 
+/// How the mailbox signs in: its password, or Microsoft's sign-in (an
+/// Outlook.com or Microsoft 365 mailbox, microsoft.ts). Kept in its
+/// metadata; a mailbox set up before Microsoft's has a password.
+export type MailAuth = "password" | "microsoft";
+
 export interface EmailSource {
   id: string;
   user_id: string;
@@ -21,6 +26,7 @@ export interface EmailSource {
   imap_port: number;
   imap_security: MailSecurity;
   username: string;
+  auth: MailAuth;
   status: SourceStatus;
   import_after: number | null;
   last_synced_at: number | null;
@@ -98,10 +104,12 @@ const json = <T>(value: unknown, fallback: T): T => {
 
 function sourceOf(row: Record<string, unknown> | undefined): EmailSource | null {
   if (!row) return null;
+  const metadata = json<Record<string, unknown>>(row.metadata, {});
   return {
     ...(row as unknown as EmailSource),
     imap_security: row.imap_security === "starttls" ? "starttls" : "tls",
-    metadata: json(row.metadata, {}),
+    auth: metadata.auth === "microsoft" ? "microsoft" : "password",
+    metadata,
   };
 }
 
@@ -136,6 +144,7 @@ export interface SourceSettings {
   /// The window the person chose, in days (the page shows it again).
   window_days?: number | null;
   preset?: string | null;
+  auth?: MailAuth;
 }
 
 const sameMailbox = (a: Pick<EmailSource, "email_address" | "imap_host" | "username">, b: Pick<SourceSettings, "email_address" | "imap_host" | "username">) =>
@@ -148,7 +157,7 @@ const sameMailbox = (a: Pick<EmailSource, "email_address" | "imap_host" | "usern
 export function saveSource(userId: string, settings: SourceSettings, now = Date.now()): { source: EmailSource; replaced: EmailSource | null } {
   ensure();
   const current = activeSource(userId);
-  const metadata = JSON.stringify({ preset: settings.preset ?? null, window_days: settings.window_days ?? null });
+  const metadata = JSON.stringify({ preset: settings.preset ?? null, window_days: settings.window_days ?? null, auth: settings.auth ?? "password" });
   const write = (id: string) => {
     sqlite.prepare(`UPDATE email_sources SET email_address = ?, display_name = ?, imap_host = ?, imap_port = ?, imap_security = ?, username = ?,
       import_after = ?, status = 'active', last_error = NULL, metadata = ?, updated_at = ? WHERE id = ?`)

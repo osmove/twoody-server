@@ -2521,7 +2521,7 @@
     },
     "/email/status": {
       "get": {
-        "summary": "The mailbox set up (never its password), its sync, the copies kept",
+        "summary": "The mailbox set up (never its password or token), its sync, the copies kept",
         "tags": [
           "email"
         ],
@@ -2629,6 +2629,17 @@
                   "preset": {
                     "type": "string",
                     "maxLength": 30
+                  },
+                  "auth": {
+                    "type": "string",
+                    "enum": [
+                      "password",
+                      "microsoft"
+                    ]
+                  },
+                  "refresh_token": {
+                    "type": "string",
+                    "maxLength": 16384
                   }
                 }
               }
@@ -2697,6 +2708,17 @@
                   "preset": {
                     "type": "string",
                     "maxLength": 30
+                  },
+                  "auth": {
+                    "type": "string",
+                    "enum": [
+                      "password",
+                      "microsoft"
+                    ]
+                  },
+                  "refresh_token": {
+                    "type": "string",
+                    "maxLength": 16384
                   }
                 }
               }
@@ -2718,7 +2740,7 @@
         }
       },
       "delete": {
-        "summary": "Remove the mailbox: no more sync, password forgotten, the copy kept or deleted (this computer's app only)",
+        "summary": "Remove the mailbox: no more sync, password or sign-in forgotten, the copy kept or deleted (this computer's app only)",
         "tags": [
           "email"
         ],
@@ -8826,7 +8848,7 @@
     },
     "/api/v1/email/status": {
       "get": {
-        "summary": "The mailbox set up (never its password), its sync, the copies kept",
+        "summary": "The mailbox set up (never its password or token), its sync, the copies kept",
         "tags": [
           "email"
         ],
@@ -8934,6 +8956,17 @@
                   "preset": {
                     "type": "string",
                     "maxLength": 30
+                  },
+                  "auth": {
+                    "type": "string",
+                    "enum": [
+                      "password",
+                      "microsoft"
+                    ]
+                  },
+                  "refresh_token": {
+                    "type": "string",
+                    "maxLength": 16384
                   }
                 }
               }
@@ -9002,6 +9035,17 @@
                   "preset": {
                     "type": "string",
                     "maxLength": 30
+                  },
+                  "auth": {
+                    "type": "string",
+                    "enum": [
+                      "password",
+                      "microsoft"
+                    ]
+                  },
+                  "refresh_token": {
+                    "type": "string",
+                    "maxLength": 16384
                   }
                 }
               }
@@ -9023,7 +9067,7 @@
         }
       },
       "delete": {
-        "summary": "Remove the mailbox: no more sync, password forgotten, the copy kept or deleted (this computer's app only)",
+        "summary": "Remove the mailbox: no more sync, password or sign-in forgotten, the copy kept or deleted (this computer's app only)",
         "tags": [
           "email"
         ],

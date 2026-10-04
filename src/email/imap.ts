@@ -17,7 +17,11 @@ import { SOURCE_MAX_BYTES, type ListedFolder, type StructureNode } from "./parse
 
 export interface MailSettings extends MailServer {
   username: string;
-  password: string;
+  /// Its password (LOGIN)…
+  password?: string;
+  /// …or an access token (AUTHENTICATE XOAUTH2): a mailbox that signs in
+  /// with Microsoft (microsoft.ts).
+  accessToken?: string;
 }
 
 export interface OpenedFolder {
@@ -70,7 +74,12 @@ export interface MailSession {
 
 export type MailConnector = (settings: MailSettings) => Promise<MailSession>;
 
-export type MailErrorCode = MailDoorReason | "auth_failed" | "host_not_found" | "unreachable" | "tls_failed" | "timeout" | "no_inbox" | "no_drafts" | "password_missing" | "failed";
+export type MailErrorCode =
+  | MailDoorReason | "auth_failed" | "host_not_found" | "unreachable" | "tls_failed" | "timeout" | "no_inbox" | "no_drafts" | "password_missing" | "failed"
+  // A mailbox that signs in with Microsoft (microsoft.ts): its sign-in to do
+  // again, an approval it waits for, a refusal of another kind, Microsoft
+  // out of reach, or its IMAP access refused to Twoody.
+  | "signin_required" | "admin_consent_required" | "signin_failed" | "signin_unreachable" | "imap_refused";
 
 export class MailError extends Error {
   constructor(public code: MailErrorCode, detail?: string) {
@@ -142,7 +151,9 @@ async function connectWithImapFlow(settings: MailSettings): Promise<MailSession>
     // STARTTLS on this machine only (the door refuses it elsewhere), and
     // then required.
     ...(settings.security === "starttls" ? { doSTARTTLS: true } : {}),
-    auth: { user: settings.username, pass: settings.password },
+    // With an access token, imapflow authenticates with XOAUTH2 (the
+    // server's OAUTHBEARER if it offers it), never with a password.
+    auth: settings.accessToken ? { user: settings.username, accessToken: settings.accessToken } : { user: settings.username, pass: settings.password ?? "" },
     // Nothing logged: commands carry the account's name.
     logger: false,
     disableAutoIdle: true,

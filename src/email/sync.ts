@@ -1,6 +1,6 @@
 import { capabilityOn } from "../localCapabilities.js";
-import { mailPassword } from "./credentials.js";
-import { MailError, mailErrorCode, openMailSession, type FetchedMail, type MailErrorCode, type MailSession } from "./imap.js";
+import { openSourceMailbox } from "./credentials.js";
+import { MailError, mailErrorCode, type FetchedMail, type MailErrorCode, type MailSession } from "./imap.js";
 import {
   attachmentsOf, automatedSender, envelopeAddresses, flagState, parseEmail, pickFolders, textMayBeCut, threadIdOf, validDate,
   type FolderRole, type MailAddress, type ParsedEmail,
@@ -76,12 +76,7 @@ async function runSync(userId: string, source: EmailSource): Promise<SyncOutcome
   progress.set(source.id, state);
   let session: MailSession | null = null;
   try {
-    const password = mailPassword(source.id);
-    if (!password) throw new MailError("password_missing");
-    session = await openMailSession(
-      { host: source.imap_host, port: source.imap_port, security: source.imap_security, username: source.username, password },
-      { configured: { host: source.imap_host, port: source.imap_port }, emailOn: stillWanted(userId, source.id) },
-    );
+    session = await openSourceMailbox(source, stillWanted(userId, source.id));
     const picked = pickFolders(await session.listFolders());
     if (!picked.inbox) throw new MailError("no_inbox");
     const folders: Partial<Record<FolderRole, EmailFolder>> = {};
@@ -208,12 +203,21 @@ async function keep(userId: string, source: EmailSource, folder: EmailFolder, ui
 
 // ── Every 10 minutes ───────────────────────────────────────────────────
 
+/// What only the person can mend: a password refused or missing, a
+/// Microsoft sign-in to do again or an approval it waits for, IMAP access
+/// refused to Twoody.
+const PERSON_ERRORS = new Set(["auth_failed", "password_missing", "signin_required", "admin_consent_required", "imap_refused"]);
+
+export function needsThePerson(error: string | null | undefined): boolean {
+  return !!error && PERSON_ERRORS.has(error);
+}
+
 /// Whether a mailbox is due: never read, or read more than an interval ago
-/// — except after its password was refused (asking again and again could
-/// get the account locked: the person gives it again, or asks).
+/// — except after its password or sign-in was refused (asking again and
+/// again could get the account locked: the person gives it again, or asks).
 export function syncDue(source: EmailSource, now = Date.now(), intervalMs = SYNC_INTERVAL_MS): boolean {
   if (source.status === "removed") return false;
-  if (source.last_error === "auth_failed" || source.last_error === "password_missing") return false;
+  if (needsThePerson(source.last_error)) return false;
   return source.last_synced_at === null || now - source.last_synced_at >= intervalMs;
 }
 

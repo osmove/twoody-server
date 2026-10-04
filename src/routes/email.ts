@@ -8,24 +8,27 @@ import { capabilityOn } from "../localCapabilities.js";
 import { formatAddress } from "../email/parse.js";
 
 // Capacités → E-mails (src/email/), the page of this computer's app:
-//   GET    /email/status      the mailbox set up (never its password), its sync, the copies kept
+//   GET    /email/status      the mailbox set up (never its password or token), its sync, the copies kept
 //   GET    /email/folders     INBOX, Sent and Drafts as found on the server
 //   GET    /email/recent      the latest messages (?folder=inbox|sent&limit=)
-//   POST   /email/test        { address, host, port, security?, username?, password } → the connection tried once
+//   POST   /email/test        { address, host, port, security?, username?, password } → the connection tried once;
+//                             { auth: "microsoft", address, refresh_token? } for an Outlook.com or Microsoft 365
+//                             mailbox (the refresh token the Desktop's main process got, or the one kept)
 //   POST   /email/account     the same, tried then kept; read at once
 //   POST   /email/sync        read what is new, now
-//   DELETE /email/account     ?keep_messages=true|false: stops, forgets the password, keeps or deletes the copy
+//   DELETE /email/account     ?keep_messages=true|false: stops, forgets the password or sign-in, keeps or deletes the copy
 //   DELETE /email/kept/:id    a copy kept from a mailbox removed earlier, deleted
 // What the messages say (recent) and every change: this computer's app
-// only; the status and the folders: any of the person's sessions.
+// only; the status and the folders: any of the person's sessions. No
+// answer carries a password or a token.
 
 const security: Array<Record<string, string[]>> = [{ bearerAuth: [] }, { userTokenAuth: [] }];
 
 /// How a refusal is answered.
 function statusFor(error: string): number {
   if (error === "email_off") return 403;
-  if (["not_configured"].includes(error)) return 409;
-  if (["auth_failed", "host_not_found", "unreachable", "tls_failed", "timeout", "no_inbox", "failed"].includes(error)) return 502;
+  if (["not_configured", "signin_required"].includes(error)) return 409;
+  if (["auth_failed", "host_not_found", "unreachable", "tls_failed", "timeout", "no_inbox", "failed", "admin_consent_required", "signin_failed", "signin_unreachable", "imap_refused"].includes(error)) return 502;
   return 422;
 }
 
@@ -40,12 +43,14 @@ const accountBody = {
     password: { type: "string", maxLength: 1000 },
     window_days: { type: "integer" },
     preset: { type: "string", maxLength: 30 },
+    auth: { type: "string", enum: ["password", "microsoft"] },
+    refresh_token: { type: "string", maxLength: 16384 },
   },
 };
 
 export async function emailRoutes(app: FastifyInstance) {
   app.get("/email/status", {
-    schema: { tags: ["email"], summary: "The mailbox set up (never its password), its sync, the copies kept", security },
+    schema: { tags: ["email"], summary: "The mailbox set up (never its password or token), its sync, the copies kept", security },
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
@@ -141,7 +146,7 @@ export async function emailRoutes(app: FastifyInstance) {
   });
 
   app.delete<{ Querystring: { keep_messages?: string } }>("/email/account", {
-    schema: { tags: ["email"], summary: "Remove the mailbox: no more sync, password forgotten, the copy kept or deleted (this computer's app only)", security },
+    schema: { tags: ["email"], summary: "Remove the mailbox: no more sync, password or sign-in forgotten, the copy kept or deleted (this computer's app only)", security },
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;

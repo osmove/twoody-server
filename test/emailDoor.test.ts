@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,12 +11,13 @@ import test from "node:test";
 // outboundFetch) never sees. The connection to a mail server passes its
 // own door instead: E-mails on, the server the person set up — exactly —
 // and TLS (in clear to this machine only); and there is one place that
-// opens one. Nothing sends e-mails.
+// opens one. A mailbox that signs in with Microsoft adds one address to
+// it: Microsoft's token endpoint, and nothing else. Nothing sends e-mails.
 
 process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-email-door-"));
 process.env.TWOODY_BONJOUR_DISABLED = "1";
 
-const { isLoopbackHost, mailServerDoor, MailDoorClosedError, validMailHost } = await import("../src/outbound.js");
+const { isLoopbackHost, mailServerDoor, MailDoorClosedError, MICROSOFT_TOKEN_URL, microsoftTokenDoor, microsoftTokenFetch, validMailHost } = await import("../src/outbound.js");
 const { openMailSession, useMailConnectorForTests, MailError, mailErrorCode, packUids } = await import("../src/email/imap.js");
 
 test("UIDs go to the server as a short set: consecutive ones as ranges", () => {
@@ -46,6 +49,44 @@ test("the door opens only while E-mails is on, towards the server set up, over T
   assert.equal(refusal(() => mailServerDoor({ host: "127.0.0.1", port: 1143, security: "starttls" }, { host: "127.0.0.1", port: 1143 }, true)), null);
   // The private network is not this machine: TLS there too.
   assert.equal(refusal(() => mailServerDoor({ host: "192.168.1.10", port: 143, security: "starttls" }, { host: "192.168.1.10", port: 143 }, true)), "tls_required");
+});
+
+test("Microsoft's token endpoint: that address only, while E-mails is on and the mailbox signs in with Microsoft", () => {
+  const token = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
+  const door = (target: string, microsoftMailbox = true, emailOn = true) => refusal(() => microsoftTokenDoor(target, microsoftMailbox, emailOn));
+  assert.equal(MICROSOFT_TOKEN_URL, token);
+  assert.equal(door(token), null);
+  assert.equal(door("https://LOGIN.microsoftonline.com:443/common/oauth2/v2.0/x/../token"), null, "the same address, however written");
+  assert.equal(door(token, true, false), "email_off");
+  assert.equal(door(token, false, true), "not_configured", "no mailbox that signs in with Microsoft");
+  for (const other of [
+    "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+    "https://login.microsoftonline.com/organizations/oauth2/v2.0/token",
+    "https://login.microsoftonline.com/common/oauth2/v2.0/token?x=1",
+    "https://login.microsoftonline.com:8443/common/oauth2/v2.0/token",
+    "https://user@login.microsoftonline.com/common/oauth2/v2.0/token",
+    "http://login.microsoftonline.com/common/oauth2/v2.0/token",
+    "https://login.microsoftonline.com.evil.example/common/oauth2/v2.0/token",
+    "https://graph.microsoft.com/v1.0/me",
+    "https://outlook.office.com/api/v2.0/me/messages",
+    "not a url",
+  ]) assert.equal(door(other), "other_server", other);
+});
+
+test("a request refused at that door never leaves this machine", async () => {
+  let reached = 0;
+  const local = createServer((_req, res) => {
+    reached += 1;
+    res.end("{}");
+  });
+  await new Promise<void>((resolve) => local.listen(0, "127.0.0.1", resolve));
+  const elsewhere = `http://127.0.0.1:${(local.address() as AddressInfo).port}/common/oauth2/v2.0/token`;
+  const refused = (reason: string) => (err: unknown) => err instanceof MailDoorClosedError && err.reason === reason;
+  await assert.rejects(microsoftTokenFetch(elsewhere, { method: "POST" }, { microsoftMailbox: true, emailOn: true }), refused("other_server"));
+  await assert.rejects(microsoftTokenFetch(MICROSOFT_TOKEN_URL, { method: "POST" }, { microsoftMailbox: true, emailOn: false }), refused("email_off"));
+  await assert.rejects(microsoftTokenFetch(MICROSOFT_TOKEN_URL, { method: "POST" }, { microsoftMailbox: false, emailOn: true }), refused("not_configured"));
+  assert.equal(reached, 0);
+  await new Promise((resolve) => local.close(resolve));
 });
 
 test("this machine, and names that are no names", () => {
@@ -100,6 +141,11 @@ test("one file opens a connection to a mail server, and none opens a raw socket 
   // And that file asks the door before it connects.
   const text = readFileSync(imap, "utf8");
   assert.ok(text.indexOf("mailServerDoor(settings") < text.indexOf("await connector(settings)"));
+  // Microsoft's sign-in is renewed in one place, after its own door; its
+  // address is written nowhere else.
+  const microsoft = readFileSync(join(srcDir, "email", "microsoft.ts"), "utf8");
+  assert.ok(microsoft.indexOf("microsoftTokenDoor(MICROSOFT_TOKEN_URL") > 0 && microsoft.indexOf("microsoftTokenDoor(MICROSOFT_TOKEN_URL") < microsoft.indexOf("await transport("));
+  assert.deepEqual(sources().filter(({ text: one }) => /microsoftonline/i.test(one)).map(({ path }) => path), [join(srcDir, "outbound.ts")]);
 });
 
 test("nothing sends an e-mail: no SMTP, no sendmail; the only transport writes a draft into memory", () => {

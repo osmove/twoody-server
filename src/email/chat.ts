@@ -1,7 +1,7 @@
 import nodemailer from "nodemailer";
 import { capabilityOn } from "../localCapabilities.js";
-import { mailPassword } from "./credentials.js";
-import { mailErrorCode, openMailSession, type MailSession } from "./imap.js";
+import { openSourceMailbox } from "./credentials.js";
+import { mailErrorCode, type MailSession } from "./imap.js";
 import { formatAddress, parseRecipients, pickFolders, replySubject, type MailAddress } from "./parse.js";
 import { activeSource, conversationOf, findEmail, folderFor, hasEmails, searchEmails, unansweredEmails, upsertFolder, type EmailRow, type EmailSource } from "./store.js";
 
@@ -594,14 +594,9 @@ async function draft(args: Record<string, unknown>, context: EmailToolContext): 
 /// Appends the draft to the mailbox's Drafts folder (found on the server
 /// when the sync has not met it yet), through the door.
 export async function saveDraft(userId: string, source: EmailSource, draft: Draft): Promise<{ ok: true; folder: string; uid: number | null } | { ok: false; error: string }> {
-  const password = mailPassword(source.id);
-  if (!password) return { ok: false, error: "password_missing" };
   let session: MailSession | null = null;
   try {
-    session = await openMailSession(
-      { host: source.imap_host, port: source.imap_port, security: source.imap_security, username: source.username, password },
-      { configured: { host: source.imap_host, port: source.imap_port }, emailOn: capabilityOn(userId, "email") },
-    );
+    session = await openSourceMailbox(source, capabilityOn(userId, "email"));
     let drafts = folderFor(source.id, "drafts");
     if (!drafts) {
       const listed = pickFolders(await session.listFolders()).drafts;

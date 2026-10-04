@@ -3,9 +3,10 @@ import { SOURCE_MAX_BYTES, type ListedFolder, type StructureNode } from "../../s
 
 // A mailbox in memory, standing in for an IMAP server in the tests of
 // « E-mails » (src/email/): folders with their UIDVALIDITY and messages
-// (raw RFC 5322), the password it accepts, and a log of every command a
-// session sent — to check that Twoody only reads (EXAMINE, FETCH) and
-// writes nothing but a draft (APPEND) once allowed.
+// (raw RFC 5322), the password it accepts — or the access tokens, for a
+// mailbox that signs in with Microsoft (XOAUTH2) — and a log of every
+// command a session sent — to check that Twoody only reads (EXAMINE, FETCH)
+// and writes nothing but a draft (APPEND) once allowed.
 
 export interface FakeMessage {
   uid: number;
@@ -28,10 +29,12 @@ export class FakeMailServer {
   folders = new Map<string, FakeFolder>();
   log: string[] = [];
   password = "abcd efgh ijkl mnop";
+  /// The access tokens it takes (AUTHENTICATE XOAUTH2).
+  accessTokens = new Set<string>();
   /// Sessions opened (the door let them through).
   connections = 0;
-  /// What each session was given, the password left out.
-  logins: Array<Omit<MailSettings, "password">> = [];
+  /// What each session was given, the password and the token left out.
+  logins: Array<Omit<MailSettings, "password" | "accessToken">> = [];
 
   folder(path: string, specialUse: string | null = null, specialUseSource: string | null = specialUse ? "extension" : null): FakeFolder {
     const folder: FakeFolder = { path, specialUse, specialUseSource, uidValidity: 1, uidNext: 1, messages: [] };
@@ -56,10 +59,11 @@ export class FakeMailServer {
   }
 
   connector: MailConnector = async (settings: MailSettings): Promise<MailSession> => {
-    const { password, ...rest } = settings;
+    const { password, accessToken, ...rest } = settings;
     this.logins.push(rest);
-    this.log.push(`LOGIN ${settings.username}`);
-    if (password !== this.password.replace(/\s+/g, "") && password !== this.password) {
+    this.log.push(accessToken !== undefined ? `AUTHENTICATE XOAUTH2 ${settings.username}` : `LOGIN ${settings.username}`);
+    const accepted = accessToken !== undefined ? this.accessTokens.has(accessToken) : password === this.password.replace(/\s+/g, "") || password === this.password;
+    if (!accepted) {
       throw Object.assign(new Error("Invalid credentials"), { authenticationFailed: true, serverResponseCode: "AUTHENTICATIONFAILED" });
     }
     this.connections += 1;

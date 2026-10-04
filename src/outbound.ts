@@ -237,3 +237,37 @@ export function mailServerDoor(target: MailServer, configured: { host: string; p
   if (mailHostKey(target.host) !== mailHostKey(configured.host) || target.port !== configured.port) throw new MailDoorClosedError("other_server");
   if (target.security !== "tls" && !isLoopbackHost(target.host)) throw new MailDoorClosedError("tls_required");
 }
+
+// And for a mailbox that signs in with Microsoft (« Se connecter avec
+// Microsoft », src/email/microsoft.ts): its sign-in is renewed before each
+// session at Microsoft's token endpoint — that address and no other (no
+// other path of the host, no other host), over https, never redirected —
+// only while E-mails is on and the mailbox set up, or being set up, is
+// one. Made in local-only mode too, as the connection to the mail server.
+
+/// The one address this door opens to.
+export const MICROSOFT_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
+
+/// Throws unless Microsoft's token endpoint may be called now: E-mails on,
+/// a mailbox that signs in with Microsoft, and that address exactly.
+export function microsoftTokenDoor(target: string | URL, microsoftMailbox: boolean, emailOn: boolean): void {
+  if (!emailOn) throw new MailDoorClosedError("email_off");
+  if (!microsoftMailbox) throw new MailDoorClosedError("not_configured");
+  let url: URL | null = null;
+  try {
+    url = new URL(target);
+  } catch {
+    // Not a URL: refused below.
+  }
+  // Compared once parsed: a port, a user, a query or another path is
+  // another address; « .. » and the case of the host are not.
+  if (!url || url.href !== MICROSOFT_TOKEN_URL) throw new MailDoorClosedError("other_server");
+}
+
+/// A request to Microsoft's token endpoint, through that door.
+export async function microsoftTokenFetch(target: string | URL, init: RequestInit, door: { microsoftMailbox: boolean; emailOn: boolean }): Promise<Response> {
+  microsoftTokenDoor(target, door.microsoftMailbox, door.emailOn);
+  // Never followed: the refresh token in the body would go wherever a
+  // redirect pointed.
+  return fetch(target, { ...init, redirect: "error" });
+}
