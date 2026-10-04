@@ -3,7 +3,7 @@ import { sqlite } from "../db.js";
 import { emailsSchema } from "../migrations/0004_emails.js";
 import { buildMatchQuery } from "../documents/query.js";
 import type { MailSecurity } from "../outbound.js";
-import type { AttachmentInfo, FlagState, FolderRole, MailAddress } from "./parse.js";
+import { asksSomething, automatedSender, type AttachmentInfo, type FlagState, type FolderRole, type MailAddress } from "./parse.js";
 
 // The copy of the person's mailbox on this computer (migration 4,
 // src/migrations/0004_emails.ts): the mailbox set up, its folders, its
@@ -73,7 +73,7 @@ export interface EmailRow {
   size: number | null;
   attachments: AttachmentInfo[];
   labels: string[];
-  metadata: { in_reply_to?: string | null; references?: string[] };
+  metadata: { in_reply_to?: string | null; references?: string[]; automated?: boolean };
   trashed_at: number | null;
 }
 
@@ -421,6 +421,22 @@ export function searchEmails(userId: string, search: EmailSearch): EmailHit[] {
     if (found.length >= limit) break;
   }
   return found;
+}
+
+/// Received e-mails the person has not answered yet, that ask them
+/// something, from a person (not a list, a newsletter or a notice): not
+/// flagged answered, and no answer of theirs after it in its conversation.
+/// Newest first.
+export function unansweredEmails(userId: string, options: { after?: number | null; limit?: number } = {}): EmailRow[] {
+  ensure();
+  const rows = sqlite.prepare(`SELECT e.* FROM emails e
+    WHERE e.user_id = ? AND e.status = 'inbox' AND e.trashed_at IS NULL AND e.is_replied = 0
+      AND (? IS NULL OR e.provider_internal_date >= ?)
+      AND coalesce(json_extract(e.metadata, '$.automated'), 0) = 0
+      AND NOT EXISTS (SELECT 1 FROM emails s WHERE s.user_id = e.user_id AND s.status = 'sent' AND s.provider_thread_id = e.provider_thread_id
+                      AND s.provider_internal_date > e.provider_internal_date)
+    ORDER BY e.provider_internal_date DESC LIMIT 300`).all(userId, options.after ?? null, options.after ?? null) as Array<Record<string, unknown>>;
+  return rows.map(emailOf).filter((email) => !automatedSender(email.from_email) && asksSomething(email.text_body)).slice(0, Math.max(1, Math.min(30, options.limit ?? 10)));
 }
 
 /// One e-mail of the person, by its id or the start of it (8 characters at

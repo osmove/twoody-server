@@ -30,6 +30,8 @@ declare module "mailparser" {
     text?: string;
     html?: string | false;
     attachments?: Attachment[];
+    /// Header names in lower case.
+    headers?: Map<string, unknown>;
   }
   export interface ParserOptions {
     skipHtmlToText?: boolean;

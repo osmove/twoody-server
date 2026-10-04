@@ -55,7 +55,8 @@ import { discussionTitle, typedText } from "../documentBlocks.js";
 import { loadPersonalData } from "./localSync.js";
 import { capabilitiesOff, capabilityOn, type LocalCapability } from "../localCapabilities.js";
 import { callConnectorTool, connectorChatTools, waitForApproval } from "../connectors/connectors.js";
-import { EMAIL_TOOLS, emailToolsAvailable, isEmailTool, runEmailTool } from "../email/chat.js";
+import { EMAIL_TOOLS, emailsForMessage, emailToolsAvailable, isEmailTool, runEmailTool } from "../email/chat.js";
+import { aboutEmails } from "../email/intent.js";
 import { askedBank, BANK_TOOLS, isBankTool, runBankTool } from "../bank/tools.js";
 import { hasBankAccounts } from "../bank/store.js";
 import { importanceOf } from "../memory/importance.js";
@@ -811,6 +812,14 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // is saved (the phone: later).
     const emailHere = (candidate: Provider) => candidate.kind === "local_openai" && onThisComputer(candidate);
     const offersEmail = emailHere(provider) && access.mode !== "only" && !left.has("email") && isThisComputersApp(auth) && emailToolsAvailable(auth.userId);
+    // « Qu'est-ce que René m'a écrit ? », « Réponds à René… »: the e-mails
+    // are looked up here and come with the message, as documents do — never
+    // answered « voulez-vous que je cherche ? » (email/intent.ts). Not by a
+    // call required of the model: llama.cpp let Qwen3.5 9B write prose
+    // instead, 300 tokens and 15 s lost (bench of 04/10/2026).
+    const emailAsked = offersEmail && aboutEmails(typedText(content));
+    const emailFound = emailAsked ? emailsForMessage(typedText(content), { userId: auth.userId, timeZone: validTimeZone(parsed.time_zone), budgetChars: contextBudget(readWindow(parsed.context_window) ?? 32_768) }) : null;
+    if (emailFound) trace.email = { found: emailFound.mode, count: emailFound.count };
     const runEmail = async (name: string, args: Record<string, unknown>): Promise<string> => {
       const traced: ToolCallTrace = { name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0 };
       toolCallsTraced.push(traced);
@@ -961,6 +970,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       actionTools: !!toolsFor(provider) && offersActions,
       connectorTools: toolsFor(provider) && connectorTools.length ? [...new Set(connectorTools.map((tool) => tool.connectorName))] : null,
       emailTools: !!toolsFor(provider) && offersEmail,
+      emailFound: toolsFor(provider) ? emailFound?.block ?? null : null,
       bankTools: !!toolsFor(provider) && offersBank,
       // The projects the message is about (named, or through the memories
       // given with it): their cards, with the message.
@@ -1790,7 +1800,7 @@ export async function warmNewConversation(key: string, { wake = false }: { wake?
 // read again at each turn (history, memories, documents, the message).
 const WARM_SEEDS_FILE = join(DATA_DIR, "warm-seeds.json");
 const WARM_WATCH_MS = 10 * 60_000;
-const SEED_LEFT_OUT = ["prefs", "history", "memories", "content", "excerpts", "documentFiles", "documentFileTotal", "fileListings", "documentNote", "personal", "homeDevices", "homeDone", "projectCards", "remembered", "summary", "summaryThrough", "state", "currentId", "discussionId", "relevant", "profileHints", "now", "documentScan"];
+const SEED_LEFT_OUT = ["prefs", "history", "memories", "content", "excerpts", "documentFiles", "documentFileTotal", "fileListings", "documentNote", "personal", "homeDevices", "homeDone", "emailFound", "projectCards", "remembered", "summary", "summaryThrough", "state", "currentId", "discussionId", "relevant", "profileHints", "now", "documentScan"];
 
 type WarmSeed = { input: Record<string, unknown>; tools: ChatTools["definitions"] | null; model: string | null };
 
@@ -2268,6 +2278,9 @@ const HOLD_CHARS = 280;
 /// back (a search announced takes far less: Qwen3.5 9B writes one in about
 /// half a second).
 const HOLD_MS = 1_200;
+/// Once a sentence announced a search, what may still be held while the
+/// call is awaited: two or three sentences of preamble, not an answer.
+const HOLD_ANNOUNCED_CHARS = 600;
 export function looksLikeAnnouncement(text: string): boolean {
   const said = text.trim();
   if (!said || said.length > HOLD_CHARS) return false;
@@ -2489,12 +2502,18 @@ async function streamLocal(
     const insist = !!options.tools?.insist;
     let holding = false;
     let narrating = false;
+    // A sentence said it is about to look something up: what follows is
+    // held, past the time limit, until a call comes (then dropped) or it
+    // grows into an answer (04/10/2026: « Je vais d'abord rechercher les
+    // e-mails… » reached the person, the call coming 1.5 s later).
+    let announced = false;
     let held = "";
     let heldSince = 0;
     let released = 0;
     const hold = () => {
       holding = !!options.tools;
       narrating = insist;
+      announced = false;
       held = "";
       released = 0;
     };
@@ -2512,7 +2531,7 @@ async function streamLocal(
           // The same time limit (04/10/2026): with a connector, every answer
           // was held from its first word up to 280 characters, 4 to 5 s on
           // the MacBook Air before anything showed.
-          if (released + held.length > HOLD_CHARS || Date.now() - heldSince > HOLD_MS) letGo();
+          if (released + held.length > (announced ? HOLD_ANNOUNCED_CHARS : HOLD_CHARS) || (!announced && Date.now() - heldSince > HOLD_MS)) letGo();
           return;
         }
         const end = sentenceEnd(held);
@@ -2523,6 +2542,7 @@ async function streamLocal(
         const sentence = held.slice(0, end);
         if (NARRATION.test(sentence)) {
           narrating = true;
+          announced = true;
           continue;
         }
         onDelta(sentence);

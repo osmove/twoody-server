@@ -318,6 +318,36 @@ export interface ParsedEmail {
   format: "text" | "html";
   /// The text kept is not the whole of it.
   truncated: boolean;
+  /// Sent by a machine: a mailing list, a newsletter, an automatic notice
+  /// (its headers say so). Nobody waits for an answer to it.
+  automated: boolean;
+}
+
+/// Who no person writes from: no-reply, notifications, newsletters…
+const AUTOMATED_SENDER = /^(?:no-?reply|noreply|ne-?pas-?r[ée]pondre|nepasrepondre|do-?not-?reply|notifications?|newsletters?|news|infos?|mailer-daemon|postmaster|bounces?|marketing|promos?|promotions?|alertes?|alerts?)(?:[+._-][^@]*)?@/i;
+
+export function automatedSender(address: string | null | undefined): boolean {
+  return !!address && AUTOMATED_SENDER.test(address);
+}
+
+/// Whether headers say a machine sent it (RFC 2369 lists, RFC 3834).
+export function automatedHeaders(headers: Map<string, unknown> | undefined): boolean {
+  if (!headers) return false;
+  if (headers.has("list-unsubscribe") || headers.has("list-id")) return true;
+  const precedence = String(headers.get("precedence") ?? "").toLowerCase();
+  if (["bulk", "list", "junk"].includes(precedence)) return true;
+  const auto = String(headers.get("auto-submitted") ?? "no").toLowerCase();
+  return auto !== "no" && auto !== "";
+}
+
+/// Whether a text asks the reader something: a question, or a request
+/// (« peux-tu… », « merci de me dire… », « let me know »).
+const ASKS = /\?|(?<![\p{L}\p{N}])(?:peux-tu|pourrais-tu|pouvez-vous|pourriez-vous|merci de|dis-moi|dites-moi|me dire|me confirmer|confirme|confirmez|tiens-moi|tenez-moi|j['’]attends|en attente de|pense [àa]|pensez [àa]|n['’]oublie pas|besoin de (?:ta|votre|tes|vos)|can you|could you|would you|please|let me know|confirm|are you|do you|will you|waiting for your)(?![\p{L}\p{N}])/iu;
+
+export function asksSomething(text: string | null | undefined): boolean {
+  // The quoted part of an answer (« > … », « Le … a écrit : ») asks nothing new.
+  const own = (text ?? "").split(/\n(?:>|Le .{4,80} a [ée]crit ?:|On .{4,80} wrote:)/)[0] ?? "";
+  return ASKS.test(own);
 }
 
 function validDate(value: unknown): number | null {
@@ -345,6 +375,7 @@ export async function parseEmail(source: Buffer, options: { cut?: boolean } = {}
     text: kept.text,
     format: body.format,
     truncated: kept.truncated || options.cut === true,
+    automated: automatedHeaders(parsed.headers),
   };
 }
 

@@ -20,14 +20,16 @@ delete process.env.TWOODY_EMBEDDING_MODEL;
 
 // ── A model that calls the tools it is scripted to, in turn ─────────────
 type Body = { messages: Array<{ role: string; content: string }>; tools?: Array<{ function: { name: string } }>; max_tokens?: number; tool_choice?: string };
-type Step = (lastResult: string | null) => { name: string; arguments: object };
+/// A call, maybe after some words — said with a pause between them, as a
+/// real model writes them (« Je vais chercher… », then the call).
+type Step = (lastResult: string | null) => { name: string; arguments: object; say?: string[]; pauseMs?: number };
 const bodies: Body[] = [];
 let script: Step[] = [];
 const llm = createServer((req: IncomingMessage, res: ServerResponse) => {
   if (req.method === "GET") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ data: [{ id: "qwen" }] })); return; }
   let raw = "";
   req.on("data", (chunk) => (raw += chunk));
-  req.on("end", () => {
+  req.on("end", async () => {
     const body = JSON.parse(raw) as Body;
     bodies.push(body);
     res.writeHead(200, { "content-type": "text/event-stream" });
@@ -37,6 +39,10 @@ const llm = createServer((req: IncomingMessage, res: ServerResponse) => {
     const step = script[results.length];
     if (step && body.tools?.length && body.tool_choice !== "none" && body.max_tokens !== 1) {
       const call = step(last);
+      for (const words of call.say ?? []) {
+        send({ choices: [{ delta: { content: words } }] });
+        await new Promise((resolve) => setTimeout(resolve, call.pauseMs ?? 0));
+      }
       send({ choices: [{ delta: { tool_calls: [{ index: 0, id: `call_${results.length}`, type: "function", function: { name: call.name, arguments: JSON.stringify(call.arguments) } }] } }] });
       send({ choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else {
@@ -212,6 +218,37 @@ test("the search: words without their accents, a sender by name or address, a fo
   assert.deepEqual(subjects(searchEmails(userId, { query: "facture", before: now - 5 * DAY })), []);
   const [hit] = searchEmails(userId, { query: "prélevée" });
   assert.match(hit!.snippet ?? "", /prélevée le 15/);
+});
+
+const lastUserMessage = () => bodies.at(-1)!.messages.filter((message) => message.role === "user").at(-1)!.content;
+
+test("a message plainly about e-mails comes with the e-mails found — newest conversation first, its e-mails together — never one that is not", async () => {
+  await ask("Qu'est-ce que René m'a écrit ?");
+  const given = lastUserMessage();
+  assert.match(given, /\[The user's e-mails that may answer this message, newest first, from the copy of jimmy@example.org kept on this computer/);
+  assert.match(given, /Conversation « Réunion de lundi », 2 e-mails, oldest first:/);
+  assert.ok(given.indexOf("From: René Dupont <rene@example.com>") < given.indexOf("sent by the user"), "the conversation in its order");
+  assert.match(given, /· (?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday) \d{4}-\d{2}-\d{2} \d{2}:\d{2} ·/, "the weekday given");
+  await ask("Combien font 17 × 23 ?");
+  assert.doesNotMatch(lastUserMessage(), /e-mails/);
+});
+
+test("« quels e-mails attendent une réponse ? »: received, not answered, asking something — no notice, nothing already answered", async () => {
+  await ask("Quels e-mails attendent une réponse de ma part ?");
+  const given = lastUserMessage();
+  assert.match(given, /\[E-mails the user received in the last 90 days, has not answered, and that ask them something/);
+  assert.match(given, /Subject: Dîner samedi/);
+  assert.doesNotMatch(given, /Subject: Réunion de lundi/, "René was answered in the conversation");
+  assert.doesNotMatch(given, /Votre facture de septembre|Subject: Urgent/);
+});
+
+test("words that only announce a search never reach the person, however long the call takes to come", async () => {
+  script = [() => ({ name: "search_emails", arguments: { query: "facture" }, say: ["Je vais chercher dans vos e-mails. ", "Cela inclut les e-mails reçus récemment. "], pauseMs: 1_400 })];
+  const response = await ask("Où en est ma facture ?");
+  script = [];
+  const final = eventOf(response.body, "final").message as string;
+  assert.match(final, /^OK: \[The user's e-mails matching this search/);
+  assert.doesNotMatch(response.body, /Je vais chercher|Cela inclut/);
 });
 
 test("in the chat: the three e-mail tools, in this order; the system prompt says how to use them; left out for a message, or for a phone", async () => {

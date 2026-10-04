@@ -2,7 +2,7 @@ import { capabilityOn } from "../localCapabilities.js";
 import { mailPassword } from "./credentials.js";
 import { MailError, mailErrorCode, openMailSession, type FetchedMail, type MailErrorCode, type MailSession } from "./imap.js";
 import {
-  attachmentsOf, envelopeAddresses, flagState, parseEmail, pickFolders, textMayBeCut, threadIdOf, validDate,
+  attachmentsOf, automatedSender, envelopeAddresses, flagState, parseEmail, pickFolders, textMayBeCut, threadIdOf, validDate,
   type FolderRole, type MailAddress, type ParsedEmail,
 } from "./parse.js";
 import {
@@ -200,7 +200,7 @@ async function keep(userId: string, source: EmailSource, folder: EmailFolder, ui
     size: mail.size,
     attachments: attachmentsOf(mail.structure),
     labels: mail.labels.slice(0, 50),
-    metadata: { in_reply_to: inReplyTo, references },
+    metadata: { in_reply_to: inReplyTo, references, ...(parsed?.automated || automatedSender(from?.address) ? { automated: true } : {}) },
     trashed_at: flags.deleted ? Date.now() : null,
   };
   return saveEmail(email);
