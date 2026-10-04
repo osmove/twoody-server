@@ -64,6 +64,10 @@
     "drizzle-orm": "^0.31.0",
     "fastify": "^5.12.5",
     "fflate": "^0.8.3",
+    "html-to-text": "^10.0.1",
+    "imapflow": "^2.2.4",
+    "mailparser": "^3.9.34",
+    "nodemailer": "^10.0.14",
     "unpdf": "^1.8.1",
     "zod": "^3.23.0"
   },

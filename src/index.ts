@@ -32,6 +32,7 @@ import { sealDiscussionTitle, setDesktopVault, startVaultService } from "./vault
 import { startMemorySync } from "./vault/memories.js";
 import { startMemoryWork } from "./memory/changes.js";
 import { startLearning } from "./memory/learner.js";
+import { startEmailSync } from "./email/sync.js";
 import { onTitled, startTitles } from "./discussionTitles.js";
 import { builtinAddress, initEngine, preloadBuiltin, stopEngine } from "./engine.js";
 import { fileURLToPath } from "node:url";
@@ -319,6 +320,9 @@ try {
   // answer; a synchronised one's sealed for the other devices (headless).
   const titles = startTitles();
   onTitled((discussionId, title) => void sealDiscussionTitle(discussionId, title));
+  // The person's mailbox, brought up to date every 10 minutes while
+  // E-mails is on and a mailbox is set up (src/email/sync.ts).
+  const emailSync = startEmailSync();
   if (parentPort && process.env.TWOODY_TUNNEL === "1") {
     parentPort.on("message", ({ data }) => {
       if ((data as { type?: unknown } | null)?.type !== "tunnel") return;
@@ -381,6 +385,7 @@ try {
         memoryWork.stop();
         learning.stop();
         titles.stop();
+        emailSync.stop();
         stopPeerPoller();
         stopMeshLinks();
         stopRoster();

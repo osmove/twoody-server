@@ -63,6 +63,8 @@ documents), also measure with a real model (root AGENTS.md §5, §7):
 | `projects/` | projects (`projects.ts`) and the chat's action tools (`actions.ts`) |
 | `diagnostics/traces.ts` | one trace per answer; `telemetryOf` = the content-free part that may be shared |
 | `documents/` | the document library (§5) |
+| `email/` | « E-mails » (Capacités): the mailbox over IMAP — `imap.ts` (the only file that connects to a mail server, through `mailServerDoor` in `outbound.ts`; read-only but for a draft's APPEND), `sync.ts` (INBOX and Sent, the window then by UID, every 10 min), `store.ts` (migration 4, FTS), `credentials.ts` (the password, `email-credentials.json` 0600), `chat.ts` (`search_emails`, `read_email`, `draft_email` asked in the chat first; nothing is ever sent) |
+| `bank/` | « Banque » (Capacités): bank statements imported from this computer's app — `parse.ts` (CSV with its layout found or confirmed, OFX/QFX, QIF; fingerprints), `categories.ts` (keyword rules, counterparties), `store.ts` (migration 5; an overlapping statement adds only what is new), `tools.ts` (`bank_accounts`, `search_transactions`, `spending_summary`, for a model of this computer in its app only) |
 | `builtin/`, `engine.ts`, `engineJobs.ts`, `localRuntime.ts`, `runtimeSlots.ts`, `cli/runtime.ts` | the built-in llama.cpp engine and « Moteur » (docs/builtin-runtime-design.md) |
 | `account/`, `cli/account.ts` | linking this server to a Twoody account (`twoody-server login/logout/approve`), approvals, endorsements, status heartbeat |
 | `vault/` | end-to-end encrypted history and memories, trust roster |

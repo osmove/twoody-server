@@ -55,6 +55,9 @@ import { discussionTitle, typedText } from "../documentBlocks.js";
 import { loadPersonalData } from "./localSync.js";
 import { capabilitiesOff, capabilityOn, type LocalCapability } from "../localCapabilities.js";
 import { callConnectorTool, connectorChatTools, waitForApproval } from "../connectors/connectors.js";
+import { EMAIL_TOOLS, emailToolsAvailable, isEmailTool, runEmailTool } from "../email/chat.js";
+import { askedBank, BANK_TOOLS, isBankTool, runBankTool } from "../bank/tools.js";
+import { hasBankAccounts } from "../bank/store.js";
 import { importanceOf } from "../memory/importance.js";
 import { controlHome, HOME_TOOL, homeBlock, homeConfig, homeDoneSentence, homeEntities, homeErrorSentence, homeOn, homeShortcut, type HomeDone } from "../home/homeAssistant.js";
 import { validTimeZone } from "../usagePeriods.js";
@@ -801,13 +804,72 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         return `Not done: ${chosen.connectorName} could not be reached (${traced.error}). Tell the user, briefly.`;
       }
     };
+    // E-mails (Capacités, src/email/): the copy of the person's mailbox on
+    // this computer, searched and read by a model of this very computer —
+    // never another one, even of theirs: the copy does not leave it — in
+    // this computer's app, the only one that asks, for now, before a draft
+    // is saved (the phone: later).
+    const emailHere = (candidate: Provider) => candidate.kind === "local_openai" && onThisComputer(candidate);
+    const offersEmail = emailHere(provider) && access.mode !== "only" && !left.has("email") && isThisComputersApp(auth) && emailToolsAvailable(auth.userId);
+    const runEmail = async (name: string, args: Record<string, unknown>): Promise<string> => {
+      const traced: ToolCallTrace = { name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0 };
+      toolCallsTraced.push(traced);
+      const called = Date.now();
+      const done = await runEmailTool(name, args, {
+        userId: auth.userId,
+        timeZone: validTimeZone(parsed.time_zone),
+        budgetChars: contextBudget(readWindow(parsed.context_window) ?? 32_768),
+        // « Recherche dans vos e-mails… » while it looks.
+        onSearch: () => {
+          startSse();
+          reply.raw.write(`event: status\ndata: ${JSON.stringify({ kind: "searching_emails" })}\n\n`);
+        },
+        // Each draft asked in the chat, never « Toujours autoriser »: the
+        // recipients, the subject and the start of the text, before anything
+        // reaches the mailbox.
+        approve: async (draft) => {
+          const approvalId = generateId();
+          startSse();
+          reply.raw.write(`event: approval\ndata: ${JSON.stringify({ id: approvalId, kind: "email_draft", connector: "E-mails", tool: "draft_email", arguments: { to: draft.to, cc: draft.cc, subject: draft.subject, body: draft.body_start }, draft })}\n\n`);
+          const allowed = await waitForApproval(auth.userId, approvalId, upstream.signal);
+          if (!upstream.signal.aborted) reply.raw.write(`event: approval_done\ndata: ${JSON.stringify({ id: approvalId, allowed })}\n\n`);
+          return allowed;
+        },
+      });
+      traced.ms = Date.now() - called;
+      traced.result_chars = done.text.length;
+      if (done.error) traced.error = done.error;
+      return done.text;
+    };
+    // Banque (Capacités, src/bank/): the statements the person imported,
+    // read by a model of this very computer only — not another computer of
+    // theirs — in this computer's app: nothing about the bank leaves it.
+    // « Combien j'ai dépensé en courses ? » must look before answering.
+    const bankHere = (candidate: Provider) => candidate.kind === "local_openai" && onThisComputer(candidate);
+    const offersBank = bankHere(provider) && access.mode !== "only" && capabilityOn(auth.userId, "bank") && !left.has("bank") && isThisComputersApp(auth) && hasBankAccounts(auth.userId);
+    const bankAsked = offersBank && askedBank(typedText(content));
     const chatTools: ChatTools = {
-      ...(asked ? { required: true } : {}),
+      ...(asked || bankAsked ? { required: true } : {}),
       // A connector's tool may be announced instead of called: insisted on.
       ...(connectorTools.length ? { insist: true } : {}),
-      definitions: [...(offersDocuments ? [SEARCH_DOCUMENTS_TOOL] : []), ...(offersActions ? ACTION_TOOLS : []), ...(offersHome ? [HOME_TOOL] : []), ...connectorTools.map((tool) => tool.definition)],
+      // Search, read, then draft an answer: three rounds.
+      ...(offersEmail ? { rounds: 3 } : {}),
+      // The e-mail tools, always the same three, before the connectors'
+      // (which change as the person picks them): the runtime's cache.
+      // The bank's three tools after them, the same as long as Banque is on.
+      definitions: [...(offersDocuments ? [SEARCH_DOCUMENTS_TOOL] : []), ...(offersActions ? ACTION_TOOLS : []), ...(offersHome ? [HOME_TOOL] : []), ...(offersEmail ? EMAIL_TOOLS : []), ...(offersBank ? BANK_TOOLS : []), ...connectorTools.map((tool) => tool.definition)],
       run: async (name, args) => {
         if (name === "search_documents") return documentTools.run(name, args);
+        if (offersEmail && isEmailTool(name)) {
+          // Answered by another computer after this one failed: not given.
+          if (!emailHere(provider)) return "The user's e-mails are read only by a model of this computer: not available for this answer. Say so, briefly.";
+          return runEmail(name, args);
+        }
+        if (offersBank && isBankTool(name)) {
+          // Answered by another computer after this one failed: not given.
+          if (!bankHere(provider)) return "The user's bank statements are read only by a model of this computer: not available for this answer. Say so, briefly.";
+          return runBankTool(auth.userId, name, args, { timeZone: validTimeZone(parsed.time_zone) });
+        }
         const viaConnector = connectorTools.find((tool) => tool.definition.function.name === name);
         if (viaConnector) return runConnectorTool(viaConnector, args);
         if (name === "control_home") {
@@ -898,6 +960,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       documentTool: !!toolsFor(provider) && offersDocuments,
       actionTools: !!toolsFor(provider) && offersActions,
       connectorTools: toolsFor(provider) && connectorTools.length ? [...new Set(connectorTools.map((tool) => tool.connectorName))] : null,
+      emailTools: !!toolsFor(provider) && offersEmail,
+      bankTools: !!toolsFor(provider) && offersBank,
       // The projects the message is about (named, or through the memories
       // given with it): their cards, with the message.
       projectCards: memoryMode === "full" ? cards.map((card) => card.card) : [],
@@ -2191,6 +2255,9 @@ export interface ChatTools {
   /// offres : », « Voulez-vous que je les affiche ? ») is held back and the
   /// model asked again, made to call a tool (streamLocal).
   insist?: boolean;
+  /// Tool rounds before the answer (TOOL_ROUNDS unless said): an e-mail
+  /// found, read, then answered takes three.
+  rounds?: number;
 }
 
 /// What a first answer held back may be: short, and announcing or offering
@@ -2496,9 +2563,9 @@ async function streamLocal(
       let rest = settle(called());
       // Announced, not called: asked again, a tool call required; what
       // was announced is not shown. A connector's: any announcement, any
-      // tool; otherwise only words that say a search, and only the
-      // documents' search may then be called (not an action).
-      const searchOnly = options.tools?.definitions.filter((tool) => tool.function.name === "search_documents") ?? [];
+      // tool; otherwise only words that say a search, and only a search —
+      // of the documents, of the e-mails — may then be called (not an action).
+      const searchOnly = options.tools?.definitions.filter((tool) => tool.function.name === "search_documents" || tool.function.name === "search_emails") ?? [];
       const retryTools = insist ? options.tools?.definitions ?? [] : searchOnly;
       if (rest && options.tools && !called() && retryTools.length && (insist ? looksLikeAnnouncement(rest) : onlyNarration(rest)) && !signal.aborted) {
         try {
@@ -2524,7 +2591,8 @@ async function streamLocal(
       // what it returns is given back, and the model goes on from there —
       // the prompt read so far is reused, only the result is new.
       let followed: Array<Record<string, unknown>> = [...chatMessages];
-      for (let round = 0; options.tools && !cut && calls.length > 0 && round < TOOL_ROUNDS; round += 1) {
+      const rounds = options.tools?.rounds ?? TOOL_ROUNDS;
+      for (let round = 0; options.tools && !cut && calls.length > 0 && round < rounds; round += 1) {
         const asked = calls.splice(0).filter((call) => call.name).slice(0, 3);
         if (asked.length === 0) break;
         const results = [];
@@ -2540,11 +2608,11 @@ async function streamLocal(
           ...results.map(({ id, content }) => ({ role: "tool", tool_call_id: id, content })),
         ];
         if (signal.aborted) throw new Error("aborted");
-        const next = await post({ ...body, ...extras, messages: followed, tool_choice: round + 1 >= TOOL_ROUNDS ? "none" : "auto" });
+        const next = await post({ ...body, ...extras, messages: followed, tool_choice: round + 1 >= rounds ? "none" : "auto" });
         if (!next.ok) throw new LocalLlmUnavailableError(`Local LLM provider returned ${next.status}`);
         const spent = usage?.completion_tokens ?? 0;
         // It may call again: what it says before that is held back too.
-        if (round + 1 < TOOL_ROUNDS) hold();
+        if (round + 1 < rounds) hold();
         filter = thinkFilter();
         usage = await consumeOpenAIStream(next, filter.push, reason, calls);
         filter.flush();

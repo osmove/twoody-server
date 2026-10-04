@@ -13,7 +13,11 @@ import { sqlite } from "./db.js";
 // first read turns on documents when folders are granted, contacts and the
 // agenda when there are some.
 
-export const LOCAL_CAPABILITIES = ["documents", "contacts", "calendar", "web", "dictation", "agent", "home", "connectors", "memory"] as const;
+// « email »: the person's mailbox, read over IMAP from this computer
+// (src/email/, Jimmy, 04/10/2026: « IMAP d'abord »).
+// « bank »: the bank statements the person imports, read and kept on this
+// computer (src/bank/, Jimmy, 04/10/2026: « import de relevés pour la banque »).
+export const LOCAL_CAPABILITIES = ["documents", "contacts", "calendar", "web", "dictation", "agent", "home", "connectors", "memory", "email", "bank"] as const;
 export type LocalCapability = (typeof LOCAL_CAPABILITIES)[number];
 
 export function isLocalCapability(value: unknown): value is LocalCapability {

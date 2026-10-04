@@ -171,6 +171,8 @@ families, by file in `src/routes/`:
 | Memory | `/memories*` (candidates, duplicates, import, learn), `/memories/search`, `/memories/retrieve`, `/conversations/search`, `/entities*` | `memories.ts`, `memorySearch.ts`, `entities.ts` |
 | Projects, tasks, reminders, notes, events, contacts | `/projects*`, `/tasks*`, `/reminders*`, `/notes*`, `/events*`, `/contacts*`, `/local_sync/*` | `projects.ts`, `tasks.ts`, `reminders.ts`, `notes.ts`, `calendarEvents.ts`, `contacts.ts`, `localSync.ts` |
 | Documents | `/local_documents/*` | `localDocuments.ts` |
+| E-mails (Capacités) | `/email/status`, `/email/folders`, `/email/recent`, `/email/test`, `/email/account`, `/email/sync`, `/email/kept/:id` — the mailbox read over IMAP (TLS) from this computer, changed from this computer's app only | `email.ts` (and `src/email/`) |
+| Bank (Capacités) | `/bank`, `/bank/transactions*`, `/bank/imports*` (CSV, OFX/QFX, QIF; `/bank/imports/preview` reads without keeping), `/bank/accounts/:id` — statements kept on this computer, read and changed from this computer's app only | `bank.ts` (and `src/bank/`) |
 | Account link | `/account/link`, `/account/approvals*` | `accountLink.ts` |
 | Other computers (mesh) | `/api/v1/peer/*`, `/api/v1/peers*` | `peer.ts`, `peers.ts`, `peerVault.ts`, `peerDocuments.ts` |
 | Usage and diagnostics | `/usage*`, `/diagnostics/turns`, `/diagnostics/telemetry` | `usage.ts`, `diagnostics.ts` |

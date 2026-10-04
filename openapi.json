@@ -110,6 +110,12 @@
                     "tunnel_relay": {
                       "type": "string",
                       "nullable": true
+                    },
+                    "memory_features": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
@@ -274,6 +280,25 @@
                   },
                   "tunnel_public_key": {
                     "type": "string"
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "device",
+                      "peer"
+                    ]
+                  },
+                  "requester_computer_id": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      },
+                      {
+                        "type": "integer"
+                      }
+                    ]
                   }
                 }
               }
@@ -359,6 +384,24 @@
         }
       }
     },
+    "/session/device-access": {
+      "post": {
+        "summary": "Renew this device's signed device-access (tunnel only)",
+        "tags": [
+          "session"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/session/me": {
       "get": {
         "summary": "Verify current bearer token",
@@ -431,6 +474,27 @@
             "name": "id",
             "required": true
           }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/queries/warm": {
+      "post": {
+        "summary": "Read ahead the start of a new conversation, while the person speaks or types",
+        "tags": [
+          "queries"
         ],
         "security": [
           {
@@ -1998,12 +2062,1036 @@
         }
       }
     },
+    "/local_capabilities": {
+      "get": {
+        "summary": "What the person switched on on this computer",
+        "tags": [
+          "capabilities"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_capabilities/{id}": {
+      "patch": {
+        "summary": "Switch a capability on or off",
+        "tags": [
+          "capabilities"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "minProperties": 1,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "menu": {
+                    "type": "boolean"
+                  },
+                  "chat": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_capabilities_order": {
+      "put": {
+        "summary": "Arrange the capabilities' pages in the menu",
+        "tags": [
+          "capabilities"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "order"
+                ],
+                "properties": {
+                  "order": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 40,
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/home": {
+      "get": {
+        "summary": "Home Assistant: set up or not, and the devices",
+        "tags": [
+          "home"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/home/config": {
+      "put": {
+        "summary": "Set the address and token of Home Assistant",
+        "tags": [
+          "home"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Forget Home Assistant",
+        "tags": [
+          "home"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/home/control": {
+      "post": {
+        "summary": "Switch a device of the home",
+        "tags": [
+          "home"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "entity_id",
+                  "action"
+                ],
+                "properties": {
+                  "entity_id": {
+                    "type": "string"
+                  },
+                  "action": {
+                    "type": "string"
+                  },
+                  "brightness": {
+                    "type": "number"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/connectors": {
+      "get": {
+        "summary": "The person's connectors (MCP servers) and their tools",
+        "tags": [
+          "connectors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Add a connector (this computer's app only)",
+        "tags": [
+          "connectors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/connectors/{id}": {
+      "patch": {
+        "summary": "Change a connector (this computer's app only)",
+        "tags": [
+          "connectors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Remove a connector (this computer's app only)",
+        "tags": [
+          "connectors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/connectors/{id}/start": {
+      "post": {
+        "summary": "Start a connector and read its tools again (this computer's app only)",
+        "tags": [
+          "connectors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/connectors/{id}/oauth/start": {
+      "post": {
+        "summary": "The sign-in page of a connector's service (this computer's app only)",
+        "tags": [
+          "connectors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/connectors/{id}/oauth/sign_out": {
+      "post": {
+        "summary": "Sign out of a connector's service (this computer's app only)",
+        "tags": [
+          "connectors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/queries/approval": {
+      "post": {
+        "summary": "Allow or refuse a connector's tool call asked in the chat",
+        "tags": [
+          "queries"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/email/status": {
+      "get": {
+        "summary": "The mailbox set up (never its password), its sync, the copies kept",
+        "tags": [
+          "email"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/email/folders": {
+      "get": {
+        "summary": "The folders of the mailbox Twoody reads and writes drafts to",
+        "tags": [
+          "email"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/email/recent": {
+      "get": {
+        "summary": "The latest messages kept on this computer (this computer's app only)",
+        "tags": [
+          "email"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/email/test": {
+      "post": {
+        "summary": "Try a mailbox's settings: one connection, nothing read (this computer's app only)",
+        "tags": [
+          "email"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "address": {
+                    "type": "string",
+                    "maxLength": 320
+                  },
+                  "host": {
+                    "type": "string",
+                    "maxLength": 253
+                  },
+                  "port": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  },
+                  "security": {
+                    "type": "string",
+                    "enum": [
+                      "tls",
+                      "starttls"
+                    ]
+                  },
+                  "username": {
+                    "type": "string",
+                    "maxLength": 320
+                  },
+                  "password": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "window_days": {
+                    "type": "integer"
+                  },
+                  "preset": {
+                    "type": "string",
+                    "maxLength": 30
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/email/account": {
+      "post": {
+        "summary": "Set up the mailbox: tried, then kept, then read (this computer's app only)",
+        "tags": [
+          "email"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "address": {
+                    "type": "string",
+                    "maxLength": 320
+                  },
+                  "host": {
+                    "type": "string",
+                    "maxLength": 253
+                  },
+                  "port": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  },
+                  "security": {
+                    "type": "string",
+                    "enum": [
+                      "tls",
+                      "starttls"
+                    ]
+                  },
+                  "username": {
+                    "type": "string",
+                    "maxLength": 320
+                  },
+                  "password": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "window_days": {
+                    "type": "integer"
+                  },
+                  "preset": {
+                    "type": "string",
+                    "maxLength": 30
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Remove the mailbox: no more sync, password forgotten, the copy kept or deleted (this computer's app only)",
+        "tags": [
+          "email"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/email/sync": {
+      "post": {
+        "summary": "Read what is new in the mailbox, now (this computer's app only)",
+        "tags": [
+          "email"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/email/kept/{id}": {
+      "delete": {
+        "summary": "Delete the copy kept from a mailbox removed earlier (this computer's app only)",
+        "tags": [
+          "email"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/bank": {
+      "get": {
+        "summary": "Bank: the accounts and imports of the statements kept on this computer",
+        "tags": [
+          "bank"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/bank/transactions": {
+      "get": {
+        "summary": "Bank: transactions, newest first",
+        "tags": [
+          "bank"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/bank/imports/preview": {
+      "post": {
+        "summary": "Bank: what a statement holds, before importing it",
+        "tags": [
+          "bank"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/bank/imports": {
+      "post": {
+        "summary": "Bank: import a statement (CSV, OFX/QFX, QIF)",
+        "tags": [
+          "bank"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/bank/imports/{id}": {
+      "delete": {
+        "summary": "Bank: delete an import, with the transactions only it held",
+        "tags": [
+          "bank"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/bank/accounts/{id}": {
+      "patch": {
+        "summary": "Bank: rename an account",
+        "tags": [
+          "bank"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/bank/transactions/{id}": {
+      "patch": {
+        "summary": "Bank: correct a transaction's category (and those of the same counterparty)",
+        "tags": [
+          "bank"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "category"
+                ],
+                "properties": {
+                  "category": {
+                    "type": "string"
+                  },
+                  "similar": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_sync/contacts": {
+      "put": {
+        "summary": "Replace the contacts copied from this computer (its own app only)",
+        "tags": [
+          "contacts"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_sync/events": {
+      "put": {
+        "summary": "Replace the calendar events copied from this computer (its own app only)",
+        "tags": [
+          "events"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/discussions/{id}": {
       "delete": {
         "summary": "Delete a discussion and its messages",
         "tags": [
           "session"
         ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Change a discussion's memory mode",
+        "tags": [
+          "session"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "memory_mode": {
+                    "type": "string",
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        },
         "parameters": [
           {
             "schema": {
@@ -2043,6 +3131,91 @@
             "required": true
           }
         ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/discussions/import": {
+      "post": {
+        "summary": "Create or extend a conversation from its decrypted exchanges",
+        "tags": [
+          "session"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "vault_id",
+                  "turns"
+                ],
+                "properties": {
+                  "vault_id": {
+                    "type": "string",
+                    "maxLength": 36
+                  },
+                  "discussion_id": {
+                    "type": "string",
+                    "maxLength": 100
+                  },
+                  "title": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "turns": {
+                    "type": "array",
+                    "maxItems": 500,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "ref",
+                        "text",
+                        "reply"
+                      ],
+                      "properties": {
+                        "ref": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 200
+                        },
+                        "text": {
+                          "type": "string",
+                          "maxLength": 100000
+                        },
+                        "reply": {
+                          "type": "string",
+                          "maxLength": 200000
+                        },
+                        "model": {
+                          "type": "string",
+                          "maxLength": 200,
+                          "nullable": true
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "maxLength": 40
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
         "security": [
           {
             "bearerAuth": []
@@ -2108,6 +3281,246 @@
         }
       }
     },
+    "/discussions/{id}/memory_notices": {
+      "get": {
+        "summary": "What was learned from this conversation",
+        "tags": [
+          "discussions"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/memories/candidates": {
+      "get": {
+        "summary": "Facts learned from conversations, waiting for the person",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/memories/candidates/{id}/accept": {
+      "post": {
+        "summary": "Keep a learned fact, as proposed or corrected",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/memories/candidates/{id}/reject": {
+      "post": {
+        "summary": "Refuse a learned fact: never proposed again",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/memories/news": {
+      "get": {
+        "summary": "What Twoody learned and has not said yet",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/memories/discover": {
+      "post": {
+        "summary": "Projects, contacts and dates found in these memories",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/memories/discover/apply": {
+      "post": {
+        "summary": "Make the projects, contacts and dates the person ticked",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/memories/similar": {
+      "get": {
+        "summary": "Pairs of memories that say much the same",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/memories/similar/dismiss": {
+      "post": {
+        "summary": "These two memories differ: never shown as a pair again",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/memories/learn": {
+      "post": {
+        "summary": "Learn now from what was said in conversations",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/memories": {
       "get": {
         "summary": "List the current user's memories",
@@ -2149,6 +3562,27 @@
             }
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/memories/duplicates": {
+      "get": {
+        "summary": "Possible duplicates: memories with the same title and different contents",
+        "tags": [
+          "memories"
+        ],
         "security": [
           {
             "bearerAuth": []
@@ -2261,6 +3695,715 @@
             "name": "id",
             "required": true
           }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/memories/import": {
+      "post": {
+        "summary": "Import what another assistant knows of the user",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/diagnostics/turns": {
+      "get": {
+        "summary": "What happened in each answer on this computer",
+        "tags": [
+          "diagnostics"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/diagnostics/messages/{id}": {
+      "get": {
+        "summary": "An answer's trace and the prompt its model was given",
+        "tags": [
+          "diagnostics"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/diagnostics/full": {
+      "get": {
+        "summary": "The traces whole, with their prompts, for audits on the account (when the person ticked it)",
+        "tags": [
+          "diagnostics"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/diagnostics/telemetry": {
+      "get": {
+        "summary": "The traces without their content, for the account's app analytics",
+        "tags": [
+          "diagnostics"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/projects": {
+      "get": {
+        "summary": "The person's projects, active first",
+        "tags": [
+          "projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Start a project",
+        "tags": [
+          "projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/projects/{id}": {
+      "get": {
+        "summary": "A project with its memories, tasks, reminders, events, conversations and documents",
+        "tags": [
+          "projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Change a project: title, kind, size, status, brief, due date, budget, names",
+        "tags": [
+          "projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Remove a project; what hung off it stays, unlinked",
+        "tags": [
+          "projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/projects/{id}/link": {
+      "post": {
+        "summary": "Tie a task, reminder, event, conversation or document to the project",
+        "tags": [
+          "projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/projects/{id}/unlink": {
+      "post": {
+        "summary": "Untie a task, reminder, event, conversation or document from the project",
+        "tags": [
+          "projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/entities": {
+      "get": {
+        "summary": "List the people, projects and places of the user's memories",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create an entity: {entity: {kind, name, note?, aliases?, relations?: [{to: id or name, label}]}}",
+        "tags": [
+          "memories"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "entity": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/entities/{id}": {
+      "get": {
+        "summary": "Show an entity, with the memories that name it",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Update an entity: the fields given; aliases and relations are replaced whole",
+        "tags": [
+          "memories"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "entity": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete an entity, its other names and relations (its memories stay)",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/entities/{id}/merge": {
+      "post": {
+        "summary": "Merge this entity into another ({into: id}): its names become aliases there, its relations and memories move",
+        "tags": [
+          "memories"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "into"
+                ],
+                "properties": {
+                  "into": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/memories/search": {
+      "get": {
+        "summary": "Search the user's memories: hybrid lexical + embeddings, top-k with scores, no threshold",
+        "tags": [
+          "memories"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "in": "query",
+            "name": "q",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "in": "query",
+            "name": "entity",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/memories/retrieve": {
+      "post": {
+        "summary": "Dry run of retrieval (tier b): what a message would be given, with scores and budget",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/conversations/search": {
+      "get": {
+        "summary": "Search the user's conversations (FTS5): snippet, date and conversation title per message; « Aucune » conversations are never indexed",
+        "tags": [
+          "discussions"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "in": "query",
+            "name": "q",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 40
+            },
+            "in": "query",
+            "name": "after",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 40
+            },
+            "in": "query",
+            "name": "before",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/usage": {
+      "get": {
+        "summary": "Tokens this computer's models spent: ?days= (by day, model and device) or ?period=day|week|month|year&tz=&offset= (series, speed, by model, device and source)",
+        "tags": [
+          "usage"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/usage/performance": {
+      "get": {
+        "summary": "This computer's CPU, GPU and memory, and each answer's speed, over 1h, 24h, 7d or 30d",
+        "tags": [
+          "usage"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/usage/export.csv": {
+      "get": {
+        "summary": "Every call to a model in a period (?period=&tz=&offset=) or between ?from= and ?to= (ISO), as CSV",
+        "tags": [
+          "usage"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/usage/events": {
+      "post": {
+        "summary": "The desktop app reports its own calls to a model (Twoody Code, the Agent): 500 at most per call",
+        "tags": [
+          "usage"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/usage/samples": {
+      "post": {
+        "summary": "The desktop app reports this computer's load (15-s samples, 500 at most per call) and, once, the machine",
+        "tags": [
+          "usage"
         ],
         "responses": {
           "200": {
@@ -2931,6 +5074,226 @@
         }
       }
     },
+    "/local_documents/browse": {
+      "get": {
+        "summary": "A folder inside a granted folder (root, path; sorted, paged, searched by name), or the index's view of one (folder_id, directory)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "folder_id",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "in": "query",
+            "name": "directory",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000
+            },
+            "in": "query",
+            "name": "offset",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "in": "query",
+            "name": "root",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "in": "query",
+            "name": "path",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "name",
+                "date",
+                "size"
+              ]
+            },
+            "in": "query",
+            "name": "sort",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            },
+            "in": "query",
+            "name": "order",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "in": "query",
+            "name": "q",
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_documents/browse/raw": {
+      "get": {
+        "summary": "A file inside a granted folder, the file itself, indexed or not (Range; 25 MB an answer through the relay, 32 MB on the local network)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "in": "query",
+            "name": "root",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "in": "query",
+            "name": "path",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_documents/remote/{computer_id}/browse": {
+      "get": {
+        "summary": "A folder of another trusted computer of the account, through this one",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "computer_id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_documents/remote/{computer_id}/browse/raw": {
+      "get": {
+        "summary": "A file browsed on another trusted computer of the account, the file itself, through this one (Range)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "computer_id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/local_documents/folders": {
       "get": {
         "summary": "Granted folders and index counts",
@@ -2965,6 +5328,298 @@
                 "properties": {
                   "path": {
                     "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_documents/context": {
+      "post": {
+        "summary": "Retrieve scoped context for an external conversation",
+        "tags": [
+          "documents"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "question",
+                  "document_access"
+                ],
+                "properties": {
+                  "question": {
+                    "type": "string",
+                    "maxLength": 24000
+                  },
+                  "document_access": {
+                    "type": "object"
+                  },
+                  "context_window": {
+                    "type": "integer",
+                    "minimum": 1024,
+                    "maximum": 1048576
+                  },
+                  "history": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "role",
+                        "content"
+                      ],
+                      "properties": {
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "user",
+                            "assistant"
+                          ]
+                        },
+                        "content": {
+                          "type": "string",
+                          "maxLength": 16000
+                        },
+                        "sourcesJson": {
+                          "type": "string",
+                          "maxLength": 16000
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_documents/files/{id}": {
+      "get": {
+        "summary": "Read indexed text by opaque ID, 20 passages per page",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000
+            },
+            "in": "query",
+            "name": "offset",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_documents/files/{id}/raw": {
+      "get": {
+        "summary": "The indexed file itself by opaque ID (Range; 25 MB an answer through the relay, 32 MB on the local network)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_documents/semantic": {
+      "get": {
+        "summary": "Local semantic indexing status",
+        "tags": [
+          "documents"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Enable or pause local semantic indexing",
+        "tags": [
+          "documents"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "enabled"
+                ],
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_documents/semantic/reindex": {
+      "post": {
+        "summary": "Resume local semantic indexing",
+        "tags": [
+          "documents"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_documents/personal": {
+      "get": {
+        "summary": "Preview the personal-files grant",
+        "tags": [
+          "documents"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Explicitly grant personal files under the home directory",
+        "tags": [
+          "documents"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "confirmed"
+                ],
+                "properties": {
+                  "confirmed": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
                   }
                 }
               }
@@ -3059,6 +5714,126 @@
         }
       }
     },
+    "/local_documents/files": {
+      "get": {
+        "summary": "Files indexed in a granted folder, 100 per page",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "name",
+                "modified",
+                "category"
+              ]
+            },
+            "in": "query",
+            "name": "sort",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "in": "query",
+            "name": "folder_id",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000
+            },
+            "in": "query",
+            "name": "offset",
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_documents/computers": {
+      "get": {
+        "summary": "The folders of the account's other trusted computers, names and counts",
+        "tags": [
+          "documents"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_documents/remote/{computer_id}/files/{id}/raw": {
+      "get": {
+        "summary": "A cited document, the file itself, from the computer of the account that holds it (Range)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "computer_id",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/local_documents/known": {
       "get": {
         "summary": "Whether a path is an indexed document of this user",
@@ -3071,6 +5846,513 @@
           },
           {
             "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/code/sessions": {
+      "get": {
+        "summary": "Twoody Code: folders open on this computer and their sessions (paired phone)",
+        "tags": [
+          "code"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Twoody Code: start a session in a folder already open in Code",
+        "tags": [
+          "code"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "workspace",
+                  "text"
+                ],
+                "properties": {
+                  "workspace": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 16000
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "ask",
+                      "auto-edit",
+                      "plan"
+                    ]
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{16,80}$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/code/sessions/{id}": {
+      "get": {
+        "summary": "Twoody Code: one session, its items and pending decisions",
+        "tags": [
+          "code"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f-]{36}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/code/sessions/{id}/messages": {
+      "post": {
+        "summary": "Twoody Code: continue a session",
+        "tags": [
+          "code"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "text"
+                ],
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 16000
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "ask",
+                      "auto-edit",
+                      "plan"
+                    ]
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{16,80}$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f-]{36}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/code/sessions/{id}/approvals/{callId}": {
+      "post": {
+        "summary": "Twoody Code: allow or deny one pending step",
+        "tags": [
+          "code"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "decision"
+                ],
+                "properties": {
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "allow",
+                      "deny"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 1000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f-]{36}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "in": "path",
+            "name": "callId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/code/sessions/{id}/stop": {
+      "post": {
+        "summary": "Twoody Code: stop the session's request",
+        "tags": [
+          "code"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f-]{36}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/code/sessions/{id}/processes/{processId}/stop": {
+      "post": {
+        "summary": "Twoody Code: stop a process the session keeps running in the background",
+        "tags": [
+          "code"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f-]{36}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,40}$"
+            },
+            "in": "path",
+            "name": "processId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/code/sessions/{id}/stream": {
+      "post": {
+        "summary": "Twoody Code: follow a session (text/event-stream)",
+        "tags": [
+          "code"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f-]{36}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/account/link": {
+      "get": {
+        "summary": "Whether this server is linked to a Twoody account (the code while it waits, to its console only)",
+        "tags": [
+          "session"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Start linking this server to a Twoody account: a code, shown on its console, to type on a signed-in device",
+        "tags": [
+          "session"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Leave the Twoody account (this machine or the admin token); ?force=1 leaves here even when the backend does not confirm",
+        "tags": [
+          "session"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/account/approvals": {
+      "get": {
+        "summary": "Requests to use this server waiting for an approval (this machine or the admin token)",
+        "tags": [
+          "session"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/account/approvals/{id}": {
+      "post": {
+        "summary": "Approve or deny a request on this server's console (rule 3)",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/runtime": {
+      "get": {
+        "summary": "This computer's engine (« Moteur »): the preference, the engine in use, the built-in llama.cpp runtime",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "put": {
+        "summary": "Choose this computer's engine: auto, builtin, ollama, lmstudio, mlx or custom (with custom_url)",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/runtime/install": {
+      "post": {
+        "summary": "Install the built-in llama.cpp runtime (pinned release, checked against its SHA-256)",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/runtime/catalog": {
+      "get": {
+        "summary": "The models Twoody offers for the built-in runtime: installed, recommended, fits in this computer's memory",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/runtime/models": {
+      "post": {
+        "summary": "Install a model of the catalogue (and the runtime first when needed): 202 with the job",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/runtime/jobs/current": {
+      "get": {
+        "summary": "The model installation in progress, or the last one",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Cancel the model installation in progress (what was downloaded is kept for the next try)",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/runtime/models/{id}": {
+      "delete": {
+        "summary": "Remove an installed model of the built-in runtime",
+        "tags": [
+          "providers"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
           }
         ],
         "responses": {
@@ -3133,6 +6415,12 @@
                     "tunnel_relay": {
                       "type": "string",
                       "nullable": true
+                    },
+                    "memory_features": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
@@ -3297,6 +6585,25 @@
                   },
                   "tunnel_public_key": {
                     "type": "string"
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "device",
+                      "peer"
+                    ]
+                  },
+                  "requester_computer_id": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      },
+                      {
+                        "type": "integer"
+                      }
+                    ]
                   }
                 }
               }
@@ -3382,6 +6689,24 @@
         }
       }
     },
+    "/api/v1/session/device-access": {
+      "post": {
+        "summary": "Renew this device's signed device-access (tunnel only)",
+        "tags": [
+          "session"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/api/v1/session/me": {
       "get": {
         "summary": "Verify current bearer token",
@@ -3454,6 +6779,27 @@
             "name": "id",
             "required": true
           }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/queries/warm": {
+      "post": {
+        "summary": "Read ahead the start of a new conversation, while the person speaks or types",
+        "tags": [
+          "queries"
         ],
         "security": [
           {
@@ -5021,12 +8367,1036 @@
         }
       }
     },
+    "/api/v1/local_capabilities": {
+      "get": {
+        "summary": "What the person switched on on this computer",
+        "tags": [
+          "capabilities"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_capabilities/{id}": {
+      "patch": {
+        "summary": "Switch a capability on or off",
+        "tags": [
+          "capabilities"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "minProperties": 1,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "menu": {
+                    "type": "boolean"
+                  },
+                  "chat": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_capabilities_order": {
+      "put": {
+        "summary": "Arrange the capabilities' pages in the menu",
+        "tags": [
+          "capabilities"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "order"
+                ],
+                "properties": {
+                  "order": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 40,
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/home": {
+      "get": {
+        "summary": "Home Assistant: set up or not, and the devices",
+        "tags": [
+          "home"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/home/config": {
+      "put": {
+        "summary": "Set the address and token of Home Assistant",
+        "tags": [
+          "home"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Forget Home Assistant",
+        "tags": [
+          "home"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/home/control": {
+      "post": {
+        "summary": "Switch a device of the home",
+        "tags": [
+          "home"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "entity_id",
+                  "action"
+                ],
+                "properties": {
+                  "entity_id": {
+                    "type": "string"
+                  },
+                  "action": {
+                    "type": "string"
+                  },
+                  "brightness": {
+                    "type": "number"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/connectors": {
+      "get": {
+        "summary": "The person's connectors (MCP servers) and their tools",
+        "tags": [
+          "connectors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Add a connector (this computer's app only)",
+        "tags": [
+          "connectors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/connectors/{id}": {
+      "patch": {
+        "summary": "Change a connector (this computer's app only)",
+        "tags": [
+          "connectors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Remove a connector (this computer's app only)",
+        "tags": [
+          "connectors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/connectors/{id}/start": {
+      "post": {
+        "summary": "Start a connector and read its tools again (this computer's app only)",
+        "tags": [
+          "connectors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/connectors/{id}/oauth/start": {
+      "post": {
+        "summary": "The sign-in page of a connector's service (this computer's app only)",
+        "tags": [
+          "connectors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/connectors/{id}/oauth/sign_out": {
+      "post": {
+        "summary": "Sign out of a connector's service (this computer's app only)",
+        "tags": [
+          "connectors"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/queries/approval": {
+      "post": {
+        "summary": "Allow or refuse a connector's tool call asked in the chat",
+        "tags": [
+          "queries"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/email/status": {
+      "get": {
+        "summary": "The mailbox set up (never its password), its sync, the copies kept",
+        "tags": [
+          "email"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/email/folders": {
+      "get": {
+        "summary": "The folders of the mailbox Twoody reads and writes drafts to",
+        "tags": [
+          "email"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/email/recent": {
+      "get": {
+        "summary": "The latest messages kept on this computer (this computer's app only)",
+        "tags": [
+          "email"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/email/test": {
+      "post": {
+        "summary": "Try a mailbox's settings: one connection, nothing read (this computer's app only)",
+        "tags": [
+          "email"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "address": {
+                    "type": "string",
+                    "maxLength": 320
+                  },
+                  "host": {
+                    "type": "string",
+                    "maxLength": 253
+                  },
+                  "port": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  },
+                  "security": {
+                    "type": "string",
+                    "enum": [
+                      "tls",
+                      "starttls"
+                    ]
+                  },
+                  "username": {
+                    "type": "string",
+                    "maxLength": 320
+                  },
+                  "password": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "window_days": {
+                    "type": "integer"
+                  },
+                  "preset": {
+                    "type": "string",
+                    "maxLength": 30
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/email/account": {
+      "post": {
+        "summary": "Set up the mailbox: tried, then kept, then read (this computer's app only)",
+        "tags": [
+          "email"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "address": {
+                    "type": "string",
+                    "maxLength": 320
+                  },
+                  "host": {
+                    "type": "string",
+                    "maxLength": 253
+                  },
+                  "port": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  },
+                  "security": {
+                    "type": "string",
+                    "enum": [
+                      "tls",
+                      "starttls"
+                    ]
+                  },
+                  "username": {
+                    "type": "string",
+                    "maxLength": 320
+                  },
+                  "password": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "window_days": {
+                    "type": "integer"
+                  },
+                  "preset": {
+                    "type": "string",
+                    "maxLength": 30
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Remove the mailbox: no more sync, password forgotten, the copy kept or deleted (this computer's app only)",
+        "tags": [
+          "email"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/email/sync": {
+      "post": {
+        "summary": "Read what is new in the mailbox, now (this computer's app only)",
+        "tags": [
+          "email"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/email/kept/{id}": {
+      "delete": {
+        "summary": "Delete the copy kept from a mailbox removed earlier (this computer's app only)",
+        "tags": [
+          "email"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/bank": {
+      "get": {
+        "summary": "Bank: the accounts and imports of the statements kept on this computer",
+        "tags": [
+          "bank"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/bank/transactions": {
+      "get": {
+        "summary": "Bank: transactions, newest first",
+        "tags": [
+          "bank"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/bank/imports/preview": {
+      "post": {
+        "summary": "Bank: what a statement holds, before importing it",
+        "tags": [
+          "bank"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/bank/imports": {
+      "post": {
+        "summary": "Bank: import a statement (CSV, OFX/QFX, QIF)",
+        "tags": [
+          "bank"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/bank/imports/{id}": {
+      "delete": {
+        "summary": "Bank: delete an import, with the transactions only it held",
+        "tags": [
+          "bank"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/bank/accounts/{id}": {
+      "patch": {
+        "summary": "Bank: rename an account",
+        "tags": [
+          "bank"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/bank/transactions/{id}": {
+      "patch": {
+        "summary": "Bank: correct a transaction's category (and those of the same counterparty)",
+        "tags": [
+          "bank"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "category"
+                ],
+                "properties": {
+                  "category": {
+                    "type": "string"
+                  },
+                  "similar": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_sync/contacts": {
+      "put": {
+        "summary": "Replace the contacts copied from this computer (its own app only)",
+        "tags": [
+          "contacts"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_sync/events": {
+      "put": {
+        "summary": "Replace the calendar events copied from this computer (its own app only)",
+        "tags": [
+          "events"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/api/v1/discussions/{id}": {
       "delete": {
         "summary": "Delete a discussion and its messages",
         "tags": [
           "session"
         ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Change a discussion's memory mode",
+        "tags": [
+          "session"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "memory_mode": {
+                    "type": "string",
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        },
         "parameters": [
           {
             "schema": {
@@ -5066,6 +9436,91 @@
             "required": true
           }
         ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/discussions/import": {
+      "post": {
+        "summary": "Create or extend a conversation from its decrypted exchanges",
+        "tags": [
+          "session"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "vault_id",
+                  "turns"
+                ],
+                "properties": {
+                  "vault_id": {
+                    "type": "string",
+                    "maxLength": 36
+                  },
+                  "discussion_id": {
+                    "type": "string",
+                    "maxLength": 100
+                  },
+                  "title": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "turns": {
+                    "type": "array",
+                    "maxItems": 500,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "ref",
+                        "text",
+                        "reply"
+                      ],
+                      "properties": {
+                        "ref": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 200
+                        },
+                        "text": {
+                          "type": "string",
+                          "maxLength": 100000
+                        },
+                        "reply": {
+                          "type": "string",
+                          "maxLength": 200000
+                        },
+                        "model": {
+                          "type": "string",
+                          "maxLength": 200,
+                          "nullable": true
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "maxLength": 40
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
         "security": [
           {
             "bearerAuth": []
@@ -5131,6 +9586,246 @@
         }
       }
     },
+    "/api/v1/discussions/{id}/memory_notices": {
+      "get": {
+        "summary": "What was learned from this conversation",
+        "tags": [
+          "discussions"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/memories/candidates": {
+      "get": {
+        "summary": "Facts learned from conversations, waiting for the person",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/memories/candidates/{id}/accept": {
+      "post": {
+        "summary": "Keep a learned fact, as proposed or corrected",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/memories/candidates/{id}/reject": {
+      "post": {
+        "summary": "Refuse a learned fact: never proposed again",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/memories/news": {
+      "get": {
+        "summary": "What Twoody learned and has not said yet",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/memories/discover": {
+      "post": {
+        "summary": "Projects, contacts and dates found in these memories",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/memories/discover/apply": {
+      "post": {
+        "summary": "Make the projects, contacts and dates the person ticked",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/memories/similar": {
+      "get": {
+        "summary": "Pairs of memories that say much the same",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/memories/similar/dismiss": {
+      "post": {
+        "summary": "These two memories differ: never shown as a pair again",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/memories/learn": {
+      "post": {
+        "summary": "Learn now from what was said in conversations",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/api/v1/memories": {
       "get": {
         "summary": "List the current user's memories",
@@ -5172,6 +9867,27 @@
             }
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/memories/duplicates": {
+      "get": {
+        "summary": "Possible duplicates: memories with the same title and different contents",
+        "tags": [
+          "memories"
+        ],
         "security": [
           {
             "bearerAuth": []
@@ -5284,6 +10000,715 @@
             "name": "id",
             "required": true
           }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/memories/import": {
+      "post": {
+        "summary": "Import what another assistant knows of the user",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/diagnostics/turns": {
+      "get": {
+        "summary": "What happened in each answer on this computer",
+        "tags": [
+          "diagnostics"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/diagnostics/messages/{id}": {
+      "get": {
+        "summary": "An answer's trace and the prompt its model was given",
+        "tags": [
+          "diagnostics"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/diagnostics/full": {
+      "get": {
+        "summary": "The traces whole, with their prompts, for audits on the account (when the person ticked it)",
+        "tags": [
+          "diagnostics"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/diagnostics/telemetry": {
+      "get": {
+        "summary": "The traces without their content, for the account's app analytics",
+        "tags": [
+          "diagnostics"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/projects": {
+      "get": {
+        "summary": "The person's projects, active first",
+        "tags": [
+          "projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Start a project",
+        "tags": [
+          "projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}": {
+      "get": {
+        "summary": "A project with its memories, tasks, reminders, events, conversations and documents",
+        "tags": [
+          "projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Change a project: title, kind, size, status, brief, due date, budget, names",
+        "tags": [
+          "projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Remove a project; what hung off it stays, unlinked",
+        "tags": [
+          "projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/link": {
+      "post": {
+        "summary": "Tie a task, reminder, event, conversation or document to the project",
+        "tags": [
+          "projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/unlink": {
+      "post": {
+        "summary": "Untie a task, reminder, event, conversation or document from the project",
+        "tags": [
+          "projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/entities": {
+      "get": {
+        "summary": "List the people, projects and places of the user's memories",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create an entity: {entity: {kind, name, note?, aliases?, relations?: [{to: id or name, label}]}}",
+        "tags": [
+          "memories"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "entity": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/entities/{id}": {
+      "get": {
+        "summary": "Show an entity, with the memories that name it",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Update an entity: the fields given; aliases and relations are replaced whole",
+        "tags": [
+          "memories"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "entity": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete an entity, its other names and relations (its memories stay)",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/entities/{id}/merge": {
+      "post": {
+        "summary": "Merge this entity into another ({into: id}): its names become aliases there, its relations and memories move",
+        "tags": [
+          "memories"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "into"
+                ],
+                "properties": {
+                  "into": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/memories/search": {
+      "get": {
+        "summary": "Search the user's memories: hybrid lexical + embeddings, top-k with scores, no threshold",
+        "tags": [
+          "memories"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "in": "query",
+            "name": "q",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "in": "query",
+            "name": "entity",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/memories/retrieve": {
+      "post": {
+        "summary": "Dry run of retrieval (tier b): what a message would be given, with scores and budget",
+        "tags": [
+          "memories"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/conversations/search": {
+      "get": {
+        "summary": "Search the user's conversations (FTS5): snippet, date and conversation title per message; « Aucune » conversations are never indexed",
+        "tags": [
+          "discussions"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "in": "query",
+            "name": "q",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 40
+            },
+            "in": "query",
+            "name": "after",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 40
+            },
+            "in": "query",
+            "name": "before",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/usage": {
+      "get": {
+        "summary": "Tokens this computer's models spent: ?days= (by day, model and device) or ?period=day|week|month|year&tz=&offset= (series, speed, by model, device and source)",
+        "tags": [
+          "usage"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/usage/performance": {
+      "get": {
+        "summary": "This computer's CPU, GPU and memory, and each answer's speed, over 1h, 24h, 7d or 30d",
+        "tags": [
+          "usage"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/usage/export.csv": {
+      "get": {
+        "summary": "Every call to a model in a period (?period=&tz=&offset=) or between ?from= and ?to= (ISO), as CSV",
+        "tags": [
+          "usage"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/usage/events": {
+      "post": {
+        "summary": "The desktop app reports its own calls to a model (Twoody Code, the Agent): 500 at most per call",
+        "tags": [
+          "usage"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/usage/samples": {
+      "post": {
+        "summary": "The desktop app reports this computer's load (15-s samples, 500 at most per call) and, once, the machine",
+        "tags": [
+          "usage"
         ],
         "responses": {
           "200": {
@@ -5954,6 +11379,226 @@
         }
       }
     },
+    "/api/v1/local_documents/browse": {
+      "get": {
+        "summary": "A folder inside a granted folder (root, path; sorted, paged, searched by name), or the index's view of one (folder_id, directory)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "folder_id",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "in": "query",
+            "name": "directory",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000
+            },
+            "in": "query",
+            "name": "offset",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "in": "query",
+            "name": "root",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "in": "query",
+            "name": "path",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "name",
+                "date",
+                "size"
+              ]
+            },
+            "in": "query",
+            "name": "sort",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            },
+            "in": "query",
+            "name": "order",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "in": "query",
+            "name": "q",
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_documents/browse/raw": {
+      "get": {
+        "summary": "A file inside a granted folder, the file itself, indexed or not (Range; 25 MB an answer through the relay, 32 MB on the local network)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "in": "query",
+            "name": "root",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "in": "query",
+            "name": "path",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_documents/remote/{computer_id}/browse": {
+      "get": {
+        "summary": "A folder of another trusted computer of the account, through this one",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "computer_id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_documents/remote/{computer_id}/browse/raw": {
+      "get": {
+        "summary": "A file browsed on another trusted computer of the account, the file itself, through this one (Range)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "computer_id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/api/v1/local_documents/folders": {
       "get": {
         "summary": "Granted folders and index counts",
@@ -5988,6 +11633,298 @@
                 "properties": {
                   "path": {
                     "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_documents/context": {
+      "post": {
+        "summary": "Retrieve scoped context for an external conversation",
+        "tags": [
+          "documents"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "question",
+                  "document_access"
+                ],
+                "properties": {
+                  "question": {
+                    "type": "string",
+                    "maxLength": 24000
+                  },
+                  "document_access": {
+                    "type": "object"
+                  },
+                  "context_window": {
+                    "type": "integer",
+                    "minimum": 1024,
+                    "maximum": 1048576
+                  },
+                  "history": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "role",
+                        "content"
+                      ],
+                      "properties": {
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "user",
+                            "assistant"
+                          ]
+                        },
+                        "content": {
+                          "type": "string",
+                          "maxLength": 16000
+                        },
+                        "sourcesJson": {
+                          "type": "string",
+                          "maxLength": 16000
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_documents/files/{id}": {
+      "get": {
+        "summary": "Read indexed text by opaque ID, 20 passages per page",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000
+            },
+            "in": "query",
+            "name": "offset",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_documents/files/{id}/raw": {
+      "get": {
+        "summary": "The indexed file itself by opaque ID (Range; 25 MB an answer through the relay, 32 MB on the local network)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_documents/semantic": {
+      "get": {
+        "summary": "Local semantic indexing status",
+        "tags": [
+          "documents"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Enable or pause local semantic indexing",
+        "tags": [
+          "documents"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "enabled"
+                ],
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_documents/semantic/reindex": {
+      "post": {
+        "summary": "Resume local semantic indexing",
+        "tags": [
+          "documents"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_documents/personal": {
+      "get": {
+        "summary": "Preview the personal-files grant",
+        "tags": [
+          "documents"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Explicitly grant personal files under the home directory",
+        "tags": [
+          "documents"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "confirmed"
+                ],
+                "properties": {
+                  "confirmed": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
                   }
                 }
               }
@@ -6082,6 +12019,126 @@
         }
       }
     },
+    "/api/v1/local_documents/files": {
+      "get": {
+        "summary": "Files indexed in a granted folder, 100 per page",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "name",
+                "modified",
+                "category"
+              ]
+            },
+            "in": "query",
+            "name": "sort",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "in": "query",
+            "name": "folder_id",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000
+            },
+            "in": "query",
+            "name": "offset",
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_documents/computers": {
+      "get": {
+        "summary": "The folders of the account's other trusted computers, names and counts",
+        "tags": [
+          "documents"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_documents/remote/{computer_id}/files/{id}/raw": {
+      "get": {
+        "summary": "A cited document, the file itself, from the computer of the account that holds it (Range)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "computer_id",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/api/v1/local_documents/known": {
       "get": {
         "summary": "Whether a path is an indexed document of this user",
@@ -6094,6 +12151,1187 @@
           },
           {
             "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/mobile_agent": {
+      "get": {
+        "summary": "Agent folders explicitly granted on the paired desktop",
+        "tags": [
+          "agent"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Run or review a paired desktop Agent turn",
+        "tags": [
+          "agent"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "command"
+                ],
+                "properties": {
+                  "command": {
+                    "type": "string",
+                    "enum": [
+                      "send",
+                      "session",
+                      "approve",
+                      "stop"
+                    ]
+                  },
+                  "sessionId": {
+                    "type": "string",
+                    "maxLength": 80
+                  },
+                  "folderId": {
+                    "type": "string",
+                    "maxLength": 80
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 16000
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{16,80}$"
+                  },
+                  "model": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "callId": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "allow",
+                      "deny"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/code/sessions": {
+      "get": {
+        "summary": "Twoody Code: folders open on this computer and their sessions (paired phone)",
+        "tags": [
+          "code"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Twoody Code: start a session in a folder already open in Code",
+        "tags": [
+          "code"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "workspace",
+                  "text"
+                ],
+                "properties": {
+                  "workspace": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 16000
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "ask",
+                      "auto-edit",
+                      "plan"
+                    ]
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{16,80}$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/code/sessions/{id}": {
+      "get": {
+        "summary": "Twoody Code: one session, its items and pending decisions",
+        "tags": [
+          "code"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f-]{36}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/code/sessions/{id}/messages": {
+      "post": {
+        "summary": "Twoody Code: continue a session",
+        "tags": [
+          "code"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "text"
+                ],
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 16000
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "ask",
+                      "auto-edit",
+                      "plan"
+                    ]
+                  },
+                  "request_id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{16,80}$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f-]{36}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/code/sessions/{id}/approvals/{callId}": {
+      "post": {
+        "summary": "Twoody Code: allow or deny one pending step",
+        "tags": [
+          "code"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "decision"
+                ],
+                "properties": {
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "allow",
+                      "deny"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 1000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f-]{36}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "in": "path",
+            "name": "callId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/code/sessions/{id}/stop": {
+      "post": {
+        "summary": "Twoody Code: stop the session's request",
+        "tags": [
+          "code"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f-]{36}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/code/sessions/{id}/processes/{processId}/stop": {
+      "post": {
+        "summary": "Twoody Code: stop a process the session keeps running in the background",
+        "tags": [
+          "code"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f-]{36}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,40}$"
+            },
+            "in": "path",
+            "name": "processId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/code/sessions/{id}/stream": {
+      "post": {
+        "summary": "Twoody Code: follow a session (text/event-stream)",
+        "tags": [
+          "code"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f-]{36}$"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/account/link": {
+      "get": {
+        "summary": "Whether this server is linked to a Twoody account (the code while it waits, to its console only)",
+        "tags": [
+          "session"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Start linking this server to a Twoody account: a code, shown on its console, to type on a signed-in device",
+        "tags": [
+          "session"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Leave the Twoody account (this machine or the admin token); ?force=1 leaves here even when the backend does not confirm",
+        "tags": [
+          "session"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/account/approvals": {
+      "get": {
+        "summary": "Requests to use this server waiting for an approval (this machine or the admin token)",
+        "tags": [
+          "session"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/account/approvals/{id}": {
+      "post": {
+        "summary": "Approve or deny a request on this server's console (rule 3)",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/runtime": {
+      "get": {
+        "summary": "This computer's engine (« Moteur »): the preference, the engine in use, the built-in llama.cpp runtime",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "put": {
+        "summary": "Choose this computer's engine: auto, builtin, ollama, lmstudio, mlx or custom (with custom_url)",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/runtime/install": {
+      "post": {
+        "summary": "Install the built-in llama.cpp runtime (pinned release, checked against its SHA-256)",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/runtime/catalog": {
+      "get": {
+        "summary": "The models Twoody offers for the built-in runtime: installed, recommended, fits in this computer's memory",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/runtime/models": {
+      "post": {
+        "summary": "Install a model of the catalogue (and the runtime first when needed): 202 with the job",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/runtime/jobs/current": {
+      "get": {
+        "summary": "The model installation in progress, or the last one",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Cancel the model installation in progress (what was downloaded is kept for the next try)",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/runtime/models/{id}": {
+      "delete": {
+        "summary": "Remove an installed model of the built-in runtime",
+        "tags": [
+          "providers"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peer/vault/identity": {
+      "get": {
+        "summary": "This computer's vault public keys, for the device that approves it (tunnel only)",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peer/session/device-access": {
+      "post": {
+        "summary": "A Desktop's embedded server renews its peer session's device-access (tunnel only)",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peer/vault/anchor": {
+      "post": {
+        "summary": "The person device approving this computer names itself (tunnel only)",
+        "tags": [
+          "providers"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "vault_device_id",
+                  "sign_public"
+                ],
+                "properties": {
+                  "vault_device_id": {
+                    "type": "string",
+                    "maxLength": 36
+                  },
+                  "sign_public": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "device_access": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peer/status": {
+      "get": {
+        "summary": "This computer's status, for the account's other computers",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peer/session": {
+      "delete": {
+        "summary": "The calling computer forgets its session on this one",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peer/v1/chat/completions": {
+      "post": {
+        "summary": "OpenAI-compatible chat completion on this computer's runtime, for another computer of the account",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peers": {
+      "get": {
+        "summary": "The account's computers this one sends questions to (Desktop or a device paired with it)",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Ask another computer of the account for peer access (Desktop only)",
+        "tags": [
+          "providers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peers/{id}": {
+      "patch": {
+        "summary": "Turn a peer on or off for the automatic choice, or trust it with this computer's person's data (Desktop or a device paired with it)",
+        "tags": [
+          "providers"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Forget a peer (Desktop only)",
+        "tags": [
+          "providers"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peers/{id}/vault/identity": {
+      "get": {
+        "summary": "A peer's vault identity, through the sealed link with it (Desktop only)",
+        "tags": [
+          "providers"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peers/{id}/vault/anchor": {
+      "post": {
+        "summary": "Name this Desktop's vault device to a peer, through the sealed link with it (Desktop only)",
+        "tags": [
+          "providers"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "vault_device_id",
+                  "sign_public"
+                ],
+                "properties": {
+                  "vault_device_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 36
+                  },
+                  "sign_public": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peer/documents/search": {
+      "post": {
+        "summary": "Passages of this computer's documents, for a computer of the account it trusts",
+        "tags": [
+          "documents"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "q",
+                  "scope"
+                ],
+                "properties": {
+                  "q": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  },
+                  "hint": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  "scope": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "mode"
+                    ],
+                    "properties": {
+                      "mode": {
+                        "enum": [
+                          "all",
+                          "selected"
+                        ]
+                      },
+                      "folder_ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 200,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                        }
+                      }
+                    },
+                    "if": {
+                      "properties": {
+                        "mode": {
+                          "enum": [
+                            "selected"
+                          ]
+                        }
+                      }
+                    },
+                    "then": {
+                      "required": [
+                        "folder_ids"
+                      ]
+                    },
+                    "else": {
+                      "not": {
+                        "required": [
+                          "folder_ids"
+                        ]
+                      }
+                    }
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 8
+                  },
+                  "budget_chars": {
+                    "type": "integer",
+                    "minimum": 200,
+                    "maximum": 10000
+                  },
+                  "deadline_ms": {
+                    "type": "integer",
+                    "minimum": 100,
+                    "maximum": 3000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peer/documents/list": {
+      "post": {
+        "summary": "Files of this computer's granted folders (names, sizes, kinds, dates), for a computer of the account it trusts",
+        "tags": [
+          "documents"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "scope"
+                ],
+                "properties": {
+                  "folder": {
+                    "type": "string",
+                    "maxLength": 32
+                  },
+                  "folder_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "sort": {
+                    "enum": [
+                      "recent",
+                      "oldest",
+                      "largest",
+                      "smallest",
+                      "name"
+                    ]
+                  },
+                  "kinds": {
+                    "type": "array",
+                    "maxItems": 10,
+                    "items": {
+                      "type": "string",
+                      "maxLength": 16
+                    }
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30
+                  },
+                  "scope": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "mode"
+                    ],
+                    "properties": {
+                      "mode": {
+                        "enum": [
+                          "all",
+                          "selected"
+                        ]
+                      },
+                      "folder_ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 200,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                        }
+                      }
+                    },
+                    "if": {
+                      "properties": {
+                        "mode": {
+                          "enum": [
+                            "selected"
+                          ]
+                        }
+                      }
+                    },
+                    "then": {
+                      "required": [
+                        "folder_ids"
+                      ]
+                    },
+                    "else": {
+                      "not": {
+                        "required": [
+                          "folder_ids"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peer/documents/folders": {
+      "get": {
+        "summary": "This computer's granted folders, names and counts, for a computer of the account it trusts",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peer/documents/browse": {
+      "get": {
+        "summary": "A folder inside one of this computer's granted folders (names, kinds, sizes, dates; no path), for a computer of the account it trusts",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peer/documents/browse/raw": {
+      "get": {
+        "summary": "A file browsed in one of this computer's granted folders, the file itself, indexed or not (Range; 25 MB an answer through the relay, 32 MB on the local network)",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peer/documents/files/{id}": {
+      "get": {
+        "summary": "Indexed text of one of this computer's documents, 20 passages a page",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000
+            },
+            "in": "query",
+            "name": "offset",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peer/documents/files/{id}/raw": {
+      "get": {
+        "summary": "One of this computer's documents, the file itself (Range; 25 MB an answer through the relay, 32 MB on the local network)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/peers/{id}/audit": {
+      "get": {
+        "summary": "What a computer of the account read of this one's documents, newest first (Desktop or a device paired with it)",
+        "tags": [
+          "providers"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "in": "query",
+            "name": "before",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
           }
         ],
         "responses": {

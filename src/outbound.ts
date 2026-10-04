@@ -175,3 +175,65 @@ export function connectorFetch(origins: Iterable<string>): typeof outboundFetch 
     return outboundFetch(input, init);
   };
 }
+
+// The door for e-mail (Capacités → E-mails, 04/10/2026). IMAP is no HTTP:
+// the gate above never sees it, so the one place that opens a connection
+// to a mail server (src/email/imap.ts, test/emailDoor.test.ts keeps it the
+// only one) asks this first. It opens only while E-mails is on, only
+// towards the server the person set up themselves — its host and its port,
+// exactly — and only over TLS; in clear to this machine alone (Proton Mail
+// Bridge listens on 127.0.0.1). Asked for by the person when they set up
+// their mailbox, as a connector is: made in local-only mode too.
+
+export type MailSecurity = "tls" | "starttls";
+
+export interface MailServer {
+  host: string;
+  port: number;
+  security: MailSecurity;
+}
+
+export type MailDoorReason = "email_off" | "not_configured" | "invalid_server" | "other_server" | "tls_required";
+
+export class MailDoorClosedError extends Error {
+  constructor(public reason: MailDoorReason) {
+    super(`Refused on the way to the mail server: ${reason}`);
+    this.name = "MailDoorClosedError";
+  }
+}
+
+const loopbackRanges = new BlockList();
+loopbackRanges.addSubnet("127.0.0.0", 8, "ipv4");
+loopbackRanges.addAddress("::1", "ipv6");
+
+/// A host as compared: lower case, without an IPv6 literal's brackets or a
+/// trailing dot.
+export function mailHostKey(host: string): string {
+  return host.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1").replace(/\.$/, "");
+}
+
+/// A name or an address, nothing else (no scheme, path, user or space).
+export function validMailHost(host: string): boolean {
+  const key = mailHostKey(host);
+  if (isIP(key) !== 0) return true;
+  return key.length > 0 && key.length <= 253 && key.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
+}
+
+/// This machine only: 127.0.0.0/8, ::1, localhost.
+export function isLoopbackHost(host: string): boolean {
+  const key = mailHostKey(host);
+  if (key === "localhost") return true;
+  const mapped = key.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1] ?? key;
+  const family = isIP(mapped);
+  return family !== 0 && loopbackRanges.check(mapped, family === 4 ? "ipv4" : "ipv6");
+}
+
+/// Throws unless a connection to `target` may be opened now: E-mails on,
+/// a server set up by the person, this one, over TLS.
+export function mailServerDoor(target: MailServer, configured: { host: string; port: number } | null, emailOn: boolean): void {
+  if (!emailOn) throw new MailDoorClosedError("email_off");
+  if (!configured) throw new MailDoorClosedError("not_configured");
+  if (!validMailHost(target.host) || !Number.isInteger(target.port) || target.port < 1 || target.port > 65_535) throw new MailDoorClosedError("invalid_server");
+  if (mailHostKey(target.host) !== mailHostKey(configured.host) || target.port !== configured.port) throw new MailDoorClosedError("other_server");
+  if (target.security !== "tls" && !isLoopbackHost(target.host)) throw new MailDoorClosedError("tls_required");
+}

@@ -343,3 +343,64 @@ première réponse (`src/discussionTitles.ts`), comme ChatGPT et Claude.
 Colonne **propre au Mac** : elle n'est pas dans `schema/contract.json`, le
 compte n'écrivant pas de titres. À y ajouter (avec `title_source` côté
 Rails) le jour où le cloud en générera.
+
+## Migration 4 : les e-mails (4 octobre 2026)
+
+La capacité « E-mails » (Jimmy : « IMAP d'abord ») garde sur l'ordinateur
+une copie de la boîte mail lue en IMAP (`src/email/`).
+`src/migrations/0004_emails.ts` crée :
+
+- `email_sources` : la boîte réglée (adresse, serveur IMAP, état de la
+  synchronisation), comme la table `email_sources` du compte (Gmail) ; le mot
+  de passe n'y est jamais (`email-credentials.json`, 0600, hors de la base et
+  de ses sauvegardes) ;
+- `email_folders` : INBOX, Envoyés et Brouillons, avec UIDVALIDITY et le
+  dernier UID lu ;
+- `emails` : les messages, avec les noms de la table `emails` du compte
+  (`from_email`, `to_email`, `text_body`, `body_format`, `is_read`,
+  `is_replied`, `provider_message_id`, `provider_thread_id`,
+  `provider_label_ids`, `provider_internal_date`, `attachment_metadata`,
+  `metadata`, `trashed_at`) ; dates en millisecondes, JSON sans suffixe,
+  identifiants UUID ; `recipients`, `people`, `uid`, `sent_at` en plus ;
+- `email_fts` : l'index plein texte (objet, personnes, texte), à contenu
+  externe, tenu par des déclencheurs.
+
+Tables **propres au Mac** : pas dans `schema/contract.json`, le compte lisant
+Gmail lui-même. À y ajouter le jour où une boîte IMAP vivra aussi sur le
+compte.
+
+## Migration 5 : la banque (4 octobre 2026)
+
+La capacité « Banque » (Jimmy : « import de relevés pour la banque », sans
+connexion directe à la banque pour l'instant) garde sur l'ordinateur les
+relevés que la personne importe (CSV, OFX/QFX, QIF ; `src/bank/`).
+`src/migrations/0005_bank.ts` crée :
+
+- `bank_accounts` : un compte par compte trouvé dans les relevés, avec les
+  noms de la table `bank_accounts` du compte (`name`, `iban`, `ref`,
+  `currency`, `product`, `status`, `balance_at`) ; le solde en centimes
+  (`balance_cents`, le compte garde un flottant `balance`), le dernier qu'un
+  relevé a donné ; `bank_name` (le compte le tient de `bank_authorizations`)
+  et `number_tail` (les derniers chiffres d'un numéro masqué, « ****4521 »)
+  en plus ;
+- `bank_imports` : un import par relevé (nom du fichier, format, période,
+  nombres d'opérations lues, ajoutées, déjà présentes, le solde qu'il donne,
+  la disposition des colonnes d'un CSV) ;
+- `bank_transactions` : les opérations, avec les noms de la table
+  `bank_transactions` du compte (`booking_date`, `value_date`, `info` pour le
+  libellé, `creditor_name` / `debtor_name` pour le tiers, `code`, `ref`,
+  `comment`) ; montants en centimes (`amount_cents`), jours en millisecondes
+  (00:00 UTC) ; `category`, `category_source` (`rule` ou `person`) et
+  `fingerprint` (jour, montant, libellé, rang parmi les lignes identiques du
+  même fichier : unique par compte, un relevé qui en recoupe un autre n'ajoute
+  que le nouveau) en plus ;
+- `bank_transaction_imports` : quels imports contenaient chaque opération,
+  pour que supprimer un import garde ce qu'un autre contient aussi ;
+- `bank_category_rules` : les catégories choisies par la personne pour un
+  tiers, appliquées aux imports suivants.
+
+Tables **propres au Mac** : pas dans `schema/contract.json`, rien de la
+banque n'allant au compte, et les tables du compte n'ayant pas la même forme
+(montants flottants, `bank_authorization_id` obligatoire, dates en `date`).
+Le contrat étant copié tel quel dans twoody-backend, y ajouter ces tables
+demandera la même modification côté Rails.
