@@ -164,6 +164,13 @@ test("documents: an isolated project's conversation reads its own only; one outs
   assert.doesNotMatch(lastUser(inMartin.sent), /4 800/);
 });
 
+test("in an isolated project with documents, a question is read against them up front; small talk is not", async () => {
+  const asked = await ask({ text: "Combien prévoit la clause pénale ?", force_new_discussion: true, project_id: dupont.id });
+  assert.match(lastUser(asked.sent), /4 800 euros/);
+  const hello = await ask({ text: "Bonjour !", force_new_discussion: true, project_id: dupont.id });
+  assert.doesNotMatch(lastUser(hello.sent), /4 800/);
+});
+
 test("memory: the project's notes in its conversations only; of the person's memory, only what they wrote or pinned themselves", async () => {
   const now = Date.now();
   sqlite.prepare("INSERT INTO memories (id, user_id, kind, title, content, tags, source, created_at, updated_at) VALUES (?, ?, 'user', ?, ?, '[]', 'manual', ?, ?)")

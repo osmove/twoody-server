@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import { idleForMs, inflight } from "../account/inflight.js";
 import { citationLink, folderOf, localFolderIds, meshPeers, retrieveAcrossComputers, type MeshPassage, type MeshRetrieval } from "../documents/remote.js";
 import { listingIntent } from "../documents/fileListing.js";
+import { smallTalk } from "../documents/query.js";
 import { passageLocation } from "../documents/location.js";
 import { listFilesAcrossComputers, type MeshListing } from "../documents/remoteListing.js";
 import { contextBudget } from "./localDocuments.js";
@@ -746,13 +747,18 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       remote: fullFor !== null && !isolated,
       requester,
     });
-    const plainlyDocuments = access.mode === "only" || !!intent || aboutDocuments(typedText(content)) || citedBefore(history);
+    // In an isolated project with documents, a question is about them (a
+    // client file is its documents): read now, not left to a call the model
+    // announces first (04/10/2026: « Je vais rechercher les documents du
+    // dossier… » shown before the answer).
+    const projectQuestion = !!isolated && allowedFolders.length > 0 && !smallTalk(typedText(content));
+    const plainlyDocuments = access.mode === "only" || !!intent || aboutDocuments(typedText(content)) || citedBefore(history) || projectQuestion;
     const documentsStarted = Date.now();
     const retrieved: MeshRetrieval = access.mode !== "off" && plainlyDocuments ? await retrieveFor(typedText(content)) : NO_DOCUMENTS;
     trace.documents = {
       mode: access.mode,
       decision: access.mode === "off" ? "off" : plainlyDocuments ? "read" : toolCapable(provider) && !conversationOnlyFor(provider) ? "tool" : "none",
-      reason: access.mode === "only" ? "only" : intent ? "listing" : aboutDocuments(typedText(content)) ? "named" : citedBefore(history) ? "follow_up" : null,
+      reason: access.mode === "only" ? "only" : intent ? "listing" : aboutDocuments(typedText(content)) ? "named" : citedBefore(history) ? "follow_up" : projectQuestion ? "isolated_project" : null,
       passages: retrieved.passages.length,
       files: retrieved.files.length,
       computers: retrieved.computers.map((computer) => ({ name: computer.computer_name, status: computer.status, passages: computer.passages })),
