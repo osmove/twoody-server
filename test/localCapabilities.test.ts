@@ -90,3 +90,20 @@ test("adding a folder turns Documents on (Jimmy, 04/10/2026); turning it off sta
   await app.inject({ method: "PATCH", url: "/local_capabilities/documents", headers: desktop, payload: { enabled: false } });
   assert.equal(localCapabilities(owner).documents, false);
 });
+
+test("where a capability shows, menu and chat, both on unless the person says otherwise (04/10/2026)", async () => {
+  const read = await app.inject({ method: "GET", url: "/local_capabilities", headers: desktop });
+  assert.deepEqual(read.json().places.home, { menu: true, chat: true });
+  const changed = await app.inject({ method: "PATCH", url: "/local_capabilities/home", headers: desktop, payload: { menu: false } });
+  assert.equal(changed.statusCode, 200);
+  assert.deepEqual(changed.json().places.home, { menu: false, chat: true });
+  assert.deepEqual(changed.json().places.documents, { menu: true, chat: true });
+  // Only the place changed, not the switch.
+  assert.equal(changed.json().capabilities.documents, localCapabilities(owner).documents);
+  assert.equal((await app.inject({ method: "PATCH", url: "/local_capabilities/home", headers: desktop, payload: {} })).statusCode, 400);
+  assert.equal((await app.inject({ method: "PATCH", url: "/local_capabilities/home", headers: phone, payload: { chat: false } })).statusCode, 403);
+  const { capabilitiesOff } = await import("../src/localCapabilities.js");
+  assert.deepEqual([...capabilitiesOff(["home", "nope", "contacts"])], ["home", "contacts"]);
+  assert.deepEqual([...capabilitiesOff("calendar,connectors")], ["calendar", "connectors"]);
+  assert.equal(capabilitiesOff(null).size, 0);
+});

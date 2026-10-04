@@ -63,3 +63,33 @@ export function setLocalCapability(userId: string, id: LocalCapability, enabled:
   sqlite.prepare("UPDATE users SET prefs = ? WHERE id = ?").run(JSON.stringify({ ...prefs, local_capabilities: { ...current, [id]: enabled } }), userId);
   return { ...current, [id]: enabled };
 }
+
+// Where a capability that is on shows (Jimmy, 04/10/2026): in the app's menu
+// — its own page in the sidebar, Maison to switch the lights — and in the
+// chat — its icon under the message, to leave it out of one. Both on unless
+// the person says otherwise. Kept in `users.prefs` as
+// `capability_places: { home: { menu: false } }`.
+export interface CapabilityPlace { menu: boolean; chat: boolean }
+
+export function capabilityPlaces(userId: string): Record<LocalCapability, CapabilityPlace> {
+  const stored = readPrefs(userId).capability_places as Record<string, Partial<CapabilityPlace>> | undefined;
+  return Object.fromEntries(LOCAL_CAPABILITIES.map((id) => {
+    const place = stored && typeof stored === "object" ? stored[id] : undefined;
+    return [id, { menu: place?.menu !== false, chat: place?.chat !== false }];
+  })) as Record<LocalCapability, CapabilityPlace>;
+}
+
+export function setCapabilityPlace(userId: string, id: LocalCapability, place: Partial<CapabilityPlace>): Record<LocalCapability, CapabilityPlace> {
+  const current = capabilityPlaces(userId);
+  const next = { ...current, [id]: { ...current[id], ...place } };
+  const prefs = readPrefs(userId);
+  sqlite.prepare("UPDATE users SET prefs = ? WHERE id = ?").run(JSON.stringify({ ...prefs, capability_places: next }), userId);
+  return next;
+}
+
+/// The capabilities a message leaves out (`capabilities_off`, the chat's
+/// icons): only known ids, the rest ignored.
+export function capabilitiesOff(value: unknown): Set<LocalCapability> {
+  const list = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+  return new Set(list.map((item) => String(item).trim()).filter(isLocalCapability));
+}

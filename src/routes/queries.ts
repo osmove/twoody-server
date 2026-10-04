@@ -53,7 +53,7 @@ import { engineRoute, isBuiltinUrl, localRuntimeReady } from "../engine.js";
 import { RuntimeError } from "../builtin/index.js";
 import { discussionTitle, typedText } from "../documentBlocks.js";
 import { loadPersonalData } from "./localSync.js";
-import { capabilityOn } from "../localCapabilities.js";
+import { capabilitiesOff, capabilityOn, type LocalCapability } from "../localCapabilities.js";
 import { callConnectorTool, connectorChatTools, waitForApproval } from "../connectors/connectors.js";
 import { importanceOf } from "../memory/importance.js";
 import { controlHome, HOME_TOOL, homeBlock, homeConfig, homeDoneSentence, homeEntities, homeErrorSentence, homeOn, homeShortcut, type HomeDone } from "../home/homeAssistant.js";
@@ -74,6 +74,10 @@ import { titleAfterFirstAnswer, type TitleCall } from "../discussionTitles.js";
 
 interface QueryBody {
   document_access?: unknown;
+  /// The capabilities this message leaves out, by the chat's icons
+  /// (« home », « connectors », « contacts », « calendar »…): off for it
+  /// alone, whatever Capabilities says.
+  capabilities_off?: unknown;
   /// Images given with the message, as data URLs (PNG, JPEG, WebP, GIF):
   /// for a model that reads them (its vision file, catalog.ts).
   images?: unknown;
@@ -369,6 +373,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   catch { return reply.code(422).send({ error: "invalid_document_access" }); }
   // Documents switched off in Capabilities: the chat does not search them.
   if (access.mode !== "off" && !capabilityOn(auth.userId, "documents")) access = { mode: "off" as const };
+  const left = capabilitiesOff(parsed.capabilities_off);
+  if (left.has("documents")) access = { mode: "off" as const };
   const audioBuffer = parsed.audioBuffer ?? null;
   const skipTranscription = readBool(parsed.skip_transcription, false);
   const rawMemoryMode = parsed.memory_mode ?? (parsed.query as { memory_mode?: unknown } | undefined)?.memory_mode;
@@ -732,7 +738,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // its devices, « allume la lumière du salon » done at once, and the
     // control_home tool for the rest.
     const homeLocal = provider.kind === "local_openai" || provider.kind === "peer_openai";
-    const home = homeLocal && homeOn(auth.userId) && homeConfig(auth.userId) ? await homeEntities(auth.userId).catch(() => null) : null;
+    const home = homeLocal && homeOn(auth.userId) && !left.has("home") && homeConfig(auth.userId) ? await homeEntities(auth.userId).catch(() => null) : null;
     const homeActed = (done: HomeDone) => actionsDone.push({ type: "home", id: `${done.entity.entity_id}:${Date.now()}`, title: done.entity.name, at: null, project: null, change: { state: done.action, brightness: done.brightness } });
     let homeDone: string | null = null;
     const shortcut = home ? homeShortcut(typedText(content), home) : null;
@@ -757,7 +763,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // Connecteurs (Capacités): the tools of the person's MCP servers, for a
     // model of theirs, asked in this computer's app before each call — the
     // only app that shows the question for now.
-    const connectorTools = homeLocal && capabilityOn(auth.userId, "connectors") && isThisComputersApp(auth) ? connectorChatTools(auth.userId) : [];
+    const connectorTools = homeLocal && capabilityOn(auth.userId, "connectors") && !left.has("connectors") && isThisComputersApp(auth) ? connectorChatTools(auth.userId) : [];
     const runConnectorTool = async (chosen: (typeof connectorTools)[number], args: Record<string, unknown>): Promise<string> => {
       const traced: ToolCallTrace = { name: chosen.definition.function.name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0 };
       toolCallsTraced.push(traced);
@@ -896,7 +902,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       documentNote: retrieved.note,
       local: provider.kind === "local_openai" || provider.kind === "peer_openai",
       remembered,
-      personal: fullFor && onThisComputer(fullFor) && access.mode !== "only" ? loadPersonalData(auth.userId) : null,
+      personal: fullFor && onThisComputer(fullFor) && access.mode !== "only" ? withoutLeftOut(loadPersonalData(auth.userId), left) : null,
       // Done already: the list, with the states from before, would only
       // contradict what was done.
       homeDevices: home && !shortcut ? homeBlock(typedText(content), home) : null,
@@ -1277,6 +1283,7 @@ async function parseMultipartBody(req: FastifyRequest): Promise<ParsedBody | nul
   const nested = (fields.query ?? {}) as Record<string, unknown>;
   return {
     document_access: nested.document_access ?? fields.document_access,
+    capabilities_off: nested.capabilities_off ?? fields.capabilities_off,
     text:               (nested.text as string) ?? (fields.text as string),
     content:            (nested.content as string) ?? (fields.content as string),
     channel:            (nested.channel as string) ?? (fields.channel as string),
@@ -3077,4 +3084,9 @@ export function rememberImages(discussionId: string, images: string[], now = Dat
 export function recentImages(discussionId: string, now = Date.now()): string[] {
   const entry = recentImageStore.get(discussionId);
   return entry && now - entry.at <= RECENT_IMAGES_MS ? entry.images : [];
+}
+
+/// The person's contacts and agenda, less what this message leaves out.
+function withoutLeftOut(personal: ReturnType<typeof loadPersonalData>, left: Set<LocalCapability>): ReturnType<typeof loadPersonalData> {
+  return { contacts: left.has("contacts") ? [] : personal.contacts, events: left.has("calendar") ? [] : personal.events };
 }
