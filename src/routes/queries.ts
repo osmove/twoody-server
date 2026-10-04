@@ -603,7 +603,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     const fullFor = plan.find((entry) => !conversationOnlyFor(entry.provider))?.provider ?? null;
     // Which memories this turn is given (« Complète », « Profil seulement »,
     // « Aucune »): nothing is learned from a conversation in « Aucune ».
-    const memoryMode = memoryModeFor(userContext.prefs, compacted.memoryMode);
+    // Mémoire left out of this message by its icon: nothing remembered is
+    // given to it, and nothing is kept from it on the spot (the conversation
+    // read again once it is over still is, unless Mémoire is off).
+    const memoryMode = left.has("memory") ? "none" as const : memoryModeFor(userContext.prefs, compacted.memoryMode);
     // « Retiens que… »: kept before the answer, so that it can say so.
     const learning = memoryMode !== "none" && access.mode !== "only";
     const remembered = learning ? askedToRemember(typedText(content)) : null;
@@ -1171,7 +1174,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     if (discussion.created) learnSoon(auth.userId, discussion.id);
     // And what was just said in this one, at once: « Mémoire enregistrée »
     // seconds after the answer, stopped by the next message.
-    learnAfterAnswer(discussion.id);
+    if (!left.has("memory")) learnAfterAnswer(discussion.id);
     // What the next new conversation starts with, read ahead if it changed.
     scheduleWarm(auth.userId);
   } catch (err) {

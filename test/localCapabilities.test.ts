@@ -25,12 +25,12 @@ const owner = paired.json().user_id as string;
 const desktop = { authorization: `Bearer ${paired.json().token}` };
 const phone = { authorization: `Bearer ${createAuthSession(owner, "pair:iPhone").token}` };
 
-test("a new installation has every capability off", async () => {
+test("a new installation has every capability off, but Mémoire, on as Twoody always was (04/10/2026)", async () => {
   const response = await app.inject({ method: "GET", url: "/local_capabilities", headers: desktop });
   // The app asks under /api/v1, as for everything else.
   assert.equal((await app.inject({ method: "GET", url: "/api/v1/local_capabilities", headers: desktop })).statusCode, 200);
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.json().capabilities, { documents: false, contacts: false, calendar: false, web: false, dictation: false, agent: false, home: false, connectors: false });
+  assert.deepEqual(response.json().capabilities, { documents: false, contacts: false, calendar: false, web: false, dictation: false, agent: false, home: false, connectors: false, memory: true });
 });
 
 test("off, documents, contacts and the agenda are not read; on, they are", async (t) => {
@@ -66,7 +66,7 @@ test("an installation from before the switches keeps what it used", () => {
   const seconds = Date.now();
   sqlite.prepare("INSERT INTO users (id, email, name, prefs, created_at) VALUES (?, 'ancien@example.com', 'Ancien', '{}', ?)").run(user, seconds);
   sqlite.prepare("INSERT INTO contacts (id, user_id, name, origin, created_at, updated_at) VALUES ('c-old', ?, 'Paul', 'local', ?, ?)").run(user, seconds, seconds);
-  assert.deepEqual(localCapabilities(user), { documents: false, contacts: true, calendar: false, web: false, dictation: false, agent: false, home: false, connectors: false });
+  assert.deepEqual(localCapabilities(user), { documents: false, contacts: true, calendar: false, web: false, dictation: false, agent: false, home: false, connectors: false, memory: true });
 });
 
 test("people and dates kept after an import switch Contacts and Agenda on", () => {
@@ -106,4 +106,20 @@ test("where a capability shows, menu and chat, both on unless the person says ot
   assert.deepEqual([...capabilitiesOff(["home", "nope", "contacts"])], ["home", "contacts"]);
   assert.deepEqual([...capabilitiesOff("calendar,connectors")], ["calendar", "connectors"]);
   assert.equal(capabilitiesOff(null).size, 0);
+});
+
+test("Mémoire is the person's memory_enabled; the menu's order is kept, unknown ids dropped", async () => {
+  const off = await app.inject({ method: "PATCH", url: "/local_capabilities/memory", headers: desktop, payload: { enabled: false } });
+  assert.equal(off.json().capabilities.memory, false);
+  assert.equal((await app.inject({ method: "GET", url: "/me", headers: desktop })).json().memory_enabled, false);
+  await app.inject({ method: "PATCH", url: "/local_capabilities/memory", headers: desktop, payload: { enabled: true } });
+  assert.equal(localCapabilities(owner).memory, true);
+
+  assert.equal((await app.inject({ method: "GET", url: "/local_capabilities", headers: desktop })).json().order, null);
+  const arranged = await app.inject({ method: "PUT", url: "/local_capabilities_order", headers: desktop, payload: { order: ["home", "memory", "nope", "home", "documents"] } });
+  assert.equal(arranged.statusCode, 200);
+  assert.deepEqual(arranged.json().order, ["home", "memory", "documents"]);
+  assert.deepEqual((await app.inject({ method: "GET", url: "/local_capabilities", headers: phone })).json().order, ["home", "memory", "documents"]);
+  assert.equal((await app.inject({ method: "PUT", url: "/local_capabilities_order", headers: phone, payload: { order: [] } })).statusCode, 403);
+  assert.equal((await app.inject({ method: "PUT", url: "/local_capabilities_order", headers: desktop, payload: { order: null } })).json().order, null);
 });

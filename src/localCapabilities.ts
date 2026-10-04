@@ -13,7 +13,7 @@ import { sqlite } from "./db.js";
 // first read turns on documents when folders are granted, contacts and the
 // agenda when there are some.
 
-export const LOCAL_CAPABILITIES = ["documents", "contacts", "calendar", "web", "dictation", "agent", "home", "connectors"] as const;
+export const LOCAL_CAPABILITIES = ["documents", "contacts", "calendar", "web", "dictation", "agent", "home", "connectors", "memory"] as const;
 export type LocalCapability = (typeof LOCAL_CAPABILITIES)[number];
 
 export function isLocalCapability(value: unknown): value is LocalCapability {
@@ -38,8 +38,17 @@ function some(sql: string, userId: string): boolean {
   }
 }
 
-/// Every switch, the ones never set being off.
+/// Every switch, the ones never set being off — except Mémoire (Jimmy,
+/// 04/10/2026: « mets aussi Mémoire dans Capacités »), which is the
+/// person's `memory_enabled`, on unless they turned it off: Twoody has
+/// always remembered, and a capability must not take that away unasked.
 export function localCapabilities(userId: string): Record<LocalCapability, boolean> {
+  const switches = storedCapabilities(userId);
+  const prefs = readPrefs(userId);
+  return { ...switches, memory: prefs.memory_enabled !== false && prefs.memory_enabled !== "false" };
+}
+
+function storedCapabilities(userId: string): Record<LocalCapability, boolean> {
   const prefs = readPrefs(userId);
   let stored = prefs.local_capabilities as Record<string, unknown> | undefined;
   if (!stored || typeof stored !== "object") {
@@ -58,10 +67,15 @@ export function capabilityOn(userId: string, id: LocalCapability): boolean {
 }
 
 export function setLocalCapability(userId: string, id: LocalCapability, enabled: boolean): Record<LocalCapability, boolean> {
-  const current = localCapabilities(userId);
+  if (id === "memory") {
+    const prefs = readPrefs(userId);
+    sqlite.prepare("UPDATE users SET prefs = ? WHERE id = ?").run(JSON.stringify({ ...prefs, memory_enabled: enabled }), userId);
+    return localCapabilities(userId);
+  }
+  const current = storedCapabilities(userId);
   const prefs = readPrefs(userId);
   sqlite.prepare("UPDATE users SET prefs = ? WHERE id = ?").run(JSON.stringify({ ...prefs, local_capabilities: { ...current, [id]: enabled } }), userId);
-  return { ...current, [id]: enabled };
+  return localCapabilities(userId);
 }
 
 // Where a capability that is on shows (Jimmy, 04/10/2026): in the app's menu
@@ -92,4 +106,22 @@ export function setCapabilityPlace(userId: string, id: LocalCapability, place: P
 export function capabilitiesOff(value: unknown): Set<LocalCapability> {
   const list = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
   return new Set(list.map((item) => String(item).trim()).filter(isLocalCapability));
+}
+
+/// The order of the capabilities' pages in the app's menu, as the person
+/// arranged them (Jimmy, 04/10/2026: « qu'on puisse réorganiser les
+/// positions dans le menu »); null until they do — the app then lists them
+/// alphabetically, in its language.
+export function capabilityOrder(userId: string): LocalCapability[] | null {
+  const stored = readPrefs(userId).capability_order;
+  if (!Array.isArray(stored)) return null;
+  const known = stored.filter(isLocalCapability);
+  return known.length ? [...new Set(known)] : null;
+}
+
+export function setCapabilityOrder(userId: string, order: unknown): LocalCapability[] | null {
+  const list = Array.isArray(order) ? [...new Set(order.filter(isLocalCapability))] : [];
+  const prefs = readPrefs(userId);
+  sqlite.prepare("UPDATE users SET prefs = ? WHERE id = ?").run(JSON.stringify({ ...prefs, capability_order: list.length ? list : null }), userId);
+  return capabilityOrder(userId);
 }
