@@ -489,6 +489,8 @@ test("the timer: every round while a capability is on; never again after a refus
     answer = () => ({ status: 400, body: { error: "invalid_grant", error_codes: [70008] } });
     useFakes();
     await until(async () => (await status()).calendar.last_error === "signin_required", "the refusal noted");
+    // The link's sign-in refused: both copies wait for the person at once.
+    assert.equal((await status()).contacts.last_error, "signin_required", "the other copy too");
     const tokens = tokenRequests.length;
     await sleep(200);
     assert.equal(tokenRequests.length, tokens, "not asked again and again");

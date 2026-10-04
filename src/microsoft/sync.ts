@@ -33,6 +33,8 @@ const REFRESH_TOKEN_MAX_CHARS = 16_384;
 const PERSON_ERRORS = new Set<string>(["signin_required", "admin_consent_required", "graph_refused", "no_mailbox"]);
 /// The sign-in itself refused: the same for both copies.
 const SIGNIN_ERRORS = new Set<string>(["signin_required", "admin_consent_required", "signin_failed", "signin_unreachable"]);
+/// Refusals of the link itself (its sign-in), whatever copy met them.
+const LINK_REFUSALS = new Set<string>(["signin_required", "admin_consent_required"]);
 /// No failure: the capability turned off, or the link removed, meanwhile.
 const STOPPED = new Set<string>(["capability_off", "not_linked"]);
 
@@ -110,6 +112,14 @@ async function runSync(userId: string, link: GraphLink, kinds: readonly CopyKind
       // The copy kept stays as it was.
       noteGraphSync(userId, link.id, kind, { last_attempt_at: now, last_error: code });
       failure ??= code;
+    }
+  }
+  // A sign-in refused is the link's, not one copy's: the other copies it
+  // serves wait for the person too, without asking Microsoft once more.
+  if (failure && LINK_REFUSALS.has(failure)) {
+    for (const kind of COPY_KINDS) {
+      if (kinds.includes(kind) || !capabilityOn(userId, kind) || !linkGrants(link, kind)) continue;
+      noteGraphSync(userId, link.id, kind, { last_attempt_at: Date.now(), last_error: failure });
     }
   }
   return failure ? { ok: false, error: failure } : { ok: true, rows };
