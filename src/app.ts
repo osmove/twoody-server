@@ -32,6 +32,7 @@ import { homeRoutes } from "./routes/home.js";
 import { connectorRoutes } from "./routes/connectors.js";
 import { emailRoutes } from "./routes/email.js";
 import { bankRoutes } from "./routes/bank.js";
+import { dossierRoutes } from "./routes/dossiers.js";
 import { localSyncRoutes } from "./routes/localSync.js";
 import { discussionRoutes } from "./routes/discussions.js";
 import { memoryRoutes } from "./routes/memories.js";
@@ -182,6 +183,7 @@ export async function buildApp() {
   await app.register(connectorRoutes);
   await app.register(emailRoutes);
   await app.register(bankRoutes);
+  await app.register(dossierRoutes);
   await app.register(localSyncRoutes);
   await app.register(discussionRoutes);
   await app.register(memoryRoutes);
@@ -228,6 +230,7 @@ export async function buildApp() {
   await app.register(connectorRoutes, { prefix: "/api/v1" });
   await app.register(emailRoutes, { prefix: "/api/v1" });
   await app.register(bankRoutes, { prefix: "/api/v1" });
+  await app.register(dossierRoutes, { prefix: "/api/v1" });
   await app.register(localSyncRoutes, { prefix: "/api/v1" });
   await app.register(discussionRoutes, { prefix: "/api/v1" });
   await app.register(memoryRoutes, { prefix: "/api/v1" });

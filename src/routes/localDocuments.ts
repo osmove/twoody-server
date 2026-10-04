@@ -28,6 +28,7 @@ import {
 } from "../documents/library.js";
 import { MAX_FILES_PER_FOLDER, SKIPPED_BUNDLES, SKIPPED_DIRECTORIES } from "../documents/walk.js";
 import { setLocalCapability } from "../localCapabilities.js";
+import { isThisComputersApp } from "./usage.js";
 
 /// Adding a folder turns Documents on (Jimmy, 04/10/2026: « il faudrait les
 /// activer quand on ajoute un dossier »): the person who gives Twoody a
@@ -58,9 +59,10 @@ function rejectionStatus(err: FolderRejected): number {
   return err.reason === "already_added" ? 409 : err.reason === "not_permitted" ? 403 : 422;
 }
 
-/// A browse of this computer's granted folders, as every route answers it.
-async function sendBrowse(reply: FastifyReply, userId: string, request: BrowseRequest) {
-  const result = await browseGranted(userId, scopedFolders(userId, {mode: "all"}), request);
+/// A browse of this computer's granted folders, as every route answers it;
+/// a client file's folders for this computer's app only (src/dossiers/).
+async function sendBrowse(reply: FastifyReply, userId: string, request: BrowseRequest, withDossiers: boolean) {
+  const result = await browseGranted(userId, scopedFolders(userId, {mode: "all"}, {withDossiers}), request);
   if ("error" in result) return reply.code(result.error === "invalid_path" ? 400 : 404).send({error: result.error === "invalid_path" ? "invalid_directory" : "folder_unavailable"});
   return reply.send({computer_id: selfIdentity().id, computer_name: selfIdentity().name, ...result});
 }
@@ -86,9 +88,10 @@ export async function localDocumentRoutes(app: FastifyInstance) {
         if (!auth.sessionId) return reply.code(403).send({error: "session_required"});
         const request = readBrowseRequest(req.query);
         if (!request) return reply.code(400).send({error: "invalid_directory"});
-        return sendBrowse(reply, auth.userId, request);
+        return sendBrowse(reply, auth.userId, request, isThisComputersApp(auth));
       }
       if (!req.query.folder_id) return reply.code(400).send({error: "folder_required"});
+      if (!folderShown(auth, req.query.folder_id)) return reply.code(404).send({error: "folder_unavailable"});
       try {
         const result = browseDocuments(auth.userId, req.query.folder_id, req.query.directory || "", req.query.offset || 0);
         return result ? reply.send(result) : reply.code(404).send({error: "folder_unavailable"});
@@ -106,7 +109,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply); if (!auth) return;
       if (!auth.sessionId) return reply.code(403).send({error: "session_required"});
-      await serveBrowsedFile(req, reply, {userId: auth.userId, roots: scopedFolders(auth.userId, {mode: "all"}), root: req.query.root, path: req.query.path});
+      await serveBrowsedFile(req, reply, {userId: auth.userId, roots: scopedFolders(auth.userId, {mode: "all"}, {withDossiers: isThisComputersApp(auth)}), root: req.query.root, path: req.query.path});
       return reply;
     },
   });
@@ -122,7 +125,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       if (isSelf(req.params.computer_id)) {
         const request = readBrowseRequest(req.query);
         if (!request) return reply.code(400).send({error: "invalid_directory"});
-        return sendBrowse(reply, auth.userId, request);
+        return sendBrowse(reply, auth.userId, request, isThisComputersApp(auth));
       }
       const requester = await meshRequester(req, auth, () => meshRoster().get());
       const answer = await browseRemote({userId: auth.userId, client: auth.sessionId, computerId: req.params.computer_id, query: req.query, requester});
@@ -137,7 +140,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply); if (!auth) return;
       if (!auth.sessionId) return reply.code(403).send({error: "session_required"});
       if (isSelf(req.params.computer_id)) {
-        await serveBrowsedFile(req, reply, {userId: auth.userId, roots: scopedFolders(auth.userId, {mode: "all"}), root: req.query.root, path: req.query.path});
+        await serveBrowsedFile(req, reply, {userId: auth.userId, roots: scopedFolders(auth.userId, {mode: "all"}, {withDossiers: isThisComputersApp(auth)}), root: req.query.root, path: req.query.path});
         return reply;
       }
       const requester = await meshRequester(req, auth, () => meshRoster().get());
@@ -151,7 +154,8 @@ export async function localDocumentRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      reply.send({ folders: listFolders(auth.userId), index: indexStatus(auth.userId) });
+      const mine = isThisComputersApp(auth);
+      reply.send({ folders: listFolders(auth.userId).filter((folder) => mine || folder.dossier_id === null), index: indexStatus(auth.userId) });
     },
   });
 
@@ -171,7 +175,9 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       let access;
       try { access = documentAccess(req.body.document_access); }
       catch { return reply.code(422).send({error: "invalid_document_access"}); }
-      const granted = listFolders(auth.userId);
+      // A client file's documents never go to a conversation held elsewhere
+      // (src/dossiers/).
+      const granted = listFolders(auth.userId).filter(folder => folder.dossier_id === null);
       const selected = granted.filter(folder => access.folderIds?.includes(folder.id));
       const folders = granted.filter(folder => access.mode !== "off" && (!access.folderIds || selected.some(parent => {
         const path = relative(parent.path, folder.path);
@@ -206,7 +212,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       const file=sqlite.prepare(`SELECT d.id,d.name,d.mtime_ms,d.status FROM documents d
         JOIN document_folders f ON f.id=d.folder_id AND f.user_id=d.user_id
         WHERE d.id=? AND d.user_id=?`).get(req.params.id,auth.userId);
-      if(!file)return reply.code(404).send({error:"not_found"});
+      if(!file||!documentShown(auth,req.params.id))return reply.code(404).send({error:"not_found"});
       const offset=req.query.offset ?? 0;
       const rows=sqlite.prepare(`SELECT page,text FROM document_chunks WHERE document_id=? AND user_id=?
         ORDER BY position,rowid LIMIT 21 OFFSET ?`).all(req.params.id,auth.userId,offset);
@@ -223,7 +229,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
     handler:async(req,reply)=>{
       const auth=await requireAuth(req,reply);if(!auth)return;
       if(!auth.sessionId)return reply.code(403).send({error:"session_required"});
-      await serveRawDocument(req,reply,{userId:auth.userId,documentId:req.params.id,folderIds:scopedFolders(auth.userId,{mode:"all"}).map(f=>f.id)});
+      await serveRawDocument(req,reply,{userId:auth.userId,documentId:req.params.id,folderIds:scopedFolders(auth.userId,{mode:"all"},{withDossiers:isThisComputersApp(auth)}).map(f=>f.id)});
       return reply;
     },
   });
@@ -320,7 +326,9 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
       const q=req.query.q ?? "";
-      const passages = fusePassages(searchPassages(auth.userId, q, 8), q.trim() ? await semanticPassages(auth.userId, q, listFolders(auth.userId).map(f=>f.id)) : [], 8);
+      const mine = isThisComputersApp(auth);
+      const folderIds = listFolders(auth.userId).filter((folder) => mine || folder.dossier_id === null).map((folder) => folder.id);
+      const passages = fusePassages(searchPassages(auth.userId, q, 8, folderIds), q.trim() ? await semanticPassages(auth.userId, q, folderIds) : [], 8);
       reply.send({
         passages: passages.map(({ text: _text, ...passage }) => passage),
       });
@@ -333,6 +341,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
+      if (!folderShown(auth, req.query.folder_id)) return reply.code(404).send({ error: "folder_unavailable" });
       reply.send(listDocuments(auth.userId, req.query.folder_id, req.query.offset ?? 0, 100, req.query.sort));
     },
   });
@@ -384,4 +393,17 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       reply.send({ known: isIndexedPath(auth.userId, req.query.path ?? "") });
     },
   });
+}
+
+/// A client file's folder, or a document in one (src/dossiers/): shown to
+/// this computer's app only.
+function folderShown(auth: { userId: string; sessionId?: string; deviceId?: string }, folderId: string): boolean {
+  if (isThisComputersApp(auth)) return true;
+  return listFolders(auth.userId).find((folder) => folder.id === folderId)?.dossier_id == null;
+}
+
+function documentShown(auth: { userId: string; sessionId?: string; deviceId?: string }, documentId: string): boolean {
+  if (isThisComputersApp(auth)) return true;
+  const row = sqlite.prepare("SELECT folder_id FROM documents WHERE id = ? AND user_id = ?").get(documentId, auth.userId) as { folder_id: string } | undefined;
+  return !row || folderShown(auth, row.folder_id);
 }

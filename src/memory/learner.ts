@@ -486,9 +486,11 @@ export function conversationLanguage(userId: string, discussionId: string, perso
 /// Learns from what was said in this conversation since last time.
 export async function learnDiscussion(discussionId: string, options: { ask?: LearningModel | null; now?: number } = {}): Promise<LearnResult | null> {
   const ask = options.ask ?? model;
-  const row = sqlite.prepare("SELECT id, user_id, learned_through FROM discussions WHERE id = ?").get(discussionId) as
-    { id: string; user_id: string; learned_through: number | null } | undefined;
-  if (!row || busyDiscussions.has(discussionId)) return null;
+  const row = sqlite.prepare("SELECT id, user_id, learned_through, dossier_id FROM discussions WHERE id = ?").get(discussionId) as
+    { id: string; user_id: string; learned_through: number | null; dossier_id: string | null } | undefined;
+  // A client file's conversation is never learned into the person's memory
+  // (src/dossiers/): what is said there may be about one client only.
+  if (!row || row.dossier_id || busyDiscussions.has(discussionId)) return null;
   const result: LearnResult = { discussion_id: row.id, read: 0, saved: [], proposed: [], dropped: 0 };
   const rows = sqlite.prepare("SELECT rowid, role, content, provider FROM messages WHERE discussion_id = ? AND rowid > ? ORDER BY rowid").all(row.id, row.learned_through ?? 0) as MessageRow[];
   if (!rows.length) return result;
@@ -774,7 +776,7 @@ export function pendingDiscussions(options: { userId?: string; idleMs: number; n
   const now = options.now ?? Date.now();
   const before = now - options.idleMs;
   const rows = sqlite.prepare(`SELECT d.id FROM discussions d
-    WHERE (? IS NULL OR d.user_id = ?) AND d.id IS NOT ? AND d.last_activity_at <= ?
+    WHERE (? IS NULL OR d.user_id = ?) AND d.id IS NOT ? AND d.last_activity_at <= ? AND d.dossier_id IS NULL
       AND EXISTS (SELECT 1 FROM messages m WHERE m.discussion_id = d.id AND m.role = 'user' AND m.rowid > COALESCE(d.learned_through, 0))
     ORDER BY d.last_activity_at LIMIT ?`).all(options.userId ?? null, options.userId ?? null, options.except ?? null, before, options.limit ?? 10) as Array<{ id: string }>;
   return rows

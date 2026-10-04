@@ -77,25 +77,37 @@ export function listFolders(userId: string) {
     .all(userId) as Array<{ folderId: string; total: number; indexed: number; empty: number; failed: number }>;
   const byFolder = new Map(counts.map((row) => [row.folderId, row]));
 
-  return db
+  const rows = db
     .select()
     .from(documentFolders)
     .where(eq(documentFolders.userId, userId))
     .all()
-    .sort((a, b) => a.path.localeCompare(b.path))
-    .map((folder) => {
-      const count = byFolder.get(folder.id);
-      return {
-        id: folder.id,
-        path: folder.path,
-        name: folderName(folder.path),
-        documents: count?.total ?? 0,
-        indexed: count?.indexed ?? 0,
-        without_text: count?.empty ?? 0,
-        failed: count?.failed ?? 0,
-        ignored: ignoredByFolder.get(folder.id) ?? 0,
-      };
-    });
+    .sort((a, b) => a.path.localeCompare(b.path));
+  const dossierOf = folderDossiers(rows);
+  return rows.map((folder) => {
+    const count = byFolder.get(folder.id);
+    return {
+      id: folder.id,
+      path: folder.path,
+      name: folderName(folder.path),
+      documents: count?.total ?? 0,
+      indexed: count?.indexed ?? 0,
+      without_text: count?.empty ?? 0,
+      failed: count?.failed ?? 0,
+      ignored: ignoredByFolder.get(folder.id) ?? 0,
+      // The client file it belongs to (src/dossiers/): searched in that
+      // file's conversations only, never elsewhere.
+      dossier_id: dossierOf.get(folder.id) ?? null,
+    };
+  });
+}
+
+/// The client file each granted folder belongs to: its own, else that of a
+/// client file's folder holding it — a folder granted inside a file's folder
+/// is that file's too, whatever was granted first.
+export function folderDossiers(rows: ReadonlyArray<{ id: string; path: string; dossierId: string | null }>): Map<string, string | null> {
+  const filed = rows.filter((row) => row.dossierId).sort((a, b) => b.path.length - a.path.length);
+  return new Map(rows.map((row) => [row.id, row.dossierId ?? filed.find((folder) => within(folder.path, row.path))?.dossierId ?? null]));
 }
 
 /// Grants a folder. Its first entry is read before it is kept, so that
@@ -153,6 +165,9 @@ export interface IndexStatus {
 }
 
 const jobs = new Map<string, IndexStatus>();
+/// Asked again while a pass ran (a folder granted, a client file's folder
+/// set, src/dossiers/): another pass follows it, which knows the new folder.
+const askedAgain = new Set<string>();
 
 export function indexStatus(userId: string): IndexStatus {
   return jobs.get(userId) ?? { running: false, total: 0, done: 0, current: null, started_at: null, finished_at: null };
@@ -162,7 +177,10 @@ export function indexStatus(userId: string): IndexStatus {
 /// pass is over; callers that only want to start it do not await it.
 export async function reindex(userId: string): Promise<IndexStatus> {
   const current = jobs.get(userId);
-  if (current?.running) return current;
+  if (current?.running) {
+    askedAgain.add(userId);
+    return current;
+  }
   // Documents switched off in Capabilities: nothing is read.
   if (!capabilityOn(userId, "documents")) return indexStatus(userId);
 
@@ -221,8 +239,15 @@ export async function reindex(userId: string): Promise<IndexStatus> {
     status.current = null;
     status.finished_at = new Date().toISOString();
   }
+  if (askedAgain.delete(userId)) return reindex(userId);
   void indexSemantic(userId);
   return status;
+}
+
+/// The deepest granted folder holding a file, now.
+function holderOf(userId: string, path: string): string | null {
+  const folders = sqlite.prepare("SELECT id, path FROM document_folders WHERE user_id = ?").all(userId) as Array<{ id: string; path: string }>;
+  return folders.filter((folder) => within(folder.path, path)).sort((a, b) => b.path.length - a.path.length)[0]?.id ?? null;
 }
 
 /// Whether `child` lies under `parent` (not the same folder).
@@ -238,7 +263,11 @@ export function indexOnDemand(userId: string, folderId: string, path: string): P
   return indexFile(userId, folderId, path);
 }
 
-async function indexFile(userId: string, folderId: string, path: string): Promise<void> {
+async function indexFile(userId: string, given: string, path: string): Promise<void> {
+  // The deepest granted folder holding it now, not the one the pass started
+  // with: a folder granted meanwhile inside it (a client file's, which no
+  // other conversation may search) takes its files at once.
+  const folderId = holderOf(userId, path) ?? given;
   let info;
   try {
     info = await stat(path);

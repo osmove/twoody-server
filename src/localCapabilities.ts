@@ -17,7 +17,10 @@ import { sqlite } from "./db.js";
 // (src/email/, Jimmy, 04/10/2026: « IMAP d'abord »).
 // « bank »: the bank statements the person imports, read and kept on this
 // computer (src/bank/, Jimmy, 04/10/2026: « import de relevés pour la banque »).
-export const LOCAL_CAPABILITIES = ["documents", "contacts", "calendar", "web", "dictation", "agent", "home", "connectors", "memory", "email", "bank"] as const;
+// « dossiers »: client files (src/dossiers/, Jimmy, 04/10/2026, Twoody Pro):
+// the switch only shows or hides them in the app's menu — a file's
+// conversations stay walled off whatever it says.
+export const LOCAL_CAPABILITIES = ["documents", "contacts", "calendar", "web", "dictation", "agent", "home", "connectors", "memory", "email", "bank", "dossiers"] as const;
 export type LocalCapability = (typeof LOCAL_CAPABILITIES)[number];
 
 export function isLocalCapability(value: unknown): value is LocalCapability {

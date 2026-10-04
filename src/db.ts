@@ -208,6 +208,9 @@ export const discussions = sqliteTable("discussions", {
   learnedThrough: integer("learned_through"),
   /// The project the conversation is mostly about (docs/projects-design.md).
   projectId: text("project_id"),
+  /// The client file the conversation belongs to (migration 6,
+  /// src/dossiers/): set when it starts, never changed.
+  dossierId: text("dossier_id"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   lastActivityAt: integer("last_activity_at", { mode: "timestamp_ms" }).notNull(),
 });
@@ -408,6 +411,9 @@ export const documentFolders = sqliteTable("document_folders", {
   userId: text("user_id").notNull().references(() => users.id),
   path: text("path").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  // The client file whose documents this folder holds (migration 6,
+  // src/dossiers/): searched in its conversations only.
+  dossierId: text("dossier_id"),
 });
 
 /// One row per indexed file. The text itself lives in the

@@ -183,6 +183,10 @@ export interface ChatContextInput {
   /// The model may read the bank statements the person imported
   /// (Capacités → Banque, src/bank/tools.ts).
   bankTools?: boolean;
+  /// The client file the conversation is in (src/dossiers/dossiers.ts
+  /// dossierContext): what it is, that nothing else is reachable, its
+  /// summary and notes — the end of the system prompt.
+  dossier?: string | null;
   documentFiles?: Array<{name: string; modified_at: string; chars: number; folder?: string}>;
   documentFileTotal?: number;
   documentScan?: { running: boolean; limited?: boolean };
@@ -615,8 +619,11 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   // What this message asked to be remembered, just saved: the answer
   // confirms it rather than saying it cannot remember.
   const remembered = input.remembered
-    ? `[Just saved in the user's Memories on this computer, as their message asks: « ${input.remembered} ». ` +
-      "Confirm it briefly in their language. You do remember things they ask you to, across conversations.]"
+    ? input.dossier
+      ? `[Just saved in this client file's notes, as their message asks: « ${input.remembered} ». ` +
+        "Confirm it briefly in their language. You do remember it in this file's conversations.]"
+      : `[Just saved in the user's Memories on this computer, as their message asks: « ${input.remembered} ». ` +
+        "Confirm it briefly in their language. You do remember things they ask you to, across conversations.]"
     : null;
   // The first documents or web results since the system prompt was frozen
   // bring the sentence on how to read them.
@@ -754,6 +761,10 @@ function buildSystemPrompt(input: ChatContextInput, profile: string | null, stat
   if (profile) {
     sections.push(`What you know about the user, from their saved Memories (use it only when it bears on a message; never bring up personal details unprompted):\n${profile}`);
   }
+
+  // Last: what comes before it stays the same as in the person's other
+  // conversations, and the runtime reuses it (the tools come first).
+  if (input.dossier) sections.push(input.dossier);
 
   return sections.join("\n\n");
 }

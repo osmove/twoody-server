@@ -75,6 +75,8 @@ import { sqliteHistory } from "../vault/localHistory.js";
 import { pathlessSource } from "../vault/sync.js";
 import { noteMemoryUse, profileHints, retrieveMemories } from "../memory/retrieve.js";
 import { titleAfterFirstAnswer, type TitleCall } from "../discussionTitles.js";
+import { DossierError, dossierContext, dossierForNewConversation, dossierOfDiscussion, rememberInDossier, type DossierRef } from "../dossiers/dossiers.js";
+import { inDossierScope } from "../documents/retrieval.js";
 
 interface QueryBody {
   document_access?: unknown;
@@ -82,6 +84,14 @@ interface QueryBody {
   /// (« home », « connectors », « contacts », « calendar »…): off for it
   /// alone, whatever Capabilities says.
   capabilities_off?: unknown;
+  /// In a client file's conversation (src/dossiers/), the capabilities
+  /// that reach outside it — e-mails, calendar, contacts, the bank, the
+  /// home, connectors, the web — are left out unless this names them:
+  /// switched on for this message by their icons.
+  capabilities_on?: unknown;
+  /// The client file a new conversation starts in (src/dossiers/): the
+  /// conversation's own from then on, never changed.
+  dossier_id?: string;
   /// Images given with the message, as data URLs (PNG, JPEG, WebP, GIF):
   /// for a model that reads them (its vision file, catalog.ts).
   images?: unknown;
@@ -179,7 +189,18 @@ export async function queryRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      const key = warmKey(auth);
+      // In a client file (src/dossiers/), its own start: another tool set
+      // and its summary and notes.
+      const asked = (req.body as { dossier_id?: unknown } | null)?.dossier_id;
+      let dossierId: string | null = null;
+      if (typeof asked === "string" && asked && isThisComputersApp(auth)) {
+        try {
+          dossierId = dossierForNewConversation(auth.userId, asked).id;
+        } catch {
+          return reply.code(202).send({ status: "skipped" });
+        }
+      }
+      const key = warmKey(auth, dossierId);
       await restoreWarmSeed(key);
       // Asked by the person (typing, a recording started): the runtime is
       // woken if it slept, since a question follows.
@@ -257,10 +278,13 @@ export function discussionContext(
 ): { summary: string | null; summaryThrough: string | null; tokensEstimate: number } {
   const compacted = discussionSummary(discussionId);
   const userContext = loadUserContext(userId);
+  const dossier = dossierOfDiscussion(discussionId, userId);
+  if (dossier) userContext.memories = userContext.memories.filter(ownWords);
   const chatMessages = buildChatMessages({
     ...userContext,
     memoryMode: memoryModeFor(userContext.prefs, compacted.memoryMode),
-    profileHints: profileHints(userId, userContext.memories),
+    profileHints: turnHints(userId, userContext.memories, dossier),
+    dossier: dossier ? dossierContext(userId, dossier.id) : null,
     history: loadHistory(discussionId, compacted.summaryThrough),
     summary: compacted.summary,
     summaryThrough: compacted.summaryThrough,
@@ -310,14 +334,19 @@ async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body:
     }
     // The conversation as a turn gives it (the runtime reuses what it
     // already read), then the demand for the summary.
-    const documentFolders = listFolders(auth.userId);
+    // A client file's conversation, as its turns are given (src/dossiers/).
+    const dossier = dossierOfDiscussion(discussion.id, auth.userId);
+    if (dossier && !onThisComputer(provider)) throw new DossierModelError("A client file's conversation is summarised by a model of this computer");
+    const documentFolders = listFolders(auth.userId).filter((folder) => inDossierScope(folder.dossier_id, { dossier: dossier?.id ?? null }));
     const userContext = loadUserContext(auth.userId);
+    if (dossier) userContext.memories = userContext.memories.filter(ownWords);
     const chatMessages = buildChatMessages({
       ...userContext,
       memoryMode: memoryModeFor(userContext.prefs, compacted.memoryMode),
       // The same profile as a turn's (the runtime reuses what it read); no
       // memory rides on the demand for a summary.
-      profileHints: profileHints(auth.userId, userContext.memories),
+      profileHints: turnHints(auth.userId, userContext.memories, dossier),
+      dossier: dossier ? dossierContext(auth.userId, dossier.id, dossierScale(readWindow(req.body?.context_window))) : null,
       relevant: { items: [], retrieval: "skipped", ms: 0 },
       history,
       summary: compacted.summary,
@@ -358,6 +387,7 @@ async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body:
     const message = err instanceof Error ? err.message : "Unknown error";
     const [status, code] =
       err instanceof LocalLlmUnavailableError ? [503, "local_llm_unavailable"]
+      : err instanceof DossierModelError ? [409, "dossier_local_model_only"]
       : err instanceof RuntimeError ? [err.status, err.code]
       : err instanceof LocalOnlyError ? [403, "local_only"]
       : err instanceof VisionUnavailableError ? [422, "vision_unavailable"]
@@ -438,7 +468,20 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // it had named none: nothing of it reaches the vault.
   // The same who reaches the other computers' documents (documents/remote.ts).
   const requester = await meshRequester(req, auth, () => meshRoster().get());
-  const vaultMember = requester !== null;
+  // A client file's conversation (src/dossiers/): this computer's app only,
+  // and never synchronised — nothing of it reaches the vault.
+  let askedDossier: DossierRef | null = null;
+  if (typeof parsed.dossier_id === "string" && parsed.dossier_id) {
+    try {
+      askedDossier = dossierForNewConversation(auth.userId, parsed.dossier_id);
+    } catch (err) {
+      if (err instanceof DossierError) return reply.code(err.status).send({ error: err.code });
+      throw err;
+    }
+  }
+  const filedRequest = !!askedDossier || (!!parsed.discussion_id && dossierOfDiscussion(parsed.discussion_id, auth.userId) !== null);
+  if (filedRequest && !isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
+  const vaultMember = requester !== null && !filedRequest;
   const vaultConversationId = vaultMember ? askedVaultConversationId : null;
   const priorTurns = vaultMember ? askedPriorTurns : null;
   const vaultRef = vaultMember ? askedVaultRef : null;
@@ -458,7 +501,17 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     caughtUp?.discussionId ?? parsed.discussion_id ?? null,
     channel,
     caughtUp ? false : readBool(parsed.force_new_discussion ?? parsed.query?.force_new_discussion, false),
+    askedDossier?.id ?? null,
   );
+  // The file the conversation is in, if any: its documents, its notes, and
+  // nothing that reaches outside it unless the message asks (src/dossiers/).
+  const dossier = dossierOfDiscussion(discussion.id, auth.userId);
+  if (dossier && !isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
+  if (dossier?.status === "archived") return reply.code(409).send({ error: "dossier_archived" });
+  if (dossier) {
+    const asked = capabilitiesOff(parsed.capabilities_on);
+    for (const id of OUTSIDE_A_DOSSIER) if (!asked.has(id)) left.add(id);
+  }
 
   // The memory mode asked for is the conversation's from now on.
   if (askedMemoryMode) db.update(discussions).set({ memoryMode: askedMemoryMode }).where(eq(discussions.id, discussion.id)).run();
@@ -590,7 +643,12 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // Which computer of the account answers, and with which model
     // (router/, docs/multi-computer-design.md §3): the ones to try in
     // order — one unless « Automatique » found several.
-    const plan = await planRoute(auth.userId, model, routing, previousComputer(discussion.id));
+    // A client file's conversation is answered on this computer, or on a
+    // computer of the account trusted with what it holds — never by a model
+    // in the cloud (src/dossiers/).
+    const routes = await planRoute(auth.userId, model, routing, previousComputer(discussion.id));
+    const plan = dossier ? routes.filter((entry) => onThisComputer(entry.provider)) : routes;
+    if (!plan.length) throw new DossierModelError("A client file's conversation is answered by a model of this computer");
     let provider = plan[0]!.provider;
     answeredBy = { kind: provider.kind, model: "model" in provider ? provider.model : null };
     answeredByComputer = plan[0]!.answeredBy;
@@ -600,6 +658,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
     }
     const userContext = loadUserContext(auth.userId);
+    if (dossier) userContext.memories = userContext.memories.filter(ownWords);
     // A computer of the account that is not trusted with what this one
     // knows of its person (not in the verified vault roster,
     // vault/roster.ts) is given the conversation only: no memories, no
@@ -618,7 +677,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     const learning = memoryMode !== "none" && access.mode !== "only";
     const remembered = learning ? askedToRemember(typedText(content)) : null;
     // « Mémoire enregistrée » under the answer; « déjà en mémoire » when known.
-    const rememberedAdded = remembered ? rememberFacts(auth.userId, [remembered], vaultRef ?? null) > 0 : false;
+    // In a client file, a note of the file, never a memory of the person.
+    const rememberedAdded = remembered
+      ? dossier ? rememberInDossier(auth.userId, dossier.id, remembered, discussion.id) : rememberFacts(auth.userId, [remembered], vaultRef ?? null) > 0
+      : false;
     // Passages from the user's own documents that match this prompt.
     // The model sees them numbered; the client gets the same list to
     // resolve the [1], [2]… the reply cites.
@@ -629,7 +691,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // for 1.5 s on the local network, 3 s through the relay
     // (documents/remote.ts, docs/mesh-design.md §2). The access asked for
     // applies to all of them; this computer's folders are the bare ids.
-    const granted = listFolders(auth.userId);
+    // A client file's conversation reads its folders only; any other, none
+    // of a client file's (src/dossiers/).
+    const everyFolder = listFolders(auth.userId);
+    const granted = everyFolder.filter((folder) => inDossierScope(folder.dossier_id, { dossier: dossier?.id ?? null }));
     const localIds = localFolderIds(access);
     const selected = granted.filter(folder => localIds?.includes(folder.id));
     const allowedFolders = granted.filter(folder => access.mode !== "off" && (!localIds || selected.some(parent => {
@@ -648,7 +713,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
           access,
           roots: allowedFolders,
           granted,
-          remote: fullFor !== null,
+          remote: fullFor !== null && !dossier,
           requester,
         }).catch((err) => {
           req.log.warn({ err: err instanceof Error ? err.message : String(err) }, "file listing failed");
@@ -671,7 +736,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       localFolders: allowedFolders.map(folder => folder.id),
       budgetChars: contextBudget(readWindow(parsed.context_window) ?? 32_768),
       // A computer given the conversation only would see no excerpt.
-      remote: fullFor !== null,
+      remote: fullFor !== null && !dossier,
       requester,
     });
     const plainlyDocuments = access.mode === "only" || !!intent || aboutDocuments(typedText(content)) || citedBefore(history);
@@ -940,7 +1005,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       mode: memoryMode,
       documentMode: access.mode,
     });
-    const cards = memoryMode === "full" && access.mode !== "only" ? projectCards(auth.userId, typedText(content), relevant.items.map((item) => item.id)) : [];
+    const cards = memoryMode === "full" && access.mode !== "only" && !dossier ? projectCards(auth.userId, typedText(content), relevant.items.map((item) => item.id)) : [];
     trace.projects = cards.map((card) => card.title);
     const turnInput: ChatContextInput = {
       ...userContext,
@@ -956,14 +1021,17 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       state: compacted.state,
       memoryMode,
       relevant,
-      profileHints: memoryMode === "none" ? null : profileHints(auth.userId, userContext.memories),
+      profileHints: memoryMode === "none" ? null : turnHints(auth.userId, userContext.memories, dossier),
+      // The client file's own: what it is, its summary, its notes — at the
+      // end of the system prompt (src/dossiers/).
+      dossier: dossier ? dossierContext(auth.userId, dossier.id, dossierScale(readWindow(parsed.context_window))) : null,
       currentId: promptId,
       discussionId: discussion.id,
       contextWindow: readWindow(parsed.context_window),
       // Whether the person granted folders at all, not this message's
       // selection: a sentence of the system prompt, which must not flip
       // with the Documents button.
-      hasDocuments: granted.length > 0 || meshPeers(auth.userId).length > 0,
+      hasDocuments: everyFolder.length > 0 || meshPeers(auth.userId).length > 0,
       documentFolders,
       documentScan: indexStatus(auth.userId),
       documentTool: !!toolsFor(provider) && offersDocuments,
@@ -1011,9 +1079,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // What a new conversation would start with, kept ready in the runtime
     // (warmNewConversation): the facts of this request, and what was sent.
     if (provider.kind === "local_openai") {
-      lastTurnInputs.set(warmKey(auth), { input: turnInput, provider, tools: toolsFor(provider)?.definitions ?? null });
-      saveWarmSeed(warmKey(auth), turnInput, provider, toolsFor(provider)?.definitions ?? null);
-      noteSystemSent(warmKey(auth), provider, chatMessages[0]?.content ?? "", toolsFor(provider)?.definitions ?? null);
+      const key = warmKey(auth, dossier?.id);
+      lastTurnInputs.set(key, { input: turnInput, provider, tools: toolsFor(provider)?.definitions ?? null });
+      saveWarmSeed(key, turnInput, provider, toolsFor(provider)?.definitions ?? null);
+      noteSystemSent(key, provider, chatMessages[0]?.content ?? "", toolsFor(provider)?.definitions ?? null);
     }
     let conversationOnly: ChatMessage[] | null = null;
     const messagesFor = (candidate: Provider): ChatMessage[] => {
@@ -1251,9 +1320,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     if (discussion.created) learnSoon(auth.userId, discussion.id);
     // And what was just said in this one, at once: « Mémoire enregistrée »
     // seconds after the answer, stopped by the next message.
-    if (!left.has("memory")) learnAfterAnswer(discussion.id);
+    // A client file's conversation is never learned into the person's memory.
+    if (!left.has("memory") && !dossier) learnAfterAnswer(discussion.id);
     // What the next new conversation starts with, read ahead if it changed.
-    scheduleWarm(warmKey(auth));
+    scheduleWarm(warmKey(auth, dossier?.id));
   } catch (err) {
     if (upstream.signal.aborted) {
       // Keep what was written: the conversation would otherwise show a
@@ -1295,6 +1365,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       err instanceof ComputerUnavailableError ? [503, "computer_unavailable"]
       : err instanceof PeerUnavailableError ? [503, "computer_unavailable"]
       : err instanceof LocalLlmUnavailableError ? [503, "local_llm_unavailable"]
+      : err instanceof DossierModelError ? [409, "dossier_local_model_only"]
       : err instanceof RuntimeError ? [err.status, err.code]
       : err instanceof LocalOnlyError ? [403, "local_only"]
       : err instanceof VisionUnavailableError ? [422, "vision_unavailable"]
@@ -1364,6 +1435,8 @@ async function parseMultipartBody(req: FastifyRequest): Promise<ParsedBody | nul
   return {
     document_access: nested.document_access ?? fields.document_access,
     capabilities_off: nested.capabilities_off ?? fields.capabilities_off,
+    capabilities_on: nested.capabilities_on ?? fields.capabilities_on,
+    dossier_id:         (nested.dossier_id as string) ?? (fields.dossier_id as string),
     text:               (nested.text as string) ?? (fields.text as string),
     content:            (nested.content as string) ?? (fields.content as string),
     channel:            (nested.channel as string) ?? (fields.channel as string),
@@ -1408,6 +1481,34 @@ type Provider =
   | { kind: "peer_openai"; model: string; baseUrl: string; computerId: string; computerName: string; userId: string; trusted: boolean };
 
 class LocalLlmUnavailableError extends Error {}
+
+/// A client file's conversation asked of a model that is neither on this
+/// computer nor on one trusted with what it holds (src/dossiers/).
+class DossierModelError extends Error {}
+
+/// What a client file's conversation leaves out unless the message switches
+/// it on (`capabilities_on`): what reaches outside the file.
+const OUTSIDE_A_DOSSIER: LocalCapability[] = ["contacts", "calendar", "email", "bank", "home", "connectors", "web"];
+
+/// Of the person's own memory, what a client file's conversation is given:
+/// what they wrote or pinned themselves, and how they like answers — never
+/// a fact learned from another conversation, which may be another client's.
+function ownWords(memory: MemoryRow): boolean {
+  return !!memory.manual || !!memory.pinned || memory.kind === "feedback";
+}
+
+/// The profile's hints; in a client file, without the lines of the
+/// person's people and projects (their graph, their projects).
+function turnHints(userId: string, memories: MemoryRow[], dossier: DossierRef | null) {
+  const hints = profileHints(userId, memories);
+  return dossier ? { ...hints, graph: null, projects: null } : hints;
+}
+
+/// How much of a client file's summary and notes a window holds: as given
+/// for 32k tokens, half for 16k or less, twice for 64k or more.
+function dossierScale(contextWindow: number | null): number {
+  return Math.min(2, Math.max(0.5, (contextWindow ?? 32_768) / 32_768));
+}
 
 /// A computer chosen by name did not answer before its first word.
 class ComputerUnavailableError extends Error {
@@ -1709,14 +1810,21 @@ const RUNTIME_SLEEPS_AFTER_MS = 29 * 60_000;
 
 /// Whose start of a new conversation: the person's, in this computer's app
 /// (their id), or on another device (their id + « |remote »).
-function warmKey(auth: { userId: string } & Parameters<typeof isThisComputersApp>[0]): string {
-  return isThisComputersApp(auth) ? auth.userId : `${auth.userId}|remote`;
+/// A client file's conversation (this computer's app only) starts with its
+/// own: their id + « |dossier:<id> ».
+function warmKey(auth: { userId: string } & Parameters<typeof isThisComputersApp>[0], dossierId: string | null = null): string {
+  if (!isThisComputersApp(auth)) return `${auth.userId}|remote`;
+  return dossierId ? `${auth.userId}|dossier:${dossierId}` : auth.userId;
 }
 
 const userOfKey = (key: string) => key.split("|")[0]!;
+const dossierOfKey = (key: string): string | null => /\|dossier:(.+)$/.exec(key)?.[1] ?? null;
 
+/// The keys read ahead in the background (a memory changed, the watch):
+/// never a client file's — read ahead only when the person is about to
+/// ask in one (/queries/warm), the runtime holding one start at a time.
 function warmKeysOf(userId: string): string[] {
-  return [...new Set([...lastTurnInputs.keys(), ...Object.keys(readWarmSeeds())])].filter((key) => userOfKey(key) === userId);
+  return [...new Set([...lastTurnInputs.keys(), ...Object.keys(readWarmSeeds())])].filter((key) => userOfKey(key) === userId && !dossierOfKey(key));
 }
 
 function systemKey(provider: Provider): string {
@@ -1728,8 +1836,15 @@ function digestOf(text: string): string {
 }
 
 function noteSystemSent(key: string, provider: Provider, system: string, tools: ChatTools["definitions"] | null) {
-  systemsSent.set(`${systemKey(provider)}\n${key}`, digestOf(`${system}\n${JSON.stringify(tools ?? [])}`));
+  const digest = digestOf(`${system}\n${JSON.stringify(tools ?? [])}`);
+  systemsSent.set(`${systemKey(provider)}\n${key}`, digest);
+  runtimeHolds.set(systemKey(provider), digest);
 }
+
+/// What each runtime read last — it holds one start at a time: a start
+/// asked ahead by the person (`wake`) is read unless it is that one, a
+/// client file's or not (forgotten when a background call used it).
+const runtimeHolds = new Map<string, string>();
 
 /// The system prompt a new conversation of this person would start with now.
 export function newConversationSystem(key: string): { system: string; provider: Provider; tools: ChatTools["definitions"] | null } | null {
@@ -1738,12 +1853,24 @@ export function newConversationSystem(key: string): { system: string; provider: 
   const userId = userOfKey(key);
   const context = loadUserContext(userId);
   const memoryMode = memoryModeFor(context.prefs);
+  // A client file's: as its conversations start (routes above).
+  const dossierId = dossierOfKey(key);
+  let dossier: DossierRef | null = null;
+  if (dossierId) {
+    try {
+      dossier = dossierForNewConversation(userId, dossierId);
+    } catch {
+      return null;
+    }
+    context.memories = context.memories.filter(ownWords);
+  }
   const turn = buildChatTurn({
     ...last.input,
     ...context,
     userName: last.input.userName,
     memoryMode,
-    profileHints: memoryMode === "none" ? null : profileHints(userId, context.memories),
+    profileHints: memoryMode === "none" ? null : turnHints(userId, context.memories, dossier),
+    dossier: dossier ? dossierContext(userId, dossier.id, dossierScale(last.input.contextWindow ?? null)) : null,
     history: [],
     content: "",
     summary: null,
@@ -1777,7 +1904,8 @@ export async function warmNewConversation(key: string, { wake = false }: { wake?
   // again after a pause: read ahead before the runtime slept, the start was
   // taken as still there.
   const slept = idleForMs() > RUNTIME_SLEEPS_AFTER_MS;
-  if (systemsSent.get(sentKey) === digest_ && !slept) return "unchanged";
+  const held = wake ? runtimeHolds.get(systemKey(next.provider)) === digest_ : systemsSent.get(sentKey) === digest_;
+  if (held && !slept) return "unchanged";
   if (slept && !wake) return "asleep";
   if (inflight() > 0) return "busy";
   const warmStarted = Date.now();
@@ -1785,6 +1913,7 @@ export async function warmNewConversation(key: string, { wake = false }: { wake?
   try {
     await streamLocal(next.provider.baseUrl, [{ role: "system", content: next.system }, { role: "user", content: "" }], next.provider.model, 0, () => undefined, AbortSignal.timeout(120_000), { purpose: "chat", maxTokens: 1, ...(next.tools ? { tools: { definitions: next.tools, run: async () => "" } } : {}) });
     systemsSent.set(sentKey, digest_);
+    runtimeHolds.set(systemKey(next.provider), digest_);
     recordTrace(userOfKey(key), { kind: "warm", model: next.provider.model, outcome: "answered", totalMs: Date.now() - warmStarted, detail: { system_chars: next.system.length, tools: next.tools?.map((tool) => tool.function.name) ?? [] } });
     return "warmed";
   } catch {
@@ -1800,7 +1929,7 @@ export async function warmNewConversation(key: string, { wake = false }: { wake?
 // read again at each turn (history, memories, documents, the message).
 const WARM_SEEDS_FILE = join(DATA_DIR, "warm-seeds.json");
 const WARM_WATCH_MS = 10 * 60_000;
-const SEED_LEFT_OUT = ["prefs", "history", "memories", "content", "excerpts", "documentFiles", "documentFileTotal", "fileListings", "documentNote", "personal", "homeDevices", "homeDone", "emailFound", "projectCards", "remembered", "summary", "summaryThrough", "state", "currentId", "discussionId", "relevant", "profileHints", "now", "documentScan"];
+const SEED_LEFT_OUT = ["dossier", "prefs", "history", "memories", "content", "excerpts", "documentFiles", "documentFileTotal", "fileListings", "documentNote", "personal", "homeDevices", "homeDone", "emailFound", "projectCards", "remembered", "summary", "summaryThrough", "state", "currentId", "discussionId", "relevant", "profileHints", "now", "documentScan"];
 
 type WarmSeed = { input: Record<string, unknown>; tools: ChatTools["definitions"] | null; model: string | null };
 
@@ -1827,7 +1956,18 @@ function saveWarmSeed(seedKey: string, input: ChatContextInput, provider: Provid
 /// After a restart, what the last turn was built from, from disk.
 export async function restoreWarmSeed(key: string): Promise<boolean> {
   if (lastTurnInputs.has(key)) return true;
-  const seed = readWarmSeeds()[key];
+  // A client file asked for the first time starts as another file's
+  // conversation did (the same tools): only its summary and notes differ.
+  if (dossierOfKey(key)) {
+    const sibling = [...lastTurnInputs.entries()].reverse().find(([other]) => other !== key && userOfKey(other) === userOfKey(key) && dossierOfKey(other));
+    if (sibling) {
+      lastTurnInputs.set(key, sibling[1]);
+      return true;
+    }
+  }
+  const seeds = readWarmSeeds();
+  const sibling = dossierOfKey(key) ? Object.keys(seeds).reverse().find((other) => userOfKey(other) === userOfKey(key) && dossierOfKey(other)) : undefined;
+  const seed = seeds[key] ?? (sibling ? seeds[sibling] : undefined);
   if (!seed?.input) return false;
   const provider = await resolveProvider(userOfKey(key), seed.model ?? undefined).catch(() => null);
   if (!provider || provider.kind !== "local_openai" || lastTurnInputs.has(key)) return lastTurnInputs.has(key);
@@ -1840,6 +1980,7 @@ export async function restoreWarmSeed(key: string): Promise<boolean> {
 export function forgetWarmStateForTests() {
   lastTurnInputs.clear();
   systemsSent.clear();
+  runtimeHolds.clear();
 }
 
 let warmWatch: NodeJS.Timeout | null = null;
@@ -1852,6 +1993,7 @@ function startWarmWatch() {
   const check = async () => {
     for (const key of new Set([...Object.keys(readWarmSeeds()), ...lastTurnInputs.keys()])) {
       if (inflight() > 0) return;
+      if (dossierOfKey(key)) continue;
       if (await restoreWarmSeed(key)) await warmNewConversation(key).catch(() => "none");
     }
   };
@@ -1885,6 +2027,7 @@ async function learningCall(userId: string, prompt: LearnMessages, signal?: Abor
     const asked = Date.now();
     let first = 0;
     const done = target.kind === "local_openai" ? beginGeneration("background") : () => undefined;
+    runtimeHolds.clear();
     try {
       const spent = await streamFromProvider(target, prompt, 0, (delta) => { first ||= Date.now(); text += delta; }, signal ? AbortSignal.any([signal, AbortSignal.timeout(180_000)]) : AbortSignal.timeout(180_000), { purpose: "background" });
       if (target.kind !== "peer_openai") recordModelCall(userId, "memory", "model" in target ? target.model : null, "this-computer", spent, messagesChars(prompt), text.length, asked, first, Date.now());
@@ -1918,6 +2061,7 @@ function titleCall(userId: string, answered: Provider): TitleCall {
   return async (prompt, signal) => {
     // Counted from the start, so that the learner waits for it.
     const done = beginGeneration("background");
+    runtimeHolds.clear();
     try {
       const target = answered.kind === "local_openai" ? answered : await resolveProvider(userId).catch(() => null);
       if (target?.kind !== "local_openai") return "";
@@ -2192,6 +2336,11 @@ const ABOUT_DOCUMENTS = new RegExp(`(?<![\\p{L}\\p{N}])(?:${[
   "documents?", "fichiers?", "dossiers?", "pdfs?", "contrats?", "factures?", "devis", "bail", "baux", "cvs?", "relev[ée]s?", "attestations?",
   "fiches? de paie", "bulletins? de (?:paie|salaire)", "rapports?", "t[ée]l[ée]chargements", "pi[èe]ces? jointes?", "avenants?", "pr[ée]avis",
   "quittances?", "avis d['’]imp[ôo]ts?", "polices? d['’]assurance",
+  // Spreadsheets and presentations, and a file named with its extension
+  // (« budget.xlsx »); not « Excel » or « PowerPoint » alone: « comment
+  // faire une RECHERCHEV dans Excel ? » is no question about a file.
+  "tableurs?", "feuilles? de calcul", "classeurs?", "diapositives?", "diaporamas?", "(?:mon|ma|mes|notre|nos) (?:tableaux?|pr[ée]sentations?|diapos?|slides?)",
+  "spreadsheets?", "workbooks?", "slide ?decks?", "(?:my|our) (?:slides?|decks?|presentations?)", "docx?", "xlsx?", "xlsm", "pptx?", "odt", "ods", "odp",
   // English
   "files?", "folders?", "downloads", "contracts?", "agreements?", "invoices?", "leases?", "notice periods?", "amendments?", "addend(?:um|a)",
   "payslips?", "pay ?slips?", "pay ?stubs?", "receipts?", "bank statements?", "insurance polic(?:y|ies)", "tax returns?", "utility bills?", "attachments?",
@@ -2789,14 +2938,16 @@ function resolveDiscussion(
   requestedId: string | null,
   channel: string,
   forceNew: boolean,
+  dossierId: string | null = null,
 ): { id: string; title: string | null; created?: boolean } {
   const own = db.select().from(discussions).where(eq(discussions.userId, userId));
   const explicit = requestedId && !forceNew
     ? own.all().find((row) => row.id === requestedId) ?? null
     : null;
-  // Only a voice surface ever continues a conversation it did not name.
+  // Only a voice surface ever continues a conversation it did not name —
+  // one of the same client file, or of none (src/dossiers/).
   const mostRecent = !forceNew && reuseWindowMs(channel) !== null
-    ? own.all().sort((a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime())[0] ?? null
+    ? own.all().filter((row) => (row.dossierId ?? null) === dossierId).sort((a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime())[0] ?? null
     : null;
 
   const chosen = chooseDiscussion({ channel, forceNew, explicit, mostRecent });
@@ -2810,6 +2961,7 @@ function resolveDiscussion(
       userId,
       channel,
       title: null,
+      dossierId,
       createdAt: now,
       lastActivityAt: now,
     })

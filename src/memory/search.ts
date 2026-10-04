@@ -192,6 +192,9 @@ export function readDate(value: unknown, name: string): number | null {
 /// The messages of the person's conversations that hold the question's
 /// words, best first: their conversation, its title, the date and a
 /// snippet. Conversations in « Aucune » are never in the index.
+/// A client file's conversations are never found here (src/dossiers/):
+/// this search serves the account's assistant and the person's other
+/// conversations.
 export function searchConversations(
   userId: string,
   options: { q?: string | null; after?: number | null; before?: number | null; limit?: number },
@@ -209,7 +212,7 @@ export function searchConversations(
          FROM message_fts f
          JOIN messages m ON m.id = f.message_id
          JOIN discussions d ON d.id = f.discussion_id
-        WHERE message_fts MATCH ? AND f.user_id = ? AND d.user_id = ?
+        WHERE message_fts MATCH ? AND f.user_id = ? AND d.user_id = ? AND d.dossier_id IS NULL
           AND m.created_at >= ? AND m.created_at < ?
           AND f.discussion_id IN (SELECT discussion_id FROM message_fts_conversations)
         ORDER BY score, m.created_at DESC
