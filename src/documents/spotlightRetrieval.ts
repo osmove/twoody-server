@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { basename, isAbsolute, relative, sep } from "node:path";
 import { sqlite } from "../db.js";
-import { isSupported, MAX_FILE_BYTES } from "./extract.js";
+import { isSupported, maxBytesFor } from "./extract.js";
 import { safeRoots, type GrantedRoot } from "./fileListing.js";
 import { indexOnDemand } from "./library.js";
 import { spotlightEnabled, spotlightSearch } from "./spotlight.js";
@@ -66,7 +66,7 @@ export async function spotlightCandidates(userId: string, terms: string[], folde
     const row = before.get(c.path);
     try {
       const info = statSync(c.path);
-      if (!info.isFile() || info.size > MAX_FILE_BYTES) return false;
+      if (!info.isFile() || info.size > maxBytesFor(c.path)) return false;
       return !row || row.folder_id !== c.root.id || row.size !== info.size || row.mtime_ms !== Math.floor(info.mtimeMs);
     } catch {
       return false;

@@ -8,7 +8,7 @@ import { basename, extname, isAbsolute, join, relative } from "node:path";
 import { generateId } from "../auth.js";
 import { db, documentFolders, documents, sqlite } from "../db.js";
 import { chunkSections } from "./chunk.js";
-import { extractSections, MAX_FILE_BYTES } from "./extract.js";
+import { extractSections, maxBytesFor } from "./extract.js";
 import { folderRisk } from "./folderRisk.js";
 import { capabilityOn, setLocalCapability } from "../localCapabilities.js";
 import { folderReadable, walk } from "./walk.js";
@@ -288,7 +288,7 @@ async function indexFile(userId: string, given: string, path: string): Promise<v
   let error: string | null = null;
   let chunks: ReturnType<typeof chunkSections> = [];
 
-  if (info.size > MAX_FILE_BYTES) {
+  if (info.size > maxBytesFor(path)) {
     status = "error";
     error = "too_large";
   } else {

@@ -139,7 +139,18 @@ with citations. Nothing leaves the SQLite file.
 
 - `extract.ts` pure-JS extraction (unpdf, fflate for .docx/.odt, RTF, HTML,
   text); no shelling out. `ocr.ts` uses the helper the Desktop provides.
-- `chunk.ts` ~1200-character passages; a PDF page starts a new one.
+  Spreadsheets (.xlsx/.xlsm/.ods, and CSV/TSV that are tables) and
+  presentations (.pptx/.pptm/.ppsx/.odp, speaker notes included) are read
+  part by part from the zip (`zipParts.ts`: pictures never inflated, a
+  sheet streamed and capped at 10,000 rows): `spreadsheet.ts` writes each
+  sheet as blocks of rows that start with `[Sheet "name", rows a–b of n]`
+  and the header row, cells as shown (`numberFormat.ts`: formulas'
+  results, dates, decimals, no thousands grouping); `presentation.ts`
+  gives one section per slide (`page` = slide number). `location.ts`
+  derives a citation's place (page, slide, or sheet and rows) from a
+  passage's name, page and first line — sources carry it as `location`.
+- `chunk.ts` ~1200-character passages; a PDF page or a slide starts a new
+  one; a spreadsheet's block is kept whole.
 - `query.ts` question → FTS5 query; `library.ts` grants
   (`folderRisk.ts`/`canonicalFolder` refuse roots, a whole home, `~/Library`,
   hidden paths; symlinks not followed), incremental indexing, BM25 search

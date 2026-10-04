@@ -9,6 +9,7 @@ import { isSelf, selfIdentity } from "../router/index.js";
 import { relative, isAbsolute } from "node:path";
 import { indexSemantic, semanticPassages, semanticStatus, setSemantic, stopSemantic } from "../documents/semantic.js";
 import { fusePassages } from "../documents/vectorMath.js";
+import { passageLocation } from "../documents/location.js";
 import { homedir } from "node:os";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { requireAuth } from "../auth.js";
@@ -198,7 +199,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       if (context.length > budget) return reply.code(413).send({error: "context_budget", budget});
       // Only document data and grounding policy, never the user's profile/memories or paths.
       reply.send({context, budget, omitted_passages: found.passages.length - count, sources: found.passages.slice(0, count).map((p,i) => ({
-        n:i+1, document_id:p.document_id, name:p.name, page:p.page, snippet:p.snippet,
+        n:i+1, document_id:p.document_id, name:p.name, page:p.page, location:passageLocation(p.name,p.page,p.text), snippet:p.snippet,
       }))});
     },
   });
@@ -330,7 +331,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       const folderIds = listFolders(auth.userId).filter((folder) => mine || folder.dossier_id === null).map((folder) => folder.id);
       const passages = fusePassages(searchPassages(auth.userId, q, 8, folderIds), q.trim() ? await semanticPassages(auth.userId, q, folderIds) : [], 8);
       reply.send({
-        passages: passages.map(({ text: _text, ...passage }) => passage),
+        passages: passages.map(({ text, ...passage }) => ({ ...passage, location: passageLocation(passage.name, passage.page, text) })),
       });
     },
   });

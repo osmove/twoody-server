@@ -39,6 +39,7 @@
 import { createHash } from "node:crypto";
 import { hasDocuments, hasWebResults, splitDocuments } from "./documentBlocks.js";
 import { smallTalk } from "./documents/query.js";
+import { excerptPlace } from "./documents/location.js";
 import { personalContextBlock, type PersonalContact, type PersonalEvent } from "./personalContext.js";
 import { ageFrom, BIRTH, coreConcepts, normalize, rankMemories, withinReach } from "./memory/rank.js";
 import type { RelevantMemories } from "./memory/retrieve.js";
@@ -1082,7 +1083,10 @@ export function formatExcerpts(excerpts: DocumentExcerpt[], first = 1): string |
   if (excerpts.length === 0) return null;
   const blocks = excerpts.map((excerpt, offset) => {
     const index = first - 1 + offset;
-    const page = excerpt.page === null ? excerpt.name : `${excerpt.name}, p. ${excerpt.page}`;
+    // « p. 4 », « slide 3 »; a spreadsheet's passage names its sheet and
+    // rows on its own first line.
+    const place = excerptPlace(excerpt.name, excerpt.page, excerpt.text);
+    const page = place ? `${excerpt.name}, ${place}` : excerpt.name;
     const folder = excerpt.folder ? `${page} — in ${excerpt.folder}` : page;
     const where = excerpt.computer ? `${folder} (on ${excerpt.computer})` : folder;
     return `[${index + 1}] ${where}\n${excerpt.text}`;

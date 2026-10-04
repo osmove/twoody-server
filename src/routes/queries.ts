@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import { idleForMs, inflight } from "../account/inflight.js";
 import { citationLink, folderOf, localFolderIds, meshPeers, retrieveAcrossComputers, type MeshPassage, type MeshRetrieval } from "../documents/remote.js";
 import { listingIntent } from "../documents/fileListing.js";
+import { passageLocation } from "../documents/location.js";
 import { listFilesAcrossComputers, type MeshListing } from "../documents/remoteListing.js";
 import { contextBudget } from "./localDocuments.js";
 import { importVaultConversation } from "./discussions.js";
@@ -774,6 +775,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       ...(passage.folder ? { folder: passage.folder } : {}),
       ...(passage.rel_path ? { rel_path: passage.rel_path } : {}),
       page: passage.page,
+      // The page, slide, or sheet and rows the clients show (location.ts).
+      location: passageLocation(passage.name, passage.page, passage.text),
       snippet: passage.snippet,
       url: citationLink(passage.computer_id, passage.document_id),
       ...(passage.local && !shared && passage.path ? { path: passage.path } : {}),
@@ -2385,7 +2388,7 @@ const SEARCH_DOCUMENTS_TOOL: ChatTools["definitions"][number] = {
   function: {
     name: "search_documents",
     description:
-      "Search the user's own documents — the folders they granted on their computers: contracts, invoices, payslips, CVs, letters, notes, reports — " +
+      "Search the user's own documents — the folders they granted on their computers: contracts, invoices, payslips, CVs, letters, notes, reports, spreadsheets, presentations — " +
       "and get the passages that match, numbered to cite like [1]. Use it when the answer may be in their files. " +
       "Do not use it for general knowledge, small talk, or what you already know about the user.",
     parameters: {

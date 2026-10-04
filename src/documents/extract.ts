@@ -3,28 +3,47 @@ import { extname } from "node:path";
 import { strFromU8, unzipSync } from "fflate";
 import { extractText, getDocumentProxy } from "unpdf";
 import { ocrPages } from "./ocr.js";
+import { readOdp, readPptx } from "./presentation.js";
+import { readDelimited, readOds, readXlsx, sheetSections } from "./spreadsheet.js";
+import { ZipParts } from "./zipParts.js";
 
 // Text extraction for the document index. Pure JavaScript on purpose:
 // the server has to work on a stock Mac (no pdftotext, no ripgrep) and,
 // later, on Windows. Each extractor returns sections; a PDF yields one
-// per page so an answer can cite "contract.pdf, p. 4".
+// per page so an answer can cite "contract.pdf, p. 4", a presentation one
+// per slide ("pitch.pptx, slide 3"), a spreadsheet blocks of rows that
+// name their sheet ("budget.xlsx, sheet "Ventes", rows 3–14").
 
 export interface Section {
-  /// 1-based page number, or null for formats without pages.
+  /// 1-based page number — a presentation's slide number —, or null for
+  /// formats without pages.
   page: number | null;
   text: string;
   /// Read by OCR from a scanned page (./ocr.ts), not from the file's text.
   ocr?: boolean;
+  /// `page` numbers a presentation's slides.
+  unit?: "slide";
+  /// Rows of a spreadsheet, with their sheet's line and header
+  /// (./spreadsheet.ts): one passage, never cut again (chunk.ts).
+  table?: true;
 }
 
-const PLAIN_TEXT = new Set([".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".log", ".srt", ".vtt", ".yml", ".yaml"]);
+const PLAIN_TEXT = new Set([".txt", ".md", ".markdown", ".json", ".log", ".srt", ".vtt", ".yml", ".yaml"]);
 const MARKUP = new Set([".html", ".htm", ".xml"]);
+/// Read as tables, or as text when they are none.
+const DELIMITED = new Set([".csv", ".tsv"]);
+const SPREADSHEETS = new Set([".xlsx", ".xlsm", ".ods"]);
+const PRESENTATIONS = new Set([".pptx", ".pptm", ".ppsx", ".odp"]);
 
-export const SUPPORTED_EXTENSIONS = new Set([...PLAIN_TEXT, ...MARKUP, ".pdf", ".docx", ".odt", ".rtf"]);
+export const SUPPORTED_EXTENSIONS = new Set([...PLAIN_TEXT, ...MARKUP, ...DELIMITED, ...SPREADSHEETS, ...PRESENTATIONS, ".pdf", ".docx", ".odt", ".rtf"]);
 
 /// Files above this are skipped: they are almost never prose, and the
 /// extractors hold the whole file in memory.
 export const MAX_FILE_BYTES = 40 * 1024 * 1024;
+/// Spreadsheets and presentations are read part by part (./zipParts.ts):
+/// their pictures and videos are never loaded, so a deck heavy with
+/// photos is read like a light one.
+const MAX_ZIPPED_FILE_BYTES = 512 * 1024 * 1024;
 /// A single document cannot take over the index.
 const MAX_DOCUMENT_CHARS = 2_000_000;
 
@@ -32,27 +51,52 @@ export function isSupported(path: string): boolean {
   return SUPPORTED_EXTENSIONS.has(extname(path).toLowerCase());
 }
 
+/// The largest file of this kind that is read.
+export function maxBytesFor(path: string): number {
+  const ext = extname(path).toLowerCase();
+  return SPREADSHEETS.has(ext) || PRESENTATIONS.has(ext) ? MAX_ZIPPED_FILE_BYTES : MAX_FILE_BYTES;
+}
+
 export async function extractSections(path: string): Promise<Section[]> {
   const ext = extname(path).toLowerCase();
-  const bytes = await readFile(path);
 
   let sections: Section[];
-  if (ext === ".pdf") sections = await extractPdf(path, bytes);
-  else if (ext === ".docx") sections = [{ page: null, text: extractDocx(bytes) }];
-  else if (ext === ".odt") sections = [{ page: null, text: extractOdt(bytes) }];
-  else if (ext === ".rtf") sections = [{ page: null, text: stripRtf(decodeText(bytes)) }];
-  else if (MARKUP.has(ext)) sections = [{ page: null, text: stripMarkup(decodeText(bytes)) }];
-  else sections = [{ page: null, text: decodeText(bytes) }];
+  if (SPREADSHEETS.has(ext) || PRESENTATIONS.has(ext)) sections = await extractZipped(path, ext);
+  else {
+    const bytes = await readFile(path);
+    if (ext === ".pdf") sections = await extractPdf(path, bytes);
+    else if (ext === ".docx") sections = [{ page: null, text: extractDocx(bytes) }];
+    else if (ext === ".odt") sections = [{ page: null, text: extractOdt(bytes) }];
+    else if (ext === ".rtf") sections = [{ page: null, text: stripRtf(decodeText(bytes)) }];
+    else if (MARKUP.has(ext)) sections = [{ page: null, text: stripMarkup(decodeText(bytes)) }];
+    else if (DELIMITED.has(ext)) {
+      const text = decodeText(bytes);
+      const table = readDelimited(text, ext === ".tsv");
+      sections = table ? sheetSections([table]) : [{ page: null, text }];
+    } else sections = [{ page: null, text: decodeText(bytes) }];
+  }
 
   let budget = MAX_DOCUMENT_CHARS;
   const kept: Section[] = [];
   for (const section of sections) {
     const text = tidy(section.text).slice(0, budget);
     budget -= text.length;
-    if (text) kept.push({ page: section.page, text, ...(section.ocr ? { ocr: true } : {}) });
+    if (text) kept.push({ page: section.page, text, ...(section.ocr ? { ocr: true } : {}), ...(section.unit ? { unit: section.unit } : {}), ...(section.table ? { table: true } : {}) });
     if (budget <= 0) break;
   }
   return kept;
+}
+
+async function extractZipped(path: string, ext: string): Promise<Section[]> {
+  const zip = await ZipParts.open(path);
+  try {
+    if (ext === ".ods") return sheetSections(await readOds(zip));
+    if (SPREADSHEETS.has(ext)) return sheetSections(await readXlsx(zip));
+    if (ext === ".odp") return await readOdp(zip);
+    return await readPptx(zip);
+  } finally {
+    await zip.close();
+  }
 }
 
 /// Below this many letters and digits a page counts as without text: a

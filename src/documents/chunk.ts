@@ -14,10 +14,17 @@ export interface Chunk {
 
 export const CHUNK_TARGET_CHARS = 1_200;
 const CHUNK_OVERLAP_CHARS = 150;
+/// A spreadsheet's block of rows is sized by its reader (spreadsheet.ts):
+/// cut again, its second half would lose the sheet's line and header.
+const MAX_TABLE_CHUNK_CHARS = 4_000;
 
 export function chunkSections(sections: Section[], target = CHUNK_TARGET_CHARS): Chunk[] {
   const chunks: Chunk[] = [];
   for (const section of sections) {
+    if (section.table) {
+      chunks.push({ page: section.page, position: chunks.length, text: section.text.slice(0, MAX_TABLE_CHUNK_CHARS) });
+      continue;
+    }
     for (const text of chunkText(section.text, target)) {
       chunks.push({ page: section.page, position: chunks.length, text });
     }
