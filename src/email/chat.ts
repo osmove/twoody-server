@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer";
 import { capabilityOn } from "../localCapabilities.js";
 import { openSourceMailbox } from "./credentials.js";
+import { saveGmailDraft } from "./gmailMailbox.js";
 import { saveGraphDraft } from "./graphMailbox.js";
 import { mailErrorCode, type MailSession } from "./imap.js";
 import { formatAddress, parseRecipients, pickFolders, replySubject, type MailAddress } from "./parse.js";
@@ -597,9 +598,11 @@ async function draft(args: Record<string, unknown>, context: EmailToolContext): 
 
 /// Appends the draft to the mailbox's Drafts folder (found on the server
 /// when the sync has not met it yet), through the door — or, for a mailbox
-/// read through Microsoft Graph, creates it there from the same text.
+/// read through Microsoft Graph or the Gmail API, creates it there from the
+/// same text.
 export async function saveDraft(userId: string, source: EmailSource, draft: Draft): Promise<{ ok: true; folder: string; uid: number | null } | { ok: false; error: string }> {
   if (source.auth === "graph") return saveGraphDraft(userId, source, await composeDraft(draft));
+  if (source.auth === "gmail") return saveGmailDraft(userId, source, await composeDraft(draft));
   let session: MailSession | null = null;
   try {
     session = await openSourceMailbox(source, capabilityOn(userId, "email"));

@@ -12,16 +12,21 @@ import { asksSomething, automatedSender, type AttachmentInfo, type FlagState, ty
 // A mailbox read through Microsoft Graph (graphMailbox.ts) needs no column
 // of its own: a message's Graph id is kept in its metadata (`graph_id`; it
 // has no IMAP UID), and where each folder's round of changes stands in the
-// mailbox's metadata (`graph_folders`).
+// mailbox's metadata (`graph_folders`). One read through the Gmail API
+// (gmailMailbox.ts) likewise: a message's Gmail id in its metadata
+// (`gmail_id`), where the mailbox's changes stand in the mailbox's
+// (`gmail_sync`).
 
 export type SourceStatus = "active" | "error" | "removed";
 
 /// How the mailbox is opened: its password, over IMAP; Microsoft's sign-in,
 /// over IMAP (an Outlook.com or Microsoft 365 mailbox linked by Twoody
 /// 0.13.76, microsoft.ts, kept working as it was until the person signs in
-/// again); or the link to Microsoft Graph, no IMAP at all (graphMailbox.ts).
-/// Kept in its metadata; a mailbox set up before Microsoft's has a password.
-export type MailAuth = "password" | "microsoft" | "graph";
+/// again); the link to Microsoft Graph, no IMAP at all (graphMailbox.ts); or
+/// Google's sign-in, read through the Gmail API, no IMAP either
+/// (gmailMailbox.ts). Kept in its metadata; a mailbox set up before
+/// Microsoft's has a password.
+export type MailAuth = "password" | "microsoft" | "graph" | "gmail";
 
 export interface EmailSource {
   id: string;
@@ -86,8 +91,9 @@ export interface EmailRow {
   size: number | null;
   attachments: AttachmentInfo[];
   labels: string[];
-  /// `graph_id`: the message's id at Microsoft Graph, for a mailbox read through it.
-  metadata: { in_reply_to?: string | null; references?: string[]; automated?: boolean; graph_id?: string };
+  /// `graph_id`: the message's id at Microsoft Graph, for a mailbox read
+  /// through it; `gmail_id`: at Gmail, for one read through the Gmail API.
+  metadata: { in_reply_to?: string | null; references?: string[]; automated?: boolean; graph_id?: string; gmail_id?: string };
   trashed_at: number | null;
 }
 
@@ -116,7 +122,7 @@ function sourceOf(row: Record<string, unknown> | undefined): EmailSource | null 
   return {
     ...(row as unknown as EmailSource),
     imap_security: row.imap_security === "starttls" ? "starttls" : "tls",
-    auth: metadata.auth === "microsoft" || metadata.auth === "graph" ? metadata.auth : "password",
+    auth: metadata.auth === "microsoft" || metadata.auth === "graph" || metadata.auth === "gmail" ? metadata.auth : "password",
     metadata,
   };
 }
@@ -170,6 +176,8 @@ export function saveSource(userId: string, settings: SourceSettings, now = Date.
   const metadataFor = (before: EmailSource | null) => JSON.stringify({
     preset: settings.preset ?? null, window_days: settings.window_days ?? null, auth: settings.auth ?? "password",
     ...(before?.auth === "graph" && settings.auth === "graph" && before.metadata.graph_folders ? { graph_folders: before.metadata.graph_folders } : {}),
+    // And one read through the Gmail API, where its changes stand.
+    ...(before?.auth === "gmail" && settings.auth === "gmail" && before.metadata.gmail_sync ? { gmail_sync: before.metadata.gmail_sync } : {}),
   });
   const write = (before: EmailSource) => {
     sqlite.prepare(`UPDATE email_sources SET email_address = ?, display_name = ?, imap_host = ?, imap_port = ?, imap_security = ?, username = ?,
@@ -393,31 +401,69 @@ export function noteGraphFolder(folderId: string, state: { synced_after: number;
     .run(state.synced_after, state.message_count, state.last_synced_at, state.last_synced_at, folderId);
 }
 
-/// The folder's messages read through Graph: their Graph id, and their row.
-export function graphIdsIn(folderId: string): Map<string, string> {
+/// Where a message's id at its service is kept in its metadata: Microsoft
+/// Graph's, or Gmail's (the same code keeps both copies).
+export type RemoteIdKey = "graph_id" | "gmail_id";
+const idPath = (key: RemoteIdKey) => (key === "gmail_id" ? "$.gmail_id" : "$.graph_id");
+
+/// The folder's messages read through Graph (or Gmail's API): their id
+/// there, and their row.
+export function graphIdsIn(folderId: string, key: RemoteIdKey = "graph_id"): Map<string, string> {
   ensure();
-  const rows = sqlite.prepare("SELECT id, json_extract(metadata, '$.graph_id') AS graph_id FROM emails WHERE email_folder_id = ? AND json_extract(metadata, '$.graph_id') IS NOT NULL").all(folderId) as Array<{ id: string; graph_id: string }>;
-  return new Map(rows.map((row) => [row.graph_id, row.id]));
+  const path = idPath(key);
+  const rows = sqlite.prepare(`SELECT id, json_extract(metadata, '${path}') AS remote_id FROM emails WHERE email_folder_id = ? AND json_extract(metadata, '${path}') IS NOT NULL`).all(folderId) as Array<{ id: string; remote_id: string }>;
+  return new Map(rows.map((row) => [row.remote_id, row.id]));
 }
 
 /// The row of the folder a message read through Graph already is, by its
 /// Message-ID: one kept from IMAP before the mailbox moved to Graph, or one
 /// removed from the folder and back since (under another Graph id).
-function counterpart(folderId: string, messageId: string | null): string | null {
+function counterpart(folderId: string, messageId: string | null, key: RemoteIdKey = "graph_id"): string | null {
   if (!messageId) return null;
+  const path = idPath(key);
   const row = sqlite.prepare(`SELECT id FROM emails WHERE email_folder_id = ? AND provider_message_id = ?
-      AND (json_extract(metadata, '$.graph_id') IS NULL OR trashed_at IS NOT NULL)
-    ORDER BY json_extract(metadata, '$.graph_id') IS NULL DESC, provider_internal_date DESC LIMIT 1`).get(folderId, messageId) as { id: string } | undefined;
+      AND (json_extract(metadata, '${path}') IS NULL OR trashed_at IS NOT NULL)
+    ORDER BY json_extract(metadata, '${path}') IS NULL DESC, provider_internal_date DESC LIMIT 1`).get(folderId, messageId) as { id: string } | undefined;
   return row?.id ?? null;
 }
 
-/// Whether a message read through Graph is already here, kept another way.
-export function graphCounterpart(folderId: string, messageId: string | null): boolean {
+/// Whether a message read through Graph (or Gmail's API) is already here,
+/// kept another way.
+export function graphCounterpart(folderId: string, messageId: string | null, key: RemoteIdKey = "graph_id"): boolean {
   ensure();
-  return counterpart(folderId, messageId) !== null;
+  return counterpart(folderId, messageId, key) !== null;
 }
 
-/// What a change of Graph says of one message.
+/// Where a mailbox read through the Gmail API stands: the start of the
+/// window its messages were listed from, and Gmail's history id its next
+/// round of changes starts at.
+export interface GmailSyncState {
+  since: number;
+  history_id: string | null;
+}
+
+export function gmailSyncState(sourceId: string): GmailSyncState | null {
+  ensure();
+  const kept = sourceMetadata(sourceId)?.gmail_sync as Partial<GmailSyncState> | undefined;
+  if (!kept || typeof kept.since !== "number") return null;
+  return { since: kept.since, history_id: typeof kept.history_id === "string" && /^\d{1,30}$/.test(kept.history_id) ? kept.history_id : null };
+}
+
+/// Noted for the mailbox (null: none, to list it again) — never for one
+/// removed meanwhile.
+export function saveGmailSyncState(sourceId: string, state: GmailSyncState | null, now = Date.now()): void {
+  ensure();
+  sqlite.transaction(() => {
+    const metadata = sourceMetadata(sourceId);
+    if (!metadata) return;
+    const next = { ...metadata };
+    if (state) next.gmail_sync = state;
+    else delete next.gmail_sync;
+    sqlite.prepare("UPDATE email_sources SET metadata = ?, updated_at = ? WHERE id = ? AND status != 'removed'").run(JSON.stringify(next), now, sourceId);
+  })();
+}
+
+/// What a change of Graph (or of Gmail) says of one message.
 export interface GraphChange {
   graphId: string;
   /// Gone from the folder: deleted, or moved elsewhere.
@@ -433,8 +479,9 @@ export interface GraphChange {
 /// brought up to date (read, flagged, back in the folder), what left the
 /// folder hidden — kept, as a message flagged deleted is, never purged.
 /// `known` (Graph id → row) follows. How many messages are new.
-export function saveGraphChanges(folderId: string, changes: GraphChange[], known: Map<string, string>, now = Date.now()): number {
+export function saveGraphChanges(folderId: string, changes: GraphChange[], known: Map<string, string>, now = Date.now(), key: RemoteIdKey = "graph_id"): number {
   ensure();
+  const path = idPath(key);
   return sqlite.transaction(() => {
     let added = 0;
     for (const change of changes) {
@@ -450,11 +497,11 @@ export function saveGraphChanges(folderId: string, changes: GraphChange[], known
       }
       const email = change.email;
       if (!email) continue;
-      const before = counterpart(folderId, email.provider_message_id);
+      const before = counterpart(folderId, email.provider_message_id, key);
       if (before) {
-        // The same e-mail: it takes its Graph id and conversation, its UID goes.
+        // The same e-mail: it takes its Graph (or Gmail) id and conversation, its UID goes.
         sqlite.prepare(`UPDATE emails SET uid = NULL, uid_validity = NULL, provider_thread_id = coalesce(?, provider_thread_id), is_read = coalesce(?, is_read), important = coalesce(?, important),
-            trashed_at = NULL, metadata = json_set(metadata, '$.graph_id', ?), updated_at = ? WHERE id = ?`)
+            trashed_at = NULL, metadata = json_set(metadata, '${path}', ?), updated_at = ? WHERE id = ?`)
           .run(email.provider_thread_id, ...flags, change.graphId, now, before);
         known.set(change.graphId, before);
         continue;

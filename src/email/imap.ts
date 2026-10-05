@@ -79,7 +79,12 @@ export type MailErrorCode =
   // A mailbox that signs in with Microsoft (microsoft.ts): its sign-in to do
   // again, an approval it waits for, a refusal of another kind, Microsoft
   // out of reach, or its IMAP access refused to Twoody.
-  | "signin_required" | "admin_consent_required" | "signin_failed" | "signin_unreachable" | "imap_refused";
+  | "signin_required" | "admin_consent_required" | "signin_failed" | "signin_unreachable" | "imap_refused"
+  // What the server's own words say, when it says why (Gmail above all):
+  // an app password wanted instead of the account's own; IMAP turned off
+  // (by an organisation, or in the account's settings); a sign-in to
+  // finish in the provider's web page first; too many connections open.
+  | "app_password_required" | "imap_disabled" | "web_login_required" | "too_many_connections";
 
 export class MailError extends Error {
   constructor(public code: MailErrorCode, detail?: string) {
@@ -88,13 +93,36 @@ export class MailError extends Error {
   }
 }
 
+/// The server's own words, as imapflow hands them (the response line, its
+/// text, the error's message): read here, in memory, and never kept, logged
+/// or sent back — they may hold the account's address.
+function serverWords(error: { response?: unknown; responseText?: unknown; message?: unknown; serverResponseCode?: unknown }): string {
+  return [error.serverResponseCode, error.responseText, error.response, error.message]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .slice(0, 4_000);
+}
+
+/// What the server's words say, when they say why: the codes of
+/// RFC 5530 and the sentences Gmail, Yahoo and others send.
+function codeFromWords(words: string): MailErrorCode | null {
+  if (!words) return null;
+  if (/application-specific password required|app(?:lication)? password required/i.test(words)) return "app_password_required";
+  if (/IMAP access is disabled|not enabled for IMAP|IMAP (?:access )?(?:is )?(?:disabled|not enabled)|IMAP is turned off/i.test(words)) return "imap_disabled";
+  if (/\bWEBALERT\b|log ?in via your web browser|web login required|sign in (?:via|through|with) your (?:web )?browser/i.test(words)) return "web_login_required";
+  if (/too many (?:simultaneous |concurrent |open )?connections|maximum number of (?:simultaneous |concurrent )?connections|\[LIMIT\]|\bLIMIT\b.*connections/i.test(words)) return "too_many_connections";
+  return null;
+}
+
 /// What went wrong, said as one of a few words (never the server's own
 /// text, which may hold the account's name).
 export function mailErrorCode(err: unknown): MailErrorCode {
   if (err instanceof MailError) return err.code;
   if (err instanceof MailDoorClosedError) return err.reason;
-  const error = (err ?? {}) as { code?: unknown; authenticationFailed?: unknown; tlsFailed?: unknown; serverResponseCode?: unknown; message?: unknown };
+  const error = (err ?? {}) as { code?: unknown; authenticationFailed?: unknown; tlsFailed?: unknown; serverResponseCode?: unknown; message?: unknown; response?: unknown; responseText?: unknown };
   const code = typeof error.code === "string" ? error.code : "";
+  const said = codeFromWords(serverWords(error));
+  if (said) return said;
   if (error.authenticationFailed === true || error.serverResponseCode === "AUTHENTICATIONFAILED" || error.serverResponseCode === "AUTHORIZATIONFAILED") return "auth_failed";
   if (error.tlsFailed === true || /^(?:CERT_|ERR_TLS_|ERR_SSL_|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT)/.test(code)) return "tls_failed";
   if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "EAI_NONAME") return "host_not_found";

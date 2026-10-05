@@ -223,9 +223,10 @@ test("Graph's address is written in the door alone; the one file that sends requ
   assert.equal(graph.match(/await transport\(/g)?.length, 1, "one place sends");
   assert.ok(graph.indexOf("graphDoor(url, method, this.door())") > 0 && graph.indexOf("graphDoor(url, method, this.door())") < graph.indexOf("await transport(url"));
   assert.doesNotMatch(graph, /"(?:PATCH|PUT|DELETE)"/);
-  // A write is asked in one place: the draft, at /me/messages.
+  // A write is asked in one place: the draft, at /me/messages (and, for a
+  // Gmail mailbox, its own draft through the Gmail door: test/gmailDoor.test.ts).
   const posts = sources().flatMap(({ path, text }) => [...text.matchAll(/\bsession\.post\(([^,]+),/g)].map((match) => `${path}: ${match[1]}`));
-  assert.deepEqual(posts, [`${join(srcDir, "microsoft", "mail.ts")}: \`\${GRAPH_ME}/messages\``]);
+  assert.deepEqual(posts, [`${join(srcDir, "email", "gmailMailbox.ts")}: \`\${GMAIL_ME}/drafts\``, `${join(srcDir, "microsoft", "mail.ts")}: \`\${GRAPH_ME}/messages\``]);
   // And the door opens no other write: only POST, once, for E-mails.
   const door = readFileSync(join(srcDir, "outbound.ts"), "utf8");
   const paths = door.slice(door.indexOf("const GRAPH_PATHS"), door.indexOf("export function graphRoute"));

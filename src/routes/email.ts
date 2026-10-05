@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
 import { isThisComputersApp } from "./usage.js";
-import { deleteKeptCopy, mailboxStatus, readAccountInput, removeMailbox, setUpMailbox, testMailbox } from "../email/account.js";
+import { accountWarnings, deleteKeptCopy, mailboxStatus, readAccountInput, removeMailbox, setUpMailbox, testMailbox } from "../email/account.js";
 import { activeSource, foldersOf, recentEmails } from "../email/store.js";
 import { syncMailbox, syncProgress } from "../email/sync.js";
 import { capabilityOn } from "../localCapabilities.js";
@@ -15,7 +15,10 @@ import { formatAddress } from "../email/parse.js";
 //                             { auth: "graph", address, refresh_token?, scopes? } for an Outlook.com or Microsoft 365
 //                             mailbox read through Microsoft Graph (the sign-in the Desktop's main process got, which
 //                             becomes the link to Microsoft, or the link kept); { auth: "microsoft", address,
-//                             refresh_token? } for one read over IMAP, as Twoody 0.13.76 linked them
+//                             refresh_token? } for one read over IMAP, as Twoody 0.13.76 linked them; { auth: "gmail",
+//                             address, refresh_token?, scopes? } for a Gmail mailbox read through the Gmail API
+//                             (« Se connecter avec Google »: the sign-in the Desktop's main process got, or the one kept).
+//                             `warnings`: what the page says without refusing (a Gmail app password not of 16 letters)
 //   POST   /email/account     the same, tried then kept; read at once
 //   POST   /email/sync        read what is new, now
 //   DELETE /email/account     ?keep_messages=true|false: stops, forgets the password or sign-in, keeps or deletes the copy
@@ -34,6 +37,10 @@ function statusFor(error: string): number {
     "auth_failed", "host_not_found", "unreachable", "tls_failed", "timeout", "no_inbox", "failed", "admin_consent_required", "signin_failed", "signin_unreachable", "imap_refused",
     // Through Microsoft Graph.
     "no_mailbox", "graph_refused", "throttled", "graph_unreachable", "graph_failed", "gone", "sync_reset", "other_address", "method_not_allowed",
+    // What the IMAP server's own words said.
+    "app_password_required", "imap_disabled", "web_login_required", "too_many_connections",
+    // Through the Gmail API.
+    "gmail_refused", "gmail_unreachable", "gmail_failed", "other_account",
   ].includes(error)) return 502;
   return 422;
 }
@@ -49,7 +56,7 @@ const accountBody = {
     password: { type: "string", maxLength: 1000 },
     window_days: { type: "integer" },
     preset: { type: "string", maxLength: 30 },
-    auth: { type: "string", enum: ["password", "microsoft", "graph"] },
+    auth: { type: "string", enum: ["password", "microsoft", "graph", "gmail"] },
     refresh_token: { type: "string", maxLength: 16384 },
     scopes: { type: "string", maxLength: 4096 },
   },
@@ -120,7 +127,7 @@ export async function emailRoutes(app: FastifyInstance) {
       if (!read.ok) return reply.code(statusFor(read.error)).send({ error: read.error });
       const tested = await testMailbox(auth.userId, read.input);
       if (!tested.ok) return reply.code(statusFor(tested.error)).send({ error: tested.error });
-      reply.send({ ok: true, folders: tested.folders });
+      reply.send({ ok: true, folders: tested.folders, warnings: accountWarnings(read.input) });
     },
   });
 
@@ -133,7 +140,7 @@ export async function emailRoutes(app: FastifyInstance) {
       if (!capabilityOn(auth.userId, "email")) return reply.code(403).send({ error: "email_off" });
       const done = await setUpMailbox(auth.userId, req.body);
       if (!done.ok) return reply.code(statusFor(done.error)).send({ error: done.error });
-      reply.send({ ok: true, folders: done.folders, status: mailboxStatus(auth.userId) });
+      reply.send({ ok: true, folders: done.folders, warnings: done.warnings, status: mailboxStatus(auth.userId) });
     },
   });
 

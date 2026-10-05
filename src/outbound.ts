@@ -390,3 +390,132 @@ export async function graphFetch(target: string | URL, init: RequestInit, door: 
   // redirect pointed.
   return fetch(target, { ...init, redirect: "error" });
 }
+
+// The doors for « Se connecter avec Google » (Capacités → E-mails,
+// 05/10/2026): a Gmail mailbox read through the Gmail API rather than over
+// IMAP, with Google's sign-in, which the Desktop's main process did and
+// handed over (a refresh token). Two addresses, each opened only while
+// E-mails is on and the mailbox set up — or being set up — signs in with
+// Google, over https, never redirected:
+//   - Google's token endpoint (src/google/token.ts), that address exactly,
+//     to renew the sign-in;
+//   - the Gmail API (src/email/gmailMailbox.ts), below
+//     https://gmail.googleapis.com/gmail/v1/users/me/ and only what reading
+//     the mailbox needs, read only — the account's address and where its
+//     changes stand (profile), its labels, the list of its messages,
+//     a message, a thread, the changes since the last round (history), a
+//     message's part Gmail keeps apart (attachments) — and one write: a
+//     draft, created (POST drafts). Nothing that sends (messages/send,
+//     drafts/send), deletes, trashes, moves or changes a message's labels
+//     (delete, trash, untrash, modify, batchModify, batchDelete, import,
+//     insert), nor any other method on an address opened for reading.
+// Asked for by the person when they link their mailbox, as the mail server
+// is: made in local-only mode too.
+
+/// The one address Google's token endpoint is reached at.
+export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+export const GMAIL_ORIGIN = "https://gmail.googleapis.com";
+/// Where every address the Gmail door opens starts.
+export const GMAIL_ME = `${GMAIL_ORIGIN}/gmail/v1/users/me`;
+
+export type GmailDoorReason = "email_off" | "not_configured" | "other_address" | "method_not_allowed";
+
+export class GmailDoorClosedError extends Error {
+  constructor(public reason: GmailDoorReason) {
+    super(`Refused on the way to Google: ${reason}`);
+    this.name = "GmailDoorClosedError";
+  }
+}
+
+/// Whether the door may open now: E-mails on, the mailbox set up (or being
+/// set up) one that signs in with Google.
+export interface GmailDoorState {
+  gmailMailbox: boolean;
+  emailOn: boolean;
+}
+
+function gmailDoorOpen(door: GmailDoorState): void {
+  if (!door.emailOn) throw new GmailDoorClosedError("email_off");
+  if (!door.gmailMailbox) throw new GmailDoorClosedError("not_configured");
+}
+
+/// Throws unless Google's token endpoint may be called now, at that address
+/// exactly (compared once parsed: a port, a user, a query or another path is
+/// another address).
+export function googleTokenDoor(target: string | URL, door: GmailDoorState): void {
+  gmailDoorOpen(door);
+  let url: URL | null = null;
+  try {
+    url = new URL(target);
+  } catch {
+    // Not a URL: refused below.
+  }
+  if (!url || url.href !== GOOGLE_TOKEN_URL) throw new GmailDoorClosedError("other_address");
+}
+
+/// A request to Google's token endpoint, through that door.
+export async function googleTokenFetch(target: string | URL, init: RequestInit, door: GmailDoorState): Promise<Response> {
+  googleTokenDoor(target, door);
+  // Never followed: the refresh token in the body would go wherever a
+  // redirect pointed.
+  return fetch(target, { ...init, redirect: "error" });
+}
+
+/// The paths opened below /gmail/v1/users/me, and what may be done there.
+/// An id is one segment of letters, digits, « _ » and « - ».
+const GMAIL_PATHS: ReadonlyArray<{ path: RegExp; methods: readonly string[] }> = [
+  { path: /^\/profile$/, methods: ["GET"] },
+  { path: /^\/labels$/, methods: ["GET"] },
+  { path: /^\/labels\/[A-Za-z0-9_-]+$/, methods: ["GET"] },
+  { path: /^\/messages$/, methods: ["GET"] },
+  { path: /^\/messages\/[A-Za-z0-9_-]+$/, methods: ["GET"] },
+  { path: /^\/messages\/[A-Za-z0-9_-]+\/attachments\/[A-Za-z0-9_-]+$/, methods: ["GET"] },
+  { path: /^\/threads$/, methods: ["GET"] },
+  { path: /^\/threads\/[A-Za-z0-9_-]+$/, methods: ["GET"] },
+  { path: /^\/history$/, methods: ["GET"] },
+  // A draft, created: the only write, and never a send.
+  { path: /^\/drafts$/, methods: ["POST"] },
+];
+
+/// What the door opens to at a Gmail address — what may be done there — or
+/// null: another origin (scheme, host, port), a user in it, a path not
+/// declared above. Judged once parsed, « .. » resolved. « send », « trash »,
+/// « modify » and « batch… » are the last segment of their path, never an
+/// id: no path above takes them.
+export function gmailRoute(target: string | URL): { methods: readonly string[] } | null {
+  let url: URL;
+  try {
+    url = new URL(target);
+  } catch {
+    return null;
+  }
+  if (url.origin !== GMAIL_ORIGIN || url.username || url.password) return null;
+  const root = "/gmail/v1/users/me/";
+  if (!url.pathname.startsWith(root)) return null;
+  const rest = url.pathname.slice(root.length - 1);
+  // No slash, backslash, dot or colon hidden in an id (« messages/x:send »).
+  if (/%|\\|:/.test(rest)) return null;
+  const segments = rest.split("/");
+  const last = segments[segments.length - 1] ?? "";
+  if (/^(?:send|trash|untrash|modify|import|batchModify|batchDelete|watch|stop)$/i.test(last)) return null;
+  const route = GMAIL_PATHS.find((one) => one.path.test(rest));
+  return route ? { methods: route.methods } : null;
+}
+
+/// Throws unless this request may go to the Gmail API now: an address the
+/// door opens, what may be done there, E-mails on, a mailbox that signs in
+/// with Google.
+export function gmailDoor(target: string | URL, method: string | undefined, door: GmailDoorState): void {
+  const route = gmailRoute(target);
+  if (!route) throw new GmailDoorClosedError("other_address");
+  if (!route.methods.includes((method ?? "GET").toUpperCase())) throw new GmailDoorClosedError("method_not_allowed");
+  gmailDoorOpen(door);
+}
+
+/// A request to the Gmail API, through that door.
+export async function gmailFetch(target: string | URL, init: RequestInit, door: GmailDoorState): Promise<Response> {
+  gmailDoor(target, init.method, door);
+  // Never followed: the access token in its headers would go wherever a
+  // redirect pointed.
+  return fetch(target, { ...init, redirect: "error" });
+}

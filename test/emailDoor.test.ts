@@ -121,6 +121,26 @@ test("errors said as a few words, never the server's own text", () => {
   assert.equal(mailErrorCode(new Error("anything else")), "failed");
 });
 
+test("what the server's own words say, said as a precise code — read in memory, never repeated", () => {
+  // As imapflow hands a refused LOGIN over: the response line, its text, its code.
+  const refused = (line: string, code = "ALERT") => Object.assign(new Error("Command failed"), { authenticationFailed: true, serverResponseCode: code, response: `3 NO [${code}] ${line}`, responseText: line });
+  const cases: Array<[unknown, string]> = [
+    [refused("Application-specific password required: https://support.google.com/accounts/answer/185833 (Failure)"), "app_password_required"],
+    [refused("IMAP access is disabled for your domain. Please contact your domain administrator for questions about this feature. (Failure)"), "imap_disabled"],
+    [refused("Your account is not enabled for IMAP use. Please visit your Gmail settings page and enable your account for IMAP access. (Failure)"), "imap_disabled"],
+    [refused("Please log in via your web browser: https://support.google.com/mail/accounts/answer/78754 (Failure)", "WEBALERT"), "web_login_required"],
+    [refused("Web login required: https://support.google.com/mail/answer/78754", "ALERT"), "web_login_required"],
+    [refused("Too many simultaneous connections. (Failure)"), "too_many_connections"],
+    [Object.assign(new Error("Connection closed"), { code: "NoConnection", response: "* BYE [UNAVAILABLE] Maximum number of connections from user+IP exceeded" }), "too_many_connections"],
+    [refused("Invalid credentials (Failure) claire.martin@gmail.com", "AUTHENTICATIONFAILED"), "auth_failed"],
+    [Object.assign(new Error("Command failed"), { authenticationFailed: true, serverResponseCode: "AUTHENTICATIONFAILED" }), "auth_failed"],
+  ];
+  for (const [err, code] of cases) assert.equal(mailErrorCode(err), code, String((err as { responseText?: string }).responseText ?? (err as Error).message));
+  // The words go nowhere: a MailError carries the code alone.
+  const said = new MailError(mailErrorCode(cases[0]![0]));
+  assert.equal(said.message, "app_password_required");
+});
+
 const srcDir = fileURLToPath(new URL("../src", import.meta.url));
 function sources(dir = srcDir): Array<{ path: string; text: string }> {
   return readdirSync(dir).flatMap((name) => {
