@@ -22,9 +22,13 @@ delete process.env.TWOODY_EMBEDDING_MODEL;
 type Body = { messages: Array<{ role: string; content: string }>; tools?: Array<{ function: { name: string } }>; max_tokens?: number; tool_choice?: string };
 /// A call, maybe after some words — said with a pause between them, as a
 /// real model writes them (« Je vais chercher… », then the call).
-type Step = (lastResult: string | null) => { name: string; arguments: object; say?: string[]; pauseMs?: number };
+/// `announceOnly`: the words only, the call when it is required of it (a
+/// draft announced, then asked again).
+type Step = (lastResult: string | null) => { name: string; arguments: object; say?: string[]; pauseMs?: number; announceOnly?: boolean };
 const bodies: Body[] = [];
 let script: Step[] = [];
+/// What it answers when it calls nothing (else « OK: » and the last result).
+let answer: string | null = null;
 const llm = createServer((req: IncomingMessage, res: ServerResponse) => {
   if (req.method === "GET") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ data: [{ id: "qwen" }] })); return; }
   let raw = "";
@@ -39,14 +43,20 @@ const llm = createServer((req: IncomingMessage, res: ServerResponse) => {
     const step = script[results.length];
     if (step && body.tools?.length && body.tool_choice !== "none" && body.max_tokens !== 1) {
       const call = step(last);
-      for (const words of call.say ?? []) {
+      const required = body.tool_choice === "required";
+      for (const words of required ? [] : call.say ?? []) {
         send({ choices: [{ delta: { content: words } }] });
         await new Promise((resolve) => setTimeout(resolve, call.pauseMs ?? 0));
+      }
+      if (call.announceOnly && !required) {
+        send({ choices: [{ delta: {}, finish_reason: "stop" }] });
+        res.end("data: [DONE]\n\n");
+        return;
       }
       send({ choices: [{ delta: { tool_calls: [{ index: 0, id: `call_${results.length}`, type: "function", function: { name: call.name, arguments: JSON.stringify(call.arguments) } }] } }] });
       send({ choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else {
-      send({ choices: [{ delta: { content: last ? `OK: ${last}` : "Réponse." } }] });
+      send({ choices: [{ delta: { content: answer ?? (last ? `OK: ${last}` : "Réponse.") } }] });
     }
     res.end("data: [DONE]\n\n");
   });
@@ -322,6 +332,61 @@ test("allowed: saved in Drafts, flagged \\Draft, threaded under the e-mail it an
   script = [];
   assert.ok(eventOf(again.body, "approval"), "asked again");
   assert.equal(mail.folders.get("Drafts")!.messages.length, 1);
+});
+
+test("a draft announced and not made (« Je rédige un brouillon… »), however slowly said: asked again, draft_email allowed — still shown to the person first", async () => {
+  const [reunion] = searchEmails(userId, { from: "rene", query: "reunion" });
+  const before = bodies.length;
+  script = [() => ({ name: "draft_email", arguments: { in_reply_to: reunion!.id, body: "Bonjour René,\n\nD'accord pour lundi.\n\nJimmy" }, say: ["Je rédige un brouillon ", "de réponse à René ", "pour confirmer lundi."], pauseMs: 700, announceOnly: true })];
+  const [response] = await Promise.all([ask("Réponds à René que c'est d'accord pour lundi"), answerWhenAsked(false)]);
+  script = [];
+  assert.equal(eventOf(response.body, "approval")?.kind, "email_draft", "the draft, asked of the person");
+  assert.doesNotMatch(response.body, /Je rédige|de réponse à René/, "the announcement never reached the person");
+  const retried = bodies.slice(before).find((body) => body.tool_choice === "required");
+  assert.ok(retried?.tools?.some((tool) => tool.function.name === "draft_email"));
+  assert.ok(!retried?.tools?.some((tool) => tool.function.name === "create_reminder"), "no action but the draft and the searches");
+  assert.equal(mail.folders.get("Drafts")!.messages.length, 1, "refused: nothing more saved");
+});
+
+test("not asked for a draft: words about one are no announcement — shown, nothing asked again", async () => {
+  const before = bodies.length;
+  script = [() => ({ name: "draft_email", arguments: { to: "rene@example.com", subject: "Lundi", body: "OK." }, say: ["Je rédige un brouillon si vous voulez."], announceOnly: true })];
+  const response = await ask("Qu'est-ce que René m'a écrit ?");
+  script = [];
+  assert.equal(eventOf(response.body, "approval"), null);
+  assert.match(eventOf(response.body, "final").message, /Je rédige un brouillon si vous voulez\./);
+  assert.ok(!bodies.slice(before).some((body) => body.tool_choice === "required"));
+});
+
+test("« Dis à René que je viens lundi »: how not said — a question first, no draft; « oui »: the e-mail now", async () => {
+  answer = "Voulez-vous que je rédige un e-mail à René pour lui dire que vous venez lundi ?";
+  const first = await ask("Dis à René que je viens lundi");
+  answer = null;
+  const given = lastUserMessage();
+  assert.match(given, /\[The user asks to pass something on to « René » without saying how\. Do not write the message yet and do not call draft_email\./);
+  assert.match(given, /« Voulez-vous que je rédige un e-mail à maman pour lui dire que vous venez dimanche \? »/);
+  assert.match(given, /Never say you cannot send or pass on messages/);
+  assert.match(given, /From: René Dupont <rene@example\.com>/, "who René is, from the e-mails");
+  assert.equal(eventOf(first.body, "approval"), null);
+  // A draft all the same: not shown to the person, the model told to ask.
+  script = [() => ({ name: "draft_email", arguments: { to: "rene@example.com", subject: "Lundi", body: "Je viens lundi." } })];
+  const forced = await ask("Préviens René que je serai en retard");
+  script = [];
+  assert.equal(eventOf(forced.body, "approval"), null);
+  assert.match(eventOf(forced.body, "final").message, /^OK: Not done: the user did not say how to pass this on\./);
+  // « oui » to the question: the request and René's e-mails, the draft to make now.
+  const discussionId = eventOf(first.body, "final").discussion_id as string;
+  await ask("oui", { discussion_id: discussionId, force_new_discussion: false });
+  const agreed = lastUserMessage();
+  assert.match(agreed, /\[The user said yes to the e-mail you offered to draft for their request « Dis à René que je viens lundi »\. Call draft_email now/);
+  assert.match(agreed, /From: René Dupont <rene@example\.com>/);
+  // Said how, or about something else: no question.
+  await ask("Dis à René par SMS que je viens lundi");
+  assert.doesNotMatch(lastUserMessage(), /pass something on/);
+  await ask("Dis-moi la capitale de l'Italie");
+  assert.doesNotMatch(lastUserMessage(), /pass something on|e-mails/);
+  const system = systemOf(bodies.at(-1));
+  assert.match(system, /Asked to pass something on to someone without saying how/, "one sentence, always the same: the cache holds");
 });
 
 test("a draft with no recipient, or to something that is no address, is not asked: the model is told", async () => {

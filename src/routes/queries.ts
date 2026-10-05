@@ -57,8 +57,8 @@ import { discussionTitle, typedText } from "../documentBlocks.js";
 import { loadPersonalData } from "./localSync.js";
 import { capabilitiesOff, capabilityOn, type LocalCapability } from "../localCapabilities.js";
 import { callConnectorTool, connectorChatTools, waitForApproval } from "../connectors/connectors.js";
-import { EMAIL_TOOLS, emailsForMessage, emailToolsAvailable, isEmailTool, runEmailTool } from "../email/chat.js";
-import { aboutEmails } from "../email/intent.js";
+import { EMAIL_TOOLS, emailsAgreedTo, emailsForMessage, emailToolsAvailable, isEmailTool, passOnFirst, runEmailTool } from "../email/chat.js";
+import { aboutEmails, agreedToDraft, asksForADraft, passOnWithoutHow } from "../email/intent.js";
 import { askedBank, BANK_TOOLS, isBankTool, runBankTool } from "../bank/tools.js";
 import { hasBankAccounts } from "../bank/store.js";
 import { importanceOf } from "../memory/importance.js";
@@ -898,12 +898,37 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // call required of the model: llama.cpp let Qwen3.5 9B write prose
     // instead, 300 tokens and 15 s lost (bench of 04/10/2026).
     const emailAsked = offersEmail && aboutEmails(typedText(content));
-    const emailFound = emailAsked ? emailsForMessage(typedText(content), { userId: auth.userId, timeZone: validTimeZone(parsed.time_zone), budgetChars: contextBudget(readWindow(parsed.context_window) ?? 32_768) }) : null;
+    const emailContext = { userId: auth.userId, timeZone: validTimeZone(parsed.time_zone), budgetChars: contextBudget(readWindow(parsed.context_window) ?? 32_768) };
+    // « Dis à maman que je viens dimanche »: how not said — asked first
+    // (« Voulez-vous que je rédige un e-mail à maman… ? »), no draft yet
+    // (Jimmy, 05/10/2026); « oui » to that question: the e-mail now.
+    const passOn = offersEmail && !emailAsked ? passOnWithoutHow(typedText(content)) : null;
+    const lastAnswer = [...history].reverse().find((row) => row.role === "assistant");
+    const agreedRequest = offersEmail && !emailAsked && !passOn && lastAnswer && agreedToDraft(lastAnswer.content, typedText(content))
+      ? [...history.slice(0, history.lastIndexOf(lastAnswer))].reverse().find((row) => row.role === "user")?.content ?? null
+      : null;
+    const emailFound = emailAsked
+      ? emailsForMessage(typedText(content), emailContext)
+      : passOn
+        ? passOnFirst(passOn.recipient, emailContext)
+        : agreedRequest
+          ? emailsAgreedTo(agreedRequest, typedText(content), emailContext)
+          : null;
     if (emailFound) trace.email = { found: emailFound.mode, count: emailFound.count };
+    // Asked to write or answer an e-mail: a draft announced and not made
+    // (« Je rédige un brouillon… ») is asked again, draft_email allowed.
+    const draftAsked = offersEmail && (agreedRequest !== null || (emailAsked && asksForADraft(typedText(content))));
     const runEmail = async (name: string, args: Record<string, unknown>): Promise<string> => {
       const traced: ToolCallTrace = { name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0 };
       toolCallsTraced.push(traced);
       const called = Date.now();
+      // The question comes first: a draft the model made all the same is
+      // not shown to the person (no approval asked).
+      if (passOn && name === "draft_email") {
+        traced.error = "ask_first";
+        traced.result_chars = 0;
+        return "Not done: the user did not say how to pass this on. Ask them first, in one short question, whether you should draft an e-mail to them; never say you cannot send messages.";
+      }
       const done = await runEmailTool(name, args, {
         userId: auth.userId,
         timeZone: validTimeZone(parsed.time_zone),
@@ -943,6 +968,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       ...(connectorTools.length ? { insist: true } : {}),
       // Search, read, then draft an answer: three rounds.
       ...(offersEmail ? { rounds: 3 } : {}),
+      ...(draftAsked ? { mayDraft: true } : {}),
       // The e-mail tools, always the same three, before the connectors'
       // (which change as the person picks them): the runtime's cache.
       // The bank's three tools after them, the same as long as Banque is on.
@@ -2435,6 +2461,10 @@ export interface ChatTools {
   /// Tool rounds before the answer (TOOL_ROUNDS unless said): an e-mail
   /// found, read, then answered takes three.
   rounds?: number;
+  /// The message asked for an e-mail to be written or answered: words that
+  /// only announce the draft (« Je rédige un brouillon… ») are held back
+  /// like a search announced, and draft_email may be the call asked again.
+  mayDraft?: boolean;
 }
 
 /// What a first answer held back may be: short, and announcing or offering
@@ -2448,6 +2478,10 @@ const HOLD_MS = 1_200;
 /// Once a sentence announced a search, what may still be held while the
 /// call is awaited: two or three sentences of preamble, not an answer.
 const HOLD_ANNOUNCED_CHARS = 600;
+/// An e-mail written out in the answer instead of draft_email (« Voici
+/// votre brouillon de réponse… : Objet : … »): held while it is an e-mail's
+/// length, then asked again as a call.
+const HOLD_DRAFT_CHARS = 3_000;
 export function looksLikeAnnouncement(text: string): boolean {
   const said = text.trim();
   if (!said || said.length > HOLD_CHARS) return false;
@@ -2487,6 +2521,24 @@ const NARRATION = new RegExp([
   String.raw`(?:让我|我来|我将|我会|我需要|我先)[^。！？\n]{0,8}?(?:搜索|查找|查看|检索|查一下|找一下)`,
 ].join("|"), "iu");
 
+/// A sentence in which the model only says it is writing the e-mail asked
+/// for — « Je rédige un brouillon de réponse à Maître Dupont… », « Je
+/// confirme le rendez-vous de jeudi. », « I'll draft a reply. » — with no
+/// call: an announcement, not a draft (Qwen3.5 9B, 1 of 3 and 3 of 6,
+/// benches of 05/10/2026). Only while a draft was asked for (mayDraft).
+export const DRAFT_NARRATION = new RegExp([
+  String.raw`^\W*(?:(?:d['’]accord|tr[eè]s bien|parfait|entendu|bien s[uû]r|ok|okay|c['’]est not[ée]|bien re[çc]u|sure|alright|got it)\W+)?`,
+  String.raw`(?:(?:je\s+|j['’]\s*)(?:vais\s+|m['’]en vais\s+|peux\s+|suis en train de\s+)?(?:maintenant\s+|donc\s+|d['’]abord\s+|tout de suite\s+|imm[ée]diatement\s+|aussi\s+)?(?:vous\s+|te\s+|lui\s+|leur\s+)?(?:r[ée]dig|pr[ée]par|[ée]cri|r[ée]pond|confirm|envoi|envoy|cr[ée]|fais|m['’]occupe)`,
+  String.raw`|i(?:'ll|’ll| will| am going to|'m going to|’m going to| am| can)?\s+(?:now\s+)?(?:draft|write|prepar|repl|respond|confirm|send|creat)`,
+  String.raw`|let me\s+(?:draft|write|prepare|reply|respond)`,
+  String.raw`|(?:drafting|writing|preparing)(?!\p{L}))`,
+].join(""), "iu");
+
+/// The e-mail itself, written out instead of drafted: « Voici votre
+/// brouillon de réponse à Maître Dupont : **Objet :** … » (Qwen3.5 9B, 1
+/// of 3, bench of 05/10/2026). Only while a draft was asked for.
+export const DRAFT_IN_PROSE = /^\W*(?:(?:voici|voil[àa])\s+(?:donc\s+)?(?:un|une|le|la|l['’]|votre|vos|ton|ta|mon|ma|cet|cette)\s*(?:proposition de\s+|projet d['’]\s*|exemple d['’]\s*)?(?:brouillon|r[ée]ponse|e-?mail|mail|courriel|message)(?![\p{L}])|here(?:'s| is)\s+(?:a|an|the|your|my)\s+(?:draft|reply|e-?mail|message)(?![\p{L}])|\**\s*(?:objet|subject)\s*\**\s*:)/iu;
+
 /// Where the first sentence of `text` ends (past its stop), or -1.
 function sentenceEnd(text: string): number {
   const found = /[.!?…:;](?=\s)|[。！？]|\n/.exec(text);
@@ -2495,7 +2547,7 @@ function sentenceEnd(text: string): number {
 
 /// The model's words only announce a search, nothing else (« I need to
 /// search your documents for this. »).
-export function onlyNarration(text: string): boolean {
+export function onlyNarration(text: string, drafting = false): boolean {
   const said = text.trim();
   if (!said || said.length > HOLD_CHARS) return false;
   const sentences: string[] = [];
@@ -2505,7 +2557,30 @@ export function onlyNarration(text: string): boolean {
     rest = rest.slice(end);
   }
   sentences.push(rest);
-  return sentences.map((sentence) => sentence.trim()).filter(Boolean).every((sentence) => NARRATION.test(sentence));
+  return sentences.map((sentence) => sentence.trim()).filter(Boolean).every((sentence) => NARRATION.test(sentence) || (drafting && DRAFT_NARRATION.test(sentence)));
+}
+
+/// The e-mail asked for, written out in the answer rather than drafted:
+/// its first sentence (after words that only announce it) says so.
+export function writtenOut(text: string): boolean {
+  const said = text.trim();
+  if (!said || said.length > HOLD_DRAFT_CHARS) return false;
+  let rest = said;
+  for (let end = sentenceEnd(rest); end >= 0; end = sentenceEnd(rest)) {
+    const sentence = rest.slice(0, end).trim();
+    if (DRAFT_IN_PROSE.test(sentence)) return true;
+    if (sentence && !NARRATION.test(sentence) && !DRAFT_NARRATION.test(sentence)) return false;
+    rest = rest.slice(end);
+  }
+  return DRAFT_IN_PROSE.test(rest.trim());
+}
+
+/// A short answer that opens on the draft announced and asks nothing: « Je
+/// rédige un brouillon de réponse à Maître Anne Dupont…, en reprenant son
+/// e-mail (id: 251d…). » — its sentences cut at « id: » (bench of 05/10/2026).
+export function draftAnnounced(text: string): boolean {
+  const said = text.trim();
+  return !!said && said.length <= HOLD_ANNOUNCED_CHARS && !said.includes("?") && DRAFT_NARRATION.test(said);
 }
 
 /// Tool calls a turn may make before it answers.
@@ -2667,6 +2742,7 @@ async function streamLocal(
     // as they end. A connector's tool insisted on: all the first words
     // are held back while they are few (« Voici vos offres : »).
     const insist = !!options.tools?.insist;
+    const drafting = !!options.tools?.mayDraft;
     let holding = false;
     let narrating = false;
     // A sentence said it is about to look something up: what follows is
@@ -2674,6 +2750,8 @@ async function streamLocal(
     // grows into an answer (04/10/2026: « Je vais d'abord rechercher les
     // e-mails… » reached the person, the call coming 1.5 s later).
     let announced = false;
+    // …or that it gives the e-mail asked for, written out: held longer.
+    let draftShown = false;
     let held = "";
     let heldSince = 0;
     let released = 0;
@@ -2681,6 +2759,7 @@ async function streamLocal(
       holding = !!options.tools;
       narrating = insist;
       announced = false;
+      draftShown = false;
       held = "";
       released = 0;
     };
@@ -2698,18 +2777,28 @@ async function streamLocal(
           // The same time limit (04/10/2026): with a connector, every answer
           // was held from its first word up to 280 characters, 4 to 5 s on
           // the MacBook Air before anything showed.
-          if (released + held.length > (announced ? HOLD_ANNOUNCED_CHARS : HOLD_CHARS) || (!announced && Date.now() - heldSince > HOLD_MS)) letGo();
+          if (released + held.length > (draftShown ? HOLD_DRAFT_CHARS : announced ? HOLD_ANNOUNCED_CHARS : HOLD_CHARS) || (!announced && Date.now() - heldSince > HOLD_MS)) letGo();
           return;
         }
         const end = sentenceEnd(held);
         if (end < 0) {
+          // A draft announced takes longer than HOLD_MS to write (« Je
+          // rédige un brouillon de réponse à Maître Dupont confirmant… »,
+          // let go half-written, bench of 05/10/2026): its first words tell.
+          if (drafting && (DRAFT_NARRATION.test(held.trim()) || DRAFT_IN_PROSE.test(held))) {
+            narrating = true;
+            announced = true;
+            if (DRAFT_IN_PROSE.test(held)) draftShown = true;
+            continue;
+          }
           if (released + held.length > HOLD_CHARS || Date.now() - heldSince > HOLD_MS) letGo();
           return;
         }
         const sentence = held.slice(0, end);
-        if (NARRATION.test(sentence)) {
+        if (NARRATION.test(sentence) || (drafting && (DRAFT_NARRATION.test(sentence.trim()) || DRAFT_IN_PROSE.test(sentence)))) {
           narrating = true;
           announced = true;
+          if (drafting && DRAFT_IN_PROSE.test(sentence)) draftShown = true;
           continue;
         }
         onDelta(sentence);
@@ -2754,28 +2843,33 @@ async function streamLocal(
       // Announced, not called: asked again, a tool call required; what
       // was announced is not shown. A connector's: any announcement, any
       // tool; otherwise only words that say a search, and only a search —
-      // of the documents, of the e-mails — may then be called (not an action).
-      const searchOnly = options.tools?.definitions.filter((tool) => tool.function.name === "search_documents" || tool.function.name === "search_emails") ?? [];
+      // of the documents, of the e-mails — may then be called (not an
+      // action); or, an e-mail asked to be written or answered, words that
+      // say the draft, and draft_email too: it is still shown to the person
+      // before it is saved.
+      const searchOnly = options.tools?.definitions.filter((tool) => tool.function.name === "search_documents" || tool.function.name === "search_emails" || (drafting && tool.function.name === "draft_email")) ?? [];
       const retryTools = insist ? options.tools?.definitions ?? [] : searchOnly;
-      if (rest && options.tools && !called() && retryTools.length && (insist ? looksLikeAnnouncement(rest) : onlyNarration(rest)) && !signal.aborted) {
+      const askAgain = async (text: string, messages: Array<Record<string, unknown>>): Promise<boolean> => {
+        const announcedOnly = insist ? looksLikeAnnouncement(text) : onlyNarration(text, drafting) || (drafting && (draftAnnounced(text) || writtenOut(text)));
+        if (!text || !options.tools || called() || !retryTools.length || !announcedOnly || signal.aborted) return false;
         try {
-          const again = await post({ ...body, ...extras, ...(insist ? {} : { tools: retryTools }), max_tokens: FORCED_TOOL_TOKENS * 2, tool_choice: "required" });
-          if (again.ok) {
-            const pieces: ToolCallPieces[] = [];
-            await consumeOpenAIStream(again, () => undefined, () => undefined, pieces);
-            const valid = pieces.filter((piece) => {
-              if (!piece?.name || !retryTools.some((tool) => tool.function.name === piece.name)) return false;
-              try { JSON.parse(piece.arguments || "{}"); return true; } catch { return false; }
-            });
-            if (valid.length) {
-              calls.splice(0, calls.length, ...valid);
-              rest = "";
-            }
-          }
+          const again = await post({ ...body, ...extras, messages, ...(insist ? {} : { tools: retryTools }), max_tokens: FORCED_TOOL_TOKENS * 2, tool_choice: "required" });
+          if (!again.ok) return false;
+          const pieces: ToolCallPieces[] = [];
+          await consumeOpenAIStream(again, () => undefined, () => undefined, pieces);
+          const valid = pieces.filter((piece) => {
+            if (!piece?.name || !retryTools.some((tool) => tool.function.name === piece.name)) return false;
+            try { JSON.parse(piece.arguments || "{}"); return true; } catch { return false; }
+          });
+          if (!valid.length) return false;
+          calls.splice(0, calls.length, ...valid);
+          return true;
         } catch (err) {
           if (signal.aborted) throw err;
+          return false;
         }
-      }
+      };
+      if (await askAgain(rest, body.messages as Array<Record<string, unknown>>)) rest = "";
       if (rest) onDelta(rest);
       // The model asked for a tool (documents, at most TOOL_ROUNDS times):
       // what it returns is given back, and the model goes on from there —
@@ -2806,7 +2900,10 @@ async function streamLocal(
         filter = thinkFilter();
         usage = await consumeOpenAIStream(next, filter.push, reason, calls);
         filter.flush();
-        const left = settle(called());
+        let left = settle(called());
+        // The same after a search: « Je rédige maintenant le brouillon. »
+        // and no call is asked again, while a round is left.
+        if (drafting && !insist && round + 1 < rounds && (await askAgain(left, followed))) left = "";
         if (left) onDelta(left);
         if (usage) usage = { ...usage, completion_tokens: usage.completion_tokens + spent };
       }

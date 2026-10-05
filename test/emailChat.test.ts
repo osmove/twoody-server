@@ -13,7 +13,8 @@ process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-email-chat-"));
 process.env.TWOODY_BONJOUR_DISABLED = "1";
 
 const { expandQuery, messageWords, periodBounds, periodIn } = await import("../src/email/chat.js");
-const { aboutEmails } = await import("../src/email/intent.js");
+const mail = await import("../src/email/intent.js");
+const { aboutEmails } = mail;
 const { asksSomething, automatedHeaders, automatedSender } = await import("../src/email/parse.js");
 
 const paris = "Europe/Paris";
@@ -87,4 +88,50 @@ test("what asks the person something, and what a machine sent", () => {
   assert.equal(automatedHeaders(new Map([["auto-submitted", "auto-replied"]])), true);
   assert.equal(automatedHeaders(new Map([["auto-submitted", "no"]])), false);
   assert.equal(automatedHeaders(new Map()), false);
+});
+
+test("« Dis à maman que… »: something to pass on, how not said — never a question about Twoody itself, advice, or a way named", () => {
+  const { passOnWithoutHow } = mail;
+  for (const [message, recipient] of [
+    ["Dis à maman que je viens dimanche", "maman"], ["Préviens Paul que je serai en retard", "Paul"], ["Tu peux dire à ma sœur Julie que j'arrive ?", "ma sœur Julie"],
+    ["Préviens Maître Dupont de mon retard", "Maître Dupont"], ["Demande au plombier s'il passe demain", "plombier"], ["Dis-lui que je viens", "lui"],
+    ["Tell my mom that I'm coming on Sunday", "my mom"], ["Let Paul know I will be late", "Paul"], ["Préviens Paul", "Paul"],
+  ]) assert.equal(passOnWithoutHow(message!)?.recipient, recipient, message);
+  for (const message of [
+    "Dis-moi la capitale de l'Italie", "Dis à Siri que tu es bien plus malin qu'elle", "Explique-moi ce mail de Tessane", "Comment dire à mon patron que je démissionne ?",
+    "Dis à quel point c'est important", "Tell me a joke", "Let me know", "Dis à maman par SMS que je viens", "Appelle maman pour lui dire que je viens",
+    "Écris un mail à Paul pour le remercier", "Réponds à Maître Dupont que je confirme jeudi", "Je vais dire à maman que je viens", "Rappelle-moi de dire à Paul que je viens",
+  ]) assert.equal(passOnWithoutHow(message), null, message);
+});
+
+test("« oui » to « Voulez-vous que je rédige un e-mail… ? »: the e-mail asked for; not another yes, nor another way", () => {
+  const { agreedToDraft } = mail;
+  const offer = "Voulez-vous que je rédige un e-mail à maman pour lui dire que vous venez dimanche ?";
+  for (const reply of ["oui", "Oui, depuis ma boîte perso", "vas-y", "OK", "d'accord", "yes please"]) assert.equal(agreedToDraft(offer, reply), true, reply);
+  for (const reply of ["non", "oui mais plutôt par SMS", "Et papa ?", ""]) assert.equal(agreedToDraft(offer, reply), false, reply);
+  assert.equal(agreedToDraft("Souhaitez-vous que je lui envoie un e-mail pour le prévenir ?", "oui"), true);
+  assert.equal(agreedToDraft("La capitale de l'Italie est Rome. Autre chose ?", "oui"), false);
+  assert.equal(agreedToDraft(null, "oui"), false);
+});
+
+test("which e-mail messages ask for a draft — announced and not made, it is asked again", async () => {
+  const { asksForADraft } = mail;
+  for (const message of ["Réponds à Maître Dupont que je confirme jeudi", "Écris un mail à Paul pour le remercier", "Fais un brouillon pour Claire", "Reply to Marc about the contract"]) assert.equal(asksForADraft(message), true, message);
+  for (const message of ["Explique-moi ce mail de Tessane", "Qu'est-ce que René m'a écrit ?", "Dis à maman que je viens dimanche", "Écris-moi un haïku"]) assert.equal(asksForADraft(message), false, message);
+  const { draftAnnounced, onlyNarration, writtenOut } = await import("../src/routes/queries.js");
+  assert.equal(draftAnnounced("Je rédige un brouillon de réponse à Maître Anne Dupont pour confirmer jeudi, en reprenant son email (id: 251d0be8-83e2-44bd-b9ae-4fc17d3e97f9)."), true, "cut at « id: »");
+  assert.equal(draftAnnounced("Je rédige un brouillon : depuis quelle boîte, tessane ou maison ?"), false, "a question");
+  for (const said of [
+    "Je rédige un brouillon de réponse à Maître Dupont pour confirmer le rendez-vous du jeudi 8 octobre à 14 h.", "Je confirme le rendez-vous de jeudi.",
+    "J'écris le brouillon de réponse à Maître Dupont.", "D'accord, je rédige l'e-mail.", "Je confirme le rendez-vous du jeudi 8 octobre à 14 h. Je vais maintenant rédiger le brouillon de réponse à Maître Dupont.",
+    "I'll draft a reply now.",
+  ]) {
+    assert.equal(onlyNarration(said, true), true, said);
+    assert.equal(onlyNarration(said), false, `not asked for a draft: ${said}`);
+  }
+  for (const said of ["Voulez-vous que je rédige un e-mail ?", "Je ne sais pas à quelle adresse répondre : tessane ou maison ?", "Paul vous a écrit deux fois."]) assert.equal(onlyNarration(said, true), false, said);
+  assert.equal(writtenOut("Voici votre brouillon de réponse à Maître Dupont :\n\n**Objet :** Re : Rendez-vous\n\nMadame,\n\nJe confirme."), true);
+  assert.equal(writtenOut("**Objet :** Merci\n\nBonjour Paul,"), true);
+  assert.equal(writtenOut("Voici ce que dit le mail : une facture."), false);
+  assert.equal(writtenOut("Paul vous a écrit deux fois. Voici un e-mail :"), false, "an answer first");
 });
