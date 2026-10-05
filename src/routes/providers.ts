@@ -2,10 +2,12 @@ import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { db, llmEndpoints } from "../db.js";
 import { generateId, requireAuth } from "../auth.js";
-import { offeredModels, probeRuntime } from "../localRuntime.js";
+import { offeredModels, probeRuntime, type RuntimeProbe } from "../localRuntime.js";
+import { modelLoadState, noteModelReady, startModelLoad } from "../modelLoads.js";
+import { requirePerson } from "./runtime.js";
 import { listComputers, type ComputerEntry } from "../router/index.js";
 import { accountCredentials } from "../account/service.js";
-import { activeEngine, engine, engineDefaultModel, engineName } from "../engine.js";
+import { activeEngine, engine, engineDefaultModel, engineName, engineRoute } from "../engine.js";
 
 type ProviderPatchBody = {
   name?: string;
@@ -120,6 +122,40 @@ async function computersFor(userId: string, waitMs = COMPUTERS_WAIT_MS): Promise
   }
 }
 
+function modelName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed && trimmed.length <= 300 && trimmed !== "local" && trimmed !== "auto" ? trimmed : null;
+}
+
+/// The runtime of this computer that holds `model`, as /queries would send
+/// it there (queries.ts resolveProvider): the provider naming it, then one
+/// whose runtime lists it, then the engine. Null when none does.
+async function runtimeHolding(userId: string, model: string): Promise<{ baseUrl: string; model: string; runtime: string | null; probe: RuntimeProbe | null } | null> {
+  const stored = db
+    .select()
+    .from(llmEndpoints)
+    .where(eq(llmEndpoints.userId, userId))
+    .all()
+    .filter((p): p is typeof p & { baseUrl: string } => p.enabled && p.kind === "local_openai" && Boolean(p.baseUrl));
+  const ask = (baseUrl: string) => probeRuntime(baseUrl, { fresh: true }).catch(() => null);
+  const naming = stored.find((p) => p.model === model);
+  if (naming) return { baseUrl: naming.baseUrl, model, runtime: naming.name, probe: await ask(naming.baseUrl) };
+  for (const p of stored) {
+    const probe = await ask(p.baseUrl);
+    if (probe?.models?.includes(model)) return { baseUrl: p.baseUrl, model, runtime: p.name, probe };
+  }
+  const route = await engineRoute(model).catch(() => null);
+  if (route?.model === model) {
+    // The built-in runtime may be stopped (asleep): it is started to load.
+    const probe: RuntimeProbe = route.engine === "builtin"
+      ? { reachable: true, ok: true, models: [model], loaded: null, latency_ms: null, checked_at: new Date().toISOString() }
+      : (await ask(route.baseUrl)) ?? { reachable: false, ok: false, models: null, latency_ms: null, checked_at: new Date().toISOString() };
+    return { baseUrl: route.baseUrl, model, runtime: engineName(route.engine), probe };
+  }
+  return null;
+}
+
 export async function providerRoutes(app: FastifyInstance) {
   app.get("/providers", {
     schema: {
@@ -152,11 +188,14 @@ export async function providerRoutes(app: FastifyInstance) {
           // Refused in local-only mode (a public address): unavailable.
           const probe = await probeRuntime(provider.baseUrl, { fresh: true }).catch(() => null);
           if (!probe) {
-            const status = { available: false, latency_ms: null, checked_at: new Date().toISOString() };
+            const status = { available: false, reachable: false, latency_ms: null, checked_at: new Date().toISOString() };
             return { ...serializeProvider(provider), status, models: provider.model ? [provider.model] : [] };
           }
-          const status = { available: probe.ok, latency_ms: probe.latency_ms, checked_at: probe.checked_at };
-          return { ...serializeProvider(provider), status, models: offeredModels(provider.model, probe) };
+          // `reachable`: something answers at its address (a runtime that is
+          // not running does not); `loaded_models`: what it holds in memory,
+          // when it says (llama.cpp's router) — null when it does not.
+          const status = { available: probe.ok, reachable: probe.reachable, latency_ms: probe.latency_ms, checked_at: probe.checked_at };
+          return { ...serializeProvider(provider), status, models: offeredModels(provider.model, probe), loaded_models: probe.loaded ?? null };
         })
       );
 
@@ -168,6 +207,52 @@ export async function providerRoutes(app: FastifyInstance) {
       const fromEngine = await engineAsked;
       const listed = fromEngine ? (fromEngine.is_default ? [fromEngine, ...serialized] : [...serialized, fromEngine]) : serialized;
       reply.send({ providers: listed, ...(computers ? { auto: true, computers } : {}) });
+    },
+  });
+
+  // A model picked on a paired phone, loaded now rather than on the first
+  // question (modelLoads.ts): {model} only — never an address, never a
+  // file — and only a model one of this computer's runtimes lists.
+  //   POST /providers/load {model} → 200 {load} in memory already,
+  //     202 {load} loading, 503 runtime_unreachable {runtime}: what runs it
+  //     does not answer (mlx-lm not started), 404 unknown_model.
+  //   GET  /providers/load?model=  → {load}
+  // This computer's person only (runtime.ts requirePerson): the Desktop, a
+  // paired device, its console — never another computer of the account.
+  app.post<{ Body: { model?: unknown } }>("/providers/load", {
+    schema: {
+      tags: ["providers"],
+      summary: "Load a model of this computer's runtimes into memory",
+      security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
+    },
+    handler: async (req, reply) => {
+      if (!(await requirePerson(req, reply))) return;
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      const model = modelName(req.body?.model);
+      if (!model) return reply.code(422).send({ error: "model_required" });
+      const target = await runtimeHolding(auth.userId, model);
+      if (!target) return reply.code(404).send({ error: "unknown_model", model });
+      if (!target.probe?.reachable) {
+        return reply.code(503).send({ error: "runtime_unreachable", model, runtime: target.runtime, message: `${target.runtime ?? "The runtime"} does not answer on this computer.` });
+      }
+      if (target.probe.loaded?.includes(model)) return reply.send({ load: noteModelReady(target) });
+      const load = startModelLoad(target);
+      return reply.code(load.state === "ready" ? 200 : 202).send({ load });
+    },
+  });
+
+  app.get<{ Querystring: { model?: unknown } }>("/providers/load", {
+    schema: {
+      tags: ["providers"],
+      summary: "Where the load of a model is",
+      security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
+    },
+    handler: async (req, reply) => {
+      if (!(await requirePerson(req, reply))) return;
+      const model = modelName(req.query?.model);
+      if (!model) return reply.code(422).send({ error: "model_required" });
+      reply.send({ load: modelLoadState(model) });
     },
   });
 

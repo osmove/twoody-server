@@ -23,6 +23,9 @@ export interface RuntimeProbe {
   ok: boolean;
   /// The chat models it offers, in its own order; null when unknown.
   models: string[] | null;
+  /// Those it holds in memory now, when its list says so (llama.cpp's
+  /// router gives each model a `status`); null when it does not say.
+  loaded?: string[] | null;
   latency_ms: number | null;
   checked_at: string;
 }
@@ -80,12 +83,29 @@ async function ask(base: string): Promise<RuntimeProbe> {
     await response.body?.cancel().catch(() => undefined);
     return { reachable: true, ok: false, models: null, latency_ms, checked_at };
   }
-  const body = (await response.json().catch(() => null)) as { data?: Array<{ id?: unknown }> } | null;
+  const body = (await response.json().catch(() => null)) as { data?: Array<{ id?: unknown; status?: unknown }> } | null;
   if (!body) return { reachable: true, ok: false, models: null, latency_ms, checked_at };
-  const ids = (Array.isArray(body.data) ? body.data : [])
+  const rows = Array.isArray(body.data) ? body.data : [];
+  const ids = rows
     .map((row) => row?.id)
     .filter((id): id is string => typeof id === "string" && id.length > 0);
-  return { reachable: true, ok: true, models: ids.filter(isChatModel), latency_ms, checked_at };
+  return { reachable: true, ok: true, models: ids.filter(isChatModel), loaded: loadedOf(rows), latency_ms, checked_at };
+}
+
+/// The models a list says are in memory: llama.cpp's router gives each a
+/// `status`, a string or `{value}` depending on its version ("loaded",
+/// "loading", "unloaded", "sleeping"). Null when no row says anything.
+function loadedOf(rows: Array<{ id?: unknown; status?: unknown }>): string[] | null {
+  let said = false;
+  const loaded: string[] = [];
+  for (const row of rows) {
+    const status = row?.status;
+    const value = typeof status === "string" ? status : status && typeof status === "object" ? (status as { value?: unknown }).value : null;
+    if (typeof value !== "string") continue;
+    said = true;
+    if (value === "loaded" && typeof row.id === "string" && row.id) loaded.push(row.id);
+  }
+  return said ? loaded : null;
 }
 
 /// The models to offer for a provider: the one it names first, then the

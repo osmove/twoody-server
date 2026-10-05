@@ -31,7 +31,7 @@ import { ownerRequest } from "../localAccess.js";
 // runtime), 507 insufficient_memory, 404 not_installed / unknown_model,
 // 503 start_failed, 409 job_running.
 
-async function requirePerson(req: FastifyRequest, reply: FastifyReply): Promise<boolean> {
+export async function requirePerson(req: FastifyRequest, reply: FastifyReply): Promise<boolean> {
   if (ownerRequest(req)) return true;
   const auth = await requireAuth(req, reply);
   if (!auth) return false;
