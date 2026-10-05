@@ -63,7 +63,7 @@ test("which messages plainly ask about e-mails — and which do not", () => {
     "Qu'est-ce que René m'a écrit cette semaine ?", "Résume le dernier échange avec Claire Martin", "Est-ce que j'ai reçu une facture de Tessane ? De combien ?",
     "Quels e-mails attendent une réponse de ma part ?", "Réponds à René que c'est d'accord pour jeudi", "What did Claire ask me last month?",
     "Did my bank send me anything this week?", "Has René replied?", "Écris à Léa que je viens samedi", "Reply to Marc about the contract",
-    "Ai-je reçu la confirmation de l'hôtel ?", "Fais un brouillon pour Claire", "Did I get an invoice from EDF?",
+    "Ai-je reçu la confirmation de l'hôtel ?", "Fais un brouillon pour Claire", "Did I get an invoice from EDF?", "Réponds à Maître Dupont que je confirme le rendez-vous de jeudi",
   ]) assert.equal(aboutEmails(message), true, message);
   for (const message of [
     "Écris-moi un haïku sur l'automne", "Combien font 17 × 23 ?", "Réponds à cette question : 2+2 ?", "Comment écrire un e-mail de motivation ?",

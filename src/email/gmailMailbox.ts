@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { capabilityOn } from "../localCapabilities.js";
 import { googleAccess, GoogleSignInError, type GoogleSignInCode } from "../google/token.js";
 import { retryAfterMs } from "../microsoft/graph.js";
@@ -5,8 +6,8 @@ import { GMAIL_ME, gmailDoor, GmailDoorClosedError, gmailFetch, type GmailDoorRe
 import { mailSecret } from "./credentials.js";
 import { attachmentsOf, automatedSender, parseEmail, SOURCE_MAX_BYTES, threadIdOf, type AttachmentInfo, type StructureNode } from "./parse.js";
 import {
-  activeSource, folderFor, gmailSyncState, graphFolder, graphIdsIn, noteGraphFolder, saveGmailSyncState, saveGraphChanges,
-  type EmailFolder, type EmailSource, type GraphChange, type GraphReadRole, type SourceSettings,
+  folderFor, gmailSyncState, graphFolder, graphIdsIn, noteGraphFolder, saveGmailSyncState, saveGraphChanges, sourceById,
+  type EmailFolder, type EmailSource, type GmailBackfillCursor, type GmailSyncState, type GraphChange, type GraphReadRole, type SourceSettings,
 } from "./store.js";
 import type { SyncProgress } from "./sync.js";
 
@@ -24,9 +25,10 @@ import type { SyncProgress } from "./sync.js";
 //   - the account's address and where its changes stand (profile), its
 //     labels (INBOX, SENT, DRAFT);
 //   - the messages of INBOX and SENT received since the start of the window
-//     (messages, with `after:`), then, every 10 minutes, what changed since
-//     (history): new messages, read or starred elsewhere, out of the label,
-//     trashed or deleted;
+//     (messages, with `after:`), a page of each in turn, over several rounds
+//     if Gmail limits the pace (where each list stands is kept), then, every
+//     10 minutes, what changed since (history): new messages, read or
+//     starred elsewhere, out of the label, trashed or deleted;
 //   - each new message as Gmail keeps it (format=full): its headers, its
 //     text parts, the names, types and sizes of its attachments, never their
 //     content; a text part Gmail keeps apart, fetched alone;
@@ -41,16 +43,37 @@ const DAY_MS = 86_400_000;
 const DEFAULT_WINDOW_DAYS = 90;
 const REQUEST_TIMEOUT_MS = 30_000;
 /// Tries of one address when Gmail asks to wait.
-const MAX_TRIES = 4;
+const MAX_TRIES = 5;
 /// Waited at most, in one go, between two tries; longer, the round stops.
 const MAX_WAIT_MS = 2 * 60_000;
-/// Pages of one list, at most: a guard against a list that never ends.
+/// Waited at most, in all, during one round: past it, the round stops and
+/// the next one carries on where it stood.
+const ROUND_WAIT_MS = 3 * 60_000;
+/// Pages of one list, at most, in one round: a guard against a list that
+/// never ends (the next round carries on from where this one stopped).
 const MAX_PAGES = 500;
-/// Messages listed per page, and read before what was read is kept.
+/// Messages listed per page, read before what was read is kept.
 const PAGE = 100;
-const BATCH = 20;
+const HISTORY_BATCH = 20;
 /// A text part Gmail keeps apart is read up to this size.
 const APART_TEXT_MAX_BYTES = 4 * 1024 * 1024;
+
+// Gmail's pace (Jimmy's first Google mailbox, 05/10/2026: Gmail asked to
+// wait after 200 messages, the round failed, and Sent was never reached).
+// Gmail counts « units » per user and per second — 250 at most; a message
+// read is 5, a page of a list 5, a page of changes 2, a draft 10 — and
+// answers 429 (or 403 rateLimitExceeded / userRateLimitExceeded) past them,
+// often with Retry-After. Twoody keeps far below, a few requests at a time,
+// and waits as long as it is asked to — every request of the mailbox waits
+// with it — within a round's budget; past it, the round stops without
+// failing and the next one carries on where it stood.
+
+/// Units asked of Gmail per second, at most (its limit: 250).
+export const GMAIL_UNITS_PER_SECOND = 40;
+/// After Gmail asked to wait, the pace is halved, down to this.
+const MIN_UNITS_PER_SECOND = 10;
+/// Messages read at the same time.
+export const GMAIL_CONCURRENCY = 4;
 
 /// Gmail's system labels for the folders Twoody uses.
 export const GMAIL_LABELS = { inbox: "INBOX", sent: "SENT", drafts: "DRAFT" } as const;
@@ -112,20 +135,106 @@ type Transport = (target: string, init: RequestInit, door: GmailDoorState) => Pr
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 let transport: Transport = gmailFetch;
 let sleep: (ms: number) => Promise<void> = wait;
+let clock: () => number = () => Date.now();
+let jitter: () => number = Math.random;
 
-/// For the tests: Gmail answered by a fake (null: the real one), and the
-/// waits Gmail asks for made by `sleep`. The door is asked all the same.
-export function useGmailForTests(fake: ((target: string, init: RequestInit) => Promise<Response>) | null, options: { sleep?: (ms: number) => Promise<void> } = {}): void {
+/// For the tests: Gmail answered by a fake (null: the real one), and time
+/// — the waits Gmail asks for, the pace — kept by `sleep` and `now`, the
+/// spread of the waits by `random`. The door is asked all the same.
+export function useGmailForTests(
+  fake: ((target: string, init: RequestInit) => Promise<Response>) | null,
+  options: { sleep?: (ms: number) => Promise<void>; now?: () => number; random?: () => number } = {},
+): void {
   transport = fake ? (target, init) => fake(target, init) : gmailFetch;
   sleep = options.sleep ?? wait;
+  clock = options.now ?? (() => Date.now());
+  jitter = options.random ?? Math.random;
+  paces.clear();
 }
 
+/// What a request costs at Gmail, in its units.
+export function gmailUnits(method: string, url: string): number {
+  let path = "";
+  try {
+    path = new URL(url).pathname;
+  } catch {
+    return 5;
+  }
+  if (method === "POST" && /\/drafts$/.test(path)) return 10;
+  if (/\/history$/.test(path)) return 2;
+  if (/\/(?:profile|labels(?:\/[^/]+)?)$/.test(path)) return 1;
+  return 5;
+}
+
+/// The pace of one mailbox: units given back as time passes (a bucket of
+/// one second's worth), and, once Gmail asked to wait, nothing before then.
+class GmailPace {
+  rate = GMAIL_UNITS_PER_SECOND;
+  private units = GMAIL_UNITS_PER_SECOND;
+  private at = clock();
+  private heldUntil = 0;
+
+  /// Waits until these units may be spent, and spends them.
+  async take(units: number): Promise<void> {
+    for (;;) {
+      const now = clock();
+      if (this.heldUntil > now) {
+        await sleep(this.heldUntil - now);
+        continue;
+      }
+      this.units = Math.min(this.rate, this.units + ((now - this.at) / 1_000) * this.rate);
+      this.at = now;
+      if (this.units >= units) {
+        this.units -= units;
+        return;
+      }
+      await sleep(Math.max(1, Math.ceil(((units - this.units) / this.rate) * 1_000)));
+    }
+  }
+
+  /// Gmail asked to wait: every request of the mailbox waits, then goes slower.
+  hold(ms: number): void {
+    this.heldUntil = Math.max(this.heldUntil, clock() + ms);
+    this.rate = Math.max(MIN_UNITS_PER_SECOND, this.rate / 2);
+    this.units = 0;
+  }
+
+  /// A new round starts at the usual pace.
+  restart(): void {
+    if (this.heldUntil <= clock()) this.rate = GMAIL_UNITS_PER_SECOND;
+  }
+}
+
+/// One pace per sign-in (its hash): a round, a test and a draft of the
+/// same mailbox share it.
+const paces = new Map<string, GmailPace>();
+
+function paceFor(refreshToken: string): GmailPace {
+  const key = createHash("sha256").update(refreshToken).digest("base64url");
+  let pace = paces.get(key);
+  if (!pace) {
+    pace = new GmailPace();
+    paces.set(key, pace);
+  }
+  return pace;
+}
+
+/// Gmail asking to wait, or not to go so fast (429, 403 rateLimitExceeded…).
+export const rateLimited = (err: unknown): boolean => err instanceof GmailError && err.code === "throttled" && (err.status === 429 || err.status === 403);
+
 /// Reading one mailbox with its sign-in: its access token, renewed when
-/// needed, and each request through the door as it stands at that moment.
+/// needed, each request at the mailbox's pace and through the door as it
+/// stands at that moment.
 class GmailSession {
   private access: string | null = null;
+  private readonly pace: GmailPace;
+  /// Waited so far, at Gmail's request, this round.
+  private waited = 0;
 
-  constructor(private readonly refreshToken: string, private readonly door: () => GmailDoorState) {}
+  constructor(private readonly refreshToken: string, private readonly door: () => GmailDoorState) {
+    this.pace = paceFor(refreshToken);
+    this.pace.restart();
+  }
 
   private async accessToken(fresh = false): Promise<string> {
     const got = await googleAccess(this.refreshToken, this.door(), { fresh });
@@ -143,14 +252,20 @@ class GmailSession {
     return this.request("POST", url, JSON.stringify(body));
   }
 
-  /// One request, through the door as it stands, answered as JSON. A token
-  /// Gmail refuses was perhaps withdrawn before its time: a new one is got,
-  /// once. Asked to wait, it waits — a write only when Gmail says it did
-  /// nothing (429), a read whenever.
+  /// One request, at the mailbox's pace, through the door as it stands,
+  /// answered as JSON. A token Gmail refuses was perhaps withdrawn before
+  /// its time: a new one is got, once. Asked to wait, it waits — as long as
+  /// Gmail says (Retry-After), else longer each time, spread at random — a
+  /// write only when Gmail says it did nothing (429), a read whenever; a
+  /// wait too long, or too many in this round, stops it (`throttled`).
   private async request(method: "GET" | "POST", url: string, body?: string): Promise<Record<string, unknown>> {
     let renewed = false;
+    const units = gmailUnits(method, url);
     for (let attempt = 1; ; attempt += 1) {
       const token = this.access ?? (await this.accessToken());
+      // The door before waiting too: E-mails turned off is not waited for.
+      gmailDoor(url, method, this.door());
+      await this.pace.take(units);
       let response: Response;
       try {
         // The door first, whoever answers.
@@ -175,14 +290,38 @@ class GmailSession {
       if (response.ok && isObject(answer)) return answer;
       const refusal = gmailRefusal(response.status, answer, url);
       if (refusal.code === "throttled" && (method === "GET" || response.status === 429)) {
-        const asked = retryAfterMs(response.headers.get("retry-after")) ?? 2 ** attempt * 1_000;
-        if (asked > MAX_WAIT_MS || attempt >= MAX_TRIES) throw refusal;
-        await sleep(asked);
+        const asked = retryAfterMs(response.headers.get("retry-after"), clock());
+        // 1, 2, 4, 8 s, each between half and one and a half of it.
+        const delay = asked ?? Math.round(2 ** (attempt - 1) * 1_000 * (0.5 + jitter()));
+        if (attempt >= MAX_TRIES || delay > MAX_WAIT_MS || this.waited + delay > ROUND_WAIT_MS) throw refusal;
+        this.waited += delay;
+        this.pace.hold(delay);
         continue;
       }
       throw refusal;
     }
   }
+}
+
+/// `work` for each item, a few at a time, as long as `wanted`; the first
+/// failure stops what has not started yet, and is thrown once the others
+/// are done.
+async function fewAtATime<T>(items: T[], work: (item: T) => Promise<void>, wanted: () => boolean): Promise<void> {
+  let next = 0;
+  let failed: { error: unknown } | null = null;
+  const worker = async () => {
+    while (!failed && next < items.length && wanted()) {
+      const item = items[next]!;
+      next += 1;
+      try {
+        await work(item);
+      } catch (error) {
+        failed ??= { error };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(GMAIL_CONCURRENCY, items.length) }, worker));
+  if (failed) throw (failed as { error: unknown }).error;
 }
 
 const query = (params: Record<string, string | string[]>) => {
@@ -226,8 +365,8 @@ function setUpSession(userId: string, refreshToken: string): GmailSession {
 
 /// The mailbox set up, still this one and still read through the Gmail API.
 function stillGmail(userId: string, sourceId: string): boolean {
-  const current = activeSource(userId);
-  return current?.id === sourceId && current.auth === "gmail";
+  const current = sourceById(userId, sourceId);
+  return !!current && current.status !== "removed" && current.auth === "gmail";
 }
 
 /// Gmail tried once for this mailbox — the person asked: the account Google
@@ -459,13 +598,21 @@ function syncSession(userId: string, source: EmailSource): { session: GmailSessi
   };
 }
 
+/// How a round ended without failing: done, or stopped early because Gmail
+/// limits the pace (`rate_limited`: the next round carries on).
+export interface GmailRound {
+  paused: "rate_limited" | null;
+}
+
 /// Reads what changed in INBOX and SENT since the last round, into the
-/// copy: the changes since then (history), or — none kept, the window now
-/// starting earlier, or Gmail no longer able to say them — the window's
-/// messages listed again (those kept already are not read again). `wanted`:
-/// E-mails still on and this mailbox still the one set up — asked again
-/// before each batch is kept.
-export async function syncGmailMailbox(userId: string, source: EmailSource, state: SyncProgress, wanted: () => boolean): Promise<void> {
+/// copy: the changes since then (history) — or, the first time, the window
+/// starting earlier, or Gmail no longer able to say them, the window's
+/// messages, a page of INBOX then a page of SENT, where the last round left
+/// them (those kept already are not read again). `wanted`: E-mails still on
+/// and this mailbox still set up — asked again before each batch is kept.
+/// Gmail limiting the pace past a round's patience ends the round without
+/// failing (`paused`).
+export async function syncGmailMailbox(userId: string, source: EmailSource, state: SyncProgress, wanted: () => boolean): Promise<GmailRound> {
   if (!wanted()) throw new GmailError("email_off");
   const { session, refreshToken } = syncSession(userId, source);
   // The sign-in changed meanwhile: what this round read is not kept.
@@ -476,58 +623,113 @@ export async function syncGmailMailbox(userId: string, source: EmailSource, stat
   const folders = {} as Record<GraphReadRole, EmailFolder>;
   for (const role of READ_ROLES) folders[role] = graphFolder(source.id, role, GMAIL_LABELS[role], folderFor(source.id, role) ? null : GMAIL_LABELS[role]);
   const since = source.import_after ?? Date.now() - DEFAULT_WINDOW_DAYS * DAY_MS;
+  try {
+    await copyRound(session, userId, source, folders, since, state, stillWanted);
+    return { paused: null };
+  } catch (err) {
+    if (rateLimited(err)) return { paused: "rate_limited" };
+    throw err;
+  }
+}
+
+async function copyRound(
+  session: GmailSession, userId: string, source: EmailSource, folders: Record<GraphReadRole, EmailFolder>, since: number, state: SyncProgress, wanted: () => boolean,
+): Promise<void> {
   const kept = gmailSyncState(source.id);
-  if (kept?.history_id && kept.since <= since) {
+  if (kept?.history_id && !kept.backfill && kept.since <= since) {
     try {
-      await followHistory(session, userId, source, folders, kept.since, kept.history_id, state, stillWanted);
+      await followHistory(session, userId, source, folders, kept.since, kept.history_id, state, wanted);
       return;
     } catch (err) {
       if (!(err instanceof GmailError && err.code === "sync_reset")) throw err;
     }
   }
-  await listWindow(session, userId, source, folders, since, state, stillWanted);
+  // The window's first reading: carried on where it stood, or started —
+  // where the mailbox's changes stand noted first, for what comes meanwhile.
+  let current: GmailSyncState;
+  if (kept?.backfill && kept.since <= since) current = kept;
+  else {
+    const { historyId } = await profileOf(session);
+    current = { since, history_id: historyId, backfill: { inbox: { page_token: null, done: false }, sent: { page_token: null, done: false } } };
+    if (!wanted()) return;
+    saveGmailSyncState(source.id, current);
+  }
+  if (!(await readWindow(session, userId, source, folders, current, state, wanted)) || !wanted()) return;
+  for (const role of READ_ROLES) noteGraphFolder(folders[role].id, { synced_after: current.since, message_count: await labelTotal(session, GMAIL_LABELS[role]), last_synced_at: Date.now() });
+  if (!wanted()) return;
+  saveGmailSyncState(source.id, { since: current.since, history_id: current.history_id, backfill: null });
+  if (!current.history_id) return;
+  // What came, or changed, while the window was read.
+  try {
+    await followHistory(session, userId, source, folders, current.since, current.history_id, state, wanted);
+  } catch (err) {
+    if (!(err instanceof GmailError && err.code === "sync_reset")) throw err;
+    saveGmailSyncState(source.id, { since: current.since, history_id: null, backfill: null });
+  }
 }
 
-/// Every message of INBOX and SENT received since `since`, newest first;
-/// those not kept yet read and kept, a batch at a time. Where the mailbox's
-/// changes stood before the listing is kept at the end — not if it stopped
-/// before.
-async function listWindow(
-  session: GmailSession, userId: string, source: EmailSource, folders: Record<GraphReadRole, EmailFolder>, since: number, state: SyncProgress, wanted: () => boolean,
-): Promise<void> {
-  const { historyId } = await profileOf(session);
-  for (const role of READ_ROLES) {
-    if (!wanted()) return;
-    state.folder = role;
-    const folder = folders[role];
-    const known = graphIdsIn(folder.id, "gmail_id");
-    const ids: string[] = [];
-    let pageToken: string | null = null;
-    for (let page = 0; ; page += 1) {
-      if (page >= MAX_PAGES) throw new GmailError("gmail_failed");
-      const body = await session.get(`${GMAIL_ME}/messages?${query({ labelIds: GMAIL_LABELS[role], q: `after:${Math.floor(since / 1_000)}`, maxResults: String(PAGE), ...(pageToken ? { pageToken } : {}) })}`);
-      for (const item of Array.isArray(body.messages) ? body.messages.filter(isObject) : []) {
-        const id = gmailId(item.id);
-        if (id && !known.has(id)) ids.push(id);
+const listUrl = (role: GraphReadRole, since: number, pageToken: string | null) =>
+  `${GMAIL_ME}/messages?${query({ labelIds: GMAIL_LABELS[role], q: `after:${Math.floor(since / 1_000)}`, maxResults: String(PAGE), ...(pageToken ? { pageToken } : {}) })}`;
+
+/// The window's messages, newest first, a page of INBOX then a page of SENT
+/// — Sent is not left waiting behind a long Inbox — those not kept yet read
+/// and kept; where each list stands kept after each page, for the next
+/// round to carry on. True once both lists are read to their end.
+async function readWindow(
+  session: GmailSession, userId: string, source: EmailSource, folders: Record<GraphReadRole, EmailFolder>, current: GmailSyncState, state: SyncProgress, wanted: () => boolean,
+): Promise<boolean> {
+  const cursors: Record<GraphReadRole, GmailBackfillCursor> = { inbox: { ...current.backfill!.inbox }, sent: { ...current.backfill!.sent } };
+  const known: Record<GraphReadRole, Map<string, string>> = { inbox: graphIdsIn(folders.inbox.id, "gmail_id"), sent: graphIdsIn(folders.sent.id, "gmail_id") };
+  const restarted = new Set<GraphReadRole>();
+  for (let pages = 0; ; pages += 1) {
+    const pending = READ_ROLES.filter((role) => !cursors[role].done);
+    if (!pending.length) return true;
+    // Long enough for one round: the next carries on.
+    if (pages >= MAX_PAGES) return false;
+    for (const role of pending) {
+      if (!wanted()) return false;
+      state.folder = role;
+      let body: Record<string, unknown>;
+      try {
+        body = await session.get(listUrl(role, current.since, cursors[role].page_token));
+      } catch (err) {
+        // A page Gmail no longer knows (its token too old): the list again
+        // from its start, what is kept not read twice.
+        if (err instanceof GmailError && err.status === 400 && cursors[role].page_token && !restarted.has(role)) {
+          restarted.add(role);
+          cursors[role] = { page_token: null, done: false };
+          continue;
+        }
+        throw err;
       }
-      pageToken = typeof body.nextPageToken === "string" && body.nextPageToken ? body.nextPageToken : null;
-      if (!pageToken) break;
-    }
-    state.to_fetch += ids.length;
-    for (let start = 0; start < ids.length; start += BATCH) {
-      if (!wanted()) return;
-      const changes: GraphChange[] = [];
-      for (const id of ids.slice(start, start + BATCH)) {
-        const change = await newMessage(session, userId, source, folder, role, id);
-        if (change) changes.push(change);
-        state.fetched += 1;
+      const ids = [...new Set((Array.isArray(body.messages) ? body.messages.filter(isObject) : []).map((item) => gmailId(item.id)).filter((id): id is string => !!id && !known[role].has(id)))];
+      state.to_fetch += ids.length;
+      for (let start = 0; start < ids.length; start += HISTORY_BATCH) {
+        await readMessages(session, userId, source, folders[role], role, ids.slice(start, start + HISTORY_BATCH), known[role], state, wanted);
+        if (!wanted()) return false;
       }
-      if (!wanted()) return;
-      state.imported += saveGraphChanges(folder.id, changes, known, Date.now(), "gmail_id");
+      const next = typeof body.nextPageToken === "string" && body.nextPageToken ? body.nextPageToken : null;
+      cursors[role] = { page_token: next, done: next === null };
+      saveGmailSyncState(source.id, { ...current, backfill: { inbox: { ...cursors.inbox }, sent: { ...cursors.sent } } });
     }
-    noteGraphFolder(folder.id, { synced_after: since, message_count: await labelTotal(session, GMAIL_LABELS[role]), last_synced_at: Date.now() });
   }
-  if (wanted()) saveGmailSyncState(source.id, { since, history_id: historyId });
+}
+
+/// New messages of a folder, read a few at a time, and kept — what was
+/// read kept even when Gmail stops the round halfway: never read twice.
+async function readMessages(
+  session: GmailSession, userId: string, source: EmailSource, folder: EmailFolder, role: GraphReadRole, ids: string[], known: Map<string, string>, state: SyncProgress, wanted: () => boolean,
+): Promise<void> {
+  const changes: GraphChange[] = [];
+  try {
+    await fewAtATime(ids, async (id) => {
+      const change = await newMessage(session, userId, source, folder, role, id);
+      if (change) changes.push(change);
+      state.fetched += 1;
+    }, wanted);
+  } finally {
+    if (changes.length && wanted()) state.imported += saveGraphChanges(folder.id, changes, known, Date.now(), "gmail_id");
+  }
 }
 
 /// How many messages a label holds at Gmail (null: it does not say).
@@ -539,6 +741,7 @@ async function labelTotal(session: GmailSession, label: string): Promise<number 
 /// The changes since `historyId`: the messages they touch, each asked how
 /// it stands now — in INBOX or SENT, read, starred — and kept so: a new one
 /// read whole, one kept brought up to date, one gone from the folder hidden.
+/// Where the changes stand is kept only once all are.
 async function followHistory(
   session: GmailSession, userId: string, source: EmailSource, folders: Record<GraphReadRole, EmailFolder>, since: number, historyId: string, state: SyncProgress, wanted: () => boolean,
 ): Promise<void> {
@@ -565,36 +768,39 @@ async function followHistory(
   const known = { inbox: graphIdsIn(folders.inbox.id, "gmail_id"), sent: graphIdsIn(folders.sent.id, "gmail_id") };
   const ids = [...touched];
   state.to_fetch += ids.length;
-  for (let start = 0; start < ids.length; start += BATCH) {
+  for (let start = 0; start < ids.length; start += HISTORY_BATCH) {
     if (!wanted()) return;
     const changes: Record<GraphReadRole, GraphChange[]> = { inbox: [], sent: [] };
-    for (const id of ids.slice(start, start + BATCH)) {
-      const meta = await metaFor(session, id);
-      for (const role of READ_ROLES) {
-        const here = known[role].has(id);
-        if (!meta || !inFolder(meta, role)) {
-          if (here) changes[role].push({ graphId: id, removed: true, email: null, isRead: null, flagged: null });
-          continue;
+    try {
+      await fewAtATime(ids.slice(start, start + HISTORY_BATCH), async (id) => {
+        const meta = await metaFor(session, id);
+        for (const role of READ_ROLES) {
+          const here = known[role].has(id);
+          if (!meta || !inFolder(meta, role)) {
+            if (here) changes[role].push({ graphId: id, removed: true, email: null, isRead: null, flagged: null });
+            continue;
+          }
+          if (here) {
+            changes[role].push({ graphId: id, removed: false, email: null, isRead: !meta.labels.has("UNREAD"), flagged: meta.labels.has("STARRED") });
+            continue;
+          }
+          // Back in the folder from before the window: not copied.
+          if (meta.internalDate !== null && meta.internalDate < since) continue;
+          state.folder = role;
+          const change = await newMessage(session, userId, source, folders[role], role, id);
+          if (change) changes[role].push(change);
         }
-        if (here) {
-          changes[role].push({ graphId: id, removed: false, email: null, isRead: !meta.labels.has("UNREAD"), flagged: meta.labels.has("STARRED") });
-          continue;
-        }
-        // Back in the folder from before the window: not copied.
-        if (meta.internalDate !== null && meta.internalDate < since) continue;
-        state.folder = role;
-        const change = await newMessage(session, userId, source, folders[role], role, id);
-        if (change) changes[role].push(change);
-      }
-      state.fetched += 1;
+        state.fetched += 1;
+      }, wanted);
+    } finally {
+      // What was read is kept, even when the round stops halfway.
+      if (wanted()) for (const role of READ_ROLES) state.imported += saveGraphChanges(folders[role].id, changes[role], known[role], Date.now(), "gmail_id");
     }
-    if (!wanted()) return;
-    for (const role of READ_ROLES) state.imported += saveGraphChanges(folders[role].id, changes[role], known[role], Date.now(), "gmail_id");
   }
   if (!wanted()) return;
   const now = Date.now();
   for (const role of READ_ROLES) noteGraphFolder(folders[role].id, { synced_after: since, message_count: null, last_synced_at: now });
-  saveGmailSyncState(source.id, { since, history_id: latest });
+  saveGmailSyncState(source.id, { since, history_id: latest, backfill: null });
 }
 
 // ── The draft ───────────────────────────────────────────────────────────

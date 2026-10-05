@@ -79,6 +79,11 @@ const world = {
   drafts: [] as Array<Record<string, unknown>>,
   /// 429s still to answer.
   throttle: 0,
+  /// Said with each 429 (seconds), or nothing.
+  retryAfter: null as string | null,
+  /// Messages Gmail still reads whole before its quota runs out (null: no quota):
+  /// past it, every request is answered 429 until it is lifted.
+  quota: null as number | null,
 };
 function deliver(one: { id: string; thread: string; labels: string[]; at: number; payload: Part }) {
   history += 1;
@@ -159,7 +164,12 @@ deliver({
   payload: { mimeType: "text/plain", filename: "", headers: headers({ From: "Marc Dubois <marc.dubois@example.fr>", To: CLAIRE, Subject: "Un vieux message", "Message-ID": "<vieux@example.fr>" }), body: { size: 18, data: data("Hors de la fenêtre.") } },
 });
 
-const gmailRequests: Array<{ method: string; path: string; params: URLSearchParams; authorization: string | null; body: string | null }> = [];
+const gmailRequests: Array<{ method: string; path: string; params: URLSearchParams; authorization: string | null; body: string | null; at: number; status: number }> = [];
+/// Twoody's time, as the tests keep it: it moves only when Twoody waits.
+let clock = now;
+const waits: number[] = [];
+let inFlight = 0;
+let mostInFlight = 0;
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 const notFound = () => json({ error: { code: 404, message: "Requested entity was not found.", errors: [{ reason: "notFound" }], status: "NOT_FOUND" } }, 404);
 const visible = (message: FakeMessage) => !message.deleted && !message.labels.has("TRASH") && !message.labels.has("SPAM");
@@ -167,13 +177,31 @@ const minimal = (message: FakeMessage) => ({ id: message.id, threadId: message.t
 
 const fakeGmail = async (target: string, init: RequestInit): Promise<Response> => {
   const url = new URL(target);
-  const method = init.method ?? "GET";
-  const authorization = new Headers(init.headers).get("authorization");
-  gmailRequests.push({ method, path: url.pathname, params: url.searchParams, authorization, body: typeof init.body === "string" ? init.body : null });
+  const request = { method: init.method ?? "GET", path: url.pathname, params: url.searchParams, authorization: new Headers(init.headers).get("authorization"), body: typeof init.body === "string" ? init.body : null, at: clock, status: 200 };
+  gmailRequests.push(request);
+  inFlight += 1;
+  mostInFlight = Math.max(mostInFlight, inFlight);
+  try {
+    // Answered a moment later: the requests made meanwhile overlap.
+    await new Promise((resolve) => setImmediate(resolve));
+    const response = await answerGmail(url, init, request);
+    request.status = response.status;
+    return response;
+  } finally {
+    inFlight -= 1;
+  }
+};
+const tooMany = () => new Response(JSON.stringify({ error: { code: 429, message: "Too many requests.", errors: [{ reason: "rateLimitExceeded" }], status: "RESOURCE_EXHAUSTED" } }), {
+  status: 429, headers: { "content-type": "application/json", ...(world.retryAfter ? { "retry-after": world.retryAfter } : {}) },
+});
+const answerGmail = async (url: URL, init: RequestInit, request: { method: string; authorization: string | null }): Promise<Response> => {
+  const { method, authorization } = request;
   if (world.throttle > 0) {
     world.throttle -= 1;
-    return json({ error: { code: 429, message: "Too many requests.", errors: [{ reason: "rateLimitExceeded" }], status: "RESOURCE_EXHAUSTED" } }, 429);
+    return tooMany();
   }
+  if (world.quota !== null && world.quota <= 0) return tooMany();
+  if (world.quota !== null && /\/messages\/[0-9a-f]+$/.test(url.pathname) && url.searchParams.get("format") === "full") world.quota -= 1;
   if (!accessTokens.has(authorization?.replace(/^Bearer /, "") ?? "")) return json({ error: { code: 401, message: "Invalid Credentials", status: "UNAUTHENTICATED" } }, 401);
   const path = url.pathname.replace(/^\/gmail\/v1\/users\/me/, "");
   let match: RegExpExecArray | null;
@@ -223,7 +251,6 @@ const fakeGmail = async (target: string, init: RequestInit): Promise<Response> =
   }
   return notFound();
 };
-const waits: number[] = [];
 
 // ── The IMAP mailbox the person had set up before ───────────────────────
 const mail = new FakeMailServer();
@@ -237,12 +264,12 @@ const { createAuthSession, ensureSetupToken } = await import("../src/auth.js");
 const { sqlite } = await import("../src/db.js");
 const { useMailConnectorForTests } = await import("../src/email/imap.js");
 const { googleErrorCode, useGoogleTokenEndpointForTests } = await import("../src/google/token.js");
-const { gmailRefusal, gmailThreadId, useGmailForTests } = await import("../src/email/gmailMailbox.js");
+const { gmailRefusal, gmailThreadId, gmailUnits, GMAIL_CONCURRENCY, GMAIL_UNITS_PER_SECOND, useGmailForTests } = await import("../src/email/gmailMailbox.js");
 const { needsThePerson, syncMailbox } = await import("../src/email/sync.js");
-const { activeSource } = await import("../src/email/store.js");
+const { activeSource, gmailSyncState, saveGmailSyncState } = await import("../src/email/store.js");
 const { saveDraft } = await import("../src/email/chat.js");
 useGoogleTokenEndpointForTests(tokenEndpoint);
-useGmailForTests(fakeGmail, { sleep: async (ms) => void waits.push(ms) });
+useGmailForTests(fakeGmail, { sleep: async (ms) => { waits.push(ms); clock += ms; }, now: () => clock, random: () => 0.5 });
 useMailConnectorForTests(mail.connector);
 
 const app = await buildApp();
@@ -421,10 +448,91 @@ test("Gmail no longer has the history asked: the window listed again, what is ke
   world.floor = 0;
 });
 
-test("Gmail asks to wait: it waits, then reads", async () => {
+test("Gmail asks to wait: it waits as long as it says (Retry-After) — else 1 s, then 2 s — then reads", async () => {
+  world.throttle = 1;
+  world.retryAfter = "7";
+  let from = gmailRequests.length;
+  assert.deepEqual(await syncMailbox(userId), { ok: true, imported: 0 });
+  let asked = gmailRequests.slice(from);
+  assert.equal(asked[0]!.status, 429);
+  assert.equal(asked[1]!.path, asked[0]!.path, "the same request again");
+  assert.ok(asked[1]!.at - asked[0]!.at >= 7_000, `waited ${asked[1]!.at - asked[0]!.at} ms`);
+  world.retryAfter = null;
   world.throttle = 2;
+  from = gmailRequests.length;
   assert.equal((await syncMailbox(userId)).ok, true);
-  assert.deepEqual(waits.slice(-2), [2_000, 4_000]);
+  asked = gmailRequests.slice(from);
+  assert.deepEqual(asked.slice(0, 3).map((one) => one.status), [429, 429, 200]);
+  assert.ok(asked[1]!.at - asked[0]!.at >= 1_000);
+  assert.ok(asked[2]!.at - asked[1]!.at >= 2_000);
+  assert.equal((await status()).sync.last_error, null);
+});
+
+test("a first reading Gmail cuts short: no failure — « paused », Sent read alongside Inbox — and the next round carries on where it stood, nothing read twice, at Gmail's pace", async () => {
+  const source = activeSource(userId)!;
+  // Twelve more received, six more sent, within the window; the copy read again from its start.
+  for (let i = 0; i < 12; i += 1) {
+    deliver({ id: `18c00000000010${String(i).padStart(2, "0")}`, thread: `18c00000000010${String(i).padStart(2, "0")}`, labels: ["INBOX"], at: now - (20 + i) * 3_600_000, payload: { mimeType: "text/plain", filename: "", headers: headers({ From: "Marc Dubois <marc.dubois@example.fr>", To: CLAIRE, Subject: `Point ${i}`, "Message-ID": `<point-${i}@example.fr>` }), body: { size: 8, data: data(`Point ${i}`) } } });
+  }
+  for (let i = 0; i < 6; i += 1) {
+    deliver({ id: `18c00000000020${String(i).padStart(2, "0")}`, thread: `18c00000000020${String(i).padStart(2, "0")}`, labels: ["SENT"], at: now - (20 + i) * 3_600_000, payload: { mimeType: "text/plain", filename: "", headers: headers({ From: CLAIRE, To: "Marc Dubois <marc.dubois@example.fr>", Subject: `Réponse ${i}`, "Message-ID": `<reponse-${i}@mail.gmail.com>` }), body: { size: 10, data: data(`Réponse ${i}`) } } });
+  }
+  saveGmailSyncState(source.id, null);
+  const before = rows().length;
+  const from = gmailRequests.length;
+  const started = clock;
+  mostInFlight = 0;
+  world.pageSize = 4;
+  // Gmail's quota runs out after seven messages, and asks for longer than a round waits.
+  world.quota = 7;
+  world.retryAfter = "600";
+  const first = await syncMailbox(userId);
+  assert.deepEqual(first, { ok: true, imported: 7, paused: "rate_limited" });
+  const shown = await status();
+  assert.equal(shown.sync.last_error, null, "not a failure");
+  assert.equal(shown.sync.status, "active");
+  assert.equal(shown.sync.paused, "rate_limited");
+  assert.equal(shown.sync.first_read, true);
+  assert.ok(shown.sync.next_at - shown.sync.last_synced_at <= 3 * 60_000, "the next round comes sooner");
+  assert.ok(rows("e.status = 'sent' AND e.subject LIKE 'Réponse %'").length > 0, "Sent read alongside Inbox");
+  assert.equal(rows().length, before + 7, "what was read is kept");
+  assert.ok(gmailSyncState(source.id)!.backfill, "where the lists stand is kept");
+  // The quota is back: the next round carries on, from the page it stood at.
+  world.quota = null;
+  world.retryAfter = null;
+  const middle = gmailRequests.length;
+  const second = await syncMailbox(userId);
+  assert.deepEqual(second, { ok: true, imported: 11 });
+  assert.equal(rows().length, before + 18);
+  assert.ok(gmailRequests.slice(middle).filter((one) => one.path.endsWith("/messages")).some((one) => one.params.get("pageToken")), "carried on, not listed again from the start only");
+  assert.equal(gmailSyncState(source.id)!.backfill, null, "the first reading is done");
+  const done = await status();
+  assert.equal(done.sync.paused, null);
+  assert.equal(done.sync.first_read, false);
+  // Each message read whole once, across both rounds.
+  const reads = gmailRequests.slice(from).filter((one) => one.status === 200 && one.params.get("format") === "full").map((one) => one.path.split("/").at(-1));
+  assert.equal(reads.length, 18);
+  assert.equal(new Set(reads).size, reads.length, "nothing read twice");
+  // A few at a time, and never more units in a second than Gmail's pace allows (the bucket's second, and the next).
+  assert.ok(mostInFlight <= GMAIL_CONCURRENCY && mostInFlight > 1, `in flight: ${mostInFlight}`);
+  const asked = gmailRequests.slice(from).map((one) => ({ at: one.at, units: gmailUnits(one.method, `https://gmail.googleapis.com${one.path}`) }));
+  for (const one of asked) {
+    const inASecond = asked.filter((other) => other.at >= one.at && other.at < one.at + 1_000).reduce((sum, other) => sum + other.units, 0);
+    assert.ok(inASecond <= 2 * GMAIL_UNITS_PER_SECOND, `${inASecond} units in a second`);
+  }
+  const spent = asked.reduce((sum, one) => sum + one.units, 0);
+  assert.ok(spent <= GMAIL_UNITS_PER_SECOND * ((clock - started) / 1_000 + 1), `${spent} units in ${clock - started} ms`);
+  world.pageSize = 2;
+});
+
+test("what each request costs at Gmail, in its units", () => {
+  const me = "https://gmail.googleapis.com/gmail/v1/users/me";
+  assert.equal(gmailUnits("GET", `${me}/messages/18c0000000000a01?format=full`), 5);
+  assert.equal(gmailUnits("GET", `${me}/messages?labelIds=INBOX`), 5);
+  assert.equal(gmailUnits("GET", `${me}/history?startHistoryId=1`), 2);
+  assert.equal(gmailUnits("GET", `${me}/profile`), 1);
+  assert.equal(gmailUnits("GET", `${me}/labels/INBOX`), 1);
+  assert.equal(gmailUnits("POST", `${me}/drafts`), 10);
 });
 
 test("a draft the person allowed: created in Drafts from its MIME text, never sent; nothing else is ever written", async () => {

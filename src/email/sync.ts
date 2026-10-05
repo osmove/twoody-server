@@ -9,11 +9,12 @@ import {
   type FolderRole, type MailAddress, type ParsedEmail,
 } from "./parse.js";
 import {
-  activeSource, knownUids, noteSync, recentUids, renumberedFolder, saveEmail, saveFolderState, updateFlags, upsertFolder, usersWithMailboxes,
-  type EmailFolder, type EmailSource, type NewEmail,
+  activeSources, knownUids, noteSync, noteSyncPause, sourceById, recentUids, renumberedFolder, saveEmail, saveFolderState, syncPauseOf, updateFlags, upsertFolder, usersWithMailboxes,
+  type EmailFolder, type EmailSource, type NewEmail, type SyncPause,
 } from "./store.js";
 
-// Keeps the copy of the person's mailbox up to date: INBOX and Sent, the
+// Keeps the copy of each of the person's mailboxes up to date, each on its
+// own (one stopped, or waiting for the person, holds no other back): INBOX and Sent, the
 // last 90 days at first (the window the person chose), then what is new,
 // by UID — every 10 minutes while E-mails is on, and when the person asks.
 // Read-only on the server: folders opened with EXAMINE, messages read with
@@ -23,6 +24,9 @@ import {
 // with Gmail's history (gmailMailbox.ts).
 
 export const SYNC_INTERVAL_MS = 10 * 60_000;
+/// After a round the mailbox's service cut short (it limits the pace), the
+/// next one comes sooner.
+export const PAUSED_INTERVAL_MS = 3 * 60_000;
 export const DEFAULT_WINDOW_DAYS = 90;
 const DAY_MS = 86_400_000;
 /// Messages read per FETCH.
@@ -42,28 +46,47 @@ export interface SyncProgress {
   /// New messages kept by the last sync.
   imported: number;
   error: MailboxErrorCode | null;
+  /// The round stopped before its end without failing: the service limits
+  /// the pace, the next round carries on.
+  paused: SyncPause | null;
 }
 
 /// What goes wrong with a mailbox: over IMAP, through Graph, or through the
 /// Gmail API.
 export type MailboxErrorCode = MailErrorCode | GraphMailErrorCode | GmailErrorCode;
 
-export type SyncOutcome = { ok: true; imported: number } | { ok: false; error: MailboxErrorCode };
+export type SyncOutcome = { ok: true; imported: number; paused?: SyncPause } | { ok: false; error: MailboxErrorCode };
 
 const progress = new Map<string, SyncProgress>();
 const running = new Map<string, Promise<SyncOutcome>>();
 
-const idle = (): SyncProgress => ({ running: false, started_at: null, finished_at: null, folder: null, fetched: 0, to_fetch: 0, imported: 0, error: null });
+const idle = (): SyncProgress => ({ running: false, started_at: null, finished_at: null, folder: null, fetched: 0, to_fetch: 0, imported: 0, error: null, paused: null });
 
 export function syncProgress(sourceId: string): SyncProgress {
   return { ...(progress.get(sourceId) ?? idle()) };
 }
 
-/// Reads what is new in the person's mailbox. One sync at a time per
-/// mailbox: asked again while one runs, the same one is answered.
-export function syncMailbox(userId: string): Promise<SyncOutcome> {
-  const source = activeSource(userId);
-  if (!source) return Promise.resolve({ ok: false, error: "not_configured" });
+/// Reads what is new in one of the person's mailboxes — or, without one
+/// named, in each of them, one after the other. One sync at a time per
+/// mailbox: asked again while one runs, the same one is answered. Several
+/// mailboxes answer together: the first failure, else what all kept.
+export async function syncMailbox(userId: string, sourceId: string | null = null): Promise<SyncOutcome> {
+  if (sourceId) {
+    const source = sourceById(userId, sourceId);
+    return source && source.status !== "removed" ? syncSource(userId, source) : { ok: false, error: "not_configured" };
+  }
+  const sources = activeSources(userId);
+  if (!sources.length) return { ok: false, error: "not_configured" };
+  const outcomes: SyncOutcome[] = [];
+  for (const source of sources) outcomes.push(await syncSource(userId, source));
+  const failed = outcomes.find((outcome) => !outcome.ok);
+  if (failed) return failed;
+  const imported = outcomes.reduce((sum, outcome) => sum + (outcome.ok ? outcome.imported : 0), 0);
+  const paused = outcomes.find((outcome) => outcome.ok && outcome.paused);
+  return { ok: true, imported, ...(paused?.ok && paused.paused ? { paused: paused.paused } : {}) };
+}
+
+function syncSource(userId: string, source: EmailSource): Promise<SyncOutcome> {
   const current = running.get(source.id);
   if (current) return current;
   const job = runSync(userId, source).finally(() => running.delete(source.id));
@@ -76,9 +99,11 @@ export function syncRunning(sourceId: string): boolean {
   return running.has(sourceId);
 }
 
-/// Still to be read: E-mails on, and this mailbox still the one set up.
+/// Still to be read: E-mails on, and this mailbox still set up.
 function stillWanted(userId: string, sourceId: string): boolean {
-  return capabilityOn(userId, "email") && activeSource(userId)?.id === sourceId;
+  if (!capabilityOn(userId, "email")) return false;
+  const source = sourceById(userId, sourceId);
+  return !!source && source.status !== "removed";
 }
 
 /// No failure of the mailbox: E-mails turned off, or the link to Microsoft
@@ -92,15 +117,14 @@ async function runSync(userId: string, source: EmailSource): Promise<SyncOutcome
   try {
     if (source.auth === "graph") {
       await syncGraphMailbox(userId, source, state, () => stillWanted(userId, source.id));
-      const now = Date.now();
-      noteSync(source.id, { status: "active", last_error: null, last_synced_at: now, ...(state.imported ? { last_imported_at: now } : {}) });
-      return { ok: true, imported: state.imported };
+      return roundDone(source, state);
     }
     if (source.auth === "gmail") {
-      await syncGmailMailbox(userId, source, state, () => stillWanted(userId, source.id));
-      const now = Date.now();
-      noteSync(source.id, { status: "active", last_error: null, last_synced_at: now, ...(state.imported ? { last_imported_at: now } : {}) });
-      return { ok: true, imported: state.imported };
+      // Gmail limiting the pace past the round's patience: no failure, the
+      // next round (sooner) carries on where this one stopped.
+      const round = await syncGmailMailbox(userId, source, state, () => stillWanted(userId, source.id));
+      state.paused = round.paused;
+      return roundDone(source, state);
     }
     session = await openSourceMailbox(source, stillWanted(userId, source.id));
     const picked = pickFolders(await session.listFolders());
@@ -116,9 +140,7 @@ async function runSync(userId: string, source: EmailSource): Promise<SyncOutcome
       state.folder = role;
       state.imported += await syncFolder(session, userId, source, folder, state);
     }
-    const now = Date.now();
-    noteSync(source.id, { status: "active", last_error: null, last_synced_at: now, ...(state.imported ? { last_imported_at: now } : {}) });
-    return { ok: true, imported: state.imported };
+    return roundDone(source, state);
   } catch (err) {
     const code: MailboxErrorCode = source.auth === "graph" ? graphMailErrorCode(err) : source.auth === "gmail" ? gmailErrorCode(err) : mailErrorCode(err);
     state.error = code;
@@ -130,6 +152,14 @@ async function runSync(userId: string, source: EmailSource): Promise<SyncOutcome
     state.finished_at = Date.now();
     await session?.close().catch(() => undefined);
   }
+}
+
+/// A round that did not fail, noted: cut short (`paused`) or to its end.
+function roundDone(source: EmailSource, state: SyncProgress): SyncOutcome {
+  const now = Date.now();
+  noteSync(source.id, { status: "active", last_error: null, last_synced_at: now, ...(state.imported ? { last_imported_at: now } : {}) });
+  noteSyncPause(source.id, state.paused);
+  return { ok: true, imported: state.imported, ...(state.paused ? { paused: state.paused } : {}) };
 }
 
 /// One folder: renumbered by the server → its UIDs are dropped (the
@@ -251,7 +281,12 @@ export function needsThePerson(error: string | null | undefined): boolean {
 export function syncDue(source: EmailSource, now = Date.now(), intervalMs = SYNC_INTERVAL_MS): boolean {
   if (source.status === "removed") return false;
   if (needsThePerson(source.last_error)) return false;
-  return source.last_synced_at === null || now - source.last_synced_at >= intervalMs;
+  return source.last_synced_at === null || now - source.last_synced_at >= Math.min(intervalMs, nextRoundAfter(source));
+}
+
+/// How long after a round the next one comes: sooner after one cut short.
+export function nextRoundAfter(source: EmailSource): number {
+  return syncPauseOf(source) ? PAUSED_INTERVAL_MS : SYNC_INTERVAL_MS;
 }
 
 /// Checks every minute which mailboxes are due (E-mails on), and reads
@@ -260,12 +295,13 @@ export function startEmailSync(options: { checkEveryMs?: number; intervalMs?: nu
   let stopped = false;
   const check = async () => {
     for (const userId of usersWithMailboxes()) {
-      if (stopped) return;
-      const source = activeSource(userId);
-      if (!source || !capabilityOn(userId, "email") || !syncDue(source, Date.now(), options.intervalMs)) continue;
-      // Microsoft Graph asked to wait past a round (graph.ts): not before then.
-      if (source.auth === "graph" && graphHeldUntil(userId) !== null) continue;
-      await syncMailbox(userId).catch(() => undefined);
+      for (const source of activeSources(userId)) {
+        if (stopped) return;
+        if (!capabilityOn(userId, "email") || !syncDue(source, Date.now(), options.intervalMs)) continue;
+        // Microsoft Graph asked to wait past a round (graph.ts): not before then.
+        if (source.auth === "graph" && graphHeldUntil(userId) !== null) continue;
+        await syncMailbox(userId, source.id).catch(() => undefined);
+      }
     }
   };
   const timer = setInterval(() => void check(), options.checkEveryMs ?? 60_000);

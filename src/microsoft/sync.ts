@@ -1,5 +1,5 @@
 import { cleanAddress } from "../email/parse.js";
-import { activeSource, markRemoved, noteSync } from "../email/store.js";
+import { graphSource, markRemoved, noteSync } from "../email/store.js";
 import { needsThePerson as mailboxNeedsThePerson, syncMailbox } from "../email/sync.js";
 import { capabilityOn } from "../localCapabilities.js";
 import type { GraphCapability } from "../outbound.js";
@@ -164,13 +164,13 @@ export function keepMicrosoftLink(userId: string, given: { address: string; scop
   for (const kind of COPY_KINDS) {
     if (otherAccount || !linkGrants(link, kind)) removeCopy(userId, kind);
   }
-  const mailbox = activeSource(userId);
+  const mailbox = graphSource(userId);
   if (mailbox?.auth === "graph") {
     if (mailbox.email_address.toLowerCase() !== link.address.toLowerCase()) markRemoved(mailbox.id);
     else if (!linkGrants(link, "email")) noteSync(mailbox.id, { status: "error", last_error: "scope_missing" });
     else if (mailboxNeedsThePerson(mailbox.last_error)) {
       noteSync(mailbox.id, { status: "active", last_error: null });
-      void syncMailbox(userId).catch(() => undefined);
+      void syncMailbox(userId, mailbox.id).catch(() => undefined);
     }
   }
   void syncMicrosoftGraph(userId).catch(() => undefined);
@@ -212,7 +212,7 @@ export async function linkMicrosoftGraph(userId: string, body: unknown): Promise
 export function unlinkMicrosoftGraph(userId: string): boolean {
   const had = forgetGraphLink(userId);
   for (const kind of COPY_KINDS) removeCopy(userId, kind);
-  const mailbox = activeSource(userId);
+  const mailbox = graphSource(userId);
   if (mailbox?.auth === "graph") markRemoved(mailbox.id);
   return had;
 }
@@ -235,7 +235,7 @@ export function microsoftGraphStatus(userId: string) {
     };
   };
   // The mailbox read with the link: removing the link stops it too.
-  const mailbox = activeSource(userId);
+  const mailbox = graphSource(userId);
   return {
     linked: !!link,
     account: link ? { address: link.address, scopes: link.scopes, linked_at: link.linked_at } : null,

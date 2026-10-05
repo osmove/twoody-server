@@ -5,9 +5,11 @@ import { buildMatchQuery } from "../documents/query.js";
 import type { MailSecurity } from "../outbound.js";
 import { asksSomething, automatedSender, type AttachmentInfo, type FlagState, type FolderRole, type MailAddress } from "./parse.js";
 
-// The copy of the person's mailbox on this computer (migration 4,
-// src/migrations/0004_emails.ts): the mailbox set up, its folders, its
-// messages and their full-text index. Nothing here talks to a server.
+// The copy of the person's mailboxes on this computer (migration 4,
+// src/migrations/0004_emails.ts): the mailboxes set up — several, each its
+// own row, its own folders, its own sync (05/10/2026: « si je veux mettre
+// aussi mon email perso ») — their messages and their full-text index.
+// Nothing here talks to a server.
 //
 // A mailbox read through Microsoft Graph (graphMailbox.ts) needs no column
 // of its own: a message's Graph id is kept in its metadata (`graph_id`; it
@@ -129,10 +131,34 @@ function sourceOf(row: Record<string, unknown> | undefined): EmailSource | null 
 
 // ─── The mailbox ─────────────────────────────────────────────────────────
 
-/// The mailbox the person set up (the one not removed).
-export function activeSource(userId: string): EmailSource | null {
+/// Mailboxes a person may set up at most.
+export const MAX_MAILBOXES = 10;
+
+/// The mailboxes the person set up (not removed), the first set up first.
+export function activeSources(userId: string): EmailSource[] {
   ensure();
-  return sourceOf(sqlite.prepare("SELECT * FROM email_sources WHERE user_id = ? AND status != 'removed' ORDER BY created_at DESC LIMIT 1").get(userId) as Record<string, unknown> | undefined);
+  return (sqlite.prepare("SELECT * FROM email_sources WHERE user_id = ? AND status != 'removed' ORDER BY created_at ASC, rowid ASC").all(userId) as Array<Record<string, unknown>>)
+    .map((row) => sourceOf(row)!);
+}
+
+/// The first mailbox the person set up: the one a draft is written from
+/// when nothing says which — and the one clients that know of a single
+/// mailbox are shown.
+export function activeSource(userId: string): EmailSource | null {
+  return activeSources(userId)[0] ?? null;
+}
+
+/// The person's mailbox read through Microsoft Graph: one at most, the
+/// account of the one link to Microsoft (src/microsoft/link.ts).
+export function graphSource(userId: string): EmailSource | null {
+  return activeSources(userId).find((source) => source.auth === "graph") ?? null;
+}
+
+/// The addresses of every mailbox of the person, removed ones included (a
+/// copy kept), by id: which mailbox an e-mail is from.
+export function sourceAddresses(userId: string): Map<string, string> {
+  ensure();
+  return new Map((sqlite.prepare("SELECT id, email_address FROM email_sources WHERE user_id = ?").all(userId) as Array<{ id: string; email_address: string }>).map((row) => [row.id, row.email_address]));
 }
 
 export function sourceById(userId: string, id: string): EmailSource | null {
@@ -164,13 +190,16 @@ export interface SourceSettings {
 const sameMailbox = (a: Pick<EmailSource, "email_address" | "imap_host" | "username">, b: Pick<SourceSettings, "email_address" | "imap_host" | "username">) =>
   a.email_address.toLowerCase() === b.email_address.toLowerCase() && a.imap_host.toLowerCase() === b.imap_host.toLowerCase() && a.username === b.username;
 
-/// The mailbox as the person set it up now. The same mailbox keeps its
-/// copy and where its sync stands; another one replaces it — the copy of
-/// the one before is kept (`replaced`), its password is the caller's to
-/// forget; a mailbox removed earlier and set up again finds its copy back.
-export function saveSource(userId: string, settings: SourceSettings, now = Date.now()): { source: EmailSource; replaced: EmailSource | null } {
+/// A mailbox as the person set it up now: the same mailbox (its address,
+/// server and user name) keeps its copy and where its sync stands; one set
+/// up at an address another mailbox has (other settings), or in place of
+/// the one being edited (`replacing`), takes its place — the copy of the
+/// one before is kept (`replaced`), its password is the caller's to forget;
+/// any other is added next to the others; a mailbox removed earlier and set
+/// up again finds its copy back.
+export function saveSource(userId: string, settings: SourceSettings, options: { replacing?: string | null; now?: number } = {}): { source: EmailSource; replaced: EmailSource | null } {
   ensure();
-  const current = activeSource(userId);
+  const now = options.now ?? Date.now();
   // The same mailbox still read through Graph keeps where its folders'
   // rounds of changes stand: signed in again, it does not read them anew.
   const metadataFor = (before: EmailSource | null) => JSON.stringify({
@@ -184,12 +213,20 @@ export function saveSource(userId: string, settings: SourceSettings, now = Date.
       import_after = ?, status = 'active', last_error = NULL, metadata = ?, updated_at = ? WHERE id = ?`)
       .run(settings.email_address, settings.display_name ?? null, settings.imap_host, settings.imap_port, settings.imap_security, settings.username, settings.import_after, metadataFor(before), now, before.id);
   };
+  const remove = (source: EmailSource) => sqlite.prepare("UPDATE email_sources SET status = 'removed', updated_at = ? WHERE id = ?").run(now, source.id);
   return sqlite.transaction(() => {
-    if (current && sameMailbox(current, settings)) {
-      write(current);
-      return { source: sourceById(userId, current.id)!, replaced: null };
+    const active = activeSources(userId);
+    const edited = options.replacing ? active.find((source) => source.id === options.replacing) ?? null : null;
+    const same = active.find((source) => sameMailbox(source, settings));
+    if (same) {
+      write(same);
+      // Edited into another mailbox already set up: the one edited stops.
+      const replaced = edited && edited.id !== same.id ? edited : null;
+      if (replaced) remove(replaced);
+      return { source: sourceById(userId, same.id)!, replaced };
     }
-    if (current) sqlite.prepare("UPDATE email_sources SET status = 'removed', updated_at = ? WHERE id = ?").run(now, current.id);
+    const current = edited ?? active.find((source) => source.email_address.toLowerCase() === settings.email_address.toLowerCase()) ?? null;
+    if (current) remove(current);
     const before = (sqlite.prepare("SELECT * FROM email_sources WHERE user_id = ? AND status = 'removed' ORDER BY updated_at DESC").all(userId) as Array<Record<string, unknown>>)
       .map(sourceOf)
       .find((source) => source && source.id !== current?.id && sameMailbox(source, settings));
@@ -203,6 +240,14 @@ export function saveSource(userId: string, settings: SourceSettings, now = Date.
       .run(id, userId, settings.email_address, settings.display_name ?? null, settings.imap_host, settings.imap_port, settings.imap_security, settings.username, settings.import_after, metadataFor(null), now, now);
     return { source: sourceById(userId, id)!, replaced: current };
   })();
+}
+
+/// Whether setting up this mailbox would add one (not the same as one set
+/// up, nor at the address of one, nor in place of the one edited).
+export function addsMailbox(userId: string, settings: Pick<SourceSettings, "email_address" | "imap_host" | "username">, replacing: string | null): boolean {
+  const active = activeSources(userId);
+  if (replacing && active.some((source) => source.id === replacing)) return false;
+  return !active.some((source) => sameMailbox(source, settings) || source.email_address.toLowerCase() === settings.email_address.toLowerCase());
 }
 
 export function noteSync(sourceId: string, change: { status?: SourceStatus; last_error?: string | null; last_synced_at?: number; last_imported_at?: number }, now = Date.now()) {
@@ -434,19 +479,36 @@ export function graphCounterpart(folderId: string, messageId: string | null, key
   return counterpart(folderId, messageId, key) !== null;
 }
 
+/// Where the window's first reading of one folder stands, for a mailbox
+/// read through the Gmail API: the next page of its list (null: from the
+/// start), or read to its end.
+export interface GmailBackfillCursor {
+  page_token: string | null;
+  done: boolean;
+}
+
 /// Where a mailbox read through the Gmail API stands: the start of the
-/// window its messages were listed from, and Gmail's history id its next
-/// round of changes starts at.
+/// window its messages were listed from, Gmail's history id its next round
+/// of changes starts at, and — while the window's first reading is under
+/// way, over several rounds if need be — where INBOX's and SENT's lists stand.
 export interface GmailSyncState {
   since: number;
   history_id: string | null;
+  backfill: Record<GraphReadRole, GmailBackfillCursor> | null;
+}
+
+function cursorOf(value: unknown): GmailBackfillCursor {
+  const kept = (value && typeof value === "object" ? value : {}) as Partial<GmailBackfillCursor>;
+  const token = typeof kept.page_token === "string" && kept.page_token.length <= 2_000 ? kept.page_token : null;
+  return { page_token: token, done: kept.done === true };
 }
 
 export function gmailSyncState(sourceId: string): GmailSyncState | null {
   ensure();
-  const kept = sourceMetadata(sourceId)?.gmail_sync as Partial<GmailSyncState> | undefined;
+  const kept = sourceMetadata(sourceId)?.gmail_sync as (Partial<Omit<GmailSyncState, "backfill">> & { backfill?: Record<string, unknown> | null }) | undefined;
   if (!kept || typeof kept.since !== "number") return null;
-  return { since: kept.since, history_id: typeof kept.history_id === "string" && /^\d{1,30}$/.test(kept.history_id) ? kept.history_id : null };
+  const backfill = kept.backfill && typeof kept.backfill === "object" ? { inbox: cursorOf(kept.backfill.inbox), sent: cursorOf(kept.backfill.sent) } : null;
+  return { since: kept.since, history_id: typeof kept.history_id === "string" && /^\d{1,30}$/.test(kept.history_id) ? kept.history_id : null, backfill };
 }
 
 /// Noted for the mailbox (null: none, to list it again) — never for one
@@ -457,10 +519,40 @@ export function saveGmailSyncState(sourceId: string, state: GmailSyncState | nul
     const metadata = sourceMetadata(sourceId);
     if (!metadata) return;
     const next = { ...metadata };
-    if (state) next.gmail_sync = state;
+    if (state) next.gmail_sync = state.backfill ? state : { since: state.since, history_id: state.history_id };
     else delete next.gmail_sync;
     sqlite.prepare("UPDATE email_sources SET metadata = ?, updated_at = ? WHERE id = ? AND status != 'removed'").run(JSON.stringify(next), now, sourceId);
   })();
+}
+
+/// Why the last round stopped before its end without failing: the mailbox's
+/// service limits the pace (`rate_limited`; the next round, soon, carries on).
+export type SyncPause = "rate_limited";
+
+export function syncPauseOf(source: EmailSource): SyncPause | null {
+  return source.metadata.sync_pause === "rate_limited" ? "rate_limited" : null;
+}
+
+/// Noted (null: the last round went to its end) — never for a mailbox removed meanwhile.
+export function noteSyncPause(sourceId: string, pause: SyncPause | null, now = Date.now()): void {
+  ensure();
+  sqlite.transaction(() => {
+    const metadata = sourceMetadata(sourceId);
+    if (!metadata || (metadata.sync_pause ?? null) === pause) return;
+    const next = { ...metadata };
+    if (pause) next.sync_pause = pause;
+    else delete next.sync_pause;
+    sqlite.prepare("UPDATE email_sources SET metadata = ?, updated_at = ? WHERE id = ? AND status != 'removed'").run(JSON.stringify(next), now, sourceId);
+  })();
+}
+
+/// Whether the window's first reading of a mailbox is still under way.
+export function firstReadUnderway(source: EmailSource): boolean {
+  if (source.auth === "gmail") {
+    const state = gmailSyncState(source.id);
+    return !state || !!state.backfill;
+  }
+  return source.last_synced_at === null;
 }
 
 /// What a change of Graph (or of Gmail) says of one message.
@@ -666,12 +758,17 @@ export function conversationOf(userId: string, email: EmailRow, limit = 10): Ema
     .all(userId, email.provider_thread_id, email.id, limit) as Array<Record<string, unknown>>).map(emailOf);
 }
 
-/// The latest e-mails of a mailbox (the page's list).
-export function recentEmails(userId: string, options: { sourceId?: string | null; folder?: "inbox" | "sent" | null; limit?: number } = {}): EmailRow[] {
+/// The latest e-mails of a mailbox, or of some (the page's list).
+export function recentEmails(userId: string, options: { sourceId?: string | null; sourceIds?: string[] | null; folder?: "inbox" | "sent" | null; limit?: number } = {}): EmailRow[] {
   ensure();
   const filters = ["user_id = ?", "trashed_at IS NULL"];
   const values: Array<string | number> = [userId];
   if (options.sourceId) { filters.push("email_source_id = ?"); values.push(options.sourceId); }
+  if (options.sourceIds) {
+    if (!options.sourceIds.length) return [];
+    filters.push(`email_source_id IN (${options.sourceIds.map(() => "?").join(", ")})`);
+    values.push(...options.sourceIds);
+  }
   if (options.folder) { filters.push("status = ?"); values.push(options.folder); }
   return (sqlite.prepare(`SELECT * FROM emails WHERE ${filters.join(" AND ")} ORDER BY provider_internal_date DESC LIMIT ?`)
     .all(...values, Math.max(1, Math.min(100, options.limit ?? 20))) as Array<Record<string, unknown>>).map(emailOf);

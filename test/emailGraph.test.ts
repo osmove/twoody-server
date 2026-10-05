@@ -745,9 +745,10 @@ test("E-mails turned off: no token, no request, the copy and the link kept; back
   assert.equal((await syncMailbox(userId)).ok, true);
 });
 
-test("another mailbox set up in its place (over IMAP, with a password): the Graph one's copy kept, the link no longer holding the mailbox's permission", async () => {
+test("another mailbox set up in its place (« Modifier », over IMAP, with a password): the Graph one's copy kept, the link no longer holding the mailbox's permission", async () => {
   assert.deepEqual(link()!.scopes, ["Calendars.Read", "Mail.ReadWrite"]);
-  const gmail = await app.inject({ method: "POST", url: "/email/account", headers, payload: { address: "camille.robin@example.org", host: "imap.gmail.com", port: 993, password: mail.password, preset: "gmail" } });
+  const replacing = (await status()).account.id;
+  const gmail = await app.inject({ method: "POST", url: "/email/account", headers, payload: { id: replacing, address: "camille.robin@example.org", host: "imap.gmail.com", port: 993, password: mail.password, preset: "gmail" } });
   assert.equal(gmail.statusCode, 200, gmail.body);
   await syncMailbox(userId);
   const body = await status();

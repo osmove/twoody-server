@@ -22,7 +22,8 @@ const PATTERNS: RegExp[] = [
   /(?<![\p{L}\p{N}])(?:have|did)\s+(?:i|we)\s+(?:ever\s+)?(?:received|receive)\b/iu,
   /(?<![\p{L}\p{N}])(?:did|have)\s+(?:i|we)\s+(?:got|get|gotten)\s+(?:an?\s+|any\s+|the\s+)?(?:e-?mails?|mails?|messages?|invoices?|bills?|repl(?:y|ies)|answers?|letters?|confirmations?|receipts?)\b/iu,
   // Answer someone, write to someone: « Réponds à René… », « Reply to Claire ».
-  /(?<![\p{L}\p{N}])(?:r[ée]ponds|r[ée]pondre|r[ée]pondez|r[ée]ponde)\s+(?:à|a)\s+(?!(?:cette|ma|ta|la|une|ces|mes|tes|ses|sa|son|mon|ton|question|ceci|cela|[çc]a|tout|toutes|tous)\b)\p{L}/iu,
+  // A word's end is not \b: « Maître » is not « ma » (bench of 05/10/2026).
+  /(?<![\p{L}\p{N}])(?:r[ée]ponds|r[ée]pondre|r[ée]pondez|r[ée]ponde)\s+(?:à|a)\s+(?!(?:cette|ma|ta|la|une|ces|mes|tes|ses|sa|son|mon|ton|question|ceci|cela|[çc]a|tout|toutes|tous)(?![\p{L}\p{N}]))\p{L}/iu,
   /(?<![\p{L}\p{N}])(?:reply|respond|answer|write back)\s+to\s+(?!(?:this|that|my|the|a|an|these|those|it)\b)\p{L}/iu,
   /(?<![\p{L}\p{N}])(?:draft|write|send)\s+(?:an?\s+)?(?:e-?mail|email|reply|response|message|note)\s+(?:back\s+)?to\b/iu,
   /(?<![\p{L}\p{N}])brouillon(?![\p{L}\p{N}])/iu,
