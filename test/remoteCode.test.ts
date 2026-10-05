@@ -24,6 +24,14 @@ const calls: Array<{ command: string; input: Record<string, unknown> }> = [];
 const listeners = new Set<(signal: RemoteCodeSignal) => void>();
 let off = false;
 let afterSnapshot: (() => void) | null = null;
+/// What the Desktop answers for a folder of « documents », by its path.
+const folderErrors = new Map<string, string>([
+  ["off", "new_folders_off"],
+  ["refused", "folder_refused"],
+  ["missing", "folder_unavailable"],
+  ["taken", "folder_exists"],
+  ["badname", "invalid_name"],
+]);
 const fake: RemoteCodeBridge = {
   async ask(command, input) {
     calls.push({ command, input });
@@ -43,6 +51,12 @@ const fake: RemoteCodeBridge = {
       };
     }
     if (command === "send") return { id: ID };
+    if (command === "folders") return { new_folders: true, roots: [{ id: "home", kind: "home", name: "me", selectable: false }] };
+    const folderError = (input as { root?: unknown }).root === "documents" && folderErrors.get(String((input as { path?: unknown }).path));
+    if (folderError) throw new Error(folderError);
+    if (command === "browseFolder") return { root: input.root, path: input.path, name: "me", breadcrumbs: [], folders: [], limited: false, selectable: false };
+    if (command === "createFolder") return { name: input.name, path: input.name };
+    if (command === "openFolder") return { workspace: { path: "/Users/me/site", name: "site" } };
     if (command === "approve") {
       if (input.callId !== "c1") throw new Error("approval_unavailable");
       return { decided: true };
@@ -210,4 +224,85 @@ test("the bridge says when a phone follows, and matches answers to questions", a
   assert.equal(posted.filter((message) => (message as { type: string }).type === "remote-code-subscribe").length, 1);
   stopOther();
   assert.deepEqual(posted.at(-1), { type: "remote-code-subscribe", on: false });
+});
+
+test("other folders: only a paired phone, never another computer, the command line or the Desktop's own kinds", async () => {
+  calls.length = 0;
+  const others = ["peer:Mac de bureau", "cli", "desktop", "device", "code"].map((kind) => ({ kind, ...createAuthSession("owner", kind) }));
+  const requests = [
+    { url: "/code/folders" },
+    { url: "/code/folders/browse?root=home&path=Documents" },
+    { method: "POST" as const, url: "/code/folders", payload: { root: "home", path: "", name: "site" } },
+    { method: "POST" as const, url: "/code/folders/open", payload: { root: "home", path: "site" } },
+  ];
+  for (const request of requests) {
+    assert.equal((await app.inject(request)).statusCode, 401);
+    for (const session of others) {
+      const refused = await app.inject({ ...request, headers: { authorization: `Bearer ${session.token}` } });
+      // Another computer's session is not even one here (401); the others are not a phone's (403).
+      assert.ok([401, 403].includes(refused.statusCode), `${request.url} as ${session.kind}: ${refused.statusCode}`);
+      if (refused.statusCode === 403) assert.deepEqual(refused.json(), { error: "not_paired_phone" });
+      if (!session.kind.startsWith("peer:")) assert.equal(refused.statusCode, 403, `${request.url} as ${session.kind}`);
+    }
+    assert.equal((await lone.inject({ ...request, headers })).statusCode, 503);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("other folders: a paired phone's requests reach the Desktop as they are, and its refusals come back", async () => {
+  calls.length = 0;
+  const listed = await app.inject({ url: "/code/folders", headers });
+  assert.equal(listed.statusCode, 200);
+  assert.equal(listed.json().new_folders, true);
+  assert.deepEqual(calls.at(-1), { command: "folders", input: {} });
+
+  assert.equal((await app.inject({ url: "/code/folders/browse?root=home", headers })).statusCode, 200);
+  assert.deepEqual(calls.at(-1), { command: "browseFolder", input: { root: "home", path: "" } });
+  // Decoded by the server and handed over as it is: the Desktop refuses « .. ».
+  assert.equal((await app.inject({ url: "/code/folders/browse?root=home&path=%2e%2e%2F%2e%2e", headers })).statusCode, 200);
+  assert.deepEqual(calls.at(-1), { command: "browseFolder", input: { root: "home", path: "../.." } });
+
+  const created = await app.inject({ method: "POST", url: "/code/folders", headers, payload: { root: "documents-2", path: "proj", name: "site", extra: "dropped" } });
+  assert.equal(created.statusCode, 201);
+  assert.deepEqual(calls.at(-1), { command: "createFolder", input: { root: "documents-2", path: "proj", name: "site" } });
+  const opened = await app.inject({ method: "POST", url: "/code/folders/open", headers, payload: { root: "home", path: "site" } });
+  assert.equal(opened.statusCode, 200);
+  assert.deepEqual(opened.json(), { workspace: { path: "/Users/me/site", name: "site" } });
+  assert.deepEqual(calls.at(-1), { command: "openFolder", input: { root: "home", path: "site" } });
+
+  for (const [path, status, error] of [["off", 403, "new_folders_off"], ["refused", 403, "folder_refused"], ["missing", 404, "folder_unavailable"], ["taken", 409, "folder_exists"], ["badname", 400, "invalid_name"]] as const) {
+    for (const request of [
+      { url: `/code/folders/browse?root=documents&path=${path}` },
+      { method: "POST" as const, url: "/code/folders", payload: { root: "documents", path, name: "x" } },
+      { method: "POST" as const, url: "/code/folders/open", payload: { root: "documents", path } },
+    ]) {
+      const answer = await app.inject({ ...request, headers });
+      assert.equal(answer.statusCode, status, `${request.url} ${path}`);
+      assert.deepEqual(answer.json(), { error });
+    }
+  }
+});
+
+test("other folders: the shapes the phone may send, nothing else reaches the Desktop", async () => {
+  calls.length = 0;
+  for (const request of [
+    { url: "/code/folders/browse" },
+    { url: "/code/folders/browse?root=../etc" },
+    { url: "/code/folders/browse?root=HOME" },
+    { url: "/code/folders/browse?root=home%2F.." },
+    { url: "/code/folders/browse?root=/etc" },
+    { url: `/code/folders/browse?root=home&path=${"a".repeat(4097)}` },
+    { method: "POST" as const, url: "/code/folders", payload: { root: "home", path: "" } },
+    { method: "POST" as const, url: "/code/folders", payload: { root: "home", path: "", name: "" } },
+    { method: "POST" as const, url: "/code/folders", payload: { root: "home", path: "", name: "x".repeat(256) } },
+    { method: "POST" as const, url: "/code/folders", payload: { root: "C:", path: "", name: "x" } },
+    { method: "POST" as const, url: "/code/folders", payload: { root: "home", path: ["a", "b"], name: "x" } },
+    { method: "POST" as const, url: "/code/folders/open", payload: { path: "site" } },
+    { method: "POST" as const, url: "/code/folders/open", payload: { root: "home", path: { a: 1 } } },
+    { method: "POST" as const, url: "/code/folders/open", payload: { root: "home-1234", path: "site" } },
+  ]) {
+    const answer = await app.inject({ ...request, headers });
+    assert.equal(answer.statusCode, 400, request.url + JSON.stringify((request as { payload?: unknown }).payload ?? ""));
+  }
+  assert.equal(calls.length, 0);
 });

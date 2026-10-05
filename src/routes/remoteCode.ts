@@ -6,9 +6,12 @@ import { desktopRemoteCode, type RemoteCodeBridge, type RemoteCodeSignal } from 
 
 // Twoody Code on this computer, driven from a paired phone. The Desktop
 // app decides what is allowed (only while the person turned it on, only
-// folders already open in Code, every change and command asked, one
-// decision at a time); this checks who asks — a phone paired with this
-// computer, nothing else — and carries the answers and the events.
+// folders already open in Code — or, behind a second switch, folders of
+// the home folder the phone browses, creates and opens there
+// (twoody-desktop src/main/code/remoteFolders.ts) — every change and
+// command asked, one decision at a time); this checks who asks — a phone
+// paired with this computer, nothing else — and carries the answers and
+// the events. It never touches a folder itself.
 
 export interface RemoteCodeRouteOptions {
   /// The Desktop's Code (tests pass their own); null: not running under it.
@@ -21,7 +24,12 @@ export interface RemoteCodeRouteOptions {
 
 const STATUS: Record<string, number> = {
   invalid_request: 400,
+  invalid_name: 400,
   remote_code_off: 403,
+  new_folders_off: 403,
+  folder_refused: 403,
+  folder_unavailable: 404,
+  folder_exists: 409,
   session_unavailable: 404,
   approval_unavailable: 404,
   process_unavailable: 404,
@@ -43,6 +51,11 @@ const SESSION_ID = { type: "string", pattern: "^[0-9a-f-]{36}$" };
 const REQUEST_ID = { type: "string", pattern: "^[a-zA-Z0-9_-]{16,80}$" };
 const TEXT = { type: "string", minLength: 1, maxLength: 16000 };
 const MODE = { type: "string", enum: ["ask", "auto-edit", "plan"] };
+/// A folder as the phone names it: a root's id (the home folder, the
+/// usual places) and a path relative to it; the Desktop checks the rest.
+const FOLDER_ROOT = { type: "string", pattern: "^[a-z]{1,20}(-[0-9]{1,3})?$" };
+const FOLDER_PATH = { type: "string", maxLength: 4096 };
+const FOLDER_NAME = { type: "string", minLength: 1, maxLength: 255 };
 
 function withoutSeq(snapshot: unknown): unknown {
   if (!snapshot || typeof snapshot !== "object") return snapshot;
@@ -97,6 +110,32 @@ export async function remoteCodeRoutes(app: FastifyInstance, options: RemoteCode
   app.get("/code/sessions", {
     schema: { tags, security, summary: "Twoody Code: folders open on this computer and their sessions (paired phone)" },
   }, (req, reply) => call(req, reply, "list", {}));
+
+  // Other folders (Desktop 0.13.80 and later), once the person allowed it.
+  app.get("/code/folders", {
+    schema: { tags, security, summary: "Twoody Code: whether the phone may open other folders, and where it may browse (paired phone)" },
+  }, (req, reply) => call(req, reply, "folders", {}));
+
+  app.get<{ Querystring: { root: string; path?: string } }>("/code/folders/browse", {
+    schema: {
+      tags, security, summary: "Twoody Code: the folders inside one (never its files)",
+      querystring: { type: "object", additionalProperties: false, required: ["root"], properties: { root: FOLDER_ROOT, path: FOLDER_PATH } },
+    },
+  }, (req, reply) => call(req, reply, "browseFolder", { root: req.query.root, path: req.query.path ?? "" }));
+
+  app.post<{ Body: { root: string; path?: string; name: string } }>("/code/folders", {
+    schema: {
+      tags, security, summary: "Twoody Code: create a folder, one level, inside one the phone may browse",
+      body: { type: "object", additionalProperties: false, required: ["root", "name"], properties: { root: FOLDER_ROOT, path: FOLDER_PATH, name: FOLDER_NAME } },
+    },
+  }, (req, reply) => call(req, reply, "createFolder", { root: req.body.root, path: req.body.path ?? "", name: req.body.name }, 201));
+
+  app.post<{ Body: { root: string; path?: string } }>("/code/folders/open", {
+    schema: {
+      tags, security, summary: "Twoody Code: open a folder in Code, to start a session there",
+      body: { type: "object", additionalProperties: false, required: ["root"], properties: { root: FOLDER_ROOT, path: FOLDER_PATH } },
+    },
+  }, (req, reply) => call(req, reply, "openFolder", { root: req.body.root, path: req.body.path ?? "" }));
 
   app.get<{ Params: { id: string } }>("/code/sessions/:id", {
     schema: { tags, security, summary: "Twoody Code: one session, its items and pending decisions", params: { type: "object", required: ["id"], properties: { id: SESSION_ID } } },

@@ -1,7 +1,8 @@
 import type { Dirent } from "node:fs";
 import { lstat, opendir, readdir, stat } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { join } from "node:path";
 import { isSupported } from "./extract.js";
+import { skipDirectory } from "./folderNames.js";
 
 // How a granted folder is walked, and what is never read inside it.
 //
@@ -12,63 +13,8 @@ import { isSupported } from "./extract.js";
 // weigh a great deal, or both. The same list is shown to the person
 // before they grant their home folder (GET /local_documents/personal).
 
-/// Folder names never entered, compared without case. `Library` is the
-/// Mac's application data (keychains, mail, messages), `AppData` is
-/// Windows's; iCloud Drive lives under ~/Library and is granted on its
-/// own (folderRisk lets that one folder through).
-export const SKIPPED_DIRECTORIES = [
-  "Library",
-  "AppData",
-  "Keychains",
-  "Applications",
-  "node_modules",
-  "bower_components",
-  "__pycache__",
-  "site-packages",
-  "Cache",
-  "Caches",
-  "snap",
-  "__MACOSX",
-  "$RECYCLE.BIN",
-  "System Volume Information",
-  "Windows",
-  "Program Files",
-  "Program Files (x86)",
-  "ProgramData",
-] as const;
-
-/// Folders the Mac shows as a single file — an application, a photo or
-/// music library, a project package — by their extension: their insides
-/// are the program's own files, not the person's documents.
-export const SKIPPED_BUNDLES = [
-  ".app",
-  ".appex",
-  ".framework",
-  ".bundle",
-  ".plugin",
-  ".kext",
-  ".photoslibrary",
-  ".photolibrary",
-  ".migratedphotolibrary",
-  ".aplibrary",
-  ".musiclibrary",
-  ".tvlibrary",
-  ".imovielibrary",
-  ".fcpbundle",
-  ".logicx",
-  ".band",
-  ".lrdata",
-  ".xcarchive",
-] as const;
-
-const skippedDirectories = new Set(SKIPPED_DIRECTORIES.map((name) => name.toLowerCase()));
-const skippedBundles = new Set<string>(SKIPPED_BUNDLES);
-
-/// A folder the walk does not enter. Hidden folders (.ssh, .gnupg, .aws,
-/// .git, .cache, .Trash…) are never entered either.
-export function skipDirectory(name: string): boolean {
-  return name.startsWith(".") || skippedDirectories.has(name.toLowerCase()) || skippedBundles.has(extname(name).toLowerCase());
-}
+// The folder names never entered live in folderNames.ts (shared with the Desktop).
+export { SKIPPED_BUNDLES, SKIPPED_DIRECTORIES, skipDirectory } from "./folderNames.js";
 
 const CREDENTIAL_NAME = /^(?:credentials|secrets?|tokens?|passwords?|service[-_]?account)(?:[.-]|$)/i;
 
