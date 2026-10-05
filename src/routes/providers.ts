@@ -3,7 +3,8 @@ import { and, eq } from "drizzle-orm";
 import { db, llmEndpoints } from "../db.js";
 import { generateId, requireAuth } from "../auth.js";
 import { offeredModels, probeRuntime } from "../localRuntime.js";
-import { listComputers } from "../router/index.js";
+import { listComputers, type ComputerEntry } from "../router/index.js";
+import { accountCredentials } from "../account/service.js";
 import { activeEngine, engine, engineDefaultModel, engineName } from "../engine.js";
 
 type ProviderPatchBody = {
@@ -73,6 +74,52 @@ async function engineProvider(stored: Array<typeof llmEndpoints.$inferSelect>) {
   };
 }
 
+/// How long /providers waits for the account's computers before answering
+/// with the last list it had. They come from the account (the vault's
+/// roster, then `account_computers`), through the Desktop's main process
+/// when this server is embedded, which waits up to 20 s and 13 s: on
+/// 05/10/2026 api.twoody.com took 2.5 to 13.6 s to answer and every
+/// /providers took 13 to 33 s — and with it the model line under the
+/// composer, its icons and the model picker of Twoody Desktop.
+export const COMPUTERS_WAIT_MS = 1_500;
+const knownComputers = new Map<string, ComputerEntry[]>();
+const computersAsking = new Map<string, Promise<ComputerEntry[] | null>>();
+
+/// The account's computers for /providers: the fresh list when it comes in
+/// time, else the last one known (none before a first answer). The question
+/// goes on, one at a time per person, and its answer is kept for the next.
+async function computersFor(userId: string, waitMs = COMPUTERS_WAIT_MS): Promise<ComputerEntry[] | null> {
+  // No account any more: nothing known is still true.
+  if (!accountCredentials()) {
+    knownComputers.delete(userId);
+    return null;
+  }
+  let asking = computersAsking.get(userId);
+  if (!asking) {
+    asking = listComputers(userId)
+      .catch(() => null)
+      .then((computers) => {
+        // null: no account any more, nothing to remember.
+        if (computers) knownComputers.set(userId, computers);
+        else knownComputers.delete(userId);
+        return computers;
+      })
+      .finally(() => computersAsking.delete(userId));
+    computersAsking.set(userId, asking);
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"late">((resolve) => {
+    timer = setTimeout(() => resolve("late"), waitMs);
+    timer.unref?.();
+  });
+  try {
+    const answer = await Promise.race([asking, late]);
+    return answer === "late" ? knownComputers.get(userId) ?? null : answer;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function providerRoutes(app: FastifyInstance) {
   app.get("/providers", {
     schema: {
@@ -89,6 +136,10 @@ export async function providerRoutes(app: FastifyInstance) {
         .from(llmEndpoints)
         .where(eq(llmEndpoints.userId, auth.userId))
         .all();
+
+      // Asked alongside the runtimes, not after them.
+      const computersAsked = computersFor(auth.userId);
+      const engineAsked = engineProvider(rows).catch(() => null);
 
       // One question to each runtime gives both its status and every
       // model it holds — which a paired phone offers in its picker.
@@ -113,8 +164,8 @@ export async function providerRoutes(app: FastifyInstance) {
       // picker's « Automatique » (provider "auto") and one section per
       // computer (provider "computer:<id>"). Absent, the clients behave as
       // before.
-      const computers = await listComputers(auth.userId).catch(() => null);
-      const fromEngine = await engineProvider(rows).catch(() => null);
+      const computers = await computersAsked;
+      const fromEngine = await engineAsked;
       const listed = fromEngine ? (fromEngine.is_default ? [fromEngine, ...serialized] : [...serialized, fromEngine]) : serialized;
       reply.send({ providers: listed, ...(computers ? { auto: true, computers } : {}) });
     },
