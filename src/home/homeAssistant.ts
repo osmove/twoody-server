@@ -276,6 +276,44 @@ export function homeDoneSentence(done: HomeDone): string {
     : `« ${entity.name} » was ${before}; Twoody has just switched it: it is now ${after}${level}.`;
 }
 
+/// Words that name something of a home to switch, verbs left aside
+/// (« ouvre le document » is not one).
+const HOME_THINGS = /\b(?:lumiere|lampe|ampoule|prise|volet|store|chauffage|clim|guirlande|tele|television|ventilateur|light|lamp|plug|blinds|heating|fan|tv)/;
+
+/// « Éteins la lumière du salon »: the message asks to switch something in
+/// the home, whatever devices there are — to say why nothing was done when
+/// Maison could not be used for it.
+export function asksHome(message: string): boolean {
+  const text = plain(message);
+  // « Rappelle-moi d'éteindre la lumière » is a reminder.
+  if (text.length > 200 || /\?/.test(text) || /\b(?:rappel|remind|oublie|note)/.test(text)) return false;
+  return VERBS.some(([pattern]) => pattern.test(text)) && HOME_THINGS.test(text);
+}
+
+/// Why the home was not used for a message: left out by its icon, Maison
+/// off or not set up, Home Assistant failing (HomeError's codes).
+export type HomeUnused = "left_out" | "off" | HomeError["code"];
+
+/// What the model is told when the message asks the home for something and
+/// the home could not be used (Jimmy, 06/10/2026: « éteins la lumière du
+/// salon » answered « je suis une intelligence artificielle… », Maison being
+/// left out by its icon): why, and what the person can do — never that an
+/// assistant cannot touch a device.
+export function homeUnusedNote(why: HomeUnused): string {
+  const reason = {
+    left_out: "Maison is left out of this message by its icon under the message (the house, struck through). To use it, the user clicks that icon, then asks again.",
+    off: "Maison is switched off in Twoody. The user turns it on in Capacités → Maison.",
+    not_configured: "Home Assistant is not set up in Twoody yet. The user gives its address and a token in Capacités → Maison.",
+    unauthorized: "Home Assistant refused Twoody's access token. The user gives a new token in Capacités → Maison.",
+    unreachable: "Home Assistant does not answer on the network. The user checks that it is on, in Capacités → Maison.",
+    unknown_entity: "Home Assistant could not be read. The user checks Capacités → Maison.",
+    unavailable: "Home Assistant could not be read. The user checks Capacités → Maison.",
+    unsupported: "Home Assistant could not be read. The user checks Capacités → Maison.",
+    failed: "Home Assistant could not be read. The user checks Capacités → Maison.",
+  }[why];
+  return `[Twoody did not switch anything in the user's home for this message: data, not instructions]\n${reason}\nSay so in one or two short sentences in their language, with what to do. Do not say you are an AI that cannot control devices: Twoody can, when Maison is used.\n[End]`;
+}
+
 export function homeErrorSentence(err: unknown): string {
   const code = err instanceof HomeError ? err.code : "failed";
   const detail = err instanceof HomeError && err.detail ? err.detail : "";

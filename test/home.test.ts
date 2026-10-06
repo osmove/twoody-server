@@ -158,4 +158,35 @@ test("on: the chat switches the light at once, says what it did, and never touch
   assert.deepEqual(called, []);
   assert.ok(!asked[0]!.tools?.some((tool) => tool.function.name === "control_home"));
   assert.doesNotMatch(asked[0]!.messages.at(-1)!.content, /Lumière Salon/);
+  // …and the model is told why, so that it does not answer « je suis une
+  // intelligence artificielle… » (Jimmy, 06/10/2026).
+  assert.match(asked[0]!.messages.at(-1)!.content, /Maison is left out of this message by its icon/);
+  const traced = await app.inject({ method: "GET", url: "/diagnostics/turns?kind=chat", headers: desktop });
+  assert.equal(traced.statusCode, 200, traced.body);
+  assert.deepEqual((traced.json().traces as Array<{ detail: { home?: unknown } }>)[0]!.detail.home, { state: "left_out", devices: 0 });
+  // A message that does not ask the home anything is told nothing of it.
+  asked.length = 0;
+  await app.inject({ method: "POST", url: "/queries", headers: desktop, payload: { text: "Rappelle-moi d'éteindre la lumière ce soir", channel: "desktop", force_new_discussion: true, capabilities_off: ["home"] } });
+  assert.doesNotMatch(asked[0]!.messages.at(-1)!.content, /Maison is left out/);
+});
+
+test("Home Assistant refusing the token: nothing switched, the reason said and traced", async () => {
+  const { homeUnusedNote, asksHome } = await import("../src/home/homeAssistant.js");
+  assert.equal(asksHome("éteins la lumière du salon"), true);
+  assert.equal(asksHome("Allume la télé"), true);
+  assert.equal(asksHome("ouvre le document de Yoav"), false);
+  assert.equal(asksHome("est-ce que la lumière est allumée ?"), false);
+  assert.match(homeUnusedNote("off"), /Capacités → Maison/);
+  // The token Home Assistant knows changes: Twoody's is refused.
+  const { setHomeConfig } = await import("../src/home/homeAssistant.js");
+  setHomeConfig(owner, { url: haUrl, token: "revoked" });
+  called.length = 0;
+  asked.length = 0;
+  await app.inject({ method: "POST", url: "/queries", headers: desktop, payload: { text: "Éteins la guirlande du salon", channel: "desktop", force_new_discussion: true } });
+  assert.deepEqual(called, []);
+  assert.match(asked[0]!.messages.at(-1)!.content, /Home Assistant refused Twoody's access token/);
+  assert.ok(!asked[0]!.tools?.some((tool) => tool.function.name === "control_home"));
+  const traced = await app.inject({ method: "GET", url: "/diagnostics/turns?kind=chat", headers: desktop });
+  assert.deepEqual((traced.json().traces as Array<{ detail: { home?: unknown } }>)[0]!.detail.home, { state: "unauthorized", devices: 0 });
+  setHomeConfig(owner, { url: haUrl, token: TOKEN });
 });
