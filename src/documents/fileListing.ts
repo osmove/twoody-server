@@ -84,7 +84,7 @@ const OLDEST = /\b(plus anciens?|plus vieux|plus vieilles?|oldest|earliest)\b/;
 const LARGEST = /\b(plus gros|plus grosses?|plus lourds?|plus lourdes?|volumineux|volumineuses?|largest|biggest|heaviest)\b/;
 const SMALLEST = /\b(plus petits?|plus petites?|plus legers?|smallest|lightest)\b/;
 const COUNT = /\b(combien|nombre de|how many|number of|count)\b/;
-const LIST = /\b(liste[rz]?|listing|list|contenu|contient|contents?|qu'?y a.?t.?il|qu'?est.?ce qu'?il y a|what'?s in|what is in|which files|quels fichiers|quelles? (images|photos|captures)|montre(-moi)?|show me)\b/;
+const LIST = /\b(liste[rz]?|listing|list|contenu|contient|contents?|qu'?y a.?t.?il|qu'?est.?ce qu'?il y a|what'?s in|what is in|which files|what files|quels (sont )?(les |mes )?fichiers|quelles? (sont )?(les |mes )?(images|photos|captures)|il y a quoi|j'?ai quoi|montre(-moi)?|show me)\b/;
 const FILE_WORDS = /\b(fichiers?|files?|dossiers?|folders?|telechargements?|downloads?|captures? d'?ecran|screenshots?|pdfs?|images?|photos?|dmg|videos?|installeurs?)\b/;
 /// A question about what files say, not about the files themselves.
 const ABOUT_CONTENT = /\b(sur le sujet|qui parlent?|parlant|mentionn\w*|concernant|au sujet|a propos|regarding|about the|that mention|which mention|qui dit|says?)\b/;

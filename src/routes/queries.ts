@@ -15,7 +15,7 @@ import { createHash } from "node:crypto";
 import { idleForMs, inflight } from "../account/inflight.js";
 import { citationLink, folderOf, localFolderIds, meshPeers, retrieveAcrossComputers, type MeshPassage, type MeshRetrieval } from "../documents/remote.js";
 import { listingIntent } from "../documents/fileListing.js";
-import { smallTalk } from "../documents/query.js";
+import { retriesPrevious, smallTalk } from "../documents/query.js";
 import { passageLocation } from "../documents/location.js";
 import { listFilesAcrossComputers, type MeshListing } from "../documents/remoteListing.js";
 import { contextBudget } from "./localDocuments.js";
@@ -712,11 +712,16 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // A question about the files themselves (« le fichier le plus récent de
     // mes téléchargements »): listed from the file system of the computer
     // holding the folder, alongside the search (documents/fileListing.ts).
-    const intent = access.mode === "off" ? null : listingIntent(typedText(content));
+    // « Voilà c'est activé, tu peux maintenant ? »: the person's question
+    // before, asked again, is what the documents are read for.
+    const previousAsk = [...history].reverse().find((row) => row.role === "user" && row.content.trim())?.content ?? null;
+    const documentQuestion = previousAsk && retriesPrevious(typedText(content)) ? previousAsk.replace(IMAGE_MARK, "").trim() : typedText(content);
+    if (documentQuestion !== typedText(content)) trace.retried_previous = true;
+    const intent = access.mode === "off" ? null : listingIntent(documentQuestion);
     const listing: Promise<MeshListing | null> = intent
       ? listFilesAcrossComputers({
           userId: auth.userId,
-          question: typedText(content),
+          question: documentQuestion,
           intent,
           access,
           roots: allowedFolders,
@@ -752,13 +757,13 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // announces first (04/10/2026: « Je vais rechercher les documents du
     // dossier… » shown before the answer).
     const projectQuestion = !!isolated && allowedFolders.length > 0 && !smallTalk(typedText(content));
-    const plainlyDocuments = access.mode === "only" || !!intent || aboutDocuments(typedText(content)) || citedBefore(history) || projectQuestion;
+    const plainlyDocuments = access.mode === "only" || !!intent || aboutDocuments(documentQuestion) || citedBefore(history) || projectQuestion;
     const documentsStarted = Date.now();
-    const retrieved: MeshRetrieval = access.mode !== "off" && plainlyDocuments ? await retrieveFor(typedText(content)) : NO_DOCUMENTS;
+    const retrieved: MeshRetrieval = access.mode !== "off" && plainlyDocuments ? await retrieveFor(documentQuestion) : NO_DOCUMENTS;
     trace.documents = {
       mode: access.mode,
       decision: access.mode === "off" ? "off" : plainlyDocuments ? "read" : toolCapable(provider) && !conversationOnlyFor(provider) ? "tool" : "none",
-      reason: access.mode === "only" ? "only" : intent ? "listing" : aboutDocuments(typedText(content)) ? "named" : citedBefore(history) ? "follow_up" : projectQuestion ? "isolated_project" : null,
+      reason: access.mode === "only" ? "only" : intent ? "listing" : aboutDocuments(documentQuestion) ? "named" : citedBefore(history) ? "follow_up" : projectQuestion ? "isolated_project" : null,
       passages: retrieved.passages.length,
       files: retrieved.files.length,
       computers: retrieved.computers.map((computer) => ({ name: computer.computer_name, status: computer.status, passages: computer.passages })),

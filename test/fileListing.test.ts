@@ -259,3 +259,22 @@ test("with Spotlight: a matching file the index has not read yet is read now, ke
     setSpotlightEnabled(false);
   }
 });
+
+test("« voilà c'est activé, tu peux maintenant ? » lists what the message before asked, Documents having been off (07/10/2026)", async () => {
+  const { retriesPrevious } = await import("../src/documents/query.js");
+  assert.equal(retriesPrevious("voila c'est activé, tu peux maintenant?"), true);
+  assert.equal(retriesPrevious("Et maintenant ?"), true);
+  assert.equal(retriesPrevious("maintenant liste mes téléchargements"), false, "a question of its own");
+  assert.equal(retriesPrevious("tu peux maintenant me dire ce que dit mon CV ?"), false);
+  assert.equal(retriesPrevious("salut ça va"), false);
+  assert.equal(listingIntent("quels sont les fichiers sur mon bureau ?")?.folder, "desktop");
+  assert.equal(listingIntent("il y a quoi dans mes téléchargements ?")?.folder, "downloads");
+  ungrantAll();
+  grant("home", home);
+  const first = await app.inject({ method: "POST", url: "/queries", headers: auth, payload: { content: "tu peux me lister quels fichiers j'ai dans mes téléchargements ?", document_access: { mode: "off" } } });
+  assert.ok(!lastPrompt().includes("Twoody-0.13.22.dmg"), "Documents off: nothing listed");
+  const discussion = first.payload.match(/"discussion_id":"([^"]+)"/)![1];
+  await app.inject({ method: "POST", url: "/queries", headers: auth, payload: { content: "voila c'est activé, tu peux maintenant?", discussion_id: discussion, document_access: { mode: "all" } } });
+  assert.match(lastPrompt(), /\[File listing from the file system: Downloads \(~\/Downloads\)/);
+  assert.ok(lastPrompt().includes("Twoody-0.13.22.dmg"));
+});

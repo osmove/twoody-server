@@ -121,6 +121,24 @@ export function metadataScore(name: string, location: string, terms: string[]): 
   return termsFound(name, terms) * 8 + termsFound(location, terms) * 2;
 }
 
+// « Voilà c'est activé, tu peux maintenant ? » after « liste les fichiers
+// de mon bureau » asked with Documents off (Jimmy, 07/10/2026): the
+// question is the one before, asked again — not « maintenant ? », which
+// names no folder, so nothing was listed. A short message that only says to
+// try again, nothing of its own.
+const RETRY = /\b(?:maintenant|a present|reessaie|reessaye|reessayez|essaie encore|essaye encore|recommence|c est (?:fait|active|bon|ok)|ca y est|voila|vas y|allez y|go|now|try again|again|retry|done|it s on)\b/;
+const RETRY_WORDS = new Set([
+  "et", "alors", "bon", "ok", "okay", "oui", "voila", "c", "est", "fait", "active", "activee", "activees", "actives", "bon", "ca", "y", "tu", "peux", "pouvez", "vous",
+  "maintenant", "a", "present", "le", "la", "les", "faire", "reessaie", "reessaye", "reessayez", "essaie", "essaye", "encore", "recommence", "vas", "allez",
+  "go", "now", "try", "again", "retry", "done", "it", "s", "on", "can", "you", "do", "please", "stp", "svp", "merci", "documents", "j", "ai", "je", "l",
+]);
+
+export function retriesPrevious(text: string): boolean {
+  const plain = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’']/g, " ").replace(/[!?.,;:…()"«»-]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!plain || plain.length > 80 || !RETRY.test(plain)) return false;
+  return plain.split(" ").every((word) => RETRY_WORDS.has(word));
+}
+
 // Small talk — « salut », « ça va ? », « merci Twoody ! » — asks nothing of
 // the documents: searching them anyway brought passages that matched a
 // stray word, and the answer showed them as sources (28/09/2026). A
