@@ -170,6 +170,47 @@ test("on: the chat switches the light at once, says what it did, and never touch
   assert.doesNotMatch(asked[0]!.messages.at(-1)!.content, /Maison is left out/);
 });
 
+test("« éteins-la » right after « allume la lumière du salon »: the same device, at once (07/10/2026)", async () => {
+  const { homeFollowUp } = await import("../src/home/homeAssistant.js");
+  const last = { entities: entities.filter((e) => e.entity_id === "light.lumiere_salon"), action: "on" as const };
+  const follow = (message: string) => {
+    const found = homeFollowUp(message, entities, last);
+    return found ? `${found.action} ${found.entities.map((e) => e.entity_id).join(",")}${found.brightness ? ` ${found.brightness}%` : ""}` : null;
+  };
+  assert.equal(follow("éteins la"), "off light.lumiere_salon");
+  assert.equal(follow("Éteins-la maintenant stp"), "off light.lumiere_salon");
+  assert.equal(follow("rallume-la"), "on light.lumiere_salon");
+  assert.equal(follow("tu peux l'éteindre ?"), "off light.lumiere_salon");
+  assert.equal(follow("en fait non, éteins"), "off light.lumiere_salon");
+  assert.equal(follow("mets-la à 30 %"), "on light.lumiere_salon 30%");
+  assert.equal(follow("baisse-la à 20%"), "on light.lumiere_salon 20%");
+  assert.equal(follow("remets-la comme avant"), "off light.lumiere_salon");
+  assert.equal(follow("et la guirlande aussi"), "on switch.guirlande_salon");
+  assert.equal(follow("éteins la lumière"), "off light.lumiere_salon");
+  assert.equal(follow("monte-la au maximum"), "on light.lumiere_salon 100%");
+  assert.equal(follow("éteins tout"), null, "everything is not the last one");
+  assert.equal(follow("éteins la lumière du bureau"), null, "another device");
+  assert.equal(follow("éteins la télé"), null);
+  assert.equal(follow("est-ce qu'elle est allumée ?"), null);
+  assert.equal(follow("rappelle-moi de l'éteindre à 23 h"), null);
+  assert.equal(homeFollowUp("éteins-la", entities, null), null, "nothing switched before");
+
+  called.length = 0;
+  asked.length = 0;
+  const first = await app.inject({ method: "POST", url: "/queries", headers: desktop, payload: { text: "Allume la lumière du salon", channel: "desktop", force_new_discussion: true } });
+  const discussion = first.body.match(/"discussion_id":"([^"]+)"/)![1];
+  assert.deepEqual(called.map((call) => call.path), ["/api/services/light/turn_on"]);
+  called.length = 0;
+  await app.inject({ method: "POST", url: "/queries", headers: desktop, payload: { text: "éteins la", channel: "desktop", discussion_id: discussion } });
+  assert.deepEqual(called, [{ path: "/api/services/light/turn_off", body: { entity_id: "light.lumiere_salon" } }]);
+  // In another conversation, « éteins-la » names nothing.
+  called.length = 0;
+  asked.length = 0;
+  await app.inject({ method: "POST", url: "/queries", headers: desktop, payload: { text: "éteins-la", channel: "desktop", force_new_discussion: true } });
+  assert.deepEqual(called, []);
+  assert.doesNotMatch(asked[0]!.messages.at(-1)!.content, /Just switched/);
+});
+
 test("Home Assistant refusing the token: nothing switched, the reason said and traced", async () => {
   const { homeUnusedNote, asksHome } = await import("../src/home/homeAssistant.js");
   assert.equal(asksHome("éteins la lumière du salon"), true);
