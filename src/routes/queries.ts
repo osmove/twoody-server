@@ -93,6 +93,9 @@ interface QueryBody {
   /// home, connectors, the web — are left out unless this names them:
   /// switched on for this message by their icons.
   capabilities_on?: unknown;
+  /// The connectors, by id, this message leaves out (« Outils » in this
+  /// computer's app, 07/10/2026): the others' tools are still offered.
+  connectors_off?: unknown;
   /// The project a new conversation starts in: an isolated one's
   /// (src/projects/isolation.ts) from then on, never changed.
   project_id?: string;
@@ -888,7 +891,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // Connecteurs (Capacités): the tools of the person's MCP servers, for a
     // model of theirs, asked in this computer's app before each call — the
     // only app that shows the question for now.
-    const connectorTools = homeLocal && capabilityOn(auth.userId, "connectors") && !left.has("connectors") && isThisComputersApp(auth) ? connectorChatTools(auth.userId) : [];
+    const connectorsOff = new Set((Array.isArray(parsed.connectors_off) ? parsed.connectors_off : typeof parsed.connectors_off === "string" ? parsed.connectors_off.split(",") : []).map((id) => String(id).trim()).filter(Boolean));
+    const connectorTools = homeLocal && capabilityOn(auth.userId, "connectors") && !left.has("connectors") && isThisComputersApp(auth) ? connectorChatTools(auth.userId).filter((tool) => !connectorsOff.has(tool.connectorId)) : [];
     const runConnectorTool = async (chosen: (typeof connectorTools)[number], args: Record<string, unknown>): Promise<string> => {
       const traced: ToolCallTrace = { name: chosen.definition.function.name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0 };
       toolCallsTraced.push(traced);
@@ -1517,6 +1521,7 @@ async function parseMultipartBody(req: FastifyRequest): Promise<ParsedBody | nul
     document_access: nested.document_access ?? fields.document_access,
     capabilities_off: nested.capabilities_off ?? fields.capabilities_off,
     capabilities_on: nested.capabilities_on ?? fields.capabilities_on,
+    connectors_off: nested.connectors_off ?? fields.connectors_off,
     project_id:         (nested.project_id as string) ?? (fields.project_id as string),
     text:               (nested.text as string) ?? (fields.text as string),
     content:            (nested.content as string) ?? (fields.content as string),

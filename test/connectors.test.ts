@@ -125,6 +125,11 @@ test("a tool turned off is not offered; a connector switched off neither", async
   const offered = bodies.at(-1)!.tools?.map((tool) => tool.function.name) ?? [];
   assert.ok(offered.includes(chatToolName({ name: "Carnet" }, "lookup")));
   assert.ok(!offered.includes(chatToolName({ name: "Carnet" }, "erase_all")));
+  // Left out of this message in « Outils » (07/10/2026): that connector only.
+  await app.inject({ method: "POST", url: "/queries", headers, payload: { text: "Bonjour", channel: "desktop", force_new_discussion: true, document_access: { mode: "off" }, connectors_off: [connectorId] } });
+  assert.ok(!(bodies.at(-1)!.tools ?? []).some((tool) => tool.function.name.startsWith("mcp__")));
+  await app.inject({ method: "POST", url: "/queries", headers, payload: { text: "Bonjour", channel: "desktop", force_new_discussion: true, document_access: { mode: "off" }, connectors_off: ["another-one"] } });
+  assert.ok((bodies.at(-1)!.tools ?? []).some((tool) => tool.function.name === chatToolName({ name: "Carnet" }, "lookup")));
   await app.inject({ method: "PATCH", url: `/connectors/${connectorId}`, headers, payload: { enabled: false } });
   await ask("Bonjour");
   assert.ok(!(bodies.at(-1)!.tools ?? []).some((tool) => tool.function.name.startsWith("mcp__")));
