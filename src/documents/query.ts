@@ -166,3 +166,29 @@ export function smallTalk(text: string): boolean {
   const left = rest.trim().split(" ").filter(Boolean);
   return found && (left.length === 0 || (left.length === 1 && left[0].length <= 12));
 }
+
+// « Oui », « vas-y », « d'accord », « je veux bien »: an agreement, nothing
+// asked of its own.
+const AGREEMENT = /^(?:(?:oui|ouais|ok|okay|d accord|daccord|vas y|allez y|go|yes|yep|sure|bien sur|volontiers|c est parti|je veux bien|avec plaisir|s il te plait|s il vous plait|stp|svp|please|merci|parfait|super|top|alors)\s*)+$/;
+
+/// A message that asks nothing of its own: an agreement, small talk, or
+/// « réessaie ».
+export function asksNothing(text: string): boolean {
+  const said = text.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[’']/g, " ").replace(/[!?.,;:…()"«»-]+/g, " ").replace(/\s+/g, " ").trim();
+  return !said || AGREEMENT.test(said) || smallTalk(text) || retriesPrevious(text);
+}
+
+/// User messages looked back at for the question a retry is about.
+export const RETRY_LOOKBACK = 4;
+
+/// The question a message that only says « try again » asks again: the
+/// latest earlier user message (newest first in `earlier`) that asks
+/// something of its own, within the last few. « Liste les fichiers de mon
+/// bureau » (Documents off), « Oui », « Voilà c'est fait »: the listing,
+/// not « Oui » (Jimmy, 08/10/2026 — the roots and their counts came back).
+export function questionBefore(earlier: string[], within = RETRY_LOOKBACK): string | null {
+  for (const message of earlier.slice(0, within)) {
+    if (!asksNothing(message)) return message;
+  }
+  return null;
+}

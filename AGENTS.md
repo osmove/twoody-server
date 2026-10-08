@@ -112,7 +112,10 @@ Root AGENTS.md §3 has the overview; the rules that matter when editing:
   The `final` event's `memory` (stored in `messages.memory_json`) says what
   the turn was given.
 - **Documents** are read up front only when the message clearly asks about
-  them; otherwise the model has the `search_documents` tool.
+  them; otherwise the model has the `search_documents` tool. A question
+  about files themselves gets a file listing with the message
+  (`fileListing.ts`, a follow-up that only names a folder included), and
+  the model has `list_files` for any folder inside the granted ones.
 - **Action tools** `create_reminder`, `create_task`, `update_project`
   (`src/projects/actions.ts`) act only on the person's say; an explicit
   request (« rappelle-moi… ») forces a short, silent turn that must call
@@ -164,6 +167,12 @@ with citations. Nothing leaves the SQLite file.
   revalidate grants on every query and before storing vectors.
 - `retrieval.ts` follow-up rereads of one named file; `remote.ts`,
   `remoteListing.ts` search on trusted peers.
+- `fileListing.ts` the files of a folder for a message (« le plus récent de
+  mes téléchargements »); `folderListing.ts` the chat's `list_files`: what
+  any folder inside the granted ones holds, named « Bureau »,
+  « jimmy/Desktop/Projets » or « Factures », found by its real path (iCloud
+  Drive's Desktop is a link to ~/Desktop when « Bureau et Documents » is
+  synced), the walk's rules applied.
 - Per-turn `document_access` `{mode: off|all|selected|only, folderIds?}`;
   invalid → 422; revoked scopes retrieve nothing.
 - Routes live under `/local_documents/*` (not `/documents`, which is the

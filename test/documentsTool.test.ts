@@ -91,7 +91,7 @@ test("a message that is not about the documents reads none: the model has the to
   const { final, sent, body } = await ask("Combien je paie pour l'électricité ?");
   assert.equal(sent.length, 2);
   assert.match(body, /event: status\ndata: \{"kind":"searching_documents","query":"électricité"\}/, "« Recherche dans vos documents… » while it looks");
-  assert.deepEqual(sent[0]!.tools?.map((tool) => tool.function.name), ["search_documents"]);
+  assert.deepEqual(sent[0]!.tools?.map((tool) => tool.function.name), ["search_documents", "list_files"]);
   assert.doesNotMatch(lastUser(sent[0]!), /Excerpts from the user's documents/);
   const result = sent[1]!.messages.find((message) => message.role === "tool")!;
   assert.match(result.content, /^\[Excerpts from the user's documents\]\n\[1\] facture-electricite\.txt/);
@@ -133,7 +133,7 @@ test("each answer leaves a trace: the documents decision, the tools offered and 
   assert.equal(trace.outcome, "answered");
   assert.equal(trace.discussion_id, final.discussion_id);
   assert.equal(trace.detail.documents.decision, "tool");
-  assert.deepEqual(trace.detail.tools_offered, ["search_documents"]);
+  assert.deepEqual(trace.detail.tools_offered, ["search_documents", "list_files"]);
   assert.equal(trace.detail.tool_calls.length, 1);
   assert.equal(trace.detail.tool_calls[0].name, "search_documents");
   assert.match(trace.detail.tool_calls[0].arguments, /électricité/);
@@ -178,7 +178,7 @@ test("a search only announced, not called: not shown, the model made to call the
   narrate = null;
   assert.equal(sent.length, 3);
   assert.equal(sent[1]!.tool_choice, "required");
-  assert.deepEqual(sent[1]!.tools?.map((tool) => tool.function.name), ["search_documents"], "no action may be called on the way");
+  assert.deepEqual(sent[1]!.tools?.map((tool) => tool.function.name), ["search_documents", "list_files"], "no action may be called on the way");
   assert.equal(final.message, "You pay 84 euros [1].");
   assert.equal(streamed(body), "You pay 84 euros [1].");
 });

@@ -17,6 +17,9 @@ export interface ToolCallTrace {
   result_chars: number;
   /// Passages a document search returned.
   passages?: number;
+  /// list_files: what became of the folder asked (ok, missing, not_granted…) and the files shown.
+  status?: string;
+  files?: number;
   error?: string;
   /// The start of what the tool returned, as the model read it (local only,
   /// never in telemetryOf).

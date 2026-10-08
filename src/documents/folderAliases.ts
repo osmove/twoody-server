@@ -165,3 +165,16 @@ export function aliasPaths(id: FolderAliasId, system: AliasSystem): string[] {
   }
   return out;
 }
+
+/// The Desktop and Documents in iCloud Drive, when macOS « Bureau et
+/// Documents » is synced (Jimmy, 08/10/2026: « Bureau est le dossier
+/// desktop sur iCloud Drive »): iCloud Drive/Desktop is then a link to
+/// ~/Desktop — the same folder, left out here — or, on some Macs, a folder
+/// of its own, listed when ~/Desktop is not granted but iCloud Drive is.
+/// Real paths, those aliasPaths already gives left out.
+export function cloudAliasPaths(id: FolderAliasId, system: AliasSystem): string[] {
+  if (system.platform !== "darwin" || (id !== "desktop" && id !== "documents")) return [];
+  const local = new Set(aliasPaths(id, system));
+  const real = system.realDirectory(posix.join(system.home, "Library", "Mobile Documents", "com~apple~CloudDocs", id === "desktop" ? "Desktop" : "Documents"));
+  return real && !local.has(real) ? [real] : [];
+}

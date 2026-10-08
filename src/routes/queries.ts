@@ -14,8 +14,9 @@ import { ACTION_TOOLS, askedAction, runAction, type ChatAction } from "../projec
 import { createHash } from "node:crypto";
 import { idleForMs, inflight } from "../account/inflight.js";
 import { citationLink, folderOf, localFolderIds, meshPeers, retrieveAcrossComputers, type MeshPassage, type MeshRetrieval } from "../documents/remote.js";
-import { listingIntent } from "../documents/fileListing.js";
-import { retriesPrevious, smallTalk } from "../documents/query.js";
+import { folderFollowUp, listingIntent } from "../documents/fileListing.js";
+import { aliasNamed, formatFolderListing, LIST_FILES_TOOL, listFolder, readFolderRequest } from "../documents/folderListing.js";
+import { questionBefore, retriesPrevious, smallTalk } from "../documents/query.js";
 import { passageLocation } from "../documents/location.js";
 import { listFilesAcrossComputers, type MeshListing } from "../documents/remoteListing.js";
 import { contextBudget } from "./localDocuments.js";
@@ -719,11 +720,18 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // mes téléchargements »): listed from the file system of the computer
     // holding the folder, alongside the search (documents/fileListing.ts).
     // « Voilà c'est activé, tu peux maintenant ? »: the person's question
-    // before, asked again, is what the documents are read for.
-    const previousAsk = [...history].reverse().find((row) => row.role === "user" && row.content.trim())?.content ?? null;
-    const documentQuestion = previousAsk && retriesPrevious(typedText(content)) ? previousAsk.replace(IMAGE_MARK, "").trim() : typedText(content);
-    if (documentQuestion !== typedText(content)) trace.retried_previous = true;
-    const intent = access.mode === "off" ? null : listingIntent(documentQuestion);
+    // before, asked again, is what the documents are read for — the last
+    // one that asked something, not the « Oui » in between (08/10/2026).
+    const earlierAsks = [...history].reverse().filter((row) => row.role === "user" && row.content.trim()).map((row) => row.content.replace(IMAGE_MARK, "").trim());
+    const retried = retriesPrevious(typedText(content)) ? questionBefore(earlierAsks) : null;
+    const documentQuestion = retried ?? typedText(content);
+    if (retried) trace.retried_previous = true;
+    // « Je t'ai dit sur le bureau » after a listing asked: that listing, of
+    // the folder named (documents/fileListing.ts folderFollowUp).
+    const lastReply = [...history].reverse().find((row) => row.role === "assistant")?.content ?? null;
+    const followUp = access.mode === "off" || retried || listingIntent(documentQuestion) ? null : folderFollowUp(documentQuestion, earlierAsks, lastReply);
+    if (followUp) trace.folder_follow_up = true;
+    const intent = access.mode === "off" ? null : listingIntent(documentQuestion) ?? followUp;
     const listing: Promise<MeshListing | null> = intent
       ? listFilesAcrossComputers({
           userId: auth.userId,
@@ -810,11 +818,53 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // The search_documents tool: its passages numbered after the ones given
     // with the message, cited the same way.
     const documentTools: ChatTools = {
-      definitions: [SEARCH_DOCUMENTS_TOOL],
+      definitions: [SEARCH_DOCUMENTS_TOOL, LIST_FILES_TOOL],
       run: async (name, args) => {
         const called = Date.now();
         const traced: ToolCallTrace = { name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0 };
         toolCallsTraced.push(traced);
+        if (name === "list_files") {
+          // What a folder holds, anywhere inside the folders this
+          // conversation may read, on this computer (folderListing.ts).
+          const asked = readFolderRequest(args);
+          if (!asked) { traced.error = "invalid_arguments"; return "Give list_files a folder."; }
+          // « Recherche dans vos documents… » while it looks: the status the
+          // clients already show (a kind of its own would be ignored).
+          startSse();
+          reply.raw.write(`event: status\ndata: ${JSON.stringify({ kind: "searching_documents", folder: asked.folder })}\n\n`);
+          // A usual folder or a folder's name is asked of the person's other
+          // computers too, as a listing of its files (remoteListing.ts): a
+          // path is this computer's own.
+          const alias = aliasNamed(asked.folder);
+          const simple = alias ? { folder: alias, folderName: null } : asked.folder && !/[/\\~]/.test(asked.folder) && asked.folder.length <= 120 ? { folder: null, folderName: asked.folder } : null;
+          const others = simple && fullFor !== null && !isolated && requester && meshPeers(auth.userId).length
+            ? listFilesAcrossComputers({
+                userId: auth.userId,
+                question: documentQuestion,
+                intent: { ...simple, sort: asked.sort, kinds: asked.kinds, limit: Math.min(asked.limit, 30), count: false },
+                access,
+                roots: allowedFolders,
+                granted,
+                remote: true,
+                requester,
+                self: false,
+              }).catch(() => null)
+            : Promise.resolve(null);
+          try {
+            const [folder, elsewhere] = await Promise.all([listFolder({ request: asked, roots: allowedFolders, granted }), others]);
+            traced.ms = Date.now() - called;
+            traced.status = folder.status;
+            traced.files = folder.files.length;
+            const theirs = elsewhere?.computers.some((computer) => computer.status === "ok") ? elsewhere.blocks : [];
+            const result = [formatFolderListing(folder, asked, theirs.length ? selfIdentity().name : null), ...theirs].join("\n\n");
+            traced.result_chars = result.length;
+            return result;
+          } catch (err) {
+            traced.ms = Date.now() - called;
+            traced.error = err instanceof Error ? err.message : String(err);
+            return "The folder could not be listed. Say so briefly.";
+          }
+        }
         if (name !== "search_documents") { traced.error = "unknown_tool"; return "No such tool."; }
         const query = typeof args.query === "string" && args.query.trim() ? args.query.trim().slice(0, 500) : typedText(content);
         // « Recherche dans vos documents… » while it looks (the clients show it).
@@ -1039,9 +1089,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       // (which change as the person picks them): the runtime's cache.
       // The bank's three tools after them, the same as long as Banque is on;
       // Google's, the same as long as its link is.
-      definitions: [...(offersDocuments ? [SEARCH_DOCUMENTS_TOOL] : []), ...(offersActions ? ACTION_TOOLS : []), ...(offersHome ? [HOME_TOOL] : []), ...(offersEmail ? EMAIL_TOOLS : []), ...(offersBank ? BANK_TOOLS : []), ...googleTools, ...connectorTools.map((tool) => tool.definition)],
+      definitions: [...(offersDocuments ? documentTools.definitions : []), ...(offersActions ? ACTION_TOOLS : []), ...(offersHome ? [HOME_TOOL] : []), ...(offersEmail ? EMAIL_TOOLS : []), ...(offersBank ? BANK_TOOLS : []), ...googleTools, ...connectorTools.map((tool) => tool.definition)],
       run: async (name, args) => {
-        if (name === "search_documents") return documentTools.run(name, args);
+        if (name === "search_documents" || (offersDocuments && name === "list_files")) return documentTools.run(name, args);
         if (offersEmail && isEmailTool(name)) {
           // Answered by another computer after this one failed: not given.
           if (!emailHere(provider)) return "The user's e-mails are read only by a model of this computer: not available for this answer. Say so, briefly.";
@@ -2573,10 +2623,10 @@ export function looksLikeAnnouncement(text: string): boolean {
 /// 03/10/2026).
 const NARRATION = new RegExp([
   // English
-  String.raw`(?<!\p{L})(?:i(?:'ll|’ll| will| shall| need to| have to| must| should| want to| am going to|'m going to|’m going to| can| first need to)|let me|let's|let’s|allow me to|first,? i(?:'ll|’ll| will)?)\s+(?:\S+\s+){0,3}?(?:search|look|check|find|fetch|retriev|consult|review|scan|brows|query|go through|read|open|pull up)`,
+  String.raw`(?<!\p{L})(?:i(?:'ll|’ll| will| shall| need to| have to| must| should| want to| am going to|'m going to|’m going to| can| first need to)|let me|let's|let’s|allow me to|first,? i(?:'ll|’ll| will)?)\s+(?:\S+\s+){0,3}?(?:search|look|check|find|fetch|retriev|consult|review|scan|brows|query|go through|read|open|pull up|list)`,
   String.raw`^\W*(?:searching|looking (?:up|through|into|in|for)|checking)(?!\p{L})`,
   // French
-  String.raw`(?<!\p{L})(?:je vais|je dois|il (?:me )?faut (?:que je )?|laissez-moi|laisse-moi|permettez-moi de|je peux|je commence par|commençons par|d'abord,? je)\s+(?:\S+\s+){0,3}?(?:recherch|cherch|consult|regard|vérifi|verifi|parcour|fouill|lir|examin|récupér|recuper|ouvr)`,
+  String.raw`(?<!\p{L})(?:je vais|je dois|il (?:me )?faut (?:que je )?|laissez-moi|laisse-moi|permettez-moi de|je peux|je commence par|commençons par|d'abord,? je)\s+(?:\S+\s+){0,3}?(?:recherch|cherch|consult|regard|vérifi|verifi|parcour|fouill|lir|examin|récupér|recuper|ouvr|list)`,
   String.raw`(?<!\p{L})je (?:recherche|cherche|consulte|regarde|vérifie|parcours|fouille)(?!\p{L})`,
   // German
   String.raw`(?<!\p{L})(?:ich (?:werde|muss|sollte|möchte|will|kann)|lass(?:en sie)? mich|zuerst)\s+(?:\S+\s+){0,4}?(?:such|durchsuch|nachseh|nachschau|nachschlag|prüf|überprüf|schau|les|öffn)`,
@@ -2922,7 +2972,7 @@ async function streamLocal(
       // action); or, an e-mail asked to be written or answered, words that
       // say the draft, and draft_email too: it is still shown to the person
       // before it is saved.
-      const searchOnly = options.tools?.definitions.filter((tool) => tool.function.name === "search_documents" || tool.function.name === "search_emails" || (drafting && tool.function.name === "draft_email")) ?? [];
+      const searchOnly = options.tools?.definitions.filter((tool) => tool.function.name === "search_documents" || tool.function.name === "list_files" || tool.function.name === "search_emails" || (drafting && tool.function.name === "draft_email")) ?? [];
       const retryTools = insist ? options.tools?.definitions ?? [] : searchOnly;
       const askAgain = async (text: string, messages: Array<Record<string, unknown>>): Promise<boolean> => {
         const announcedOnly = insist ? looksLikeAnnouncement(text) : onlyNarration(text, drafting) || (drafting && (draftAnnounced(text) || writtenOut(text)));

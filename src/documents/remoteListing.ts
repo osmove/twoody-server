@@ -129,6 +129,8 @@ export async function listFilesAcrossComputers(args: {
   granted: GrantedRoot[];
   remote: boolean;
   requester: Requester | null;
+  /// false: the other computers only (list_files lists this one itself).
+  self?: boolean;
 }): Promise<MeshListing> {
   const me = selfIdentity();
   const peers =
@@ -141,7 +143,7 @@ export async function listFilesAcrossComputers(args: {
   const selfNamed = namesComputer(args.question, me.name);
   const named = peers.filter(({ peer }) => namesComputer(args.question, peer.name));
   // A computer named in the message: that one only. None: all of them.
-  const askSelf = selfNamed || !named.length;
+  const askSelf = args.self !== false && (selfNamed || !named.length);
   const asked = selfNamed || named.length ? named : peers;
 
   const [own, ...theirs] = await Promise.all([
