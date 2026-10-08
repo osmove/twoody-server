@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "../db.js";
 import { connectorFetch } from "../outbound.js";
+import { fetchConnectorIcon } from "./icons.js";
 import { McpAuthRequiredError, McpClient, type McpToolInfo, type McpTransportConfig } from "./mcpClient.js";
 import { authorizationUrl, discover, exchangeCode, OAuthError, pkce, refreshTokens, register, rememberSignIn, takeSignIn, tokenFresh, type OAuthState } from "./oauth.js";
 
@@ -45,6 +46,10 @@ export interface Connector {
   /// The service answered that it wants a sign-in, and what it said.
   auth_required?: boolean;
   www_authenticate?: string | null;
+  /// An http connector's icon, from its own origin (icons.ts): a data URI.
+  icon?: string | null;
+  /// When it was last asked for: at most once a day.
+  icon_checked_at?: string | null;
 }
 
 export class ConnectorError extends Error {
@@ -158,7 +163,8 @@ export function changeConnector(userId: string, id: string, body: unknown): Conn
       const how = readConnectorInput({ ...base, ...input }, connector);
       // Another address: the sign-in to the old one goes.
       const sameService = how.url && how.url === connector.url;
-      next = { ...next, command: undefined, args: undefined, env: undefined, url: undefined, headers: undefined, oauth_client: null, ...how, tools: [], error: null, ...(sameService ? {} : { oauth: null, auth_required: false, www_authenticate: null }) };
+      // Another address: its icon is asked of it again.
+      next = { ...next, command: undefined, args: undefined, env: undefined, url: undefined, headers: undefined, oauth_client: null, ...how, tools: [], error: null, ...(sameService ? {} : { oauth: null, auth_required: false, www_authenticate: null, icon: null, icon_checked_at: null }) };
     }
     if (typeof input.enabled === "boolean") next = { ...next, enabled: input.enabled };
     if (Array.isArray(input.disabled_tools)) next = { ...next, disabled_tools: input.disabled_tools.filter((tool): tool is string => typeof tool === "string").slice(0, 500) };
@@ -180,7 +186,11 @@ export function removeConnector(userId: string, id: string) {
 }
 
 /// What a screen shows: never a value of its environment or headers.
-export function connectorView(userId: string, connector: Connector) {
+/// `fromDevices`: whether the device asking may use it in its own
+/// messages — this computer's app, or one of the person's own devices
+/// (queries.ts, 08/10/2026); never a household member's or a device paired
+/// by code.
+export function connectorView(userId: string, connector: Connector, fromDevices = true) {
   // What the chat really gets, across all the connectors (MAX_CHAT_TOOLS).
   const offered = new Set(connectorChatTools(userId).filter((tool) => tool.connectorId === connector.id).map((tool) => tool.tool));
   const tools = connector.tools.map((tool) => ({ name: tool.name, description: tool.description, enabled: !connector.disabled_tools.includes(tool.name), offered: offered.has(tool.name), tokens: toolTokens(tool), always: (connector.auto_tools ?? []).includes(tool.name) }));
@@ -207,6 +217,11 @@ export function connectorView(userId: string, connector: Connector) {
       service: connector.oauth?.issuer ? new URL(connector.oauth.issuer).host : null,
       client_id_given: !!connector.oauth_client?.client_id,
     } : null,
+    /// Its icon as a data URI (icons.ts), or null: the app shows its plug.
+    icon: connector.url ? connector.icon ?? null : null,
+    /// Usable from the person's own devices too, each call asked on the
+    /// device that sent the message (08/10/2026).
+    from_devices: fromDevices,
   };
 }
 
@@ -248,6 +263,8 @@ export function stopConnector(userId: string, id: string) {
 export async function startConnector(userId: string, id: string): Promise<{ client: McpClient; connector: Connector }> {
   const connector = listConnectors(userId).find((one) => one.id === id);
   if (!connector) throw new ConnectorError("not_found", 404);
+  // Its icon, when it is started (added, signed in, restarted): at most once a day.
+  void refreshConnectorIcon(userId, id);
   const running = clients.get(runningKey(userId, id));
   if (running?.client.running) return { client: running.client, connector };
   const client = makeClient({ command: connector.command, args: connector.args, env: connector.env, url: connector.url, headers: connector.headers, ...(connector.url ? { bearer: () => bearerFor(userId, id), renewBearer: () => renewBearer(userId, id) } : {}) }, connectorOrigins(connector));
@@ -276,6 +293,42 @@ export async function startConnector(userId: string, id: string): Promise<{ clie
     update(userId, id, (stored) => ({ ...stored, error: message.slice(0, 300) }));
     throw new ConnectorError(`start_failed: ${message.slice(0, 200)}`, 502);
   }
+}
+
+// ── Its icon ───────────────────────────────────────────────────────────
+const ICON_REFRESH_MS = 24 * 3600 * 1000;
+const iconsUnderWay = new Map<string, Promise<void>>();
+let iconFetcher: (url: string) => Promise<string | null> = (url) => fetchConnectorIcon(url);
+
+/// For the tests: the icon asked of another door (a site on this machine).
+export function useIconFetchForTests(fetcher: ((url: string) => Promise<string | null>) | null) {
+  iconFetcher = fetcher ?? ((url) => fetchConnectorIcon(url));
+}
+
+/// An http connector's icon asked of its own origin, kept with it; not
+/// again within a day, nor twice at once. A failure keeps the one it had.
+export function refreshConnectorIcon(userId: string, id: string, now = Date.now()): Promise<void> {
+  const connector = stored(userId, id);
+  if (!connector?.url) return Promise.resolve();
+  const checked = connector.icon_checked_at ? Date.parse(connector.icon_checked_at) : NaN;
+  if (Number.isFinite(checked) && now - checked < ICON_REFRESH_MS && now >= checked) return Promise.resolve();
+  const key = runningKey(userId, id);
+  const underWay = iconsUnderWay.get(key);
+  if (underWay) return underWay;
+  const url = connector.url;
+  const done = iconFetcher(url)
+    .catch(() => null)
+    .then((icon) => {
+      try {
+        // Changed or removed meanwhile: not kept.
+        update(userId, id, (one) => (one.url === url ? { ...one, icon: icon ?? one.icon ?? null, icon_checked_at: new Date(now).toISOString() } : one));
+      } catch {
+        /* removed */
+      }
+    })
+    .finally(() => iconsUnderWay.delete(key));
+  iconsUnderWay.set(key, done);
+  return done;
 }
 
 // ── Signed in to its service (OAuth) ───────────────────────────────────
@@ -424,11 +477,17 @@ export async function callConnectorTool(userId: string, connectorId: string, too
 
 // ── The person's say, asked in the chat ────────────────────────────────
 const APPROVAL_TIMEOUT_MS = 120_000;
-const approvals = new Map<string, { userId: string; resolve: (allowed: boolean) => void; timer: NodeJS.Timeout; connectorId?: string; tool?: string }>();
+
+/// Who asked: the session whose message made the call (its stream got the
+/// question), and whether it is this computer's app.
+export interface ApprovalAsker { sessionId: string | null; thisComputersApp: boolean }
+
+const approvals = new Map<string, { userId: string; asker: ApprovalAsker; resolve: (allowed: boolean) => void; timer: NodeJS.Timeout; connectorId?: string; tool?: string }>();
 
 /// Waits for the person to allow or refuse this call (or for the chat to
-/// close, or two minutes): refused unless allowed.
-export function waitForApproval(userId: string, id: string, signal?: AbortSignal, timeoutMs = APPROVAL_TIMEOUT_MS, call?: { connectorId: string; tool: string }): Promise<boolean> {
+/// close, or two minutes): refused unless allowed. Answered only by the
+/// session that asked, or by this computer's app (answerApproval).
+export function waitForApproval(userId: string, id: string, signal: AbortSignal | undefined, asker: ApprovalAsker, timeoutMs = APPROVAL_TIMEOUT_MS, call?: { connectorId: string; tool: string }): Promise<boolean> {
   return new Promise((resolve) => {
     const done = (allowed: boolean) => {
       const entry = approvals.get(id);
@@ -437,7 +496,7 @@ export function waitForApproval(userId: string, id: string, signal?: AbortSignal
       approvals.delete(id);
       resolve(allowed);
     };
-    approvals.set(id, { userId, resolve: done, timer: setTimeout(() => done(false), timeoutMs), ...call });
+    approvals.set(id, { userId, asker, resolve: done, timer: setTimeout(() => done(false), timeoutMs), ...call });
     signal?.addEventListener("abort", () => done(false), { once: true });
   });
 }
@@ -448,11 +507,18 @@ export function waitingApprovals(userId: string): string[] {
 }
 
 /// The person's answer; false when nothing waits for it (too late, or not
-/// theirs). « Toujours autoriser » (`always`) allows this call and, from
-/// now on, every call of that tool without asking.
-export function answerApproval(userId: string, id: string, allowed: boolean, always = false): boolean {
+/// theirs to give). Since the person's own devices ask too (08/10/2026),
+/// an answer counts only from the session that asked — the stream that
+/// showed the question — or from this computer's app, as before: never
+/// from another device of the account (a household member's, one paired
+/// by code), nor from another session of the same device, whatever id it
+/// sends. « Toujours autoriser » (`always`) allows this call and, from now
+/// on, every call of that tool without asking.
+export function answerApproval(userId: string, id: string, allowed: boolean, always: boolean, answerer: ApprovalAsker): boolean {
   const entry = approvals.get(id);
   if (!entry || entry.userId !== userId) return false;
+  const sameSession = !!entry.asker.sessionId && entry.asker.sessionId === answerer.sessionId;
+  if (!sameSession && !answerer.thisComputersApp) return false;
   if (allowed && always && entry.connectorId && entry.tool) {
     const tool = entry.tool;
     try {

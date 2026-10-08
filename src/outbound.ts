@@ -176,6 +176,60 @@ export function connectorFetch(origins: Iterable<string>): typeof outboundFetch 
   };
 }
 
+export class OriginDoorClosedError extends Error {
+  constructor(target: string) {
+    super(`Refused: ${target} is not the address this door opens to`);
+    this.name = "OriginDoorClosedError";
+  }
+}
+
+const targetOf = (input: string | URL | Request): URL | null => {
+  try {
+    return new URL(input instanceof Request ? input.url : input);
+  } catch {
+    return null;
+  }
+};
+
+// A connector's icon (« Outils » and Connecteurs, 08/10/2026): asked of the
+// connector's own origin only — the address the person gave, which this
+// computer already calls — over https (or on this machine or its network),
+// never redirected, never to any other host. Unlike connectorFetch above,
+// nothing falls through to the ordinary gate: another address is refused
+// here, in every mode.
+export function connectorOriginFetch(origin: string): typeof outboundFetch {
+  return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const target = targetOf(input);
+    if (!target || target.origin !== origin || !(target.protocol === "https:" || (await isPrivateUrl(target)))) {
+      throw new OriginDoorClosedError(target?.origin ?? "an address");
+    }
+    return fetch(input, { ...init, redirect: "error" });
+  };
+}
+
+/// The address of Twoody Desktop's web search for the person's devices
+/// (twoody-desktop src/main/web/bridge.ts), when it is one this door may
+/// open: plain http on this machine's loopback, an IP literal and a port.
+export function webBridgeOrigin(url: string | null | undefined): string | null {
+  const target = url ? targetOf(url) : null;
+  if (!target || target.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(target.hostname) || !target.port) return null;
+  return target.origin;
+}
+
+// The Desktop's web search, asked for a request from the person's own
+// device (src/webResearch.ts, 08/10/2026): the main process of the app
+// that started this server, on this machine's loopback, at the address and
+// with the key it handed over at launch. That address only, never
+// redirected; the search itself leaves from the Desktop, as the Mac's own.
+export function webBridgeFetch(bridgeUrl: string): typeof outboundFetch {
+  const origin = webBridgeOrigin(bridgeUrl);
+  return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const target = targetOf(input);
+    if (!origin || !target || target.origin !== origin) throw new OriginDoorClosedError(target?.origin ?? "an address");
+    return fetch(input, { ...init, redirect: "error" });
+  };
+}
+
 // The door for e-mail (Capacités → E-mails, 04/10/2026). IMAP is no HTTP:
 // the gate above never sees it, so the one place that opens a connection
 // to a mail server (src/email/imap.ts, test/emailDoor.test.ts keeps it the

@@ -5,6 +5,8 @@ import { takeSignIn } from "../connectors/oauth.js";
 import { addConnector, answerApproval, beginSignIn, changeConnector, completeSignIn, ConnectorError, connectorView, listConnectors, removeConnector, signOut, startConnector, stopConnector } from "../connectors/connectors.js";
 import { forgetGoogleDataLink, setGoogleDataEnabled } from "../google/dataLink.js";
 import { GOOGLE_DATA_CONNECTOR_ID, googleDataConnectorView } from "../google/dataTools.js";
+import { meshRequester } from "../sessionTrust.js";
+import { meshRoster } from "../vault/roster.js";
 
 // « Connecteurs » (Capacités, Jimmy, 03/10/2026), src/connectors/connectors.ts:
 //   GET    /connectors                 the person's, with their tools
@@ -19,6 +21,14 @@ import { GOOGLE_DATA_CONNECTOR_ID, googleDataConnectorView } from "../google/dat
 // Read by any of the person's devices; added, changed, started and removed
 // only from this computer's app — a connector is a command this computer
 // runs, or an address it calls with the person's token.
+//
+// Used in the chat from this computer's app and, since 08/10/2026, from
+// the person's own devices — their iPhone — each call asked on the device
+// that sent the message (`from_devices` in the list says whether the
+// device asking may; never a household member's nor a device paired by
+// code: sessionTrust.ts meshRequester). The question is answered only by
+// the session that asked it, still the person's device, or by this
+// computer's app (connectors.ts answerApproval).
 //
 // Google Analytics and Search Console, once linked (/google_data,
 // 08/10/2026), are listed here too, as the connector « google » of kind
@@ -39,8 +49,10 @@ export async function connectorRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
+      // Whether this device's messages get them: what its « Outils » may switch on.
+      const fromDevices = isThisComputersApp(auth) || (await meshRequester(req, auth, () => meshRoster().get())) !== null;
       const google = googleDataConnectorView(auth.userId);
-      reply.send({ connectors: [...listConnectors(auth.userId).map((connector) => connectorView(auth.userId, connector)), ...(google ? [google] : [])] });
+      reply.send({ connectors: [...listConnectors(auth.userId).map((connector) => connectorView(auth.userId, connector, fromDevices)), ...(google ? [{ ...google, from_devices: fromDevices }] : [])] });
     },
   });
 
@@ -171,7 +183,12 @@ export async function connectorRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
       const id = typeof req.body?.id === "string" ? req.body.id : "";
-      if (!answerApproval(auth.userId, id, req.body?.allow === true, req.body?.always === true)) return reply.code(404).send({ error: "nothing_waiting" });
+      // Who answers: this computer's app, or the very session that asked —
+      // still one of the person's own devices, through its own tunnel key.
+      // Anyone else is told nothing waits, whatever the id.
+      const thisComputersApp = isThisComputersApp(auth);
+      const person = thisComputersApp || (await meshRequester(req, auth, () => meshRoster().get())) !== null;
+      if (!person || !answerApproval(auth.userId, id, req.body?.allow === true, req.body?.always === true, { sessionId: auth.sessionId ?? null, thisComputersApp })) return reply.code(404).send({ error: "nothing_waiting" });
       reply.send({ ok: true });
     },
   });

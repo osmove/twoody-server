@@ -5,6 +5,9 @@ import { capabilityOrder, capabilityPlaces, isLocalCapability, LOCAL_CAPABILITIE
 import { isThisComputersApp } from "./usage.js";
 import { homeOn } from "../home/homeAssistant.js";
 import { graphCapabilityChanged } from "../microsoft/sync.js";
+import { meshRequester } from "../sessionTrust.js";
+import { meshRoster } from "../vault/roster.js";
+import { webForDevicesAvailable } from "../webResearch.js";
 
 //   GET   /local_capabilities        → { capabilities: { documents: false, … }, places: { documents: { menu, chat }, … } }
 //   PATCH /local_capabilities/:id    { enabled?, menu?, chat? } → the same
@@ -12,6 +15,13 @@ import { graphCapabilityChanged } from "../microsoft/sync.js";
 //   PUT   /local_usage               { kind?, team?, profession? } → the same (`usage`)
 // Read by any of the person's devices (a phone hides what is off); changed
 // only from the app of this computer.
+//
+// `devices` (08/10/2026): what this computer does for the device asking —
+// `web`, it searches the web for its messages (src/webResearch.ts): only
+// when the Desktop that started it handed over its web search, and only
+// for this computer's app or one of the person's own devices, never a
+// household member's phone nor a device paired by code. The phone shows
+// its « Recherche Internet » switch when this and `capabilities.web` say so.
 export async function localCapabilityRoutes(app: FastifyInstance) {
   app.get("/local_capabilities", {
     schema: { tags: ["capabilities"], summary: "What the person switched on on this computer", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
@@ -19,7 +29,8 @@ export async function localCapabilityRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
       // Maison may be on by the environment of a computer without a screen.
-      reply.send({ capabilities: { ...localCapabilities(auth.userId), home: homeOn(auth.userId) }, places: capabilityPlaces(auth.userId), order: capabilityOrder(auth.userId), usage: usageProfile(auth.userId), known: LOCAL_CAPABILITIES });
+      const person = isThisComputersApp(auth) || (await meshRequester(req, auth, () => meshRoster().get())) !== null;
+      reply.send({ capabilities: { ...localCapabilities(auth.userId), home: homeOn(auth.userId) }, places: capabilityPlaces(auth.userId), order: capabilityOrder(auth.userId), usage: usageProfile(auth.userId), known: LOCAL_CAPABILITIES, devices: { web: person && webForDevicesAvailable() } });
     },
   });
 

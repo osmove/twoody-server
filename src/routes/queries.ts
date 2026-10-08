@@ -56,7 +56,7 @@ import { engineRoute, isBuiltinUrl, localRuntimeReady } from "../engine.js";
 import { RuntimeError } from "../builtin/index.js";
 import { discussionTitle, typedText } from "../documentBlocks.js";
 import { loadPersonalData } from "./localSync.js";
-import { capabilitiesOff, capabilityOn, type LocalCapability } from "../localCapabilities.js";
+import { capabilitiesOff, capabilityOn, capabilityPlaces, type LocalCapability } from "../localCapabilities.js";
 import { callConnectorTool, connectorChatTools, waitForApproval } from "../connectors/connectors.js";
 import { GOOGLE_DATA_CONNECTOR_ID, googleDataChatTools, isGoogleDataTool, runGoogleDataTool } from "../google/dataTools.js";
 import { googleDataForMessage } from "../google/dataIntent.js";
@@ -75,6 +75,7 @@ import { peerById, peerRequest, PeerUnavailableError, type PeerRow } from "../pe
 import { isSelf, peerRoutable, peerTrusted, pick, pickBackground, selfIdentity } from "../router/index.js";
 import { meshRoster } from "../vault/roster.js";
 import { meshRequester } from "../sessionTrust.js";
+import { researchOnComputer, webBlock, webBridge, webBudget } from "../webResearch.js";
 import { ownerRequest } from "../localAccess.js";
 import { ensureConversation, sealAnsweredTurn } from "../vault/service.js";
 import { sqliteHistory } from "../vault/localHistory.js";
@@ -100,6 +101,11 @@ interface QueryBody {
   /// The connectors, by id, this message leaves out (« Outils » in this
   /// computer's app, 07/10/2026): the others' tools are still offered.
   connectors_off?: unknown;
+  /// « Recherche Internet » on, from one of the person's own devices
+  /// (08/10/2026): this computer searches the web for the question, as its
+  /// own app does in its window (src/webResearch.ts). This computer's app
+  /// searches itself and sends the pages found with the message.
+  web?: unknown;
   /// The project a new conversation starts in: an isolated one's
   /// (src/projects/isolation.ts) from then on, never changed.
   project_id?: string;
@@ -420,6 +426,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   let access;
   try { access = documentAccess(parsed.document_access); }
   catch { return reply.code(422).send({ error: "invalid_document_access" }); }
+  // « Seulement mes documents » asked: no web either, whatever Capacités says.
+  const documentsOnly = access.mode === "only";
   // Documents switched off in Capabilities: the chat does not search them.
   if (access.mode !== "off" && !capabilityOn(auth.userId, "documents")) access = { mode: "off" as const };
   const left = capabilitiesOff(parsed.capabilities_off);
@@ -458,6 +466,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   if (!content) {
     return reply.code(422).send({ error: transcribed ? "no_speech" : "content_or_audio_required" });
   }
+  // What the person typed or said, before any page of the web joins it.
+  const heard = content;
+  const typedQuestion = images.length && content === IMAGE_ONLY_QUESTION ? "" : typedText(content);
 
   const channel = parsed.channel ?? "cli";
   const model   = parsed.model ?? undefined;
@@ -504,6 +515,89 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     if (caughtUp.status === "deleted") return reply.code(410).send({ error: "conversation_deleted", vault_conversation_id: vaultConversationId });
   }
 
+  let sseStarted = false;
+  let keepalive: ReturnType<typeof setInterval> | null = null;
+  const startSse = () => {
+    if (sseStarted) return;
+    sseStarted = true;
+    // The headers Fastify's hooks already set — CORS for a browser
+    // client among them — go out with the stream: writing to the raw
+    // response skips them otherwise, and the browser drops the answer.
+    for (const [name, value] of Object.entries(reply.getHeaders())) {
+      if (value !== undefined) reply.raw.setHeader(name, value);
+    }
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    // 8 KB comment padding — same trick Rails uses to flush past
+    // iOS NSURLSession's 4 KB XHR buffer threshold so each delta
+    // surfaces as it arrives instead of all at the end.
+    reply.raw.write(":" + " ".repeat(8192) + "\n\n");
+    keepalive = setInterval(() => {
+      reply.raw.write(": ping\n\n");
+    }, 15_000);
+    // A voice message: what was heard, first, so the person reads their
+    // own words while the answer is being written — not at its end.
+    if (transcribed) reply.raw.write(`event: transcription\ndata: ${JSON.stringify({ text: heard })}\n\n`);
+  };
+
+  // The reader left (closed the window, pressed Stop): stop the model
+  // too. A local runtime otherwise keeps generating, for minutes on a
+  // long answer, a reply nobody will read — and the next question queues
+  // behind it.
+  const upstream = new AbortController();
+  // The response's "close", not the request's: since Node 16 the latter
+  // fires as soon as the request body has been read.
+  reply.raw.on("close", () => {
+    if (!reply.raw.writableFinished) upstream.abort();
+  });
+
+  // Once the reply is open (the web searched for a device, below), a
+  // refusal is its last event rather than an HTTP status.
+  const refuse = (status: number, body: Record<string, unknown>) => {
+    if (!sseStarted) return reply.code(status).send(body);
+    reply.raw.write(`event: error\ndata: ${JSON.stringify(body)}\n\n`);
+    if (keepalive) clearInterval(keepalive);
+    reply.raw.end();
+    return reply;
+  };
+
+  // « Recherche Internet » from one of the person's own devices (their
+  // iPhone, 08/10/2026): this computer searches the web for the question
+  // as its own app does — the engine chosen in its Settings, the first
+  // pages read down to what bears on the question (src/webResearch.ts) —
+  // and the pages go before the question as that app sends them. Only
+  // while « Recherche Internet » is on in Capacités and shown in the chat,
+  // not left out of this message, the documents not « only » — and for the
+  // person's own devices only: never a household member's phone nor a
+  // device paired by code. This computer's app searches in its own window
+  // (Chat.tsx) and never asks for it here. Done before the question is
+  // kept, and stopped like the app does when it fails: the person is told
+  // and nothing is kept.
+  const webWanted = readBool(parsed.web, false);
+  if (webWanted && typedQuestion && requester !== null && !isThisComputersApp(auth) && !isolatedRequest
+    && webBridge() !== null && capabilityOn(auth.userId, "web") && capabilityPlaces(auth.userId).web.chat
+    && !left.has("web") && !documentsOnly) {
+    startSse();
+    reply.raw.write(`event: status\ndata: ${JSON.stringify({ kind: "searching_web", query: typedQuestion.replace(/\s+/g, " ").trim().slice(0, 200) })}\n\n`);
+    try {
+      const found = await researchOnComputer(typedQuestion, webBudget(readWindow(parsed.context_window)), upstream.signal);
+      if (found.results.length > 0) content = `${webBlock(found)}\n\n${content}`;
+      // The pages found, for the device to show and to resolve [1], [2]…
+      reply.raw.write(`event: web\ndata: ${JSON.stringify({ query: found.query, results: found.results.map((result) => ({ n: result.n, title: result.title, url: result.url })) })}\n\n`);
+    } catch (err) {
+      if (!upstream.signal.aborted) {
+        reply.raw.write(`event: error\ndata: ${JSON.stringify({ error: "web_failed", message: err instanceof Error ? err.message : String(err) })}\n\n`);
+      }
+      if (keepalive) clearInterval(keepalive);
+      reply.raw.end();
+      return reply;
+    }
+  }
+
   // Resolve / create the discussion before we open the SSE stream so
   // the `final` event can carry the discussion_id back to the client.
   // A message that names no conversation starts one, except on a voice
@@ -520,8 +614,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // The isolated project the conversation is in, if any: its documents, its
   // notes, and nothing that reaches outside it unless the message asks.
   const isolated = isolatedProjectOf(discussion.id, auth.userId);
-  if (isolated && !isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
-  if (isolated?.closed) return reply.code(409).send({ error: "project_closed" });
+  if (isolated && !isThisComputersApp(auth)) return refuse(403, { error: "desktop_app_only" });
+  if (isolated?.closed) return refuse(409, { error: "project_closed" });
   if (isolated) {
     const asked = capabilitiesOff(parsed.capabilities_on);
     for (const id of OUTSIDE_AN_ISOLATED_PROJECT) if (!asked.has(id)) left.add(id);
@@ -540,7 +634,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // refused, so that no other text can be sealed under it as this
   // computer's. Checked and inserted with nothing awaited in between.
   if (vaultRef && vaultRefTaken(discussion.id, vaultRef)) {
-    return reply.code(409).send({ error: "vault_ref_exists", vault_ref: vaultRef });
+    return refuse(409, { error: "vault_ref_exists", vault_ref: vaultRef });
   }
 
   // Persist the user prompt up front so a streaming failure doesn't
@@ -580,46 +674,6 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     userId:       auth.userId,
     discussionId: discussion.id,
     role:         "user",
-  });
-
-  let sseStarted = false;
-  let keepalive: ReturnType<typeof setInterval> | null = null;
-  const startSse = () => {
-    if (sseStarted) return;
-    sseStarted = true;
-    // The headers Fastify's hooks already set — CORS for a browser
-    // client among them — go out with the stream: writing to the raw
-    // response skips them otherwise, and the browser drops the answer.
-    for (const [name, value] of Object.entries(reply.getHeaders())) {
-      if (value !== undefined) reply.raw.setHeader(name, value);
-    }
-    reply.raw.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-    });
-    // 8 KB comment padding — same trick Rails uses to flush past
-    // iOS NSURLSession's 4 KB XHR buffer threshold so each delta
-    // surfaces as it arrives instead of all at the end.
-    reply.raw.write(":" + " ".repeat(8192) + "\n\n");
-    keepalive = setInterval(() => {
-      reply.raw.write(": ping\n\n");
-    }, 15_000);
-    // A voice message: what was heard, first, so the person reads their
-    // own words while the answer is being written — not at its end.
-    if (transcribed) reply.raw.write(`event: transcription\ndata: ${JSON.stringify({ text: content })}\n\n`);
-  };
-
-  // The reader left (closed the window, pressed Stop): stop the model
-  // too. A local runtime otherwise keeps generating, for minutes on a
-  // long answer, a reply nobody will read — and the next question queues
-  // behind it.
-  const upstream = new AbortController();
-  // The response's "close", not the request's: since Node 16 the latter
-  // fires as soon as the request body has been read.
-  reply.raw.on("close", () => {
-    if (!reply.raw.writableFinished) upstream.abort();
   });
 
   let aggregated = "";
@@ -942,10 +996,15 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // « Rappelle-moi… », « Note que je dois… »: the model must call the tool.
     const asked = offersActions ? askedAction(typedText(content)) : null;
     // Connecteurs (Capacités): the tools of the person's MCP servers, for a
-    // model of theirs, asked in this computer's app before each call — the
-    // only app that shows the question for now.
+    // model of theirs, each call asked before it is made on the device that
+    // sent the message — this computer's app, or since 08/10/2026 the
+    // person's own devices (their iPhone shows the question too): never a
+    // household member's phone nor a device paired by code (meshRequester).
+    // The answer counts only from the session that asked
+    // (connectors.ts answerApproval).
     const connectorsOff = new Set((Array.isArray(parsed.connectors_off) ? parsed.connectors_off : typeof parsed.connectors_off === "string" ? parsed.connectors_off.split(",") : []).map((id) => String(id).trim()).filter(Boolean));
-    const connectorTools = homeLocal && capabilityOn(auth.userId, "connectors") && !left.has("connectors") && isThisComputersApp(auth) ? connectorChatTools(auth.userId).filter((tool) => !connectorsOff.has(tool.connectorId)) : [];
+    const approvalAsker = { sessionId: auth.sessionId ?? null, thisComputersApp: isThisComputersApp(auth) };
+    const connectorTools = homeLocal && capabilityOn(auth.userId, "connectors") && !left.has("connectors") && (approvalAsker.thisComputersApp || requester !== null) ? connectorChatTools(auth.userId).filter((tool) => !connectorsOff.has(tool.connectorId)) : [];
     // Google Analytics and Search Console (Connecteurs › Google, 08/10/2026):
     // the statistics of the person's websites, with the link they made in
     // this computer's app, read by a model of theirs, left out as a
@@ -973,7 +1032,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         const approvalId = generateId();
         startSse();
         reply.raw.write(`event: approval\ndata: ${JSON.stringify({ id: approvalId, connector: chosen.connectorName, tool: chosen.tool, arguments: args })}\n\n`);
-        allowed = await waitForApproval(auth.userId, approvalId, upstream.signal, undefined, { connectorId: chosen.connectorId, tool: chosen.tool });
+        allowed = await waitForApproval(auth.userId, approvalId, upstream.signal, approvalAsker, undefined, { connectorId: chosen.connectorId, tool: chosen.tool });
         if (!upstream.signal.aborted) reply.raw.write(`event: approval_done\ndata: ${JSON.stringify({ id: approvalId, allowed })}\n\n`);
       }
       if (!allowed) {
@@ -1062,7 +1121,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
           const approvalId = generateId();
           startSse();
           reply.raw.write(`event: approval\ndata: ${JSON.stringify({ id: approvalId, kind: "email_draft", connector: "E-mails", tool: "draft_email", arguments: { to: draft.to, cc: draft.cc, subject: draft.subject, body: draft.body_start }, draft })}\n\n`);
-          const allowed = await waitForApproval(auth.userId, approvalId, upstream.signal);
+          const allowed = await waitForApproval(auth.userId, approvalId, upstream.signal, approvalAsker);
           if (!upstream.signal.aborted) reply.raw.write(`event: approval_done\ndata: ${JSON.stringify({ id: approvalId, allowed })}\n\n`);
           return allowed;
         },
@@ -1456,7 +1515,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       text:          aggregated,
       message:       aggregated,
       status:        "responded",
-      transcription: parsed.text ? null : (audioBuffer ? content : null),
+      transcription: parsed.text ? null : (audioBuffer ? heard : null),
       language:      null,
       sources:       cited,
       usage,
@@ -1605,6 +1664,7 @@ async function parseMultipartBody(req: FastifyRequest): Promise<ParsedBody | nul
     capabilities_off: nested.capabilities_off ?? fields.capabilities_off,
     capabilities_on: nested.capabilities_on ?? fields.capabilities_on,
     connectors_off: nested.connectors_off ?? fields.connectors_off,
+    web: nested.web ?? fields.web,
     project_id:         (nested.project_id as string) ?? (fields.project_id as string),
     text:               (nested.text as string) ?? (fields.text as string),
     content:            (nested.content as string) ?? (fields.content as string),

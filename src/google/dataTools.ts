@@ -33,6 +33,9 @@ import { googleAccess, GoogleSignInError, type GoogleSignInCode } from "./token.
 /// `connectors_off` names it by (« Outils » in the chat).
 export const GOOGLE_DATA_CONNECTOR_ID = "google";
 export const GOOGLE_DATA_CONNECTOR_NAME = "Google Analytics et Search Console";
+/// Its icon in « Outils » and Connecteurs (08/10/2026): a small drawing
+/// shipped with Twoody — Google Analytics' three bars — never fetched.
+export const GOOGLE_DATA_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHJlY3QgeD0iMTUuNSIgeT0iMiIgd2lkdGg9IjYiIGhlaWdodD0iMjAiIHJ4PSIzIiBmaWxsPSIjRjlBQjAwIi8+PHJlY3QgeD0iOSIgeT0iOSIgd2lkdGg9IjYiIGhlaWdodD0iMTMiIHJ4PSIzIiBmaWxsPSIjRTM3NDAwIi8+PGNpcmNsZSBjeD0iNSIgY3k9IjE5IiByPSIzIiBmaWxsPSIjRTM3NDAwIi8+PC9zdmc+";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 /// Requests of one link at the same time.
@@ -209,8 +212,10 @@ export function googleDataConnectorView(userId: string) {
     oauth: null,
     address: link.address,
     granted: link.granted,
+    icon: GOOGLE_DATA_ICON,
     /// Read only, asked nothing: used from the person's own phones and
     /// computers too, not only from this computer's app (08/10/2026).
+    /// GET /connectors says it for the device asking (routes/connectors.ts).
     from_devices: true,
   };
 }
