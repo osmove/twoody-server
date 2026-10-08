@@ -398,7 +398,8 @@ export async function graphFetch(target: string | URL, init: RequestInit, door: 
 // E-mails is on and the mailbox set up — or being set up — signs in with
 // Google, over https, never redirected:
 //   - Google's token endpoint (src/google/token.ts), that address exactly,
-//     to renew the sign-in;
+//     to renew the sign-in (and, for the link to Google Analytics and
+//     Search Console, while that link is kept and on: below);
 //   - the Gmail API (src/email/gmailMailbox.ts), below
 //     https://gmail.googleapis.com/gmail/v1/users/me/ and only what reading
 //     the mailbox needs, read only — the account's address and where its
@@ -439,22 +440,28 @@ function gmailDoorOpen(door: GmailDoorState): void {
   if (!door.gmailMailbox) throw new GmailDoorClosedError("not_configured");
 }
 
-/// Throws unless Google's token endpoint may be called now, at that address
-/// exactly (compared once parsed: a port, a user, a query or another path is
-/// another address).
-export function googleTokenDoor(target: string | URL, door: GmailDoorState): void {
-  gmailDoorOpen(door);
+/// Whose sign-in Google's token endpoint renews: the Gmail mailbox's, or
+/// the link to Google Analytics and Search Console (below).
+export type GoogleTokenDoorState = GmailDoorState | Pick<GoogleDataDoorState, "googleDataLinked" | "googleDataEnabled">;
+
+/// Throws unless Google's token endpoint may be called now for this
+/// sign-in, at that address exactly (compared once parsed: a port, a user, a
+/// query or another path is another address).
+export function googleTokenDoor(target: string | URL, door: GoogleTokenDoorState): void {
+  const data = "googleDataLinked" in door;
+  if (data) googleDataDoorOpen(door);
+  else gmailDoorOpen(door);
   let url: URL | null = null;
   try {
     url = new URL(target);
   } catch {
     // Not a URL: refused below.
   }
-  if (!url || url.href !== GOOGLE_TOKEN_URL) throw new GmailDoorClosedError("other_address");
+  if (!url || url.href !== GOOGLE_TOKEN_URL) throw data ? new GoogleDataDoorClosedError("other_address") : new GmailDoorClosedError("other_address");
 }
 
 /// A request to Google's token endpoint, through that door.
-export async function googleTokenFetch(target: string | URL, init: RequestInit, door: GmailDoorState): Promise<Response> {
+export async function googleTokenFetch(target: string | URL, init: RequestInit, door: GoogleTokenDoorState): Promise<Response> {
   googleTokenDoor(target, door);
   // Never followed: the refresh token in the body would go wherever a
   // redirect pointed.
@@ -515,6 +522,153 @@ export function gmailDoor(target: string | URL, method: string | undefined, door
 /// A request to the Gmail API, through that door.
 export async function gmailFetch(target: string | URL, init: RequestInit, door: GmailDoorState): Promise<Response> {
   gmailDoor(target, init.method, door);
+  // Never followed: the access token in its headers would go wherever a
+  // redirect pointed.
+  return fetch(target, { ...init, redirect: "error" });
+}
+
+// The door for Google Analytics and Search Console (Connecteurs › Google,
+// 08/10/2026): the statistics of the person's own websites, read in the chat
+// with « Se connecter avec Google » — a sign-in of its own, apart from the
+// Gmail mailbox's (src/google/dataLink.ts), with the permissions
+// analytics.readonly and webmasters.readonly only. Read only: Google's
+// reports are asked with a POST, which writes nothing; nothing that
+// changes a property, a site, a sitemap or a user is ever opened. Open only
+// while the link is kept and switched on, each address only if its
+// permission was granted, over https, never redirected:
+//   - Google's token endpoint (above), to renew the sign-in;
+//   - Analytics Admin: the accounts and properties (accountSummaries, GET,
+//     with pageSize and pageToken alone);
+//   - Analytics Data: a property's metrics and dimensions (metadata, GET),
+//     a report and a realtime report (runReport, runRealtimeReport, POST),
+//     a property named by its number;
+//   - Search Console: the sites (GET), a site's search performance
+//     (searchAnalytics/query, POST), a site named by its address or its
+//     domain property, encoded as one segment; and a page's indexing
+//     (urlInspection/index:inspect, POST).
+// Asked for by the person when they link their account, as the mail server
+// is: made in local-only mode too.
+
+export const GOOGLE_ANALYTICS_ADMIN_ORIGIN = "https://analyticsadmin.googleapis.com";
+export const GOOGLE_ANALYTICS_DATA_ORIGIN = "https://analyticsdata.googleapis.com";
+export const SEARCH_CONSOLE_ORIGIN = "https://www.googleapis.com";
+export const URL_INSPECTION_ORIGIN = "https://searchconsole.googleapis.com";
+
+/// What each permission of the link opens.
+export type GoogleDataFamily = "analytics" | "search_console";
+
+/// The addresses the door opens, as the tools (src/google/dataTools.ts)
+/// ask them. A property is its number; a site, its address or
+/// « sc-domain:example.com ».
+export const GOOGLE_DATA_URLS = {
+  accountSummaries: (pageToken?: string | null) =>
+    `${GOOGLE_ANALYTICS_ADMIN_ORIGIN}/v1beta/accountSummaries?${new URLSearchParams({ pageSize: "200", ...(pageToken ? { pageToken } : {}) }).toString()}`,
+  metadata: (propertyId: string) => `${GOOGLE_ANALYTICS_DATA_ORIGIN}/v1beta/properties/${propertyId}/metadata`,
+  runReport: (propertyId: string) => `${GOOGLE_ANALYTICS_DATA_ORIGIN}/v1beta/properties/${propertyId}:runReport`,
+  runRealtimeReport: (propertyId: string) => `${GOOGLE_ANALYTICS_DATA_ORIGIN}/v1beta/properties/${propertyId}:runRealtimeReport`,
+  sites: () => `${SEARCH_CONSOLE_ORIGIN}/webmasters/v3/sites`,
+  searchAnalytics: (siteUrl: string) => `${SEARCH_CONSOLE_ORIGIN}/webmasters/v3/sites/${encodeURIComponent(siteUrl)}/searchAnalytics/query`,
+  inspectUrl: () => `${URL_INSPECTION_ORIGIN}/v1/urlInspection/index:inspect`,
+} as const;
+
+export type GoogleDataDoorReason = "google_data_off" | "not_linked" | "other_address" | "method_not_allowed" | "scope_missing";
+
+export class GoogleDataDoorClosedError extends Error {
+  constructor(public reason: GoogleDataDoorReason) {
+    super(`Refused on the way to Google Analytics or Search Console: ${reason}`);
+    this.name = "GoogleDataDoorClosedError";
+  }
+}
+
+/// Whether the door may open now: the link kept (or being made) and
+/// switched on, and the permissions it holds.
+export interface GoogleDataDoorState {
+  googleDataLinked: boolean;
+  googleDataEnabled: boolean;
+  granted: readonly GoogleDataFamily[];
+}
+
+function googleDataDoorOpen(door: Pick<GoogleDataDoorState, "googleDataLinked" | "googleDataEnabled">): void {
+  if (!door.googleDataLinked) throw new GoogleDataDoorClosedError("not_linked");
+  if (!door.googleDataEnabled) throw new GoogleDataDoorClosedError("google_data_off");
+}
+
+/// A Search Console site as Google names it: an address (« https://example.com/ »)
+/// or a domain property (« sc-domain:example.com »).
+export function validSearchConsoleSite(site: string): boolean {
+  if (site.length > 2_000 || /[\s\\]/.test(site)) return false;
+  if (/^sc-domain:[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/i.test(site)) return true;
+  let url: URL;
+  try {
+    url = new URL(site);
+  } catch {
+    return false;
+  }
+  // As written: no « .. », no user, no query, nothing the parser rewrote.
+  return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password && !url.search && !url.hash && url.href === site && !/(?:^|\/)\.\.?(?:\/|$)/.test(url.pathname);
+}
+
+/// What the door opens to at an address — the permission it needs, what may
+/// be done there — or null: another origin (scheme, host, port), a user in
+/// it, a path or a query not declared above. Judged once parsed, « .. »
+/// resolved.
+export function googleDataRoute(target: string | URL): { family: GoogleDataFamily; methods: readonly string[] } | null {
+  let url: URL;
+  try {
+    url = new URL(target);
+  } catch {
+    return null;
+  }
+  if (url.username || url.password || url.hash) return null;
+  const path = url.pathname;
+  const noQuery = url.search === "";
+  if (url.origin === GOOGLE_ANALYTICS_ADMIN_ORIGIN) {
+    if (path !== "/v1beta/accountSummaries") return null;
+    for (const key of url.searchParams.keys()) if (key !== "pageSize" && key !== "pageToken") return null;
+    return { family: "analytics", methods: ["GET"] };
+  }
+  if (url.origin === GOOGLE_ANALYTICS_DATA_ORIGIN) {
+    if (!noQuery) return null;
+    if (/^\/v1beta\/properties\/\d{1,20}\/metadata$/.test(path)) return { family: "analytics", methods: ["GET"] };
+    if (/^\/v1beta\/properties\/\d{1,20}:(?:runReport|runRealtimeReport)$/.test(path)) return { family: "analytics", methods: ["POST"] };
+    return null;
+  }
+  if (url.origin === SEARCH_CONSOLE_ORIGIN) {
+    if (!noQuery) return null;
+    if (path === "/webmasters/v3/sites") return { family: "search_console", methods: ["GET"] };
+    const site = path.match(/^\/webmasters\/v3\/sites\/([^/]+)\/searchAnalytics\/query$/)?.[1];
+    if (!site) return null;
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(site);
+    } catch {
+      return null;
+    }
+    // One segment that is a site, encoded as the tools encode it: no path
+    // of another API hidden in it.
+    return validSearchConsoleSite(decoded) && encodeURIComponent(decoded) === site ? { family: "search_console", methods: ["POST"] } : null;
+  }
+  if (url.origin === URL_INSPECTION_ORIGIN) {
+    return noQuery && path === "/v1/urlInspection/index:inspect" ? { family: "search_console", methods: ["POST"] } : null;
+  }
+  return null;
+}
+
+/// Throws unless this request may go to Google now: an address the door
+/// opens, what may be done there, the link kept and on, its permission
+/// granted. Says which permission it serves.
+export function googleDataDoor(target: string | URL, method: string | undefined, door: GoogleDataDoorState): GoogleDataFamily {
+  const route = googleDataRoute(target);
+  if (!route) throw new GoogleDataDoorClosedError("other_address");
+  if (!route.methods.includes((method ?? "GET").toUpperCase())) throw new GoogleDataDoorClosedError("method_not_allowed");
+  googleDataDoorOpen(door);
+  if (!door.granted.includes(route.family)) throw new GoogleDataDoorClosedError("scope_missing");
+  return route.family;
+}
+
+/// A request to Google Analytics or Search Console, through that door.
+export async function googleDataFetch(target: string | URL, init: RequestInit, door: GoogleDataDoorState): Promise<Response> {
+  googleDataDoor(target, init.method, door);
   // Never followed: the access token in its headers would go wherever a
   // redirect pointed.
   return fetch(target, { ...init, redirect: "error" });

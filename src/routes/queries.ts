@@ -57,6 +57,9 @@ import { discussionTitle, typedText } from "../documentBlocks.js";
 import { loadPersonalData } from "./localSync.js";
 import { capabilitiesOff, capabilityOn, type LocalCapability } from "../localCapabilities.js";
 import { callConnectorTool, connectorChatTools, waitForApproval } from "../connectors/connectors.js";
+import { GOOGLE_DATA_CONNECTOR_ID, googleDataChatTools, isGoogleDataTool, runGoogleDataTool } from "../google/dataTools.js";
+import { googleDataForMessage } from "../google/dataIntent.js";
+import { googleDataLink } from "../google/dataLink.js";
 import { EMAIL_TOOLS, emailsAgreedTo, emailsForMessage, emailToolsAvailable, isEmailTool, passOnFirst, runEmailTool } from "../email/chat.js";
 import { aboutEmails, agreedToDraft, asksForADraft, passOnWithoutHow } from "../email/intent.js";
 import { askedBank, BANK_TOOLS, isBankTool, runBankTool } from "../bank/tools.js";
@@ -893,6 +896,22 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // only app that shows the question for now.
     const connectorsOff = new Set((Array.isArray(parsed.connectors_off) ? parsed.connectors_off : typeof parsed.connectors_off === "string" ? parsed.connectors_off.split(",") : []).map((id) => String(id).trim()).filter(Boolean));
     const connectorTools = homeLocal && capabilityOn(auth.userId, "connectors") && !left.has("connectors") && isThisComputersApp(auth) ? connectorChatTools(auth.userId).filter((tool) => !connectorsOff.has(tool.connectorId)) : [];
+    // Google Analytics and Search Console (Connecteurs › Google, 08/10/2026):
+    // the statistics of the person's websites, with the link they made in
+    // this computer's app, read by a model of theirs — the same conditions
+    // as the connectors', left out as one of them (`connectors_off`
+    // « google »). Read only: called without asking, each call traced.
+    const googleTools = homeLocal && capabilityOn(auth.userId, "connectors") && !left.has("connectors") && !connectorsOff.has(GOOGLE_DATA_CONNECTOR_ID) && isThisComputersApp(auth) ? googleDataChatTools(auth.userId) : [];
+    const runGoogle = async (name: string, args: Record<string, unknown>): Promise<string> => {
+      const traced: ToolCallTrace = { name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0 };
+      toolCallsTraced.push(traced);
+      const called = Date.now();
+      const done = await runGoogleDataTool(name, args, { userId: auth.userId, timeZone: validTimeZone(parsed.time_zone) });
+      traced.ms = Date.now() - called;
+      traced.result_chars = done.text.length;
+      if (done.error) traced.error = done.error;
+      return done.text;
+    };
     const runConnectorTool = async (chosen: (typeof connectorTools)[number], args: Record<string, unknown>): Promise<string> => {
       const traced: ToolCallTrace = { name: chosen.definition.function.name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0 };
       toolCallsTraced.push(traced);
@@ -946,6 +965,13 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     const agreedRequest = offersEmail && !emailAsked && !passOn && lastAnswer && agreedToDraft(lastAnswer.content, typedText(content))
       ? [...history.slice(0, history.lastIndexOf(lastAnswer))].reverse().find((row) => row.role === "user")?.content ?? null
       : null;
+    // « Combien de visiteurs cette semaine ? »: the likeliest figures, read
+    // now and given with the message (google/dataIntent.ts).
+    const googleGranted = googleTools.length ? googleDataLink(auth.userId)?.granted ?? [] : [];
+    const googleFound = googleTools.length && toolCapable(provider)
+      ? await googleDataForMessage(typedText(content), { userId: auth.userId, timeZone: validTimeZone(parsed.time_zone), granted: { analytics: googleGranted.includes("analytics"), searchConsole: googleGranted.includes("search_console") } }).catch(() => null)
+      : null;
+    if (googleFound) trace.google_data = { read: googleFound.tool, error: googleFound.error };
     const emailFound = emailAsked
       ? emailsForMessage(typedText(content), emailContext)
       : passOn
@@ -1004,14 +1030,16 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     const chatTools: ChatTools = {
       ...(asked || bankAsked || homeAsked ? { required: true } : {}),
       // A connector's tool may be announced instead of called: insisted on.
-      ...(connectorTools.length ? { insist: true } : {}),
-      // Search, read, then draft an answer: three rounds.
-      ...(offersEmail ? { rounds: 3 } : {}),
+      ...(connectorTools.length || googleTools.length ? { insist: true } : {}),
+      // Search, read, then draft an answer: three rounds. Google's the same:
+      // the properties, a report, another one.
+      ...(offersEmail || googleTools.length ? { rounds: 3 } : {}),
       ...(draftAsked ? { mayDraft: true } : {}),
       // The e-mail tools, always the same three, before the connectors'
       // (which change as the person picks them): the runtime's cache.
-      // The bank's three tools after them, the same as long as Banque is on.
-      definitions: [...(offersDocuments ? [SEARCH_DOCUMENTS_TOOL] : []), ...(offersActions ? ACTION_TOOLS : []), ...(offersHome ? [HOME_TOOL] : []), ...(offersEmail ? EMAIL_TOOLS : []), ...(offersBank ? BANK_TOOLS : []), ...connectorTools.map((tool) => tool.definition)],
+      // The bank's three tools after them, the same as long as Banque is on;
+      // Google's, the same as long as its link is.
+      definitions: [...(offersDocuments ? [SEARCH_DOCUMENTS_TOOL] : []), ...(offersActions ? ACTION_TOOLS : []), ...(offersHome ? [HOME_TOOL] : []), ...(offersEmail ? EMAIL_TOOLS : []), ...(offersBank ? BANK_TOOLS : []), ...googleTools, ...connectorTools.map((tool) => tool.definition)],
       run: async (name, args) => {
         if (name === "search_documents") return documentTools.run(name, args);
         if (offersEmail && isEmailTool(name)) {
@@ -1024,6 +1052,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
           if (!bankHere(provider)) return "The user's bank statements are read only by a model of this computer: not available for this answer. Say so, briefly.";
           return runBankTool(auth.userId, name, args, { timeZone: validTimeZone(parsed.time_zone) });
         }
+        if (googleTools.length && isGoogleDataTool(name)) return runGoogle(name, args);
         const viaConnector = connectorTools.find((tool) => tool.definition.function.name === name);
         if (viaConnector) return runConnectorTool(viaConnector, args);
         if (name === "control_home") {
@@ -1123,7 +1152,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       connectorTools: toolsFor(provider) && connectorTools.length ? [...new Set(connectorTools.map((tool) => tool.connectorName))] : null,
       emailTools: !!toolsFor(provider) && offersEmail,
       emailFound: toolsFor(provider) ? emailFound?.block ?? null : null,
+      googleDataFound: googleFound?.block ?? null,
       bankTools: !!toolsFor(provider) && offersBank,
+      googleDataTools: toolsFor(provider) && googleTools.length ? googleTools.map((tool) => tool.function.name) : null,
       // The projects the message is about (named, or through the memories
       // given with it): their cards, with the message.
       projectCards: memoryMode === "full" ? cards.map((card) => card.card) : [],
@@ -2017,7 +2048,7 @@ export async function warmNewConversation(key: string, { wake = false }: { wake?
 // read again at each turn (history, memories, documents, the message).
 const WARM_SEEDS_FILE = join(DATA_DIR, "warm-seeds.json");
 const WARM_WATCH_MS = 10 * 60_000;
-const SEED_LEFT_OUT = ["isolatedProject", "prefs", "history", "memories", "content", "excerpts", "documentFiles", "documentFileTotal", "fileListings", "documentNote", "personal", "homeDevices", "homeDone", "emailFound", "projectCards", "remembered", "summary", "summaryThrough", "state", "currentId", "discussionId", "relevant", "profileHints", "now", "documentScan"];
+const SEED_LEFT_OUT = ["isolatedProject", "prefs", "history", "memories", "content", "excerpts", "documentFiles", "documentFileTotal", "fileListings", "documentNote", "personal", "homeDevices", "homeDone", "emailFound", "googleDataFound", "projectCards", "remembered", "summary", "summaryThrough", "state", "currentId", "discussionId", "relevant", "profileHints", "now", "documentScan"];
 
 type WarmSeed = { input: Record<string, unknown>; tools: ChatTools["definitions"] | null; model: string | null };
 

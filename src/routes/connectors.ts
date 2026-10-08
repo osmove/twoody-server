@@ -3,6 +3,8 @@ import { requireAuth } from "../auth.js";
 import { isThisComputersApp } from "./usage.js";
 import { takeSignIn } from "../connectors/oauth.js";
 import { addConnector, answerApproval, beginSignIn, changeConnector, completeSignIn, ConnectorError, connectorView, listConnectors, removeConnector, signOut, startConnector, stopConnector } from "../connectors/connectors.js";
+import { forgetGoogleDataLink, setGoogleDataEnabled } from "../google/dataLink.js";
+import { GOOGLE_DATA_CONNECTOR_ID, googleDataConnectorView } from "../google/dataTools.js";
 
 // « Connecteurs » (Capacités, Jimmy, 03/10/2026), src/connectors/connectors.ts:
 //   GET    /connectors                 the person's, with their tools
@@ -17,6 +19,12 @@ import { addConnector, answerApproval, beginSignIn, changeConnector, completeSig
 // Read by any of the person's devices; added, changed, started and removed
 // only from this computer's app — a connector is a command this computer
 // runs, or an address it calls with the person's token.
+//
+// Google Analytics and Search Console, once linked (/google_data,
+// 08/10/2026), are listed here too, as the connector « google » of kind
+// « builtin », so that « Outils » shows them and `connectors_off` can leave
+// them out of a message: PATCH switches the link on or off, DELETE removes
+// it; nothing else applies to it.
 
 const security: Array<Record<string, string[]>> = [{ bearerAuth: [] }, { userTokenAuth: [] }];
 
@@ -31,7 +39,8 @@ export async function connectorRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      reply.send({ connectors: listConnectors(auth.userId).map((connector) => connectorView(auth.userId, connector)) });
+      const google = googleDataConnectorView(auth.userId);
+      reply.send({ connectors: [...listConnectors(auth.userId).map((connector) => connectorView(auth.userId, connector)), ...(google ? [google] : [])] });
     },
   });
 
@@ -57,6 +66,12 @@ export async function connectorRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
       if (!isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
+      if (req.params.id === GOOGLE_DATA_CONNECTOR_ID) {
+        const input = (req.body && typeof req.body === "object" ? (req.body as { connector?: unknown }).connector ?? req.body : {}) as Record<string, unknown>;
+        if (typeof input.enabled === "boolean" && !setGoogleDataEnabled(auth.userId, input.enabled)) return reply.code(404).send({ error: "not_found" });
+        const google = googleDataConnectorView(auth.userId);
+        return google ? reply.send({ connector: google }) : reply.code(404).send({ error: "not_found" });
+      }
       try {
         const changed = changeConnector(auth.userId, req.params.id, req.body);
         reply.send({ connector: connectorView(auth.userId, changed) });
@@ -70,6 +85,7 @@ export async function connectorRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
       if (!isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
+      if (req.params.id === GOOGLE_DATA_CONNECTOR_ID) return forgetGoogleDataLink(auth.userId) ? reply.code(204).send() : reply.code(404).send({ error: "not_found" });
       try {
         removeConnector(auth.userId, req.params.id);
         reply.code(204).send();
