@@ -345,7 +345,7 @@ test("in the chat: offered to a model of the person's in this computer's app, wh
   await ask("Combien de visiteurs ?", { capabilities_off: ["connectors"] });
   assert.ok(!offered().some((name) => GOOGLE_TOOLS.includes(name)), "every connector left out");
   await ask("Combien de visiteurs ?", {}, phone);
-  assert.ok(!offered().some((name) => GOOGLE_TOOLS.includes(name)), "not from the phone");
+  assert.ok(!offered().some((name) => GOOGLE_TOOLS.includes(name)), "not from a phone that is not one of the person's devices (no vault device, no sealed session)");
 
   // Called without asking (read only), traced, its result given as data.
   toolCall = { name: "google_analytics_report", arguments: { start_date: "7daysAgo", end_date: "today", metrics: ["activeUsers", "sessions"], dimensions: ["date"] } };

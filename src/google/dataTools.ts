@@ -209,6 +209,9 @@ export function googleDataConnectorView(userId: string) {
     oauth: null,
     address: link.address,
     granted: link.granted,
+    /// Read only, asked nothing: used from the person's own phones and
+    /// computers too, not only from this computer's app (08/10/2026).
+    from_devices: true,
   };
 }
 

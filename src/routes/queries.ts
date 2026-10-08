@@ -948,10 +948,12 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     const connectorTools = homeLocal && capabilityOn(auth.userId, "connectors") && !left.has("connectors") && isThisComputersApp(auth) ? connectorChatTools(auth.userId).filter((tool) => !connectorsOff.has(tool.connectorId)) : [];
     // Google Analytics and Search Console (Connecteurs › Google, 08/10/2026):
     // the statistics of the person's websites, with the link they made in
-    // this computer's app, read by a model of theirs — the same conditions
-    // as the connectors', left out as one of them (`connectors_off`
-    // « google »). Read only: called without asking, each call traced.
-    const googleTools = homeLocal && capabilityOn(auth.userId, "connectors") && !left.has("connectors") && !connectorsOff.has(GOOGLE_DATA_CONNECTOR_ID) && isThisComputersApp(auth) ? googleDataChatTools(auth.userId) : [];
+    // this computer's app, read by a model of theirs, left out as a
+    // connector (`connectors_off` « google »). Read only and asked nothing:
+    // from this computer's app and from the person's own devices — their
+    // iPhone (08/10/2026) — never a household member's or a device paired
+    // by code (meshRequester). Each call traced.
+    const googleTools = homeLocal && capabilityOn(auth.userId, "connectors") && !left.has("connectors") && !connectorsOff.has(GOOGLE_DATA_CONNECTOR_ID) && (isThisComputersApp(auth) || requester !== null) ? googleDataChatTools(auth.userId) : [];
     const runGoogle = async (name: string, args: Record<string, unknown>): Promise<string> => {
       const traced: ToolCallTrace = { name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0 };
       toolCallsTraced.push(traced);
