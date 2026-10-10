@@ -18,11 +18,10 @@ import { sqlite } from "./db.js";
 // Microsoft 365 one through Microsoft Graph (src/email/graphMailbox.ts).
 // « bank »: the bank statements the person imports, read and kept on this
 // computer (src/bank/, Jimmy, 04/10/2026: « import de relevés pour la banque »).
-// « isolated_projects »: client files, projects walled off from everything
-// else (src/projects/isolation.ts, Jimmy, 04/10/2026, Twoody Pro): the switch
-// only shows or hides them in the app's menu — their conversations stay
-// walled off whatever it says.
-export const LOCAL_CAPABILITIES = ["documents", "contacts", "calendar", "web", "dictation", "agent", "home", "connectors", "memory", "email", "bank", "isolated_projects"] as const;
+// « isolated_projects » (client files, 04/10/2026) was retired on
+// 10/10/2026: its switch, kept in the prefs of the installations that had
+// it, is no longer read (migrations/0007_retire_client_files.ts).
+export const LOCAL_CAPABILITIES = ["documents", "contacts", "calendar", "web", "dictation", "agent", "home", "connectors", "memory", "email", "bank"] as const;
 export type LocalCapability = (typeof LOCAL_CAPABILITIES)[number];
 
 export function isLocalCapability(value: unknown): value is LocalCapability {

@@ -302,3 +302,28 @@ test("in its conversations, a reminder or a task asked for is the isolated proje
   assert.equal((sqlite.prepare("SELECT project_id FROM tasks WHERE id = ?").get(task.id) as { project_id: string }).project_id, dupont.id);
   assert.throws(() => runAction(owner, "update_project", { project: "Achat d'un Mac mini", status: "done" }, "Europe/Paris", new Date(), "", within), /no_such_project/);
 });
+
+// 10/10/2026: client files retired. Those made before keep their walls
+// and are closed — read, never written in again — nothing deleted.
+test("retiring the client files closes the open ones, keeps their walls and deletes nothing", async () => {
+  const { retireClientFiles } = await import("../src/migrations/0007_retire_client_files.js");
+  const open = sqlite.prepare("SELECT id, status, isolated FROM projects WHERE user_id = ? AND isolated = 1").all(owner) as Array<{ id: string; status: string; isolated: number }>;
+  assert.ok(open.length > 0);
+  const notes = (sqlite.prepare("SELECT COUNT(*) AS n FROM project_notes").get() as { n: number }).n;
+  retireClientFiles(sqlite);
+  for (const project of open) {
+    const row = sqlite.prepare("SELECT status, isolated, done_at FROM projects WHERE id = ?").get(project.id) as { status: string; isolated: number; done_at: number | null };
+    assert.equal(row.isolated, 1, "still walled off");
+    assert.ok(row.status === "done" || row.status === "dropped");
+    assert.ok(row.done_at);
+  }
+  assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM project_notes").get() as { n: number }).n, notes);
+  assert.equal(SCHEMA_VERSION, 7);
+  // Its conversations are refused a new message: closed.
+  const discussion = sqlite.prepare("SELECT d.id FROM discussions d JOIN projects p ON p.id = d.project_id WHERE p.isolated = 1 LIMIT 1").get() as { id: string } | undefined;
+  if (discussion) {
+    const refused = await app.inject({ method: "POST", url: "/queries", headers: desktop, payload: { text: "Et ensuite ?", discussion_id: discussion.id, stream: false } });
+    assert.equal(refused.statusCode, 409);
+    assert.equal(refused.json().error, "project_closed");
+  }
+});

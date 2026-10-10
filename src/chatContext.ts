@@ -829,21 +829,27 @@ const SPANISH_WORDS = new Set(["el", "los", "las", "del", "y", "qué", "cómo", 
 const PORTUGUESE_WORDS = new Set(["o", "os", "do", "da", "dos", "das", "não", "um", "você", "ela", "ele", "qual", "quer", "em", "no", "na", "nas", "nos", "seu", "sua", "isso", "também", "ao", "pelo", "pela", "obrigado", "obrigada", "olá", "tenho", "deve", "é", "como"]);
 const ITALIAN_WORDS = new Set(["il", "gli", "della", "delle", "dello", "che", "non", "è", "per", "come", "quale", "deve", "vuole", "sono", "questo", "questa", "anche", "perché", "cosa", "dal", "nel", "nella", "ciao", "grazie", "mio", "mia", "ho", "lei", "lui", "di"]);
 const GERMAN_WORDS = new Set(["der", "die", "das", "und", "ist", "nicht", "ein", "eine", "einen", "mit", "wie", "welche", "welcher", "muss", "möchte", "sie", "er", "ich", "zu", "den", "dem", "auf", "für", "von", "im", "auch", "hallo", "danke", "mein", "meine", "was", "wann", "warum"]);
+// Dutch since the app speaks it (10/10/2026); its words overlap German's
+// and English's little once the shared ones are left out.
+const DUTCH_WORDS = new Set(["het", "een", "niet", "wat", "hoe", "waarom", "wanneer", "welke", "mijn", "jij", "je", "u", "ik", "zijn", "heb", "hebt", "heeft", "kun", "kunt", "kan", "voor", "met", "ook", "maar", "dit", "deze", "dat", "naar", "van", "bedankt", "dank", "hoi", "hallo", "graag", "alsjeblieft", "alstublieft"]);
 const LANGUAGE_WORDS: Array<[MessageLanguage, Set<string>]> = [
-  ["en", ENGLISH_WORDS], ["fr", FRENCH_WORDS], ["es", SPANISH_WORDS], ["pt", PORTUGUESE_WORDS], ["it", ITALIAN_WORDS], ["de", GERMAN_WORDS],
+  ["en", ENGLISH_WORDS], ["fr", FRENCH_WORDS], ["es", SPANISH_WORDS], ["pt", PORTUGUESE_WORDS], ["it", ITALIAN_WORDS], ["de", GERMAN_WORDS], ["nl", DUTCH_WORDS],
 ];
-export type MessageLanguage = "en" | "fr" | "es" | "pt" | "it" | "de" | "ja" | "ko";
+export type MessageLanguage = "en" | "fr" | "es" | "pt" | "it" | "de" | "nl" | "ja" | "ko" | "zh";
 
 /// The language a message is plainly written in, from its common words: at
 /// least two of one language and clearly more than of any other; null when
 /// it is short, mixed or none of these (the person's usual language then).
 export function messageLanguage(text: string): MessageLanguage | null {
-  // Japanese and Korean are told by their scripts: kana (Japanese) and
-  // hangul (Korean), a few of them enough in a short question.
+  // Japanese, Korean and Chinese are told by their scripts: kana
+  // (Japanese) and hangul (Korean), a few of them enough in a short
+  // question; Chinese characters without either, Chinese.
   const kana = (text.match(/[\u3040-\u30ff]/g) ?? []).length;
   const hangul = (text.match(/[\uac00-\ud7af]/g) ?? []).length;
+  const han = (text.match(/[\u4e00-\u9fff]/g) ?? []).length;
   if (kana >= 2 && kana >= hangul) return "ja";
   if (hangul >= 2) return "ko";
+  if (han >= 2 && kana === 0) return "zh";
   const words = text.toLowerCase().replace(/[’']/g, " ").match(/[a-zàáâãäçéèêëíìîïñóòôõöúùûüÿœß]+/g) ?? [];
   const scores = LANGUAGE_WORDS.map(([language, set]) => [language, words.filter((word) => set.has(word)).length] as const).sort((a, b) => b[1] - a[1]);
   const [best, second] = scores;
