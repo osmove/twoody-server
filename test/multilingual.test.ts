@@ -303,6 +303,24 @@ test("money, « remember that… », e-mails, documents and « shall I look? » 
   for (const said of ["Soll ich in Ihren E-Mails suchen?", "¿Quieres que busque en tus documentos?", "メールを検索しましょうか？", "要我帮你查一下邮件吗？", "이메일을 검색할까요?"]) assert.equal(looksLikeAnnouncement(said), true, said);
 });
 
+test("a connector's data announced, not fetched, in every language: held and the tool asked for", () => {
+  for (const said of [
+    "Ich werde Ihre 5 letzten Angebote abrufen.", "Ich rufe Ihre offenen Tickets ab.", "Lassen Sie mich die Daten aus Linear holen.",
+    "Voy a obtener tus últimas 5 ofertas.", "Puedo mostrar tus tickets abiertos.", "Déjame recuperar tus issues.",
+    "Recupero le tue ultime 5 offerte.", "Posso elencare i tuoi ticket aperti.",
+    "Vou obter suas últimas 5 ofertas.", "Deixe-me recuperar suas issues.",
+    "Ik ga je laatste 5 offertes ophalen.", "Ik haal je open tickets op.",
+    "最新のオファーを5件取得します。", "未解決のチケットを一覧表示します。", "我来获取你最近的5个报价。", "让我列出你的未结工单。",
+    "최근 제안 5개를 가져오겠습니다.", "열린 티켓을 조회하겠습니다.",
+  ]) assert.equal(looksLikeAnnouncement(said), true, said);
+  for (const said of [
+    "Ich habe Ihre 5 letzten Angebote: A, B, C, D und E.", "Ich hole morgen die Kinder ab und rufe dann Paul an.", "Ich zeige Ihnen gern, wie das geht, wenn Sie möchten. Das Angebot A kostet 100 €.",
+    "Las ofertas son A, B y C.", "Il prezzo è mostrato nella tabella qui sotto.", "Posso dire che è andata bene.", "Vou bem, obrigado!",
+    "Ik haal morgen de kinderen op van school, zei Paul.", "Ik vraag me af of dat klopt; Paul zei van wel.",
+    "画面に表示されている数字は100です。", "数据显示销售额增长了10%。", "가져오신 서류는 잘 받았습니다.",
+  ]) assert.equal(looksLikeAnnouncement(said), false, said);
+});
+
 test("the app's screens are named as the person's app names them; English when the language is not the app's", () => {
   assert.equal(uiLanguage("pt-BR"), "pt");
   assert.equal(uiLanguage("zh-Hans-CN"), "zh");

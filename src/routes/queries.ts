@@ -2785,8 +2785,39 @@ export function looksLikeAnnouncement(text: string): boolean {
     // The same offer in the other languages of the app (10/10/2026).
     || /(?<![\p{L}])(?:möchten sie|willst du|soll ich|sollen wir|quieres que|desea que|deseas que|vuoi che|desideri che|preferisci che|quer que|deseja que|você quer|wil je dat|wilt u dat|zal ik)(?![\p{L}])|しましょうか|いたしましょうか|要我|需要我|할까요|드릴까요/iu.test(said)
     || /\b(je vais|je peux|laissez-moi|laisse-moi|i(?:'ll| will| can)|let me)\s+(?:\S+\s+){0,2}(rechercher|chercher|récupérer|consulter|regarder|lister|afficher|vérifier|look|search|check|fetch|list|get)\b/i.test(said)
+    || FETCH_ANNOUNCED.test(said)
     || NARRATION.test(said);
 }
+
+/// « Je vais récupérer / afficher… » in the other languages of the app: a
+/// connector's data announced, not fetched — « Ich werde Ihre letzten
+/// Angebote abrufen. », « Voy a obtener tus ofertas. », « 最新のオファーを
+/// 取得します。 » (10/10/2026: only French and English were held, and the
+/// person got the announcement as the answer). NARRATION has the searching
+/// verbs; these are the fetching and showing ones. A separable verb's
+/// particle (« ich rufe … ab », « ik haal … op ») only at the sentence's end:
+/// « Ik haal morgen de kinderen op van school » is not one.
+const FETCH_ANNOUNCED = new RegExp([
+  // German
+  String.raw`(?<!\p{L})(?:ich (?:werde|kann|muss|möchte|will)|lass(?:en sie)? mich)\s+(?:\S+\s+){0,5}?(?:abrufen|abfragen|auflisten|anzeigen|holen|laden|zeigen)(?!\p{L})`,
+  String.raw`(?<!\p{L})ich (?:rufe|frage|liste|hole|lade)\s+(?:\S+\s+){0,5}?(?:ab|auf)\W*$`,
+  // Spanish
+  String.raw`(?<!\p{L})(?:voy a|puedo|déjame|dejame|permíteme|necesito|tengo que)\s+(?:\S+\s+){0,2}?(?:obtener|recuperar|mostrar|listar|traer|cargar)(?!\p{L})`,
+  String.raw`(?<!\p{L})(?:obtendré|recuperaré|mostraré|listaré|traeré)(?!\p{L})`,
+  // Italian
+  String.raw`(?<!\p{L})(?:lasciami|fammi|posso|devo|vado a)\s+(?:\S+\s+){0,2}?(?:recuperare|ottenere|mostrare|elencare|prendere|caricare)(?!\p{L})`,
+  String.raw`^\W*(?:ora\s+)?(?:recupero|elenco|ottengo|recupererò|otterrò|mostrerò|elencherò)(?!\p{L})`,
+  // Portuguese
+  String.raw`(?<!\p{L})(?:vou|posso|deixe-me|deixa-me|preciso|tenho que)\s+(?:\S+\s+){0,2}?(?:obter|recuperar|mostrar|listar|trazer|carregar)(?!\p{L})`,
+  String.raw`(?<!\p{L})(?:obterei|recuperarei|mostrarei|listarei)(?!\p{L})`,
+  // Dutch
+  String.raw`(?<!\p{L})(?:ik (?:ga|zal|kan|moet|wil)|laat me)\s+(?:\S+\s+){0,5}?(?:ophalen|opvragen|weergeven|tonen|laten zien|oplijsten)(?!\p{L})`,
+  String.raw`(?<!\p{L})ik (?:haal|vraag)\s+(?:\S+\s+){0,5}?op\W*$`,
+  // Japanese, Chinese, Korean
+  String.raw`(?:取得|一覧表示|表示|読み込み|呼び出し)(?:します|してみます|いたします|しましょう)`,
+  String.raw`(?:让我|我来|我将|我会|我先|我帮你|我去)[^。！？\n]{0,12}?(?:获取|列出|调取|拉取|显示|读取|提取)`,
+  String.raw`(?:가져오|불러오|조회하|표시하)겠습니다|(?:가져올|불러올|조회할|표시할)게요|(?:가져와|불러와|조회해)\s?(?:보겠습니다|볼게요|드릴게요|드리겠습니다)`,
+].join("|"), "iu");
 
 /// A sentence in which the model only says it is about to look something
 /// up — « I need to search your documents for this. », « Je vais chercher
