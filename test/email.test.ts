@@ -308,8 +308,35 @@ test("a draft is asked in the chat first — recipients, subject, the start of t
   assert.match(asked.draft.body_start, /^Bonjour René,/);
   assert.deepEqual(asked.draft.in_reply_to, { subject: "Réunion de lundi", from: "René Dupont <rene@example.com>" });
   assert.equal(eventOf(response.body, "approval_done").allowed, false);
-  assert.match(eventOf(response.body, "final").message, /did not allow this draft: nothing was saved/);
+  // What the model is told cannot be read as a save; it echoes words about
+  // saving (« stored, prepared »): the person reads the plain sentence.
+  assert.equal(eventOf(response.body, "final").message, "D'accord, je n'ai pas enregistré le brouillon : rien n'a été enregistré ni envoyé.");
+  assert.match(bodies.at(-1)!.messages.filter((one) => one.role === "tool").at(-1)!.content, /^NOT SAVED\. The user refused this draft when it was shown to them: it was NOT saved — not in their Drafts folder, not anywhere — and nothing was sent\. Do not call draft_email again\. Answer in one short sentence in French that the draft was not saved, such as « D'accord, je n'ai pas enregistré le brouillon : rien n'a été enregistré ni envoyé »/);
   assert.ok(!mail.log.some((line) => line.startsWith("APPEND")));
+  assert.equal(mail.folders.get("Drafts")!.messages.length, 0);
+});
+
+test("refused, and the answer says it was saved all the same: the person reads that nothing was saved, never the claim", async () => {
+  const [reunion] = searchEmails(userId, { from: "rene", query: "reunion" });
+  script = [() => ({ name: "draft_email", arguments: { in_reply_to: reunion!.id, body: "Bonjour René,\n\nC'est noté pour lundi 10h.\n\nJimmy" } })];
+  answer = "C'est fait : le brouillon est enregistré dans vos brouillons.";
+  const [response] = await Promise.all([ask("Réponds à René que c'est d'accord pour lundi"), answerWhenAsked(false)]);
+  assert.equal(eventOf(response.body, "approval_done").allowed, false);
+  assert.equal(eventOf(response.body, "final").message, "D'accord, je n'ai pas enregistré le brouillon : rien n'a été enregistré ni envoyé.");
+  assert.doesNotMatch(response.body, /est enregistré dans vos brouillons/, "the claim never reached the person");
+  // Nor that it is writing it now (« 好的，正在为您给妈妈写邮件草稿。 »).
+  answer = "Je rédige un nouveau brouillon pour René.";
+  const [drafting] = await Promise.all([ask("Réponds à René que c'est d'accord pour lundi"), answerWhenAsked(false)]);
+  assert.equal(eventOf(drafting.body, "final").message, "D'accord, je n'ai pas enregistré le brouillon : rien n'a été enregistré ni envoyé.");
+  // A right answer is kept as the model wrote it; none at all is said for it.
+  answer = "Très bien, je n'ai rien enregistré.";
+  const [kept] = await Promise.all([ask("Réponds à René que c'est d'accord pour lundi"), answerWhenAsked(false)]);
+  assert.equal(eventOf(kept.body, "final").message, "Très bien, je n'ai rien enregistré.");
+  answer = "";
+  const [silent] = await Promise.all([ask("Réponds à René que c'est d'accord pour lundi", { locale: "de-DE" }), answerWhenAsked(false)]);
+  script = [];
+  answer = null;
+  assert.match(eventOf(silent.body, "final").message, /^(?:D'accord, je n'ai pas enregistré|In Ordnung, ich habe den Entwurf nicht gespeichert)/);
   assert.equal(mail.folders.get("Drafts")!.messages.length, 0);
 });
 
@@ -387,6 +414,23 @@ test("« Dis à René que je viens lundi »: how not said — a question first, 
   assert.doesNotMatch(lastUserMessage(), /pass something on|e-mails/);
   const system = systemOf(bodies.at(-1));
   assert.match(system, /Asked to pass something on to someone without saying how/, "one sentence, always the same: the cache holds");
+});
+
+test("« oui » to « …un e-mail à René ? », his address known: the draft goes to it — asked again when the model asks again, its name put in place of an address replaced", async () => {
+  answer = "Voulez-vous que je rédige un e-mail à René pour lui dire que je serai en retard ?";
+  const first = await ask("Dis à René que je serai en retard");
+  answer = null;
+  const discussionId = eventOf(first.body, "final").discussion_id as string;
+  const before = bodies.length;
+  script = [() => ({ name: "draft_email", arguments: { to: "René", subject: "Retard", body: "Bonjour René,\n\nJe serai en retard.\n\nJimmy" }, say: ["Bien sûr. ", "Voulez-vous que je l'écrive à rene@example.com ?"], announceOnly: true })];
+  const [agreed] = await Promise.all([ask("oui", { discussion_id: discussionId, force_new_discussion: false }), answerWhenAsked(false)]);
+  script = [];
+  const given = bodies[before]!.messages.at(-1)!.content;
+  assert.match(given, /\[Whom the user named, « René »: René Dupont <rene@example\.com> \(from the user's e-mails\)\. Call draft_email with to: "rene@example\.com"/);
+  assert.ok(bodies.slice(before).some((body) => body.tool_choice === "required"), "asked again for the call");
+  assert.deepEqual(eventOf(agreed.body, "approval").draft.to, ["René Dupont <rene@example.com>"]);
+  assert.doesNotMatch(agreed.body, /Voulez-vous que je l'écrive/, "the question again never reached the person");
+  assert.equal(eventOf(agreed.body, "final").message, "D'accord, je n'ai pas enregistré le brouillon : rien n'a été enregistré ni envoyé.");
 });
 
 test("a draft with no recipient, or to something that is no address, is not asked: the model is told", async () => {

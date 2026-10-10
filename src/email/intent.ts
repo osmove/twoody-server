@@ -262,11 +262,16 @@ function offeredDraft(answer: string): boolean {
   return false;
 }
 
-export function agreedToDraft(previousAnswer: string | null | undefined, message: string): boolean {
+/// `askedFirst`: the request before was something to pass on, how not said
+/// (passOnWithoutHow), which the server told the model to answer with that
+/// very question: a yes to its question is a yes to the e-mail even when
+/// the question forgot to name it (« 엄마에게 "늦는다고" 전해 드릴까요? »,
+/// bench of 10/10/2026).
+export function agreedToDraft(previousAnswer: string | null | undefined, message: string, askedFirst = false): boolean {
   const text = message.trim();
   // « Oui, mais plutôt par SMS »: another way.
   if (!previousAnswer || !text || text.length > 200 || !(YES.test(text) || YES_OTHER.test(fold(text))) || OTHER_CHANNEL.test(text)) return false;
-  return offeredDraft(previousAnswer);
+  return offeredDraft(previousAnswer) || (askedFirst && /[?？]\s*$/u.test(previousAnswer.trim()) && !OTHER_CHANNEL.test(previousAnswer.slice(-300)));
 }
 
 /// A message about e-mails that asks for one to be written or answered

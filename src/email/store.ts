@@ -3,6 +3,7 @@ import { sqlite } from "../db.js";
 import { emailsSchema } from "../migrations/0004_emails.js";
 import { buildMatchQuery, cjkTerms, queryTerms, termsFound } from "../documents/query.js";
 import { cjkSnippet, cjkWordsFound, hasCjk, likePatterns } from "../documents/cjk.js";
+import { normaliseName } from "../memory/entities.js";
 import type { MailSecurity } from "../outbound.js";
 import { asksSomething, automatedSender, type AttachmentInfo, type FlagState, type FolderRole, type MailAddress } from "./parse.js";
 
@@ -767,6 +768,47 @@ export function unansweredEmails(userId: string, options: { after?: number | nul
                       AND s.provider_internal_date > e.provider_internal_date)
     ORDER BY e.provider_internal_date DESC LIMIT 300`).all(userId, options.after ?? null, options.after ?? null) as Array<Record<string, unknown>>;
   return rows.map(emailOf).filter((email) => !automatedSender(email.from_email) && asksSomething(email.text_body)).slice(0, Math.max(1, Math.min(30, options.limit ?? 10)));
+}
+
+/// Whom the person's e-mails show by these names (« Nadine Douieb »,
+/// « Paul »): the senders, and the ones the person wrote to, whose name has
+/// every word of one of them — the most frequent first, the person's own
+/// mailboxes left out. For « Dis à maman que… » (recipient.ts).
+export function correspondentsNamed(userId: string, names: string[], limit = 6): Array<{ name: string | null; address: string }> {
+  ensure();
+  const own = new Set([...sourceAddresses(userId).values()].map((address) => address.toLowerCase()));
+  const compact = (text: string) => normaliseName(text).replace(/\s+/g, "");
+  const wanted = names.slice(0, 6).map((name) => ({ name, words: normaliseName(name).split(" ").filter((word) => word.length >= 2 || hasCjk(word)) })).filter((one) => one.words.length);
+  if (!wanted.length) return [];
+  // Every name the mailbox knows, folded here: SQLite's LIKE folds no
+  // accents (« René » is not « rene »).
+  const rows = sqlite.prepare(
+    `SELECT name, address, SUM(n) AS count FROM (
+       SELECT from_name AS name, lower(from_email) AS address, COUNT(*) AS n FROM emails WHERE user_id = ? AND trashed_at IS NULL AND from_email IS NOT NULL AND from_name IS NOT NULL GROUP BY 1, 2
+       UNION ALL
+       SELECT to_name AS name, lower(to_email) AS address, COUNT(*) AS n FROM emails WHERE user_id = ? AND trashed_at IS NULL AND status = 'sent' AND to_email IS NOT NULL AND to_name IS NOT NULL GROUP BY 1, 2
+     ) GROUP BY 1, 2 ORDER BY count DESC LIMIT 20000`,
+  ).all(userId, userId) as Array<{ name: string; address: string; count: number }>;
+  const found = new Map<string, { name: string | null; address: string; count: number }>();
+  for (const row of rows) {
+    if (own.has(row.address)) continue;
+    const theirs = normaliseName(row.name).split(" ");
+    if (!wanted.some(({ name, words }) => (hasCjk(name) ? compact(row.name).includes(compact(name)) : words.every((word) => theirs.includes(word))))) continue;
+    const known = found.get(row.address);
+    if (known) known.count += row.count;
+    else found.set(row.address, { name: row.name, address: row.address, count: row.count });
+  }
+  return [...found.values()].sort((a, b) => b.count - a.count).slice(0, limit).map(({ name, address }) => ({ name, address }));
+}
+
+/// The person's e-mails have this address: a sender, a recipient.
+export function addressInMailbox(userId: string, address: string): boolean {
+  ensure();
+  const lower = address.trim().toLowerCase();
+  if (!lower.includes("@")) return false;
+  return !!sqlite.prepare(
+    "SELECT 1 FROM emails WHERE user_id = ? AND (lower(from_email) = ? OR lower(to_email) = ? OR instr(lower(recipients), ?) > 0) LIMIT 1",
+  ).get(userId, lower, lower, `"${lower}"`);
 }
 
 /// One e-mail of the person, by its id or the start of it (8 characters at

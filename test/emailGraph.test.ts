@@ -602,7 +602,7 @@ test("a draft is asked in the chat first; refused, nothing reaches Microsoft; al
   assert.equal(eventOf(refused.body, "approval").kind, "email_draft");
   assert.deepEqual(eventOf(refused.body, "approval").draft.to, ["Léa Fontaine <lea.fontaine@example.net>"]);
   assert.equal(eventOf(refused.body, "approval").draft.folder, "Brouillons", "the folder as the person sees it");
-  assert.match(eventOf(refused.body, "final").message, /did not allow this draft: nothing was saved/);
+  assert.equal(eventOf(refused.body, "final").message, "D'accord, je n'ai pas enregistré le brouillon : rien n'a été enregistré ni envoyé.");
   assert.equal(graphRequests.slice(asked).filter((one) => one.method !== "GET").length, 0, "nothing written at Microsoft");
   assert.equal(world.drafts.length, 0);
   const [allowed] = await Promise.all([ask("Réponds à Léa que je viens samedi"), answerWhenAsked(true)]);

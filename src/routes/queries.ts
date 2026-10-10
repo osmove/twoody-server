@@ -64,7 +64,9 @@ import { callConnectorTool, connectorChatTools, waitForApproval } from "../conne
 import { GOOGLE_DATA_CONNECTOR_ID, googleDataChatTools, isGoogleDataTool, runGoogleDataTool } from "../google/dataTools.js";
 import { googleDataForMessage } from "../google/dataIntent.js";
 import { googleDataLink } from "../google/dataLink.js";
-import { EMAIL_TOOLS, emailsAgreedTo, emailsForMessage, emailToolsAvailable, isEmailTool, passOnFirst, runEmailTool } from "../email/chat.js";
+import { answerAfterRefusal, EMAIL_TOOLS, emailsAgreedTo, emailsForMessage, emailToolsAvailable, isEmailTool, passOnFirst, PRONOUN_RECIPIENT, refusedDraft, runEmailTool, type DraftRecipient } from "../email/chat.js";
+import { addressesIn, recipientFor } from "../email/recipient.js";
+import { addressInMailbox } from "../email/store.js";
 import { aboutEmails, agreedToDraft, asksForADraft, passOnWithoutHow } from "../email/intent.js";
 import { askedBank, BANK_TOOLS, isBankTool, runBankTool } from "../bank/tools.js";
 import { hasBankAccounts } from "../bank/store.js";
@@ -1104,8 +1106,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // « Rappelle-moi de dire à Paul… »): that is the reminder's.
     const passOn = offersEmail && !emailAsked && !askedAction(typedText(content)) ? passOnWithoutHow(typedText(content)) : null;
     const lastAnswer = [...history].reverse().find((row) => row.role === "assistant");
-    const agreedRequest = offersEmail && !emailAsked && !passOn && lastAnswer && agreedToDraft(lastAnswer.content, typedText(content))
-      ? [...history.slice(0, history.lastIndexOf(lastAnswer))].reverse().find((row) => row.role === "user")?.content ?? null
+    const askedBefore = lastAnswer ? [...history.slice(0, history.lastIndexOf(lastAnswer))].reverse().find((row) => row.role === "user")?.content ?? null : null;
+    const agreedRequest = offersEmail && !emailAsked && !passOn && lastAnswer && askedBefore !== null && agreedToDraft(lastAnswer.content, typedText(content), passOnWithoutHow(askedBefore) !== null)
+      ? askedBefore
       : null;
     // « Combien de visiteurs cette semaine ? »: the likeliest figures, read
     // now and given with the message (google/dataIntent.ts).
@@ -1114,17 +1117,54 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       ? await googleDataForMessage(typedText(content), { userId: auth.userId, timeZone: validTimeZone(parsed.time_zone), locale: turnLocale, granted: { analytics: googleGranted.includes("analytics"), searchConsole: googleGranted.includes("search_console") } }).catch(() => null)
       : null;
     if (googleFound) trace.google_data = { read: googleFound.tool, error: googleFound.error };
+    // « Oui » to « …un e-mail à maman ? »: whom « maman », « Mama », « ママ »
+    // is, from the person's Memories, entity graph, Contacts and e-mails
+    // (email/recipient.ts) — the draft goes there, or the model asks.
+    const agreedWhom = agreedRequest ? passOnWithoutHow(agreedRequest)?.recipient ?? null : null;
+    const agreedPersonal = agreedWhom ? withoutLeftOut(loadPersonalData(auth.userId), left) : null;
+    const agreedMemories = memoryMode === "none" ? null : userContext.memories.filter((memory) => !memory.archived);
+    const recipient = agreedWhom && !PRONOUN_RECIPIENT.test(agreedWhom)
+      ? recipientFor(auth.userId, agreedWhom, { memories: agreedMemories, contacts: agreedPersonal?.contacts ?? [] })
+      : null;
     const emailFound = emailAsked
       ? emailsForMessage(typedText(content), emailContext)
       : passOn
         ? passOnFirst(passOn.recipient, { ...emailContext, language: messageLanguage(typedText(content)) ?? turnLocale ?? null })
         : agreedRequest
-          ? emailsAgreedTo(agreedRequest, typedText(content), emailContext)
+          ? emailsAgreedTo(agreedRequest, typedText(content), emailContext, recipient)
           : null;
-    if (emailFound) trace.email = { found: emailFound.mode, count: emailFound.count };
+    if (emailFound) trace.email = { found: emailFound.mode, count: emailFound.count, ...(recipient ? { recipient: recipient.relative ?? "name", addresses: recipient.candidates.length } : {}) };
+    // What may be written to: an address the person gave, or one their data
+    // holds — never one the model made up.
+    const draftRecipient: DraftRecipient | null = recipient
+      ? (() => {
+          const said = new Set(addressesIn(`${agreedRequest}\n${typedText(content)}`).map((address) => address.toLowerCase()));
+          const theirs = new Set([
+            ...recipient.candidates.map((one) => one.address.toLowerCase()),
+            ...said,
+            ...history.filter((row) => row.role === "user").flatMap((row) => addressesIn(row.content)).map((address) => address.toLowerCase()),
+            ...(agreedPersonal?.contacts ?? []).flatMap((contact) => contact.emails).map((address) => address.toLowerCase()),
+            ...(agreedMemories ?? []).flatMap((memory) => addressesIn(memory.content)).map((address) => address.toLowerCase()),
+          ]);
+          return {
+            said: recipient.said,
+            candidates: recipient.candidates,
+            known: (address: string) => theirs.has(address.toLowerCase()) || addressInMailbox(auth.userId, address),
+            stated: (address: string) => said.has(address.toLowerCase()),
+          };
+        })()
+      : null;
     // Asked to write or answer an e-mail: a draft announced and not made
     // (« Je rédige un brouillon… ») is asked again, draft_email allowed.
     const draftAsked = offersEmail && (agreedRequest !== null || (emailAsked && asksForADraft(typedText(content))));
+    // A draft refused at the approval step: what the model says after it is
+    // held to the end of the turn, and an answer that still says the draft
+    // was saved (or sent) is replaced by the plain truth (email/chat.ts
+    // NOT_SAVED): Qwen3.5 9B said so after 3 of 14 refusals (bench of
+    // 10/10/2026), « dans votre dossier Brouillons », « im Ordner Entwürfe ».
+    let draftRefused = false;
+    // « oui » says little: the request before it, else the app's.
+    const answerLanguage = () => messageLanguage(typedText(content), turnLocale) ?? (agreedRequest ? messageLanguage(agreedRequest, turnLocale) : null) ?? turnLocale?.split("-")[0] ?? null;
     const runEmail = async (name: string, args: Record<string, unknown>): Promise<string> => {
       const traced: ToolCallTrace = { name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0 };
       toolCallsTraced.push(traced);
@@ -1136,10 +1176,17 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         traced.result_chars = 0;
         return "Not done: the user did not say how to pass this on. Ask them first, in one short question, whether you should draft an e-mail to them; never say you cannot send messages.";
       }
+      // Refused once in this turn: not shown to the person again.
+      if (draftRefused && name === "draft_email") {
+        traced.error = "refused_before";
+        return refusedDraft(answerLanguage()).text;
+      }
       const done = await runEmailTool(name, args, {
         userId: auth.userId,
         timeZone: validTimeZone(parsed.time_zone),
         locale: turnLocale,
+        language: answerLanguage(),
+        recipient: draftRecipient,
         budgetChars: contextBudget(readWindow(parsed.context_window) ?? 32_768),
         // « Recherche dans vos e-mails… » while it looks.
         onSearch: () => {
@@ -1161,6 +1208,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       traced.ms = Date.now() - called;
       traced.result_chars = done.text.length;
       if (done.error) traced.error = done.error;
+      if (done.error === "refused") draftRefused = true;
       return done.text;
     };
     // Banque (Capacités, src/bank/): the statements the person imported,
@@ -1178,6 +1226,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       // the properties, a report, another one.
       ...(offersEmail || googleTools.length ? { rounds: 3 } : {}),
       ...(draftAsked ? { mayDraft: true } : {}),
+      ...(draftRecipient?.candidates.length === 1 ? { mustDraft: () => !toolCallsTraced.some((call) => call.name === "draft_email") } : {}),
       // The e-mail tools, always the same three, before the connectors'
       // (which change as the person picks them): the runtime's cache.
       // The bank's three tools after them, the same as long as Banque is on;
@@ -1385,9 +1434,15 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       reasoning += delta;
       reply.raw.write(`event: reasoning\ndata: ${escapeData(delta)}\n\n`);
     };
+    // After a draft refused, held to the end of the turn (draftRefused).
+    let afterRefusal = "";
     const thinkFilter = createThinkFilter((delta) => {
       startSse();
       if (reasoningStarted && reasoningMs === null) reasoningMs = Date.now() - reasoningStarted;
+      if (draftRefused) {
+        afterRefusal += delta;
+        return;
+      }
       aggregated += delta;
       // Cloud-compat shape: per-token `event: message` with the
       // raw delta as the data line. The watch/RN parser slices
@@ -1462,6 +1517,14 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     }
     const ended = Date.now();
     thinkFilter.flush();
+    if (draftRefused) {
+      // « Je rédige le brouillon… » after it was refused is no truer.
+      const told = answerAfterRefusal(afterRefusal, answerLanguage(), draftAnnounced);
+      if (told.corrected) trace.email = { ...(trace.email as Record<string, unknown> | undefined), refused_answer: afterRefusal.trim() ? "corrected" : "empty" };
+      const shown = aggregated && !/\s$/.test(aggregated) ? ` ${told.text.trimStart()}` : told.text;
+      aggregated += shown;
+      reply.raw.write(`event: message\ndata: ${escapeData(shown)}\n\n`);
+    }
     if (reasoningStarted && reasoningMs === null) reasoningMs = Date.now() - reasoningStarted;
     // The context gauge under the composer: what the runtime counted, or
     // a count from the characters when it did not say.
@@ -2691,6 +2754,12 @@ export interface ChatTools {
   /// only announce the draft (« Je rédige un brouillon… ») are held back
   /// like a search announced, and draft_email may be the call asked again.
   mayDraft?: boolean;
+  /// The person said yes to a draft and the server knows the one address
+  /// it goes to (email/recipient.ts): until draft_email is called, no
+  /// answer is right — what the model writes is held whole and it is asked
+  /// again for the call (Qwen3.5 9B asked « shall I draft it? » again, or
+  /// wrote the e-mail out, after the yes; bench of 10/10/2026).
+  mustDraft?: () => boolean;
 }
 
 /// What a first answer held back may be: short, and announcing or offering
@@ -2757,8 +2826,12 @@ const NARRATION = new RegExp([
 /// confirme le rendez-vous de jeudi. », « I'll draft a reply. » — with no
 /// call: an announcement, not a draft (Qwen3.5 9B, 1 of 3 and 3 of 6,
 /// benches of 05/10/2026). Only while a draft was asked for (mayDraft).
+/// « D'accord », « はい、承知いたしました »: what may come before.
+const DRAFT_ACK = String.raw`d['’]accord|tr[eè]s bien|parfait|entendu|bien s[uû]r|ok|okay|c['’]est not[ée]|bien re[çc]u|sure|alright|got it|gut|alles klar|gerne|in ordnung|verstanden|vale|perfecto|claro|entendido|de acuerdo|va bene|perfetto|certo|d['’]accordo|perfeito|tudo bem|beleza|ok[ée]|prima|goed|natuurlijk|はい|わかりました|承知しました|承知いたしました|かしこまりました|好的|没问题|好|네|알겠습니다|좋아요`;
+/// A sentence that only says yes (« はい、承知いたしました。 »).
+const ACK_ONLY = new RegExp(String.raw`^\W*(?:(?:${DRAFT_ACK})\W*)+$`, "iu");
 export const DRAFT_NARRATION = new RegExp([
-  String.raw`^\W*(?:(?:d['’]accord|tr[eè]s bien|parfait|entendu|bien s[uû]r|ok|okay|c['’]est not[ée]|bien re[çc]u|sure|alright|got it|gut|alles klar|gerne|in ordnung|verstanden|vale|perfecto|claro|entendido|de acuerdo|va bene|perfetto|certo|d['’]accordo|perfeito|tudo bem|beleza|ok[ée]|prima|goed|natuurlijk|はい|わかりました|承知しました|かしこまりました|好的|没问题|好|네|알겠습니다|좋아요)\W+)?`,
+  String.raw`^\W*(?:(?:${DRAFT_ACK})\W+){0,2}`,
   String.raw`(?:(?:je\s+|j['’]\s*)(?:vais\s+|m['’]en vais\s+|peux\s+|suis en train de\s+)?(?:maintenant\s+|donc\s+|d['’]abord\s+|tout de suite\s+|imm[ée]diatement\s+|aussi\s+)?(?:vous\s+|te\s+|lui\s+|leur\s+)?(?:r[ée]dig|pr[ée]par|[ée]cri|r[ée]pond|confirm|envoi|envoy|cr[ée]|fais|m['’]occupe)`,
   String.raw`|i(?:'ll|’ll| will| am going to|'m going to|’m going to| am| can)?\s+(?:now\s+)?(?:draft|write|prepar|repl|respond|confirm|send|creat)`,
   String.raw`|let me\s+(?:draft|write|prepare|reply|respond)`,
@@ -2773,6 +2846,9 @@ export const DRAFT_NARRATION = new RegExp([
   String.raw`|ik\s+(?:ga\s+|zal\s+)?(?:nu\s+|even\s+)?(?:\S+\s+){0,5}?(?:opstellen|schrijven|stel|schrijf|maak|beantwoorden|beantwoord)(?!\p{L})`,
   String.raw`|(?:[^。！？\n]{0,30}?)(?:下書き|メール|返信)を?(?:作成|書き|準備)(?:します|しますね|いたします|しています|しましょう)`,
   String.raw`|我(?:来|将|會|会|现在|現在|马上|馬上)?(?:为你|為你|帮你|幫你|给你|給你)?(?:起草|撰写|撰寫|草拟|草擬|写|寫|回复|回覆)`,
+  // « 好的，正在为您给妈妈写邮件草稿。 » (after a refused draft, bench of 10/10/2026).
+  String.raw`|正在(?:为|為|帮|幫|给|給)?(?:你|您)?[^。！？
+]{0,24}?(?:起草|撰写|撰寫|草拟|草擬|写|寫)`,
   String.raw`|(?:[^.!?\n]{0,30}?)(?:초안을?|이메일을?|답장을?)\s?(?:작성|써|쓰)(?:하겠습니다|할게요|해\s?드릴게요|겠습니다|해\s?드리겠습니다))`,
 ].join(""), "iu");
 
@@ -2811,7 +2887,7 @@ export function writtenOut(text: string): boolean {
   for (let end = sentenceEnd(rest); end >= 0; end = sentenceEnd(rest)) {
     const sentence = rest.slice(0, end).trim();
     if (DRAFT_IN_PROSE.test(sentence)) return true;
-    if (sentence && !NARRATION.test(sentence) && !DRAFT_NARRATION.test(sentence)) return false;
+    if (sentence && !NARRATION.test(sentence) && !DRAFT_NARRATION.test(sentence) && !ACK_ONLY.test(sentence)) return false;
     rest = rest.slice(end);
   }
   return DRAFT_IN_PROSE.test(rest.trim());
@@ -2985,6 +3061,7 @@ async function streamLocal(
     // are held back while they are few (« Voici vos offres : »).
     const insist = !!options.tools?.insist;
     const drafting = !!options.tools?.mayDraft;
+    const mustDraft = () => drafting && !!options.tools?.mustDraft?.();
     let holding = false;
     let narrating = false;
     // A sentence said it is about to look something up: what follows is
@@ -2999,9 +3076,10 @@ async function streamLocal(
     let released = 0;
     const hold = () => {
       holding = !!options.tools;
-      narrating = insist;
-      announced = false;
-      draftShown = false;
+      narrating = insist || mustDraft();
+      // A draft that must be made: the whole answer, an e-mail's length.
+      announced = mustDraft();
+      draftShown = mustDraft();
       held = "";
       released = 0;
     };
@@ -3092,7 +3170,7 @@ async function streamLocal(
       const searchOnly = options.tools?.definitions.filter((tool) => tool.function.name === "search_documents" || tool.function.name === "list_files" || tool.function.name === "search_emails" || (drafting && tool.function.name === "draft_email")) ?? [];
       const retryTools = insist ? options.tools?.definitions ?? [] : searchOnly;
       const askAgain = async (text: string, messages: Array<Record<string, unknown>>): Promise<boolean> => {
-        const announcedOnly = insist ? looksLikeAnnouncement(text) : onlyNarration(text, drafting) || (drafting && (draftAnnounced(text) || writtenOut(text)));
+        const announcedOnly = insist ? looksLikeAnnouncement(text) : mustDraft() || onlyNarration(text, drafting) || (drafting && (draftAnnounced(text) || writtenOut(text)));
         if (!text || !options.tools || called() || !retryTools.length || !announcedOnly || signal.aborted) return false;
         try {
           const again = await post({ ...body, ...extras, messages, ...(insist ? {} : { tools: retryTools }), max_tokens: FORCED_TOOL_TOKENS * 2, tool_choice: "required" });
