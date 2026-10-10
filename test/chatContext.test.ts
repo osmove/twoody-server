@@ -432,6 +432,11 @@ test("a message plainly in another language than the usual one is answered in it
   assert.equal(messageLanguage("Mevrouw Dupont wil het contract opzeggen. Welke opzegtermijn moet zij aanhouden, en hoe kan ik dat het beste doen?"), "nl");
   assert.equal(messageLanguage("杜邦女士想解除服务合同。她需要提前多久通知？"), "zh");
   assert.equal(messageLanguage("Ik heb een vraag over mijn documenten"), "nl");
+  // An all-kanji question is Japanese from a Japanese app; « ¿…? » Spanish.
+  assert.equal(messageLanguage("解約予告期間", "ja-JP"), "ja");
+  assert.equal(messageLanguage("解约通知期", "zh-CN"), "zh");
+  assert.equal(messageLanguage("¿Cuánto suman las facturas de la luz?"), "es");
+  assert.equal(messageLanguage("Dónde están mis facturas"), "es");
   const english = buildChatTurn(input({ userName: null, locale: "fr-FR", content: "what do you know about my friend David?" }));
   assert.match(english.messages.at(-1)!.content, /what do you know about my friend David\?\n\n\[Reply in English, the language of this message\.\]$/);
   const french = buildChatTurn(input({ userName: null, locale: "fr-FR", content: "Que sais-tu de mon ami David ?" }));

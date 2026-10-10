@@ -652,7 +652,7 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   // its answer in that language: the sentence of the system prompt alone
   // left « hello how are you? » answered in French 5 times in 6 (9B,
   // French memories, 01/10/2026).
-  const spoken = messageLanguage(current.text);
+  const spoken = messageLanguage(current.text, state.locale);
   const usual = (state.locale ?? "").split("-")[0]!.toLowerCase();
   // …and so does one that comes with data written in English — a file
   // listing, excerpts, what was done at home: « 列出我桌面上的文件 » with
@@ -852,7 +852,7 @@ const FRENCH_WORDS = new Set(["le", "la", "les", "un", "une", "des", "de", "du",
 // Words that mostly belong to one language (03/10/2026: a Spanish or
 // Portuguese question from a person whose usual language is French got a
 // French answer — only English and French were told apart).
-const SPANISH_WORDS = new Set(["el", "los", "las", "del", "y", "qué", "cómo", "cuál", "dónde", "está", "están", "quiere", "debe", "puede", "hay", "pero", "muy", "porque", "también", "usted", "sus", "al", "ella", "hola", "gracias", "mi", "tengo", "eso", "esto"]);
+const SPANISH_WORDS = new Set(["el", "los", "las", "del", "y", "qué", "cómo", "cuál", "cuáles", "dónde", "cuándo", "cuánto", "cuánta", "cuántos", "cuántas", "está", "están", "quiere", "debe", "puede", "hay", "pero", "muy", "porque", "también", "usted", "sus", "al", "ella", "hola", "gracias", "mi", "mis", "tengo", "eso", "esto", "este", "esta", "estos", "por", "para", "unos", "unas", "son", "es"]);
 const PORTUGUESE_WORDS = new Set(["o", "os", "do", "da", "dos", "das", "não", "um", "você", "ela", "ele", "qual", "quer", "em", "no", "na", "nas", "nos", "seu", "sua", "isso", "também", "ao", "pelo", "pela", "obrigado", "obrigada", "olá", "tenho", "deve", "é", "como"]);
 const ITALIAN_WORDS = new Set(["il", "gli", "della", "delle", "dello", "che", "non", "è", "per", "come", "quale", "deve", "vuole", "sono", "questo", "questa", "anche", "perché", "cosa", "dal", "nel", "nella", "ciao", "grazie", "mio", "mia", "ho", "lei", "lui", "di"]);
 const GERMAN_WORDS = new Set(["der", "die", "das", "und", "ist", "nicht", "ein", "eine", "einen", "mit", "wie", "welche", "welcher", "muss", "möchte", "sie", "er", "ich", "zu", "den", "dem", "auf", "für", "von", "im", "auch", "hallo", "danke", "mein", "meine", "was", "wann", "warum"]);
@@ -867,7 +867,13 @@ export type MessageLanguage = "en" | "fr" | "es" | "pt" | "it" | "de" | "nl" | "
 /// The language a message is plainly written in, from its common words: at
 /// least two of one language and clearly more than of any other; null when
 /// it is short, mixed or none of these (the person's usual language then).
-export function messageLanguage(text: string): MessageLanguage | null {
+/// `usual`: the app's language (« ja-JP »), which tells Japanese from
+/// Chinese when a message is all kanji (« 解約予告期間 » from a Japanese
+/// app was answered in Chinese, bench of 10/10/2026).
+export function messageLanguage(text: string, usual?: string | null): MessageLanguage | null {
+  // ¿ and ¡ are Spanish's alone: « ¿Cuánto suman las facturas de la
+  // luz? » scored as French on « de » and « la » (10/10/2026).
+  if (/[¿¡]/.test(text)) return "es";
   // Japanese, Korean and Chinese are told by their scripts: kana
   // (Japanese) and hangul (Korean), a few of them enough in a short
   // question; Chinese characters without either, Chinese.
@@ -876,7 +882,7 @@ export function messageLanguage(text: string): MessageLanguage | null {
   const han = (text.match(/[\u4e00-\u9fff]/g) ?? []).length;
   if (kana >= 2 && kana >= hangul) return "ja";
   if (hangul >= 2) return "ko";
-  if (han >= 2 && kana === 0) return "zh";
+  if (han >= 2 && kana === 0) return (usual ?? "").toLowerCase().startsWith("ja") ? "ja" : "zh";
   const words = text.toLowerCase().replace(/[’']/g, " ").match(/[a-zàáâãäçéèêëíìîïñóòôõöúùûüÿœß]+/g) ?? [];
   const scores = LANGUAGE_WORDS.map(([language, set]) => [language, words.filter((word) => set.has(word)).length] as const).sort((a, b) => b[1] - a[1]);
   const [best, second] = scores;

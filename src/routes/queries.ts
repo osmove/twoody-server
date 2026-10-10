@@ -1012,7 +1012,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       if ("undo" in shortcut && shortcut.undo) lines.push("This put it back as it was before Twoody switched it: say the state it is in now, given above.");
       // The language to confirm in: the message's, else (« Apágala » is too
       // short to tell) the app's.
-      const spoken = messageLanguage(typedText(content)) ?? turnLocale?.split("-")[0] ?? null;
+      const spoken = messageLanguage(typedText(content), turnLocale) ?? turnLocale?.split("-")[0] ?? null;
       homeDone = homeDoneNote(lines, spoken ? languageName(spoken) : null);
     }
     if (homeUnused && asksHome(typedText(content))) homeDone = homeUnusedNote(homeUnused, turnLocale);
