@@ -5,8 +5,38 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+import type { RuntimeFailure } from "./failure.js";
+
 export type Acceleration = "metal" | "vulkan" | "cpu";
 export type RuntimeEngine = { binary: string; backend: Acceleration; devices: number };
+
+// The first run of a llama.cpp release prepares its GPU code, and that is
+// slow: on a Mac, Metal compiles the shader library before llama-server
+// does anything — `--list-devices` included, and the CPU build too, which
+// is the same program. Measured on an M5 with an empty shader cache
+// (10/10/2026): 16 to 26 s idle, 37 to 40 s with the processors busy; a
+// modest or busy computer takes longer, and Vulkan's first compile on
+// Windows can too. A check stopped halfway leaves the system's cache
+// empty, so the next launch pays it all again: with 15 s for the GPU check
+// and 20 s for the start, such a Mac ran on its CPU at every launch, or
+// not at all. Both waits are generous now, and still bounded: past them,
+// something else is wrong.
+
+/// How long `llama-server --list-devices` may take.
+export const PROBE_TIMEOUT_MS = 180_000;
+/// How long a starting runtime may take to answer its /health.
+export const START_TIMEOUT_MS = 180_000;
+
+/// After a start on the GPU that did not answer, whether the CPU is worth
+/// a try. When the GPU's process exited, yes. When it was still silent at
+/// the end of the wait, only where the CPU build is another program
+/// (Windows: Vulkan's llama-server in its own folder): on a Mac it is the
+/// same program, which prepares the same Metal code first — starting it
+/// again would only start the wait over.
+export function retryOnCpu(engine: RuntimeEngine, failure: RuntimeFailure, cpuOnly: boolean): boolean {
+  if (cpuOnly || engine.backend === "cpu") return false;
+  return failure.reason !== "no-answer" || engine.backend === "vulkan";
+}
 
 // Only actual offload devices count; BLAS/Accelerate and CPU are not GPUs.
 // Never expose driver-provided free text in a copied diagnostic.
@@ -29,7 +59,7 @@ export async function selectRuntimeEngine(
   env: NodeJS.ProcessEnv,
   forceCpu = false,
   probe: (binary: string) => Promise<string> = (binary) => new Promise((resolve) => {
-    execFile(binary, ["--list-devices"], { cwd: dirname(binary), env, windowsHide: true, timeout: 15_000, maxBuffer: 128 * 1024 }, (error, stdout, stderr) => {
+    execFile(binary, ["--list-devices"], { cwd: dirname(binary), env, windowsHide: true, timeout: PROBE_TIMEOUT_MS, maxBuffer: 128 * 1024 }, (error, stdout, stderr) => {
       resolve(error ? "" : `${stdout}\n${stderr}`);
     });
   }),

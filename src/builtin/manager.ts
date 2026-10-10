@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { Writable } from "node:stream";
 
 import { outboundFetch } from "../outbound.js";
-import { accelerationArgs, selectRuntimeEngine, type RuntimeEngine } from "./acceleration.js";
+import { accelerationArgs, retryOnCpu, selectRuntimeEngine, START_TIMEOUT_MS, type RuntimeEngine } from "./acceleration.js";
 import { failureOf, type RuntimeFailure } from "./failure.js";
 import { serverBinaryName } from "./runtimeManifest.js";
 
@@ -41,7 +41,6 @@ import { serverBinaryName } from "./runtimeManifest.js";
 
 const FIRST_PORT = 47831;
 const PORTS_TRIED = 10;
-const START_TIMEOUT_MS = 20_000;
 const LOG_LIMIT = 1024 * 1024;
 const CRASH_WINDOW_MS = 10 * 60 * 1000;
 const MAX_CRASH_RESTARTS = 3;
@@ -490,7 +489,8 @@ export function createRuntimeManager(options: RuntimeManagerOptions): RuntimeMan
     lastFailure = failureOf(proc.exitCode, platform, proc.signalCode);
     log(`[runtime] llama-server did not start (${lastFailure.reason}, exit ${proc.exitCode}); see runtime.log`);
     await stopProcess();
-    if (selected.backend !== "cpu" && !cpuOnly) {
+    // On the CPU when the GPU failed, not when it was only slow (acceleration.ts).
+    if (retryOnCpu(selected, lastFailure, cpuOnly)) {
       cpuOnly = true;
       return start();
     }

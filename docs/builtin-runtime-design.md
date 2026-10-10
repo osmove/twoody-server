@@ -34,6 +34,13 @@ Router mode like the Desktop: `--host 127.0.0.1`, ports from 47831, `--models-di
 minimal env (PATH, HOME, TMPDIR, per-launch `LLAMA_API_KEY`); `runtime.pid`, and a leftover llama-server is
 stopped only if its command line has our models dir.
 - Started on demand (`manager.ensure()` on a chat to the built-in engine); status/heartbeat never start it.
+- First start of a release (10/10/2026): Metal compiles its shader library before llama-server answers
+  anything (`--list-devices` and the CPU build included, the same program on a Mac): 16–40 s on an M5 with an
+  empty cache, more on a busy or modest computer. The GPU check and the start wait up to 3 min each
+  (`PROBE_TIMEOUT_MS`, `START_TIMEOUT_MS` in acceleration.ts); a check cut short leaves the cache empty and
+  the next launch pays again. The CPU is tried after a GPU process that exited, or one still silent at the
+  end only where the CPU build is another program (Vulkan) — `retryOnCpu()`. The Desktop falls back to the
+  CPU after a model load only when the router reports it `failed`, not when it was slow.
 - Idle unload `--sleep-idle-seconds` 30 min default.
 - Memory check: MemAvailable ≥ size × 1.15 + KV, else `507 insufficient_memory`.
 - Pi defaults: threads = cores (4), `--ctx-size 8192` on ARM Linux, Desktop's builtinContextSize() elsewhere, mmap on.
