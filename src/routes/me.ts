@@ -1,4 +1,7 @@
 import type { FastifyInstance } from "fastify";
+import { ownerRequest } from "../localAccess.js";
+import { choosesForThePerson } from "../sessionTrust.js";
+import { meshRoster } from "../vault/roster.js";
 import { eq } from "drizzle-orm";
 import { requireAuth } from "../auth.js";
 import { db, users } from "../db.js";
@@ -68,13 +71,25 @@ export async function meRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      mergePrefs(auth.userId, req.body?.user ?? {});
+      // What every conversation's model is told, before anything else:
+      // written on this machine or by the person (sessionTrust.ts
+      // choosesForThePerson), never by a firmware device or a household
+      // member's phone, which would steer the owner's model with its tools
+      // (docs/trust-routes-review.md). Other preferences stay open.
+      const given = req.body?.user ?? {};
+      if (INSTRUCTION_PREFS.some((key) => key in given) && !ownerRequest(req) && !(await choosesForThePerson(req, auth, () => meshRoster().get()))) {
+        return reply.code(403).send({ error: "not_the_person" });
+      }
+      mergePrefs(auth.userId, given);
       // Switched on: the memories get their vectors; off: they go.
       if (req.body?.user && "memory_embeddings" in req.body.user) memoriesChanged(auth.userId);
       reply.send(serializeUser(auth.userId));
     },
   });
 }
+
+/// The preferences that instruct the model (chatContext.ts).
+const INSTRUCTION_PREFS = ["system_prompt", "system_prompt_replace_base"] as const;
 
 type PatchMeBody = {
   user?: Record<string, unknown>;

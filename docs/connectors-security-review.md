@@ -168,7 +168,9 @@ sessions). What stops working: the Desktop's old « self-hosted » sign-in again
 Pi's setup token without a tunnel key; the Desktop's fallback session from `/session/cli` (already
 refused before, `origin = code`).
 
-**Borderline — Jimmy's decision** (left as they are):
+**Borderline — Jimmy's decision** (left as they are here; since reviewed in `docs/trust-routes-review.md`: the
+peers routes, `mayPin`, the share writes, providers writes, `custom_url`, `pair/register` and `system_prompt` are
+fixed there with attack tests; `meshRequester`, `/auth/signin` and the rest are listed there for a decision):
 
 | Route | Today | Why not fixed here |
 |---|---|---|

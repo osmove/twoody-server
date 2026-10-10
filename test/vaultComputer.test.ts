@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,9 +44,14 @@ writeAccountFile({
 });
 
 const app = await buildApp();
-const paired = await app.inject({ method: "POST", url: "/auth/pair", payload: { setup_token: ensureSetupToken()!.token, device_name: "iPhone" } });
+// The iPhone pairs with the Pi's setup token, bringing its tunnel key: what
+// it sends through the tunnel comes from that key (an owner's token inside
+// another key's tunnel names no anchor, docs/trust-routes-review.md).
+const phoneTunnelKey = randomBytes(32).toString("hex");
+const paired = await app.inject({ method: "POST", url: "/auth/pair", payload: { setup_token: ensureSetupToken()!.token, device_name: "iPhone", tunnel_public_key: phoneTunnelKey } });
 const owner = paired.json().user_id as string;
 const local = { authorization: `Bearer ${paired.json().token}` };
+const throughItsTunnel = { ...local, "x-twoody-via-tunnel": "relay", "x-twoody-tunnel-peer": phoneTunnelKey };
 
 /// The iPhone: a person device with its own session, founding the vault.
 const phoneCreds = { backendUrl: BACKEND, userToken: fake.personSession() };
@@ -120,7 +126,7 @@ test("its vault keys are read through the tunnel only, public halves only", asyn
 /// the epoch keys.
 async function phoneTrusts(identity: Record<string, any>, { pin = true } = {}) {
   if (pin) {
-    const pinned = await app.inject({ method: "POST", url: "/api/v1/peer/vault/anchor", headers: { ...local, "x-twoody-via-tunnel": "relay" }, payload: { vault_device_id: phone.id, sign_public: crypto.toHex(phone.keys.signPublic) } });
+    const pinned = await app.inject({ method: "POST", url: "/api/v1/peer/vault/anchor", headers: throughItsTunnel, payload: { vault_device_id: phone.id, sign_public: crypto.toHex(phone.keys.signPublic) } });
     assert.equal(pinned.statusCode, 200, pinned.body);
   }
   const device = { id: identity.vault_device_id, enc_public: identity.enc_public, sign_public: identity.sign_public };
@@ -140,7 +146,9 @@ test("approved and bound by the iPhone, the Pi takes its keys once the iPhone is
   assert.equal(service.vaultEpochKeys().size, 0);
   // Pinning is for the tunnel (or this machine's own console) only, and for a well-formed person device.
   assert.equal((await app.inject({ method: "POST", url: "/api/v1/peer/vault/anchor", headers: local, remoteAddress: "192.168.1.20", payload: { vault_device_id: phone.id, sign_public: crypto.toHex(phone.keys.signPublic) } })).statusCode, 403);
-  assert.equal((await app.inject({ method: "POST", url: "/api/v1/peer/vault/anchor", headers: { ...local, "x-twoody-via-tunnel": "relay" }, payload: { vault_device_id: "nope", sign_public: crypto.toHex(phone.keys.signPublic) } })).statusCode, 422);
+  // The owner's token through the relay's stamp alone, with no key behind it: refused.
+  assert.equal((await app.inject({ method: "POST", url: "/api/v1/peer/vault/anchor", headers: { ...local, "x-twoody-via-tunnel": "relay" }, payload: { vault_device_id: phone.id, sign_public: crypto.toHex(phone.keys.signPublic) } })).statusCode, 403);
+  assert.equal((await app.inject({ method: "POST", url: "/api/v1/peer/vault/anchor", headers: throughItsTunnel, payload: { vault_device_id: "nope", sign_public: crypto.toHex(phone.keys.signPublic) } })).statusCode, 422);
 
   await phoneTrusts(await identityNow());
   assert.equal((await vaultService.tick()).status, "trusted");

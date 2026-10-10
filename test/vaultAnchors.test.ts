@@ -190,8 +190,13 @@ test("who may name an anchor: the owner, or the device itself through the tunnel
   assert.equal(pinned.statusCode, 200, pinned.body);
   assert.deepEqual(pinned.json(), { anchors: 1, pinned: true });
   assert.deepEqual((await pin(itself.headers, phone)).json(), { anchors: 1, pinned: false }, "again: nothing changes");
-  // The owner names the iPad.
-  assert.deepEqual((await pin({ ...owner, ...sealedFrom(randomBytes(32).toString("hex")) }, ipad)).json(), { anchors: 2, pinned: true });
+  // The owner's token inside the tunnel of another key names nothing
+  // (docs/trust-routes-review.md); the owner on this machine (the console)
+  // names the iPad.
+  const carried = await pin({ ...owner, ...sealedFrom(randomBytes(32).toString("hex")) }, ipad);
+  assert.equal(carried.statusCode, 403, carried.body);
+  assert.equal(carried.json().error, "anchor_not_allowed");
+  assert.deepEqual((await pin(owner, ipad)).json(), { anchors: 2, pinned: true });
   assert.deepEqual(anchorsOnDisk(), [phone.id, ipad.id]);
 });
 
@@ -307,7 +312,8 @@ test("a Desktop's embedded server, asking as its computer, pins the Desktop's ow
 });
 
 test("a pinned anchor is never replaced nor pushed out", async () => {
-  const tunnel = { ...owner, ...sealedFrom(randomBytes(32).toString("hex")) };
+  // The owner, on this machine (its console).
+  const tunnel = owner;
   const other = crypto.createDeviceKeys();
   const conflict = await pin(tunnel, { id: phone.id, keys: other });
   assert.equal(conflict.statusCode, 409);
@@ -331,10 +337,10 @@ test("approved, the Pi takes no new anchor; one the vault revokes goes, one mere
   await post("vault/envelopes", { envelopes: [crypto.wrapEpochKey({ epochKey, epoch: 1, userId: USER_ID, to: { deviceId: pi.id, encPublic: crypto.fromHex(pi.enc_public) }, from: { deviceId: phone.id, signPrivate: phone.keys.signPrivate } })] });
   assert.equal((await vaultService.tick()).status, "trusted");
 
-  const late = await pin({ ...owner, ...sealedFrom(randomBytes(32).toString("hex")) }, { id: randomUUID(), keys: crypto.createDeviceKeys() });
+  const late = await pin(owner, { id: randomUUID(), keys: crypto.createDeviceKeys() });
   assert.equal(late.statusCode, 409);
   assert.equal(late.json().error, "already_approved");
-  assert.deepEqual((await pin({ ...owner, ...sealedFrom(randomBytes(32).toString("hex")) }, phone)).json(), { anchors: 8, pinned: false }, "the same anchor again is no change");
+  assert.deepEqual((await pin(owner, phone)).json(), { anchors: 8, pinned: false }, "the same anchor again is no change");
 
   // The iPhone revokes the iPad: its anchor goes; the junk ones (never in
   // the vault) and the iPhone's stay.

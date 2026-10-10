@@ -6,7 +6,7 @@ import { DATA_DIR } from "../db.js";
 import { shareHostIdentity, type HostIdentity } from "../shares/hostIdentity.js";
 import { folderName, listFolders } from "../documents/library.js";
 import { capabilityOn } from "../localCapabilities.js";
-import { meshRequester } from "../sessionTrust.js";
+import { meshRequester, ownerHere } from "../sessionTrust.js";
 import { folderUnshareable } from "../shares/policy.js";
 import { serveShareRequest } from "../shares/serve.js";
 import {
@@ -50,7 +50,14 @@ import { isThisComputersApp } from "./usage.js";
 //
 // For the owner only: this computer's app, or one of the person's own
 // devices (sessionTrust.ts meshRequester) — never a household member's
-// phone, a device paired by code, or another computer's `peer:` session.
+// phone, a device paired by code, or another computer's `peer:` session,
+// and the owner's token only from this machine or through the tunnel from
+// its own key (sessionTrust.ts ownerHere), never over the local network,
+// a proxy or another device's tunnel. What widens a share — making one,
+// changing its right, expiry or label, marking it published, approving or
+// verifying a grantee's device — is for this computer's app alone: the
+// owner's computer decides, on its own screen (docs/trust-routes-review.md).
+// The person's devices may look, stop a share or refuse a device.
 // Serving is for this computer's app alone: the Desktop's main process asks
 // it for its bridge worker, which opened the sealed request.
 //
@@ -124,8 +131,23 @@ function localDevice(device: GuestDeviceRow, host: HostIdentity | null) {
 async function owner(req: FastifyRequest, reply: FastifyReply): Promise<{ userId: string } | null> {
   const auth = await requireAuth(req, reply);
   if (!auth) return null;
-  if (isThisComputersApp(auth) || (await meshRequester(req, auth, () => meshRoster().get())) !== null) return auth;
+  if (isThisComputersApp(auth)) return auth;
+  const requester = await meshRequester(req, auth, () => meshRoster().get());
+  // meshRequester takes the owner's session from anywhere: here, only
+  // where its token cannot have been carried by someone else.
+  if (requester && (requester.id !== "owner" || ownerHere(req, auth))) return auth;
   reply.code(403).send({ error: "owner_only" });
+  return null;
+}
+
+/// What widens a share: this computer's app alone (« Partager » in Twoody
+/// Desktop). A phone that needs it one day asks for a confirmation on the
+/// computer, it does not decide.
+async function desktopApp(req: FastifyRequest, reply: FastifyReply): Promise<{ userId: string } | null> {
+  const auth = await requireAuth(req, reply);
+  if (!auth) return null;
+  if (isThisComputersApp(auth)) return auth;
+  reply.code(403).send({ error: "desktop_app_only" });
   return null;
 }
 
@@ -156,9 +178,9 @@ export async function localShareRoutes(app: FastifyInstance) {
   });
 
   app.post<{ Body: Record<string, unknown> }>("/local_shares", {
-    schema: { tags: ["documents"], summary: "Share a Documents folder with a household member, an organization co-member or a whole organization (the owner only)" },
+    schema: { tags: ["documents"], summary: "Share a Documents folder with a household member, an organization co-member or a whole organization (this computer's app only)" },
     handler: async (req, reply) => {
-      const auth = await owner(req, reply);
+      const auth = await desktopApp(req, reply);
       if (!auth) return;
       const body = req.body && typeof req.body === "object" ? req.body : {};
       const folderId = typeof body.folder_id === "string" ? body.folder_id : null;
@@ -197,9 +219,9 @@ export async function localShareRoutes(app: FastifyInstance) {
   });
 
   app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>("/local_shares/:id", {
-    schema: { tags: ["documents"], summary: "Change a share's right, expiry or label, or mark it published to the account (the owner only)" },
+    schema: { tags: ["documents"], summary: "Change a share's right, expiry or label, or mark it published to the account (this computer's app only)" },
     handler: async (req, reply) => {
-      const auth = await owner(req, reply);
+      const auth = await desktopApp(req, reply);
       if (!auth) return;
       const share = shareById(auth.userId, req.params.id);
       if (!share) return reply.code(404).send({ error: "not_found" });
@@ -245,9 +267,10 @@ export async function localShareRoutes(app: FastifyInstance) {
 
   for (const decision of ["approve", "refuse", "verify"] as const) {
     app.post<{ Body: { grantee_user_id?: unknown; fingerprint?: unknown } }>(`/local_shares/devices/${decision}`, {
-      schema: { tags: ["documents"], summary: `${decision[0]!.toUpperCase()}${decision.slice(1)} a grantee's device for every share of this computer to that person (the owner only)` },
+      schema: { tags: ["documents"], summary: `${decision[0]!.toUpperCase()}${decision.slice(1)} a grantee's device for every share of this computer to that person (${decision === "refuse" ? "the owner only" : "this computer's app only"})` },
       handler: async (req, reply) => {
-        const auth = await owner(req, reply);
+        // Refusing only narrows; approving or verifying lets a device read.
+        const auth = decision === "refuse" ? await owner(req, reply) : await desktopApp(req, reply);
         if (!auth) return;
         const granteeUserId = accountId(req.body?.grantee_user_id);
         const fingerprint = typeof req.body?.fingerprint === "string" && FINGERPRINT.test(req.body.fingerprint) ? req.body.fingerprint : null;

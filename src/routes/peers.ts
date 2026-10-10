@@ -9,6 +9,7 @@ import { listPeers, peerById, peerRequest, peerStatus, PeerUnavailableError, rem
 import { peerTrusted } from "../router/index.js";
 import { accountCredentials } from "../account/service.js";
 import { peerDeviceAccess } from "../vault/service.js";
+import { isThisComputersApp } from "./usage.js";
 
 // The account's other computers this one sends questions to
 // (docs/multi-computer-design.md §3) — managed by Twoody Desktop, or by the
@@ -57,14 +58,23 @@ import { peerDeviceAccess } from "../vault/service.js";
 //          Both: 409 not_linked (no sealed link with it), 502 unreachable,
 //          else the peer's own status and error.
 
-/// The Desktop's own session — made by /auth/signup, /auth/signin or the
-/// pairing with the setup token (auth_sessions.origin « owner ») — or this
-/// machine / the admin token. Never by the name a device gave itself: a
-/// phone approved through the account may call itself « Twoody Desktop ».
+/// This computer's own app (routes/usage.ts isThisComputersApp: the owner's
+/// session — /auth/signup, /auth/signin or the setup token — on this very
+/// machine, not through the tunnel, a proxy or the local network), or this
+/// machine's console / the admin token. Never by the name a device gave
+/// itself: a phone approved through the account may call itself « Twoody
+/// Desktop ». Never the owner's token from anywhere else either: these
+/// routes decide which computers take this one's turns and which keys it
+/// trusts (docs/trust-routes-review.md) — the Desktop calls them on
+/// loopback, nothing else does.
+function desktopHere(req: FastifyRequest, auth: { sessionId?: string; deviceId?: string; thisMachine?: boolean }): boolean {
+  return isThisComputersApp(auth) || ownerRequest(req);
+}
+
 async function requireDesktop(req: FastifyRequest, reply: FastifyReply): Promise<{ userId: string } | null> {
   const auth = await requireAuth(req, reply);
   if (!auth) return null;
-  if (isOwnerSession(auth.sessionId) || ownerRequest(req)) return auth;
+  if (desktopHere(req, auth)) return auth;
   reply.code(403).send({ error: "desktop_only", message: "The account's computers are managed from Twoody Desktop." });
   return null;
 }
@@ -75,7 +85,7 @@ async function requireDesktop(req: FastifyRequest, reply: FastifyReply): Promise
 /// them. Never a peer session (authenticate() refuses those here anyway),
 /// never a session given to another computer of the account, and never a
 /// firmware device's token.
-export async function requirePairedPerson(req: FastifyRequest, reply: FastifyReply): Promise<{ userId: string; sessionId?: string } | null> {
+export async function requirePairedPerson(req: FastifyRequest, reply: FastifyReply): Promise<{ userId: string; sessionId?: string; deviceId?: string; thisMachine?: boolean } | null> {
   const auth = await requireAuth(req, reply);
   if (!auth) return null;
   if (isOwnerSession(auth.sessionId) || ownerRequest(req)) return auth;
@@ -184,8 +194,9 @@ export async function peersRoutes(app: FastifyInstance) {
       const { enabled, trusted, checked_tunnel_key: checkedKey } = req.body ?? {};
       if (checkedKey !== undefined) {
         // The person compared this link's security code with the
-        // computer's (Twoody Desktop only): the key must be the link's own.
-        if (!(isOwnerSession(auth.sessionId) || ownerRequest(req))) return reply.code(403).send({ error: "desktop_only" });
+        // computer's (Twoody Desktop only, on this machine): the key must be
+        // the link's own. Checked, the peer takes turns (router peerRoutable).
+        if (!desktopHere(req, auth)) return reply.code(403).send({ error: "desktop_only" });
         if (typeof checkedKey !== "string" || !/^[0-9a-f]{64}$/i.test(checkedKey)) return reply.code(422).send({ error: "invalid checked_tunnel_key" });
         if (peer.state !== "linked" || !peer.tunnelKey || peer.tunnelKey.toLowerCase() !== checkedKey.toLowerCase()) return reply.code(409).send({ error: "tunnel_key_mismatch" });
       }

@@ -1,9 +1,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { isOwnerSession, isPeerSessionKind, requireAuth } from "../auth.js";
+import { isPeerSessionKind, requireAuth } from "../auth.js";
 import { forwardedByProxy, isLoopbackAddress, viaTunnel } from "../adminAccess.js";
 import { linkedAccount } from "../account/store.js";
 import { fromThisMachine, ownerRequest } from "../localAccess.js";
-import { firstAnchorStatement, keepDeviceAccess, peerSessionIsDesktop, renewDeviceAccess, sealedFromSessionKey, sessionIsVaultDevice, sessionRow, type SessionRow } from "../sessionTrust.js";
+import { firstAnchorStatement, keepDeviceAccess, ownerHere, peerSessionIsDesktop, renewDeviceAccess, sealedFromSessionKey, sessionIsVaultDevice, sessionRow, type SessionRow } from "../sessionTrust.js";
 import { readDeviceAccess } from "../account/approvals.js";
 import { accountCredentials } from "../account/service.js";
 import { VaultError } from "../vault/crypto.js";
@@ -24,8 +24,10 @@ import type { DeviceAccessV2 } from "../vault/contracts.js";
 //     the approving person device names itself: this computer's trust in
 //     the history starts there (src/vault/client.ts verifiedIds), never
 //     from what the account says. → {anchors, pinned}
-//     Only this server's owner (its session, this machine, the admin
-//     token), or the very device being pinned: a session let in by rule 1
+//     Only this server's owner (this machine, the admin token, or its
+//     session from this machine or through the tunnel from the key it was
+//     paired with — never the owner's token in another key's tunnel), or
+//     the very device being pinned: a session let in by rule 1
 //     or 5 (account/approvals.ts) whose device-access/v2 names that vault
 //     device and is signed by the key being pinned, asking through the
 //     tunnel from the key the session was given to (sessionTrust.ts); or a
@@ -86,12 +88,15 @@ export function throughTunnel(req: FastifyRequest): boolean {
   return viaTunnel(req) && isLoopbackAddress(req.ip) && !forwardedByProxy(req);
 }
 
-/// Who may name an anchor: the owner (its session, or this machine / the
-/// admin token), or the device being pinned itself, proved by the
-/// device-access its session carries, signed by the key being pinned, over
-/// the tunnel from that session's own key.
-async function mayPin(req: FastifyRequest, auth: { sessionId?: string }, anchor: { id: string; sign_public: string }): Promise<boolean> {
-  if (isOwnerSession(auth.sessionId) || ownerRequest(req)) return true;
+/// Who may name an anchor: the owner — this machine's console or the admin
+/// token, or the owner's session from this machine or through the tunnel
+/// from the very key it was paired with (sessionTrust.ts ownerHere; never
+/// the owner's token inside the tunnel of another device's key) — or the
+/// device being pinned itself, proved by the device-access its session
+/// carries, signed by the key being pinned, over the tunnel from that
+/// session's own key.
+async function mayPin(req: FastifyRequest, auth: { sessionId?: string; thisMachine?: boolean }, anchor: { id: string; sign_public: string }): Promise<boolean> {
+  if (ownerRequest(req) || ownerHere(req, auth)) return true;
   if (!auth.sessionId || !sealedFromSessionKey(req, auth.sessionId)) return false;
   const row = sessionRow(auth.sessionId);
   const account = linkedAccount();

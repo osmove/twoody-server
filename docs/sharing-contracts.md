@@ -92,8 +92,10 @@ revision, revoked_at, revoked_by, published_at), `share_guest_devices` (grantee_
 sign_public, state pending|approved|refused, first_seen_at, last_seen_at, approved_at, verified_at; unique
 (grantee_user_id, fingerprint)), `peer_document_audit` + share_id, guest_user_id, guest_fingerprint, outcome.
 
-Routes, the owner's sessions only (this computer's app, or the person's own devices — `meshRequester`; never a
-household member's or a peer's):
+Routes, the owner's sessions only (this computer's app, or the person's own devices — `meshRequester`, the owner's
+session only from this machine or through the tunnel from its own key; never a household member's or a peer's). What
+widens a share — `POST`, `PATCH`, `devices/approve`, `devices/verify` — is this computer's app alone
+(`desktop_app_only`, docs/trust-routes-review.md); the person's devices may look, stop a share or refuse a device:
 
 ```
 GET    /local_shares                         {shares: [Local], devices: [Device]}

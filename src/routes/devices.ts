@@ -9,6 +9,9 @@ import {
 import { createRequire } from "module";
 import { LOCAL_ONLY } from "../outbound.js";
 import { isThisComputersApp } from "./usage.js";
+import { ownerRequest } from "../localAccess.js";
+import { choosesForThePerson } from "../sessionTrust.js";
+import { meshRoster } from "../vault/roster.js";
 import { allowSecretAttempt } from "../rateLimit.js";
 import {
   authenticate,
@@ -175,6 +178,12 @@ export async function deviceRoutes(app: FastifyInstance) {
   });
 
   // POST /devices/pair/register — CLI registers a code for a device to claim
+  // (`twoody pair`). The code becomes a CLI session (/session/cli) that may
+  // choose this computer's models: so only who may do that may make one —
+  // this machine's console, or the person (sessionTrust.ts
+  // choosesForThePerson). Never a firmware device's token nor a household
+  // member's phone, which would otherwise mint itself more than it was given
+  // (docs/trust-routes-review.md).
   app.post<{ Body: { code?: string; device_name?: string } }>("/devices/pair/register", {
     schema: {
       tags: ["devices"],
@@ -184,6 +193,7 @@ export async function deviceRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
+      if (!ownerRequest(req) && !(await choosesForThePerson(req, auth, () => meshRoster().get()))) return reply.code(403).send({ error: "not_the_person" });
 
       const rawCode = req.body?.code ?? generatePairingCode();
       const code = normalizePairingCode(rawCode);

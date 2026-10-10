@@ -391,6 +391,38 @@ export async function isPersonOrOwner(req: FastifyRequest, auth: { sessionId?: s
   return (await meshRequester(req, auth, roster)) !== null;
 }
 
+/// The owner's session where its token cannot have been carried by someone
+/// else: from this very machine (auth.ts fromThisMachine, recorded by
+/// authenticate) or through the tunnel from the very key that session was
+/// paired with (a phone given the setup token of a headless server). Not
+/// over the local network in clear, not through a proxy, not inside the
+/// tunnel of another device's key (docs/trust-routes-review.md).
+export function ownerHere(req: FastifyRequest, auth: { sessionId?: string | null; thisMachine?: boolean }): boolean {
+  if (!auth.sessionId || !isOwnerSession(auth.sessionId)) return false;
+  return auth.thisMachine === true || sealedFromSessionKey(req, auth.sessionId);
+}
+
+/// Who may decide where this computer's conversations go and what its model
+/// is told first (providers, the system prompt, pairing codes): the owner's
+/// session (setup token or password: the Desktop, the CLI signed in), the
+/// CLI paired with a code (`/session/cli`: kind « cli »), or one of the
+/// person's own devices (meshRequester's person branch: a device-access its
+/// vault person device signed, through the tunnel from its own key). Never a
+/// firmware device's token, another computer's `peer:` session, nor a device
+/// that is no member of the person's history — a household member's phone,
+/// whether the account brought it in (rule 2) or the Desktop let it in with
+/// its code (« Appareils »), which gives every device it approves a « code »
+/// session: they may use this computer, not send the owner's conversations
+/// elsewhere nor steer its model (docs/trust-routes-review.md).
+export async function choosesForThePerson(req: FastifyRequest, auth: { sessionId?: string | null; deviceId?: string | null }, roster: () => Promise<Roster | null> | Roster | null): Promise<boolean> {
+  if (auth.deviceId || !auth.sessionId) return false;
+  const row = sessionRow(auth.sessionId);
+  if (!row || isPeerSessionKind(row.kind) || row.requesterComputerId) return false;
+  if (row.origin === "owner" || (row.origin === "code" && row.kind === "cli")) return true;
+  const requester = await meshRequester(req, auth, roster);
+  return requester !== null && requester.id !== "owner";
+}
+
 /// Sent by the computer passing a request on (documents/remote.ts) to the
 /// one that holds the documents, for its audit: who asked it, as above.
 export const REQUESTER_HEADER = "x-twoody-requester";

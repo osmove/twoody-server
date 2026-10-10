@@ -1,12 +1,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { eq } from "drizzle-orm";
 
-import { isOwnerSession, isPeerSessionKind, requireAuth } from "../auth.js";
+import { authenticate, isOwnerSession, isPeerSessionKind, requireAuth } from "../auth.js";
 import { ENGINE_PREFERENCES, RuntimeError, RuntimeFetchError, isHttpUrl, runtimeTarget, type BuiltinPrefs, type EnginePreference } from "../builtin/index.js";
 import { authSessions, db } from "../db.js";
 import { activeEngine, engine, engineDefaultModel, engineName, engineSurvey } from "../engine.js";
 import { JobError, cancelJob, currentJob, engineCatalog, ensureRuntimeInstalled, removeEngineModel, runtimeInstalled, startModelJob } from "../engineJobs.js";
 import { ownerRequest } from "../localAccess.js";
+import { isThisComputersApp } from "./usage.js";
 
 // « Moteur » and « Modèles » of this computer (docs/builtin-runtime-design.md §4):
 //
@@ -26,6 +27,11 @@ import { ownerRequest } from "../localAccess.js";
 // account). Never another computer of the account — a peer session is
 // refused before any route (peerSessions.ts), and a session asked for by
 // another computer here — nor a firmware device's token.
+//
+// `custom_url` — the address every conversation is then sent to — only from
+// this machine: its console (ownerRequest) or this computer's app
+// (isThisComputersApp); a phone switches between engines, it never names
+// where they are (docs/trust-routes-review.md). 403 desktop_app_only.
 //
 // Refusals: 409 managed_by_desktop (the Desktop runs this computer's
 // runtime), 507 insufficient_memory, 404 not_installed / unknown_model,
@@ -118,6 +124,10 @@ export async function runtimeRoutes(app: FastifyInstance) {
         update.engine = body.engine as EnginePreference;
       }
       if (body.custom_url !== undefined) {
+        if (!ownerRequest(req)) {
+          const auth = await authenticate(req);
+          if (!auth || !isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only", message: "The custom engine's address is set on this computer." });
+        }
         if (!isHttpUrl(body.custom_url)) return reply.code(422).send({ error: "invalid_custom_url", message: "custom_url is an http(s) address" });
         update.custom_url = body.custom_url;
       }

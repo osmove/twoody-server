@@ -1,10 +1,13 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { db, llmEndpoints } from "../db.js";
 import { generateId, requireAuth } from "../auth.js";
 import { offeredModels, probeRuntime, type RuntimeProbe } from "../localRuntime.js";
 import { modelLoadState, noteModelReady, startModelLoad } from "../modelLoads.js";
 import { requirePerson } from "./runtime.js";
+import { ownerRequest } from "../localAccess.js";
+import { choosesForThePerson } from "../sessionTrust.js";
+import { meshRoster } from "../vault/roster.js";
 import { listComputers, type ComputerEntry } from "../router/index.js";
 import { accountCredentials } from "../account/service.js";
 import { activeEngine, engine, engineDefaultModel, engineName, engineRoute } from "../engine.js";
@@ -156,6 +159,22 @@ async function runtimeHolding(userId: string, model: string): Promise<{ baseUrl:
   return null;
 }
 
+/// Where this computer's conversations go, with what it knows of its person
+/// in the prompt: decided by this machine's console, or by the person
+/// (sessionTrust.ts choosesForThePerson: the Desktop, the CLI, one of the
+/// person's own devices) — never a firmware device's token nor a device that
+/// is no member of the person's history, such as a household member's
+/// phone, which could otherwise send the owner's conversations to a machine
+/// of theirs (docs/trust-routes-review.md). Reading the list and loading a
+/// model stay open to any device paired with this computer.
+async function requireChooser(req: FastifyRequest, reply: FastifyReply): Promise<{ userId: string } | null> {
+  const auth = await requireAuth(req, reply);
+  if (!auth) return null;
+  if (ownerRequest(req) || (await choosesForThePerson(req, auth, () => meshRoster().get()))) return auth;
+  reply.code(403).send({ error: "not_the_person", message: "This computer's models are chosen by its person: on it, from the CLI, or from one of the person's own devices." });
+  return null;
+}
+
 export async function providerRoutes(app: FastifyInstance) {
   app.get("/providers", {
     schema: {
@@ -265,7 +284,7 @@ export async function providerRoutes(app: FastifyInstance) {
       security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
     },
     handler: async (req, reply) => {
-      const auth = await requireAuth(req, reply);
+      const auth = await requireChooser(req, reply);
       if (!auth) return;
 
       const baseUrl = normalizeProviderUrl(req.body.base_url ?? req.body.url ?? "");
@@ -330,7 +349,7 @@ export async function providerRoutes(app: FastifyInstance) {
         security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
       },
       handler: async (req, reply) => {
-        const auth = await requireAuth(req, reply);
+        const auth = await requireChooser(req, reply);
         if (!auth) return;
 
         const [provider] = db
@@ -386,7 +405,7 @@ export async function providerRoutes(app: FastifyInstance) {
       security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
     },
     handler: async (req, reply) => {
-      const auth = await requireAuth(req, reply);
+      const auth = await requireChooser(req, reply);
       if (!auth) return;
 
       const [provider] = db
@@ -418,7 +437,7 @@ export async function providerRoutes(app: FastifyInstance) {
       security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
     },
     handler: async (req, reply) => {
-      const auth = await requireAuth(req, reply);
+      const auth = await requireChooser(req, reply);
       if (!auth) return;
 
       const [provider] = db
