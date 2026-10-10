@@ -201,7 +201,8 @@ const plain = (text: string) => fold(text).replace(/'/g, " ");
 const END_DE = String.raw`(?=\s*(?:$|[.!?,;]|(?:bitte|und|jetzt|wieder|mal|danke|sofort)\b))`;
 const END_NL = String.raw`(?=\s*(?:$|[.!?,;]|(?:alsjeblieft|alstublieft|aub|graag|nu|weer|even|en|meteen)\b))`;
 const END_EN = String.raw`(?=\s*(?:$|[.!?,;]|(?:please|again|now|too|and|then)\b))`;
-const WORDS_BETWEEN = String.raw`\s+(?:\S+\s+){0,6}?`;
+// Up to nine words between: « Mach das Licht in der Küche und den Fernseher an ».
+const WORDS_BETWEEN = String.raw`\s+(?:\S+\s+){0,9}?`;
 const PT_CLITIC = String.raw`(?:-?(?:a|o|as|os|la|lo|las|los))?`;
 const ON = new RegExp([
   String.raw`\b(?:allume|allumes|allumez|allumer|rallume|turn on|switch on)\b|\b(?:turn|switch)${WORDS_BETWEEN}on${END_EN}`,
@@ -322,31 +323,81 @@ function verbOf(text: string): [RegExp, HomeAction] | undefined {
   return VERBS.find(([pattern]) => pattern.test(text));
 }
 
-/// « Allume la lumière du salon »: the action and the device, when the
-/// message names exactly one — at once, before the model writes a word.
-/// Null when it is anything else, or names several.
-export function homeShortcut(message: string, entities: HomeEntity[]): { entities: HomeEntity[]; action: HomeAction } | null {
-  const text = plain(message).trim();
-  if (text.length > 120 || asksAQuestion(text) || ABOUT_REMINDING.test(text)) return null;
-  const verb = verbOf(text);
-  if (!verb) return null;
+/// The devices a text names best: words that tell one device from another
+/// (« salon », « bibliothèque »), and « lumière » only as a tie-breaker.
+function bestNamed(text: string, entities: HomeEntity[]): HomeEntity[] {
   const words = messageWords(text);
   let best = 0;
   let found: HomeEntity[] = [];
   for (const entity of entities) {
-    // Words that tell one device from another (« salon », « bibliothèque »),
-    // and « lumière » only as a tie-breaker.
     const score = nameScore(entity, text, words);
     if (!score) continue;
     if (score > best) { best = score; found = [entity]; }
     else if (score === best) found.push(entity);
   }
-  if (!found.length) return null;
-  // The same name twice (a device added again in Home Assistant): one device.
-  const names = new Set(found.map((entity) => plain(entity.name)));
-  if (names.size > 1) return null;
-  const working = found.filter((entity) => entity.state !== "unavailable");
-  return { entities: working.length ? [working[0]!] : [found[0]!], action: verb[1] };
+  return found;
+}
+
+/// The one device among the best named, or null when they are several
+/// devices. The same name twice (a device added again in Home Assistant)
+/// is one device: the one that answers.
+function oneDevice(found: HomeEntity[]): HomeEntity | null {
+  if (!found.length || new Set(found.map((entity) => plain(entity.name))).size > 1) return null;
+  return found.find((entity) => entity.state !== "unavailable") ?? found[0]!;
+}
+
+/// Where a message that names several devices goes from one to the next,
+/// on fold()ed text: commas and « and » in each language of the app (« et »,
+/// « and », « und », « y », « e », « en »); Japanese と and や between two
+/// names (« キッチンの照明とテレビ », not ちょっと); Chinese 和, 跟, 与, 还有
+/// when the message has no kana (« 和室 » is a Japanese room); Korean
+/// 그리고, and 와, 과, 하고, (이)랑 at the end of a word (« 주방 조명과 티비 »).
+const AND_WORDS = [
+  String.raw`\s*[,;、，]\s*`,
+  String.raw`\s+(?:et|and|und|sowie|y|e|en|ainsi que|as well as)\s+`,
+  "(?<=[㐀-䶿一-鿿゠-ヿ])[とや](?=[㐀-䶿一-鿿゠-ヿ])",
+  "\\s+그리고\\s+|(?<=[가-힣])(?:와|과|하고|이랑|랑)(?=\\s)",
+];
+const AND = new RegExp([...AND_WORDS, "\\s*(?:还有|以及|和|跟|与|及)\\s*"].join("|"), "g");
+const AND_WITH_KANA = new RegExp(AND_WORDS.join("|"), "g");
+
+/// « Allume la lumière de la cuisine et la télé » (bench of 10/10/2026:
+/// only the kitchen was switched): each part of the message names its
+/// device, and the same action goes to all of them. Undefined when fewer
+/// than two parts name a device, or a device's own name holds the « and »
+/// (« Salon et cuisine »): the message is read whole. Null when a part
+/// names several devices, or another action (« allume la cuisine et éteins
+/// la télé »): left to the model and control_home.
+function severalNamed(text: string, entities: HomeEntity[], action: HomeAction): { entities: HomeEntity[]; action: HomeAction } | null | undefined {
+  const parts = text.split(/[぀-ヿ]/.test(text) ? AND_WITH_KANA : AND).map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2) return undefined;
+  const named = parts.map((part) => bestNamed(part, entities)).filter((found) => found.length);
+  if (named.length < 2) return undefined;
+  const whole = oneDevice(bestNamed(text, entities));
+  if (whole && named.filter((found) => found.includes(whole)).length >= 2) return undefined;
+  if (parts.some((part) => { const own = verbOf(part); return own && own[1] !== action; })) return null;
+  const devices: HomeEntity[] = [];
+  for (const found of named) {
+    const device = oneDevice(found);
+    if (!device) return null;
+    if (!devices.includes(device)) devices.push(device);
+  }
+  return devices.length >= 2 ? { entities: devices, action } : undefined;
+}
+
+/// « Allume la lumière du salon »: the action and the device, when the
+/// message names exactly one — at once, before the model writes a word —
+/// or each device named in turn (« la cuisine et la télé »). Null when it
+/// is anything else, or names several in a way that is not clear.
+export function homeShortcut(message: string, entities: HomeEntity[]): { entities: HomeEntity[]; action: HomeAction } | null {
+  const text = plain(message).trim();
+  if (text.length > 120 || asksAQuestion(text) || ABOUT_REMINDING.test(text)) return null;
+  const verb = verbOf(text);
+  if (!verb) return null;
+  const several = severalNamed(text, entities, verb[1]);
+  if (several !== undefined) return several;
+  const device = oneDevice(bestNamed(text, entities));
+  return device ? { entities: [device], action: verb[1] } : null;
 }
 
 // « Allume la bibliothèque du salon », then « éteins-la » (Jimmy,

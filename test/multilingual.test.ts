@@ -77,6 +77,54 @@ test("« turn on the living room light » in every language: the device and the 
   }
 });
 
+test("« the kitchen light and the TV » in every language: both devices, at once; another action or an unclear device, the model", () => {
+  // Bench of 10/10/2026: « Allume la lumière de la cuisine et la télé »
+  // switched the kitchen only.
+  const homes: Record<string, [string, string]> = {
+    fr: ["Lumière cuisine", "Télé"], en: ["Kitchen light", "Television"], de: ["Küche Lampe", "Fernseher"], es: ["Luz de la cocina", "Televisor"],
+    it: ["Luce cucina", "Televisore"], pt: ["Luz da cozinha", "Televisão"], nl: ["Keuken lamp", "Televisie"], ja: ["キッチンの照明", "テレビ"],
+    zh: ["厨房灯", "电视"], ko: ["주방 조명", "티비"],
+  };
+  const orders: Array<[string, string, string]> = [
+    ["fr", "Allume la lumière de la cuisine et la télé", "on"],
+    ["fr", "Éteins la cuisine, la télé", "off"],
+    ["en", "Turn on the kitchen light and the television", "on"],
+    ["de", "Mach das Licht in der Küche und den Fernseher an", "on"],
+    ["de", "Schalte die Küche und den Fernseher aus", "off"],
+    ["es", "Enciende la luz de la cocina y el televisor", "on"],
+    ["it", "Accendi la luce della cucina e il televisore", "on"],
+    ["pt", "Liga a luz da cozinha e a televisão", "on"],
+    ["nl", "Zet de lamp in de keuken en de televisie aan", "on"],
+    ["ja", "キッチンの照明とテレビをつけて", "on"],
+    ["zh", "打开厨房灯和电视", "on"],
+    ["zh", "把厨房灯跟电视关掉", "off"],
+    ["ko", "주방 조명과 티비 켜 줘", "on"],
+    ["ko", "주방 조명 그리고 티비 꺼 줘", "off"],
+  ];
+  for (const [lang, message, action] of orders) {
+    const [kitchen, tv] = homes[lang]!;
+    const home = [device("light.kitchen", kitchen), device("media_player.tv", tv), device("light.living", lang === "ja" ? "リビングの照明" : "Living")];
+    const found = homeShortcut(message, home);
+    assert.equal(found ? `${found.action} ${found.entities.map((entity) => entity.entity_id).join(",")}` : null, `${action} light.kitchen,media_player.tv`, message);
+  }
+  const home = [device("light.kitchen", "Lumière cuisine"), device("light.spot", "Spot cuisine"), device("media_player.tv", "Télé"), device("light.salon_cuisine", "Salon et cuisine")];
+  // Two actions in one message, a part naming two devices: left to the model.
+  assert.equal(homeShortcut("Allume la lumière de la cuisine et éteins la télé", home), null);
+  assert.equal(homeShortcut("Mach das Licht in der Küche an und schalte den Fernseher aus", [device("light.kueche", "Küche Lampe"), device("media_player.tv", "Fernseher")]), null);
+  assert.equal(homeShortcut("Allume la cuisine et la télé", home), null, "two devices in the kitchen");
+  // A device whose own name holds the « and »: that device alone.
+  assert.deepEqual(homeShortcut("Allume salon et cuisine", home)?.entities.map((entity) => entity.entity_id), ["light.salon_cuisine"]);
+  // One device, and words after a comma: as before.
+  assert.deepEqual(homeShortcut("Allume la télé, s'il te plaît", home)?.entities.map((entity) => entity.entity_id), ["media_player.tv"]);
+  assert.deepEqual(homeShortcut("和室の照明をつけて", [device("light.washitsu", "和室の照明"), device("light.living", "リビングの照明")])?.entities.map((entity) => entity.entity_id), ["light.washitsu"]);
+  // « Éteins-les » after both: both.
+  const both = { entities: [home[0]!, home[2]!], action: "on" as const };
+  const off = homeFollowUp("Éteins-les", home, both);
+  assert.equal(off ? `${off.action} ${off.entities.map((entity) => entity.entity_id).join(",")}` : null, "off light.kitchen,media_player.tv");
+  const aus = homeFollowUp("Mach sie wieder aus", [device("light.kueche", "Küche Lampe"), device("media_player.tv", "Fernseher")], { entities: [device("light.kueche", "Küche Lampe"), device("media_player.tv", "Fernseher")], action: "on" });
+  assert.equal(aus?.entities.length, 2);
+});
+
 test("a question about a light, a reminder, another meaning of the verb: nothing switched", () => {
   for (const message of [
     "Ist das Licht im Wohnzimmer an?", "Erinnere mich, das Licht im Wohnzimmer auszuschalten", "Mach mal ein Foto",
