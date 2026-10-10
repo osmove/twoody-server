@@ -447,7 +447,10 @@ export function sharesNote(shares: ShareOutcome[]): string | null {
     if (share.status === "pending" || share.status === "refused") return [shareMissingSentence(label, share.status)];
     return [];
   });
-  return said.length ? `[${said.join(" ")} Its documents are missing from these excerpts; if the answer may be there, say so briefly.]` : null;
+  // Said first, as a fact about the folder: told only that its documents
+  // were missing, Qwen3.5 9B answered « ce n'est pas dans les documents
+  // fournis » (bench of 10/10/2026), as if the folder had been read.
+  return said.length ? `[Begin your answer by telling the person this, in their language: ${said.join(" ")} Its documents were not searched: never say the answer is not in them.]` : null;
 }
 
 const MISSING: Partial<Record<ComputerOutcome["status"], string>> = {

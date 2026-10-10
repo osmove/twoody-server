@@ -22,7 +22,8 @@ import { listFilesAcrossComputers, type MeshListing } from "../documents/remoteL
 import { contextBudget } from "./localDocuments.js";
 import { importVaultConversation } from "./discussions.js";
 import { VIA_TUNNEL_HEADER } from "../tunnel/host.js";
-import { documentAccess } from "../documents/access.js";
+import { documentAccess, type DocumentAccess } from "../documents/access.js";
+import { sharedFolderUuids } from "../shares/guest.js";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { requireAuth, generateId, PLACEHOLDER_USER_NAME } from "../auth.js";
 import { DATA_DIR, db, llmEndpoints, discussions, messages, memories, sqlite, users } from "../db.js";
@@ -428,10 +429,12 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   catch { return reply.code(422).send({ error: "invalid_document_access" }); }
   // « Seulement mes documents » asked: no web either, whatever Capacités says.
   const documentsOnly = access.mode === "only";
-  // Documents switched off in Capabilities: the chat does not search them.
-  if (access.mode !== "off" && !capabilityOn(auth.userId, "documents")) access = { mode: "off" as const };
+  // Documents switched off in Capabilities: the chat does not search this
+  // computer's folders. A folder someone shares with the person is no folder
+  // of this computer — read on its owner's, chosen one by one: kept.
+  if (access.mode !== "off" && !capabilityOn(auth.userId, "documents")) access = sharedOnly(access);
   const left = capabilitiesOff(parsed.capabilities_off);
-  if (left.has("documents")) access = { mode: "off" as const };
+  if (left.has("documents")) access = sharedOnly(access);
   const audioBuffer = parsed.audioBuffer ?? null;
   const skipTranscription = readBool(parsed.skip_transcription, false);
   const rawMemoryMode = parsed.memory_mode ?? (parsed.query as { memory_mode?: unknown } | undefined)?.memory_mode;
@@ -3691,4 +3694,11 @@ export function recentImages(discussionId: string, now = Date.now()): string[] {
 /// The person's contacts and agenda, less what this message leaves out.
 function withoutLeftOut(personal: ReturnType<typeof loadPersonalData>, left: Set<LocalCapability>): ReturnType<typeof loadPersonalData> {
   return { contacts: left.has("contacts") ? [] : personal.contacts, events: left.has("calendar") ? [] : personal.events };
+}
+
+/// What of a conversation's documents is left when this computer's own are
+/// set aside: the folders shared with the person, if it named any.
+export function sharedOnly(access: DocumentAccess): DocumentAccess {
+  const shared = sharedFolderUuids(access);
+  return shared.length ? { mode: access.mode === "only" ? "only" : "selected", folderIds: shared.map((uuid) => `share:${uuid}`) } : { mode: "off" };
 }

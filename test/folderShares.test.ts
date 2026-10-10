@@ -345,3 +345,19 @@ test("the audit says who asked what and how it went, newest first, by share — 
   assert.ok(!response.body.includes("préavis"));
   assert.equal((await app.inject({ method: "GET", url: "/local_shares/audit?share_id=../x", headers: ownerHeaders })).statusCode, 422);
 });
+
+// 10/10/2026, bench with Qwen3.5 9B: a person whose own Documents are off
+// (nothing of theirs indexed) asked about a folder shared with them and was
+// told « je n'ai pas accès à vos documents » — the shared folder was dropped
+// with this computer's own. It is kept; the unreachable folder is said first.
+test("Documents off on this computer: only the folders shared with the person are kept", async () => {
+  const { sharedOnly } = await import("../src/routes/queries.js");
+  const { sharesNote } = await import("../src/documents/remote.js");
+  const uuid = "3f1c2a9e-7b4d-4c1e-9a2b-5d6e7f8a9b0c";
+  assert.deepEqual(sharedOnly({ mode: "only", folderIds: [`share:${uuid}`, "local:abc"] }), { mode: "only", folderIds: [`share:${uuid}`] });
+  assert.deepEqual(sharedOnly({ mode: "selected", folderIds: ["local:abc"] }), { mode: "off" });
+  assert.deepEqual(sharedOnly({ mode: "all" }), { mode: "off" });
+  const note = sharesNote([{ status: "unreachable", label: "Contrats", owner_name: "Jimmy" } as never]) ?? "";
+  assert.match(note, /^\[Begin your answer by telling the person this/);
+  assert.match(note, /never say the answer is not in them/);
+});
