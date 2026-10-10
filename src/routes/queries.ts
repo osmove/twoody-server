@@ -1100,7 +1100,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // « Dis à maman que je viens dimanche »: how not said — asked first
     // (« Voulez-vous que je rédige un e-mail à maman… ? »), no draft yet
     // (Jimmy, 05/10/2026); « oui » to that question: the e-mail now.
-    const passOn = offersEmail && !emailAsked ? passOnWithoutHow(typedText(content)) : null;
+    // Not a reminder about telling someone (« 내일 폴에게 전화하라고 알려줘 »,
+    // « Rappelle-moi de dire à Paul… »): that is the reminder's.
+    const passOn = offersEmail && !emailAsked && !askedAction(typedText(content)) ? passOnWithoutHow(typedText(content)) : null;
     const lastAnswer = [...history].reverse().find((row) => row.role === "assistant");
     const agreedRequest = offersEmail && !emailAsked && !passOn && lastAnswer && agreedToDraft(lastAnswer.content, typedText(content))
       ? [...history.slice(0, history.lastIndexOf(lastAnswer))].reverse().find((row) => row.role === "user")?.content ?? null
@@ -1115,7 +1117,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     const emailFound = emailAsked
       ? emailsForMessage(typedText(content), emailContext)
       : passOn
-        ? passOnFirst(passOn.recipient, emailContext)
+        ? passOnFirst(passOn.recipient, { ...emailContext, language: messageLanguage(typedText(content)) ?? turnLocale ?? null })
         : agreedRequest
           ? emailsAgreedTo(agreedRequest, typedText(content), emailContext)
           : null;
@@ -2709,7 +2711,7 @@ const HOLD_DRAFT_CHARS = 3_000;
 export function looksLikeAnnouncement(text: string): boolean {
   const said = text.trim();
   if (!said || said.length > HOLD_CHARS) return false;
-  return /[:…]$/.test(said)
+  return /[:…：]$/.test(said)
     || /\b(voulez-vous|souhaitez-vous|veux-tu|tu veux que|vous voulez que|would you like|shall i|do you want me)\b/i.test(said)
     // The same offer in the other languages of the app (10/10/2026).
     || /(?<![\p{L}])(?:möchten sie|willst du|soll ich|sollen wir|quieres que|desea que|deseas que|vuoi che|desideri che|preferisci che|quer que|deseja que|você quer|wil je dat|wilt u dat|zal ik)(?![\p{L}])|しましょうか|いたしましょうか|要我|需要我|할까요|드릴까요/iu.test(said)
@@ -2737,14 +2739,17 @@ const NARRATION = new RegExp([
   String.raw`(?<!\p{L})(?:buscaré|revisaré|consultaré|busco en)(?!\p{L})`,
   // Italian
   String.raw`(?<!\p{L})(?:lasciami|fammi|devo|vado a|prima,?|posso)\s+(?:\S+\s+){0,3}?(?:cerc|controll|verific|consult|guard|esamin|legg|apr)`,
-  String.raw`(?<!\p{L})(?:cercherò|controllerò|verificherò|cerco nei|controllo nei)(?!\p{L})`,
+  String.raw`(?<!\p{L})(?:cercherò|controllerò|verificherò|(?:cerco|controllo|verifico|guardo)\s+(?:nei|nelle|nel|nella|tra|fra))(?!\p{L})`,
   // Portuguese
   String.raw`(?<!\p{L})(?:vou|deixe-me|deixa-me|preciso|tenho que|devo|primeiro,?|posso)\s+(?:\S+\s+){0,3}?(?:procur|pesquis|busc|verific|consult|olh|examin|ler|abr)`,
   String.raw`(?<!\p{L})(?:procurarei|pesquisarei|verificarei)(?!\p{L})`,
+  // Dutch (10/10/2026: the app speaks it)
+  String.raw`(?<!\p{L})(?:ik (?:ga|zal|moet|wil|kan)|laat me|eerst,?)\s+(?:\S+\s+){0,4}?(?:zoek|doorzoek|kijk|controleer|bekijk|raadpleeg|lees|open|na te kijken|op te zoeken|na te gaan)`,
+  String.raw`(?<!\p{L})ik (?:zoek|doorzoek|kijk|controleer|bekijk)(?!\p{L})`,
   // Japanese, Korean, Chinese
   String.raw`(?:検索|確認|調査|参照)(?:します|してみます|いたします|しましょう|する必要があります)|(?:探し|調べ)(?:ます|てみます|ましょう)|(?:探す|調べる)必要があります`,
   String.raw`(?:검색|확인|찾아)\s?(?:하겠습니다|해\s?보겠습니다|볼게요|할게요|보겠습니다)`,
-  String.raw`(?:让我|我来|我将|我会|我需要|我先)[^。！？\n]{0,8}?(?:搜索|查找|查看|检索|查一下|找一下)`,
+  String.raw`(?:让我|我来|我将|我会|我需要|我先|我帮你|我去)[^。！？\n]{0,8}?(?:搜索|查找|查看|检索|查一下|找一下|查查)`,
 ].join("|"), "iu");
 
 /// A sentence in which the model only says it is writing the e-mail asked
@@ -2753,17 +2758,28 @@ const NARRATION = new RegExp([
 /// call: an announcement, not a draft (Qwen3.5 9B, 1 of 3 and 3 of 6,
 /// benches of 05/10/2026). Only while a draft was asked for (mayDraft).
 export const DRAFT_NARRATION = new RegExp([
-  String.raw`^\W*(?:(?:d['’]accord|tr[eè]s bien|parfait|entendu|bien s[uû]r|ok|okay|c['’]est not[ée]|bien re[çc]u|sure|alright|got it)\W+)?`,
+  String.raw`^\W*(?:(?:d['’]accord|tr[eè]s bien|parfait|entendu|bien s[uû]r|ok|okay|c['’]est not[ée]|bien re[çc]u|sure|alright|got it|gut|alles klar|gerne|in ordnung|verstanden|vale|perfecto|claro|entendido|de acuerdo|va bene|perfetto|certo|d['’]accordo|perfeito|tudo bem|beleza|ok[ée]|prima|goed|natuurlijk|はい|わかりました|承知しました|かしこまりました|好的|没问题|好|네|알겠습니다|좋아요)\W+)?`,
   String.raw`(?:(?:je\s+|j['’]\s*)(?:vais\s+|m['’]en vais\s+|peux\s+|suis en train de\s+)?(?:maintenant\s+|donc\s+|d['’]abord\s+|tout de suite\s+|imm[ée]diatement\s+|aussi\s+)?(?:vous\s+|te\s+|lui\s+|leur\s+)?(?:r[ée]dig|pr[ée]par|[ée]cri|r[ée]pond|confirm|envoi|envoy|cr[ée]|fais|m['’]occupe)`,
   String.raw`|i(?:'ll|’ll| will| am going to|'m going to|’m going to| am| can)?\s+(?:now\s+)?(?:draft|write|prepar|repl|respond|confirm|send|creat)`,
   String.raw`|let me\s+(?:draft|write|prepare|reply|respond)`,
-  String.raw`|(?:drafting|writing|preparing)(?!\p{L}))`,
+  String.raw`|(?:drafting|writing|preparing)(?!\p{L})`,
+  // The same in the other languages of the app (10/10/2026): « Ich entwerfe
+  // jetzt eine Antwort an Paul. », « Voy a redactar un correo… », « 我来为你
+  // 起草一封邮件。 », « 이메일 초안을 작성하겠습니다. ».
+  String.raw`|ich\s+(?:werde\s+|kann\s+)?(?:jetzt\s+|gleich\s+|sofort\s+|nun\s+)?(?:\S+\s+){0,5}?(?:entwerfe|entwerfen|schreibe|schreiben|verfasse|verfassen|bereite|vorbereiten|erstelle|erstellen|antworte|antworten)(?!\p{L})`,
+  String.raw`|(?:voy a|ahora)\s+(?:\S+\s+){0,2}?(?:redactar|escribir|preparar|responder|enviar|crear)|(?:ahora\s+)?(?:redacto|escribo|preparo|respondo)(?!\p{L})`,
+  String.raw`|(?:sto per|vado a|ora)\s+(?:\S+\s+){0,2}?(?:scrivere|preparare|redigere|rispondere|creare)|(?:ora\s+)?(?:scrivo|preparo|redigo|rispondo)(?!\p{L})`,
+  String.raw`|(?:vou|irei|agora vou)\s+(?:\S+\s+){0,2}?(?:redigir|escrever|preparar|responder|criar|enviar)|(?:agora\s+)?(?:escrevo|preparo|redijo|respondo)(?!\p{L})`,
+  String.raw`|ik\s+(?:ga\s+|zal\s+)?(?:nu\s+|even\s+)?(?:\S+\s+){0,5}?(?:opstellen|schrijven|stel|schrijf|maak|beantwoorden|beantwoord)(?!\p{L})`,
+  String.raw`|(?:[^。！？\n]{0,30}?)(?:下書き|メール|返信)を?(?:作成|書き|準備)(?:します|しますね|いたします|しています|しましょう)`,
+  String.raw`|我(?:来|将|會|会|现在|現在|马上|馬上)?(?:为你|為你|帮你|幫你|给你|給你)?(?:起草|撰写|撰寫|草拟|草擬|写|寫|回复|回覆)`,
+  String.raw`|(?:[^.!?\n]{0,30}?)(?:초안을?|이메일을?|답장을?)\s?(?:작성|써|쓰)(?:하겠습니다|할게요|해\s?드릴게요|겠습니다|해\s?드리겠습니다))`,
 ].join(""), "iu");
 
 /// The e-mail itself, written out instead of drafted: « Voici votre
 /// brouillon de réponse à Maître Dupont : **Objet :** … » (Qwen3.5 9B, 1
 /// of 3, bench of 05/10/2026). Only while a draft was asked for.
-export const DRAFT_IN_PROSE = /^\W*(?:(?:voici|voil[àa])\s+(?:donc\s+)?(?:un|une|le|la|l['’]|votre|vos|ton|ta|mon|ma|cet|cette)\s*(?:proposition de\s+|projet d['’]\s*|exemple d['’]\s*)?(?:brouillon|r[ée]ponse|e-?mail|mail|courriel|message)(?![\p{L}])|here(?:'s| is)\s+(?:a|an|the|your|my)\s+(?:draft|reply|e-?mail|message)(?![\p{L}])|\**\s*(?:objet|subject)\s*\**\s*:)/iu;
+export const DRAFT_IN_PROSE = /^\W*(?:(?:voici|voil[àa])\s+(?:donc\s+)?(?:un|une|le|la|l['’]|votre|vos|ton|ta|mon|ma|cet|cette)\s*(?:proposition de\s+|projet d['’]\s*|exemple d['’]\s*)?(?:brouillon|r[ée]ponse|e-?mail|mail|courriel|message)(?![\p{L}])|here(?:'s| is)\s+(?:a|an|the|your|my)\s+(?:draft|reply|e-?mail|message)(?![\p{L}])|\**\s*(?:objet|subject|betreff|asunto|oggetto|assunto|onderwerp|件名|主题|主題|제목)\s*\**\s*[:：]|(?:hier ist|hier sind)\s+(?:der|ein|ihr|dein|eine|die)\s+(?:entwurf|e-?mail|antwort|nachricht)(?![\p{L}])|aqu[ií]\s+(?:tienes|tiene|est[áa])\s+(?:el|un|tu|su)\s+(?:borrador|correo|mensaje)(?![\p{L}])|ecco\s+(?:la|una|il|un|l['’])\s*(?:bozza|e-?mail|risposta|messaggio)(?![\p{L}])|aqui\s+(?:est[áa]|vai)\s+(?:o|um|seu|a|uma)\s+(?:rascunho|e-?mail|mensagem|resposta)(?![\p{L}])|hier is\s+(?:het|een|je|uw)\s+(?:concept|e-?mail|bericht|antwoord)(?![\p{L}])|以下(?:は|が)?(?:メール|下書き|返信)|这是(?:邮件|草稿|回复)|以下是(?:邮件|草稿|回复)|다음은\s?(?:이메일|초안|답장))/iu;
 
 /// Where the first sentence of `text` ends (past its stop), or -1.
 function sentenceEnd(text: string): number {

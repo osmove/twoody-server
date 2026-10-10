@@ -515,7 +515,7 @@ export const LIST_FILES_TOOL = {
     name: "list_files",
     description:
       "List what a folder on the user's computer holds — its sub-folders and files (name, kind, size, date) — anywhere inside the folders they granted, however deep: " +
-      "a home folder granted holds their Desktop (Bureau), Documents, Downloads (Téléchargements) and every folder in them. " +
+      "a home folder granted holds their Desktop, Documents, Downloads and every folder in them, whatever their computer's language calls them (Bureau, Schreibtisch, デスクトップ…). " +
       "Use it when they ask what a folder contains, to list or count files, or for the newest, oldest or largest files of a folder; call it again on a sub-folder to go deeper.",
     parameters: {
       type: "object",
@@ -523,7 +523,7 @@ export const LIST_FILES_TOOL = {
         folder: {
           type: "string",
           description:
-            "The folder: a usual one (« Bureau », « Documents », « Téléchargements », « iCloud Drive »), a path from a granted folder or a usual one (« jimmy/Desktop/Projets », « Bureau/Projets », « Documents/Factures »), or a folder's name (« Factures »).",
+            "The folder, as the user names it: a usual one, in English or in their language (« Desktop », « Documents », « Downloads », « iCloud Drive », « Bureau », « Schreibtisch », « 桌面 »), a path from a granted folder or a usual one (« jimmy/Desktop/Projets », « Desktop/Projects », « Documents/Rechnungen »), or a folder's name (« Factures »).",
         },
         sort: { type: "string", enum: ["name", "recent", "oldest", "largest"], description: "Order of the files; name by default." },
         kinds: {

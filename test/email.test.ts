@@ -364,7 +364,7 @@ test("« Dis à René que je viens lundi »: how not said — a question first, 
   answer = null;
   const given = lastUserMessage();
   assert.match(given, /\[The user asks to pass something on to « René » without saying how\. Do not write the message yet and do not call draft_email\./);
-  assert.match(given, /« Voulez-vous que je rédige un e-mail à maman pour lui dire que vous venez dimanche \? »/);
+  assert.match(given, /in French, such as « Voulez-vous que je rédige un e-mail à René pour lui dire que… \? », with what they asked to pass on/);
   assert.match(given, /Never say you cannot send or pass on messages/);
   assert.match(given, /From: René Dupont <rene@example\.com>/, "who René is, from the e-mails");
   assert.equal(eventOf(first.body, "approval"), null);

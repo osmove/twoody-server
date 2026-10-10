@@ -8,6 +8,11 @@
 // Pure functions: the rows are loaded by the caller (routes/localSync.ts),
 // and nothing here is sent anywhere.
 
+import {
+  B, DAY_AFTER_TOMORROW, E, GERMANIC, DAY_BEFORE_YESTERDAY, LAST_AFTER, LAST_BEFORE, LAST_MONTH, LAST_WEEK, MONTH_OF, MONTH_WORDS, NEXT_AFTER, NEXT_BEFORE,
+  NEXT_MONTH, NEXT_WEEK, NEXT_WEEKEND, THIS_MONTH, THIS_WEEK, TODAY, TOMORROW, WEEKEND, YESTERDAY_ANY, namesYesterday, weekdayPattern, words as wordsPattern,
+} from "./dateWords.js";
+import { CJK, CJK_RUN, fold } from "./intentText.js";
 import { localParts, zonedTime } from "./usagePeriods.js";
 
 export interface PersonalContact {
@@ -41,35 +46,46 @@ const MAX_CONTACTS = 5;
 const MAX_EVENTS = 12;
 const NOTES_CHARS = 200;
 
+/// Accents removed, lower case, apostrophes straight; kana and hangul kept
+/// whole (intentText.ts fold — stripping every mark made « デスクトップ »
+/// « テスクトッフ »).
 function normalize(text: string): string {
-  return text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().replace(/[’`]/g, "'");
+  return fold(text).replace(/`/g, "'");
 }
 
 const FR_WEEKDAYS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"];
 const EN_WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
-const MONTHS: Array<[number, string[]]> = [
-  [1, ["janvier", "janv", "january", "jan"]],
-  [2, ["fevrier", "fevr", "fev", "february", "feb"]],
-  [3, ["mars", "march", "mar"]],
-  [4, ["avril", "avr", "april", "apr"]],
-  [5, ["mai", "may"]],
-  [6, ["juin", "june", "jun"]],
-  [7, ["juillet", "juil", "july", "jul"]],
-  [8, ["aout", "august", "aug"]],
-  [9, ["septembre", "sept", "sep", "september"]],
-  [10, ["octobre", "oct", "october"]],
-  [11, ["novembre", "nov", "november"]],
-  [12, ["decembre", "dec", "december"]],
+const OTHER_WEEKDAYS = [
+  "montag", "dienstag", "mittwoch", "donnerstag", "freitag", "samstag", "sonntag", "lunes", "martes", "miercoles", "jueves", "viernes", "sabado",
+  "lunedi", "martedi", "mercoledi", "giovedi", "venerdi", "sabato", "domenica", "maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag",
 ];
-const MONTH_OF = new Map<string, number>(MONTHS.flatMap(([month, names]) => names.map((name) => [name, month] as [string, number])));
-const MONTH_WORDS = [...MONTH_OF.keys()].sort((a, b) => b.length - a.length).join("|");
 
-/// Words that ask about the agenda without naming a day: the next two weeks.
-const AGENDA = /\b(rendez-vous|rendez vous|rdv|reunions?|agenda|calendrier|planning|emploi du temps|evenements?|meetings?|appointments?|schedule|calendar|events?|occupee?s?|busy|dispo|disponibles?|disponibilites?)\b/;
-const BIRTHDAYS = /\b(anniversaires?|birthdays?)\b/;
+/// Words that ask about the agenda without naming a day: the next two
+/// weeks. In each language of the app (10/10/2026). « Termine » only as the
+/// German noun: « terminé » folds to it.
+const AGENDA = wordsPattern(
+  [
+    String.raw`rendez-vous|rendez vous|rdv|reunions?|agenda|calendrier|planning|emploi du temps|evenements?|meetings?|appointments?|schedule|calendar|events?|occupee?s?|busy|dispo|disponibles?|disponibilites?`,
+    String.raw`termin|terminen|kalender|besprechung(?:en)?|verabredung(?:en)?|zeitplan|veranstaltung(?:en)?`,
+    String.raw`citas?|reunion(?:es)?|calendario|eventos?|compromisos?|horario|ocupad[oa]s?|appuntament[oi]|riunion[ei]|impegn[oi]|eventi|occupat[oa]|compromissos?|reuniao|reunioes`,
+    String.raw`afspra(?:ak|ken)|vergadering(?:en)?|evenementen?|bezet`,
+  ].join("|"),
+  "予定|会議|ミーティング|スケジュール|約束|アポ|カレンダー|日程|打ち合わせ|打合せ|安排|会议|會議|约会|約會|预约|預約|行程|日历|日曆|开会|開會|일정|약속|회의|미팅|스케줄|캘린더|달력|예약",
+);
+const TERMINE = new RegExp(`${B}termine${E}`, "u");
+function asksAgenda(text: string): boolean {
+  return AGENDA.test(text) || (TERMINE.test(text) && GERMANIC.test(text));
+}
+const BIRTHDAYS = wordsPattern(String.raw`anniversaires?|birthdays?|geburtstage?|cumpleanos|compleann[oi]|aniversarios?|verjaardag(?:en)?|jarig`, "誕生日|生日|생일");
+
+/// What follows a day of the month that makes it no date: « le 12 h »,
+/// « el 12 % », « il 12 per cento », « 3日間 » (three days).
+const NOT_A_DAY = new RegExp(String.raw`^(?:[.,:]?\d|\s*(?:h|heures?|uhr|uur|horas?|ore|%|€|\$|euros?|ans|jours|km|kg|min|minutes?|minuten|minutos|minuti|personnes|fois|years?|days|people|percent|prozent|procent|por ?ciento|per ?cento|por ?cento|jahre|tage|anos|anni|jaar|dias|giorni|dagen|mois|months|monate|meses|mesi|maanden|semaines|weeks|wochen|semanas|settimane|weken|x|times|mal|veces|volte|vezes|keer)(?![\p{L}]))`, "u");
+const CJK_NOT_A_DAY = /^\s?(?:間|间|後|后|前|目|以内|分|ほど|程|中|까지|동안|간|후|뒤|전|째|만|이내|정도|线|線|楼|樓|门|門|房|床|口|车|車|位|机|店)/u;
 
 /// The span of days a message speaks of, in the person's time zone, or null.
 /// Several days named (« lundi et mardi ») give the span that covers them.
+/// In the ten languages of the app (dateWords.ts).
 export function dateWindow(message: string, now: Date, timeZone: string): DateWindow | null {
   let text = ` ${normalize(message)} `;
   const today = localParts(now.getTime(), timeZone);
@@ -78,35 +94,33 @@ export function dateWindow(message: string, now: Date, timeZone: string): DateWi
     to: zonedTime(timeZone, today.year, today.month, today.day + offset + span),
   });
   const found: DateWindow[] = [];
-  const take = (pattern: RegExp, window: () => DateWindow) => {
-    if (pattern.test(text)) {
+  /// Each place matched is said once: blanked out, « après-demain » is not
+  /// also « demain », nor « le 3 octobre » also « le 3 ».
+  const blank = (pattern: RegExp) => {
+    text = text.replace(new RegExp(pattern.source, "gu"), " ");
+  };
+  const take = (pattern: RegExp, window: () => DateWindow, test = (said: string) => pattern.test(said)) => {
+    if (test(text)) {
       found.push(window());
-      // Said once: « après-demain » is not also « demain ».
-      text = text.replace(new RegExp(pattern.source, "g"), " ");
+      blank(pattern);
     }
   };
+  /// The places `pattern` (global) matches and `use` accepts, blanked out.
+  const eat = (pattern: RegExp, use: (match: RegExpMatchArray) => boolean) => {
+    let out = "";
+    let last = 0;
+    for (const match of text.matchAll(pattern)) {
+      if (!use(match)) continue;
+      out += `${text.slice(last, match.index)} `;
+      last = match.index! + match[0].length;
+    }
+    text = out + text.slice(last);
+  };
 
-  take(/\bapres[- ]demain\b|\bday after tomorrow\b/, () => day(2));
-  take(/\bavant[- ]hier\b|\bday before yesterday\b/, () => day(-2));
-  take(/\bdemain\b|\btomorrow\b/, () => day(1));
-  take(/\bhier\b|\byesterday\b/, () => day(-1));
-  take(/\baujourd'? ?hui\b|\btoday\b|\bce soir\b|\bce matin\b|\bcet apres-midi\b|\btonight\b|\bthis (?:morning|afternoon|evening)\b/, () => day(0));
-  take(/\b(?:la )?semaine prochaine\b|\bnext week\b/, () => day(7 - today.weekday, 7));
-  take(/\b(?:la )?semaine (?:derniere|passee)\b|\blast week\b/, () => day(-7 - today.weekday, 7));
-  take(/\bcette semaine\b|\bthis week\b/, () => day(-today.weekday, 7));
-  take(/\b(?:ce |le )?week-? ?end\b|\bweekend\b/, () => day(5 - today.weekday, 2));
-  take(/\b(?:le )?mois prochain\b|\bnext month\b/, () => ({
-    from: zonedTime(timeZone, today.year, today.month + 1, 1),
-    to: zonedTime(timeZone, today.year, today.month + 2, 1),
-  }));
-  take(/\bce mois(?:-ci)?\b|\bthis month\b/, () => ({
-    from: zonedTime(timeZone, today.year, today.month, today.day),
-    to: zonedTime(timeZone, today.year, today.month + 1, 1),
-  }));
-
-  // Explicit dates: « le 3 octobre », « 3 oct. 2026 », « October 3rd », « 3/10 ».
-  const dated = (dayOfMonth: number, month: number, year: number | null) => {
-    if (month < 1 || month > 12 || dayOfMonth < 1 || dayOfMonth > 31) return;
+  // Explicit dates: « le 3 octobre », « 3 oct. 2026 », « October 3rd »,
+  // « 3. Oktober », « 3 de octubre », « 10月3日 », « 10월 3일 », « 3/10 ».
+  const dated = (dayOfMonth: number, month: number, year: number | null): boolean => {
+    if (month < 1 || month > 12 || dayOfMonth < 1 || dayOfMonth > 31) return false;
     let y = year ?? today.year;
     if (y < 100) y += 2000;
     let from = zonedTime(timeZone, y, month, dayOfMonth);
@@ -116,38 +130,104 @@ export function dateWindow(message: string, now: Date, timeZone: string): DateWi
       from = zonedTime(timeZone, y, month, dayOfMonth);
     }
     found.push({ from, to: zonedTime(timeZone, y, month, dayOfMonth + 1) });
+    return true;
   };
-  for (const match of text.matchAll(new RegExp(`\\b(\\d{1,2})(?:er|st|nd|rd|th)?\\s+(?:of\\s+)?(${MONTH_WORDS})\\b\\.?(?:\\s+(\\d{4}))?`, "g"))) {
-    dated(Number(match[1]), MONTH_OF.get(match[2])!, match[3] ? Number(match[3]) : null);
-  }
-  for (const match of text.matchAll(new RegExp(`\\b(${MONTH_WORDS})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b(?:,?\\s+(\\d{4}))?`, "g"))) {
-    dated(Number(match[2]), MONTH_OF.get(match[1])!, match[3] ? Number(match[3]) : null);
-  }
-  const agenda = AGENDA.test(text);
-  for (const match of text.matchAll(/(?<![\d/])(\d{1,2})\/(\d{1,2})(?:\/(\d{2}|\d{4}))?(?![\d/])/g)) {
-    // « 1/2 » is a half, unless the message is about the agenda or says
-    // « le 1/2 », « on 1/2 », or gives the year.
+  eat(/(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)/gu, (match) => dated(Number(match[3]), Number(match[2]), Number(match[1])));
+  eat(/(?:(\d{4})\s?[年년]\s?)?(\d{1,2})\s?[月월]\s?(\d{1,2})\s?[日号號일]/gu, (match) => dated(Number(match[3]), Number(match[2]), match[1] ? Number(match[1]) : null));
+  eat(new RegExp(`${B}(\\d{1,2})(?:er|st|nd|rd|th|e|de|ste|o)?\\.?\\s+(?:of\\s+|de\\s+|di\\s+)?(${MONTH_WORDS})\\.?(?![\\p{L}])(?:,?\\s+(?:de\\s+)?(\\d{4}))?`, "gu"), (match) =>
+    dated(Number(match[1]), MONTH_OF.get(match[2]!)!, match[3] ? Number(match[3]) : null));
+  eat(new RegExp(`${B}(${MONTH_WORDS})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?![\\p{L}\\p{N}])(?![.:]\\d)(?:,?\\s+(\\d{4}))?`, "gu"), (match) =>
+    dated(Number(match[2]), MONTH_OF.get(match[1]!)!, match[3] ? Number(match[3]) : null));
+  // « 12.10. », « 12.10.2026 » (German): the dot after the month, or a year.
+  eat(/(?<![\d.])(\d{1,2})\.(\d{1,2})\.(\d{4}|\d{2})?(?!\d)/gu, (match) => dated(Number(match[1]), Number(match[2]), match[3] ? Number(match[3]) : null));
+  const agenda = asksAgenda(text);
+  eat(/(?<![\d/.-])(\d{1,2})([/-])(\d{1,2})(?:\2(\d{2}|\d{4}))?(?![\d/-])/gu, (match) => {
+    // « 1/2 » is a half, « 3-4 » a range, unless the message is about the
+    // agenda or says « le 1/2 », « on 1/2 », « am 1/2 », or gives the year.
     const before = text.slice(Math.max(0, match.index! - 12), match.index);
-    if (!match[3] && !agenda && !/\b(?:le|du|au|on|the|before|after|avant|apres|until|jusqu'au)\s+$/.test(before)) continue;
-    const [a, b] = [Number(match[1]), Number(match[2])];
-    // Day first, as in French; « 10/25 » can only be month first.
+    if (!match[4] && !agenda && !/(?<![\p{L}])(?:le|du|au|on|the|before|after|avant|apres|until|jusqu'au|am|vom|bis|zum|ab|el|del|al|hasta|il|dal|no|do|ate|dia|op|tot|van|voor)\s+$/u.test(before)) return false;
+    const [a, b] = [Number(match[1]), Number(match[3])];
+    // Day first, as in most of the app's languages; « 10/25 » can only be month first.
     const [d, m] = b > 12 && a <= 12 ? [b, a] : [a, b];
-    dated(d, m, match[3] ? Number(match[3]) : null);
-  }
+    return dated(d, m, match[4] ? Number(match[4]) : null);
+  });
 
-  // Weekdays: the next one (today when it is today), or the last one.
-  for (let index = 0; index < 7; index += 1) {
-    const names = `${FR_WEEKDAYS[index]}|${EN_WEEKDAYS[index]}`;
-    const pattern = new RegExp(`\\b(last\\s+|next\\s+)?(?:${names})s?\\b(\\s+(?:dernier|passe|prochain))?`, "g");
-    for (const match of text.matchAll(pattern)) {
-      const past = /last|dernier|passe/.test(`${match[1] ?? ""}${match[2] ?? ""}`);
-      const next = /next|prochain/.test(`${match[1] ?? ""}${match[2] ?? ""}`);
-      let delta = (index - today.weekday + 7) % 7;
-      if (past) delta = -(((today.weekday - index + 7) % 7) || 7);
-      else if (next && delta === 0) delta = 7;
-      found.push(day(delta));
+  // A day of the month alone: « le 12 », « am 12. », « el 12 », « il 12 »,
+  // « dia 12 », « op de 12e », « on the 12th », « 12日 », « 12号 », « 12일 » —
+  // of the month named (« le 12 du mois prochain », « 来月12日 »), else this
+  // month's, or next month's once it has gone by.
+  const days: number[] = [];
+  const bareDay = (match: RegExpMatchArray, group = 1): boolean => {
+    const value = Number(match[group]);
+    const rest = text.slice(match.index! + match[0].length);
+    if (value < 1 || value > 31 || NOT_A_DAY.test(rest) || CJK_NOT_A_DAY.test(rest)) return false;
+    days.push(value);
+    return true;
+  };
+  eat(new RegExp(`${B}(?:le (\\d{1,2})(?:er)?|(?:on )?the (\\d{1,2})(?:st|nd|rd|th)|(?:am|den|zum|bis zum|vom) (\\d{1,2})\\.|el (?:dia )?(\\d{1,2})|(?:il |l')(\\d{1,2})|(?:no |o )?dia (\\d{1,2})|(?:op )?de (\\d{1,2})(?:e|de|ste))(?![\\p{L}\\p{N}])`, "gu"), (match) =>
+    bareDay(match, match.slice(1).findIndex((group) => group !== undefined) + 1));
+  eat(/(?<!\d)(\d{1,2})\s?(?:日|号|號|일)/gu, (match) => bareDay(match));
+  if (days.length) {
+    const offset = NEXT_MONTH.test(text) ? 1 : LAST_MONTH.test(text) ? -1 : THIS_MONTH.test(text) ? 0 : null;
+    if (offset !== null) for (const pattern of [NEXT_MONTH, LAST_MONTH, THIS_MONTH]) blank(pattern);
+    for (const value of days) {
+      const ahead = offset ?? (value < today.day ? 1 : 0);
+      found.push({
+        from: zonedTime(timeZone, today.year, today.month + ahead, value),
+        to: zonedTime(timeZone, today.year, today.month + ahead, value + 1),
+      });
     }
   }
+
+  // Named days: « après-demain » before « demain », « esta mañana » (this
+  // morning) before « mañana » (tomorrow).
+  take(DAY_AFTER_TOMORROW, () => day(2));
+  take(DAY_BEFORE_YESTERDAY, () => day(-2));
+  take(TODAY, () => day(0));
+  take(TOMORROW, () => day(1));
+  take(YESTERDAY_ANY, () => day(-1), namesYesterday);
+
+  // Weekdays: the next one (today when it is today), or the last one; of
+  // the week named with it (« vendredi de la semaine prochaine », « 下周五 »,
+  // « 先週の金曜日 », « 다음 주 금요일 »).
+  const week = NEXT_WEEK.test(text) ? 7 : LAST_WEEK.test(text) ? -7 : THIS_WEEK.test(text) ? 0 : null;
+  const weekdays: number[] = [];
+  for (let index = 0; index < 7; index += 1) {
+    for (const match of text.matchAll(weekdayPattern(index))) {
+      const before = text.slice(Math.max(0, match.index! - 24), match.index);
+      const after = text.slice(match.index! + match[0].length, match.index! + match[0].length + 16);
+      const past = LAST_BEFORE.test(before) || LAST_AFTER.test(after) || /(?:지난|저번|この前の|上个|上個)\s?$/u.test(before);
+      const next = NEXT_BEFORE.test(before) || NEXT_AFTER.test(after) || /(?:다음|오는|次の|今度の|下个|下個)\s?$/u.test(before);
+      let delta = (index - today.weekday + 7) % 7;
+      if (week !== null) delta = week + index - today.weekday;
+      else if (past) delta = -(((today.weekday - index + 7) % 7) || 7);
+      else if (next && delta === 0) delta = 7;
+      weekdays.push(delta);
+    }
+  }
+  if (weekdays.length) {
+    for (const delta of weekdays) found.push(day(delta));
+    // The week said only which one the weekday is.
+    if (week !== null) for (const pattern of [NEXT_WEEK, LAST_WEEK, THIS_WEEK]) blank(pattern);
+  }
+
+  take(NEXT_WEEKEND, () => day(12 - today.weekday, 2));
+  take(WEEKEND, () => day(5 - today.weekday, 2));
+  take(NEXT_WEEK, () => day(7 - today.weekday, 7));
+  take(LAST_WEEK, () => day(-7 - today.weekday, 7));
+  take(THIS_WEEK, () => day(-today.weekday, 7));
+  take(NEXT_MONTH, () => ({
+    from: zonedTime(timeZone, today.year, today.month + 1, 1),
+    to: zonedTime(timeZone, today.year, today.month + 2, 1),
+  }));
+  take(LAST_MONTH, () => ({
+    from: zonedTime(timeZone, today.year, today.month - 1, 1),
+    to: zonedTime(timeZone, today.year, today.month, 1),
+  }));
+  take(THIS_MONTH, () => ({
+    from: zonedTime(timeZone, today.year, today.month, today.day),
+    to: zonedTime(timeZone, today.year, today.month + 1, 1),
+  }));
 
   if (found.length === 0) return null;
   return { from: Math.min(...found.map((window) => window.from)), to: Math.max(...found.map((window) => window.to)) };
@@ -166,11 +246,24 @@ const NOT_NAMES = new Set([
   "quel", "quelle", "quand", "quoi", "tout", "tous", "the", "and", "with", "for", "from", "what", "when",
   "who", "qui", "est", "les", "des", "une", "par", "sur", "pas", "moi", "toi", "lui", "ses", "mes", "tes",
   "son", "mon", "ton", "you", "are", "was", "has", "had", "her", "his", "him", "she", "they", "them",
-  ...FR_WEEKDAYS, ...EN_WEEKDAYS, ...MONTH_OF.keys(),
+  ...FR_WEEKDAYS, ...EN_WEEKDAYS, ...OTHER_WEEKDAYS,
+  // Months of the ten languages, but those that are also first names.
+  ...[...MONTH_OF.keys()].filter((name) => !["marco", "augustus", "abril", "mayo"].includes(name)),
 ]);
 
+/// A text's words, Japanese, Chinese and Korean runs set apart from the
+/// Latin ones (« Paul给我写信了吗 »: « paul »).
 function words(text: string): string[] {
-  return normalize(text).split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 3 && !NOT_NAMES.has(word));
+  return normalize(text).replace(CJK_RUN, (run) => ` ${run} `).split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 3 && !NOT_NAMES.has(word));
+}
+
+/// A name written in Japanese, Chinese or Korean, without its spaces: found
+/// inside the message, words having no spaces around them there
+/// (« 田中さんとの予定 », « 김민수한테 »). Two characters at least: one is a
+/// family name shared by millions, or a word.
+function cjkName(text: string | null): string | null {
+  const name = normalize(text ?? "").replace(/\s+/g, "");
+  return name.length >= 2 && CJK.test(name) && !/[a-z]/.test(name) ? name : null;
 }
 
 interface MatchedContact {
@@ -202,6 +295,14 @@ export function matchContacts(message: string, contacts: PersonalContact[]): Mat
     if (hitFirst.length && hitLast.length) score = 3;
     else if (hitLast.length) score = 2;
     else if (hitFirst.length) score = 1;
+    // Names in Japanese, Chinese or Korean, found inside the message.
+    const whole = cjkName(contact.lastName && contact.firstName ? `${contact.lastName}${contact.firstName}` : contact.name);
+    const cjkLast = cjkName(contact.lastName);
+    const cjkFirst = cjkName(contact.firstName);
+    const inMessage = normalize(message).replace(/\s+/g, "");
+    if (!score && whole && inMessage.includes(whole)) { score = 3; hitLast.push(whole); }
+    else if (!score && cjkLast && inMessage.includes(cjkLast)) { score = 2; hitLast.push(cjkLast); }
+    else if (!score && cjkFirst && inMessage.includes(cjkFirst)) { score = 1; hitFirst.push(cjkFirst); }
     const organization = contact.organization ? normalize(contact.organization).trim() : "";
     if (!score && organization.length >= 4 && ` ${normalize(message)} `.includes(` ${organization} `)) score = 1;
     if (score) matched.push({ contact, score, terms: [...hitFirst, ...hitLast, ...(score === 1 && organization && !hitFirst.length ? [organization] : [])] });
@@ -290,7 +391,7 @@ export function personalContextBlock(input: PersonalContextInput): string | null
   const text = normalize(message);
   const people = matchContacts(message, input.contacts);
   let window = dateWindow(message, now, timeZone);
-  const agenda = AGENDA.test(text);
+  const agenda = asksAgenda(text);
   const birthdays = BIRTHDAYS.test(text);
   if (!window && (agenda || birthdays) && people.length === 0) {
     const today = localParts(now.getTime(), timeZone);
@@ -305,8 +406,10 @@ export function personalContextBlock(input: PersonalContextInput): string | null
   // name them, the coming ones first.
   const terms = people.slice(0, MAX_CONTACTS).flatMap((match) => match.terms);
   const mentions = (event: PersonalEvent) => {
-    const haystack = ` ${words(`${event.title} ${event.location ?? ""} ${event.notes ?? ""}`).join(" ")} `;
-    return terms.some((term) => haystack.includes(` ${term} `));
+    const said = `${event.title} ${event.location ?? ""} ${event.notes ?? ""}`;
+    const haystack = ` ${words(said).join(" ")} `;
+    const whole = normalize(said).replace(/\s+/g, "");
+    return terms.some((term) => (CJK.test(term) ? whole.includes(term) : haystack.includes(` ${term} `)));
   };
   let events: PersonalEvent[];
   if (window) {
