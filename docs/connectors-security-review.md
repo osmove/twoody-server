@@ -62,11 +62,9 @@ Checked and found sound (tests that attack, passing before and after):
 
 ## Residual risks — Jimmy's decision
 
-1. **Windows**: without a shell, `npx`/`npm` (which are `.cmd` files) do not start (`ENOENT`, or
-   `EINVAL` since Node refuses `.cmd`/`.bat` without a shell). Safe, but connectors through `npx`
-   do not work on Windows today. Enabling them through `cmd.exe` brings its quoting flaws
-   (« BatBadBut »); the sound way is to resolve `npx` to `node <npm>/bin/npx-cli.js`. Group kill
-   on Windows (`taskkill /T`) is written but not run on a Windows machine (tests skip there).
+1. ~~**Windows**: `npx`/`npm` connectors do not start without a shell~~ — done in the follow-up
+   below (`npx` resolved to `node.exe <npm>\bin\npx-cli.js`, other `.cmd`/`.bat` refused). Group
+   kill on Windows (`taskkill /T`) is still written but not run on a Windows machine.
 2. **Unpinned packages**: `npx -y pkg` fetches whatever is published at each start. Fix 2 re-asks
    when tools change, not when behaviour does. Option: warn in the Desktop when a package has no
    `@version`, or pin at add time.
@@ -75,13 +73,116 @@ Checked and found sound (tests that attack, passing before and after):
 4. **« Toujours autoriser » and prompt injection**: an always-allowed tool runs without asking when
    a document, an e-mail, a web page or another tool's result talks the model into it. By design;
    options: offer it only for read-only tools, or for the session only.
-5. **Other routes still trust `isThisComputersApp` alone** (e-mail, usage, documents…). The owner's
-   password typed on another device of the local network (server open to it) gives such a session.
-   Generalising the loopback check of fix 4 is worth a separate pass.
+5. ~~**Other routes still trust `isThisComputersApp` alone**~~ — done in the follow-up below;
+   the borderline routes are listed there for Jimmy.
 6. **Abrupt end**: if the server is killed without its `exit` handler (SIGKILL, Windows
    `TerminateProcess` from the Desktop), programs only see their input close; most MCP servers end
    then, not all.
-7. **Twoody Code's MCP servers** (`twoody-desktop/src/main/code/mcp.ts`) are a separate path: a
-   project's `.mcp.json` is fingerprint-approved (good), `~/.twoody/mcp.json` is trusted as is, and
-   fixes 6 to 8 are not applied there yet.
+7. ~~**Twoody Code's MCP servers**~~ — done in the follow-up below.
 8. **Tokens in `connectors.json`** are plain text (0600), not in the system keychain.
+
+## Follow-up, 10 October 2026 (late): residuals 1, 5 and 7
+
+### Residual 1 — Windows: `npx` without cmd.exe
+
+`src/connectors/windowsLaunch.ts` (the same file in `twoody-desktop/src/main/code/windowsLaunch.ts`
+for Twoody Code), used by `launchFor` before `spawn`, on Windows only:
+
+- the command is looked for on PATH ourselves (PATHEXT's extensions, `Path` in any case), never in
+  the current folder (Windows searches it first) nor in a relative PATH entry; a command found
+  nowhere is not started (« the program was not found »);
+- an `.exe`/`.com` found starts as it is, by its full path (`node`, `uvx`, `docker`, Volta's
+  `npx.exe`);
+- `npx`/`npm` (`.cmd`) become `node.exe <npm>\node_modules\npm\bin\npx-cli.js …` (or
+  `npm-cli.js`): the script their `.cmd` runs, from the installation it belongs to — next to the
+  `.cmd` (Node's installer, nvm-windows, scoop), else next to the `node.exe` on PATH (npm updated
+  into `%APPDATA%\npm`); no Node found: `windows_node_not_found`;
+- any other `.cmd`/`.bat` (pnpm, yarn, a script) is refused: `windows_script_refused`. Never
+  through cmd.exe, arguments always an array.
+
+The Desktop says both refusals in the ten languages (`connectors.windowsScriptRefused`,
+`connectors.windowsNodeMissing`, `connectorInput.ts startErrorKey`), under the connector and in
+Twoody Code's « MCP » panel. Twoody ships no Node that could run npm (Electron has no npm), so the
+person's own Node is used.
+
+Tests: `test/connectorsWindowsLaunch.test.ts` (simulated Windows folders, attacks: `&`, `|`, `%…%`,
+`"` stay arguments of node; a planted `node.exe`/`npx.exe`/`evil.exe` in the current folder does
+not run; `.cmd`/`.bat` refused) and `twoody-desktop/test/codeMcp.test.mjs`.
+
+**Not run on a real Windows machine**: the resolution against a real Node install, a connector
+actually started that way, `taskkill /T /F` stopping the tree, and what npm itself does next —
+`npx -y pkg` runs the package's own bin, which npm on Windows starts through its `.cmd` shim with
+npm's own escaping (outside Twoody's hands).
+
+### Residual 7 — Twoody Code's MCP servers (`twoody-desktop/src/main/code/mcp.ts`)
+
+- **`~/.twoody/mcp.json` runs nothing until allowed**, like a project's `.mcp.json`: its exact
+  command line is shown (each argument, hidden characters written as `\u{…}`, the environment's
+  names) and confirmed once for every folder; a change of command, arguments, environment or
+  address asks again (fingerprint).
+- **Allowed as shown**: `mcpAllow(workspace, name, fingerprint)` — the fingerprint of what the
+  panel showed; a file rewritten between the showing and the click is not allowed.
+- Environment allow-listed (`mcpEnvironment`: the login shell's PATH, HOME, language, proxies…;
+  never `TWOODY_*`, `ELECTRON_*`, `NODE_OPTIONS`), its own `env` on top.
+- Its own process group (POSIX), stopped as a group (SIGTERM, then SIGKILL after 2 s; `taskkill /T`
+  on Windows), every server killed when the app ends (`exit` hook) — after `stopCode()` at quit.
+- `stdin` errors (EPIPE) fail that server's calls and stop it; 8 MB at most without a line break;
+  `shell: false`, `windowsHide`, `cwd` the folder it serves; Windows launch as in residual 1.
+
+Tests (`test/codeMcp.test.mjs`, all failing on the code before): planted `~/.twoody/mcp.json`,
+rewritten after approval, swapped between showing and click, environment, no shell, group kill,
+app ending, flood, closed input, Windows launch.
+
+### Residual 5 — the other routes that trust an owner session
+
+**Fix (general).** `isThisComputersApp(auth)` (`routes/usage.ts`) now also requires the request to
+come from this very machine: `authenticate()` records `thisMachine` (`auth.ts fromThisMachine`:
+loopback address, not served by the tunnel, not forwarded by a proxy). Every route and decision that
+used it gets the check at once: e-mail (`/email/recent`, `/test`, `/account`, `/sync`, kept
+copies), Google data links, Microsoft Graph, Home Assistant settings, bank, capability switches,
+order and usage, `local_sync`, usage reports, `local_shares/serve`, isolated projects and their
+folders, and the e-mail/bank tools offered to a chat. Before, an owner session from the local
+network (`/auth/signin` or `/auth/signup` on a server open to it) or the app's token carried
+through the tunnel or a proxy passed.
+
+**Clear cases fixed too** (any token passed before; only the Desktop calls them, on loopback):
+
+| Route | Was | Now |
+|---|---|---|
+| `POST /local_documents/folders`, `POST /local_documents/personal`, `DELETE /local_documents/folders/:id` | any session, a device paired by code included, could make this server read a folder | this computer's app |
+| `DELETE /paired_devices/:id` | any token (a firmware device's too) could revoke any device, the Desktop's own session included | this computer's app |
+| `GET /devices/llm_keys` | any token got the server's OpenAI/Anthropic/Gemini keys (null in local-only mode, real on a server outside it); nothing calls it | this computer's app |
+| `PUT /home/config` | an empty token kept the stored one even for a new address, and the check sent it there | a new address needs its token again |
+
+Attack tests: `test/thisComputersApp.test.ts` (a device paired by code; the owner's token through
+the relay, the local tunnel, a proxy; an owner session from the local network) — failing on the code
+before. What the iPhone reads through the tunnel (`/local_capabilities`, `/home`,
+`/local_documents/folders`, `/connectors`, `/usage`, `/providers`) is checked to still answer.
+
+**Who is affected.** The Desktop's own session on loopback: nothing changes. The iPhone does not
+call any of these (it writes only `POST /home/control`, `PUT /runtime {engine}`, model jobs,
+`PATCH /me` preferred computer, approvals, `/peer/vault/anchor`, `/session/device-access`). A Pi
+adopted through the account never passed `isThisComputersApp` (its sessions are account or mesh
+sessions). What stops working: the Desktop's old « self-hosted » sign-in against a remote server
+(hidden since 12/05/2026) for e-mail, Maison, bank, capabilities and shares; a phone paired with a
+Pi's setup token without a tunnel key; the Desktop's fallback session from `/session/cli` (already
+refused before, `origin = code`).
+
+**Borderline — Jimmy's decision** (left as they are):
+
+| Route | Today | Why not fixed here |
+|---|---|---|
+| `POST /providers/local`, `PATCH /providers/:id`, `POST /providers/:id/default`, `DELETE /providers/:id` | any token: changes where every chat is sent (local-only mode keeps it to private addresses) | the CLI (`twoody server provider …`) manages them with its own session, possibly on another machine: restricting breaks it. Option: this machine only, or owner session only |
+| `PUT /runtime` with `engine: custom` + `custom_url` | any person session (code-paired included) | the iPhone sends `{engine}`; only `custom_url` could be limited to this machine |
+| `POST /devices/pair/register` | any token: makes a pairing code that `/session/cli` turns into a session | `twoody pair` (CLI) uses it |
+| `POST /peers`, `DELETE /peers/:id`, `GET /peers/:id/vault/identity`, `POST /peers/:id/vault/anchor`; `PATCH /peers/:id` `checked_tunnel_key` (`requireDesktop`: any owner session from anywhere) | pins the vault's trust anchor and mesh links | trust between devices: rule 12, its own review with attack tests. Recommended: `isThisComputersApp` (or this machine) |
+| `POST /peer/vault/anchor` `mayPin` | any owner session | same (rule 12) |
+| `/local_shares` writes and device approvals (`owner()`: `isThisComputersApp` or `meshRequester`, which takes any owner session from anywhere) | shares folders with other people | the person's own devices are meant to reach it; tighten `meshRequester`'s owner-session branch to this machine — a mesh change (rule 12) |
+| `GET /local_documents/folders` | full paths of the granted folders to any device of the person | the iPhone shows them (`LocalDocuments.js`); option: names only for other devices |
+| `GET /email/status` | address, IMAP host and user name (no password) to any token | Desktop only today; harmless to restrict, but not a secret |
+| `PATCH /me` (`system_prompt`, default provider/model, memory) | any token | the iPhone sets `preferred_computer` there; `system_prompt` could be this machine only |
+| `PATCH /built_in_capabilities/:id`, tools | any token | no caller found; decide whether it still lives |
+| `/members/*` (voice profiles, face embeddings) | any token | no caller of this server's route found (the iPhone's `/members` goes to the account); restrict or remove |
+| `/diagnostics/full`, `/diagnostics/installation` | any person session (tunnel included) | full prompts; the Desktop reads them locally — could be this machine only |
+| `/bridge/tasks`, `/bridge/folders*` | any token | CLI and workers |
+| `/auth/signin`, `/auth/signup` | password → owner session | such a session from the local network is no longer « this computer's app »; whether sign-in should exist outside loopback at all is a product choice |

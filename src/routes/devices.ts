@@ -8,6 +8,7 @@ import {
 } from "../db.js";
 import { createRequire } from "module";
 import { LOCAL_ONLY } from "../outbound.js";
+import { isThisComputersApp } from "./usage.js";
 import { allowSecretAttempt } from "../rateLimit.js";
 import {
   authenticate,
@@ -279,6 +280,10 @@ export async function deviceRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await authenticate(req);
       if (!auth) return reply.code(401).send({ error: "Unauthorized" });
+      // This server's provider keys: never to a paired device, a firmware
+      // token, the tunnel or the local network — this computer's app only
+      // (docs/connectors-security-review.md, « Other routes »).
+      if (!isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
       // In local-only mode a paired device must not be handed keys it
       // could use to reach a cloud provider on its own.
       reply.send({

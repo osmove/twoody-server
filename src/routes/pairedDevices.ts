@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { authenticate, isPeerSessionKind } from "../auth.js";
+import { isThisComputersApp } from "./usage.js";
 import { authSessions, db, tunnelPeers } from "../db.js";
 import { forgetTunnelPeer, forgetTunnelPeersOfSession } from "../tunnel/identity.js";
 import { tunnelPeersChanged } from "../tunnel/index.js";
@@ -76,6 +77,10 @@ export async function pairedDeviceRoutes(app: FastifyInstance) {
       // The session too, to tell this device from the others.
       const auth = await authenticate(req);
       if (!auth) return reply.code(401).send({ error: "Unauthorized" });
+      // Removing a device (the Desktop's own session included) is for this
+      // computer's app, from this machine: never another paired device, a
+      // firmware token, the tunnel or the local network.
+      if (!isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
       const key = KEY_ID.exec(req.params.id);
       if (key) {
         const known = db

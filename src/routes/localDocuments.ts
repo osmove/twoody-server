@@ -263,6 +263,11 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       body: {type: "object", required: ["confirmed"], properties: {confirmed: {type: "boolean", const: true}}}},
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply); if (!auth) return;
+      // Which folders this server reads is set by this computer's app,
+      // from this machine only: never a phone, a device paired by code, a
+      // household member, the tunnel or the local network
+      // (docs/connectors-security-review.md, « Other routes »).
+      if (!isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
       try {
         const folder = await addFolder(auth.userId, homedir(), true);
         documentsOnWithAFolder(auth.userId);
@@ -285,6 +290,11 @@ export async function localDocumentRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
+      // Which folders this server reads is set by this computer's app,
+      // from this machine only: never a phone, a device paired by code, a
+      // household member, the tunnel or the local network
+      // (docs/connectors-security-review.md, « Other routes »).
+      if (!isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
       const path = req.body?.path?.trim();
       if (!path) return reply.code(422).send({ error: "path_required" });
 
@@ -307,6 +317,7 @@ export async function localDocumentRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
+      if (!isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
       if (!removeFolder(auth.userId, req.params.id)) return reply.code(404).send({ error: "not_found" });
       reply.code(204).send();
     },

@@ -35,8 +35,11 @@ export async function homeRoutes(app: FastifyInstance) {
       if (!auth) return;
       if (!isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
       const url = cleanHomeUrl(req.body?.url);
-      // An empty token keeps the one already given (the screen never has it).
-      const token = typeof req.body?.token === "string" && req.body.token.trim() ? req.body.token.trim() : homeConfig(auth.userId)?.token ?? "";
+      // An empty token keeps the one already given (the screen never has it)
+      // — for the same address only: the kept token is never sent to
+      // another one (a server elsewhere would read it).
+      const kept = homeConfig(auth.userId);
+      const token = typeof req.body?.token === "string" && req.body.token.trim() ? req.body.token.trim() : kept && kept.url === url ? kept.token : "";
       if (!url) return reply.code(422).send({ error: "url_required" });
       if (!token) return reply.code(422).send({ error: "token_required" });
       const checked = await checkHome({ url, token });

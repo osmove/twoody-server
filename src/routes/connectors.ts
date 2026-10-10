@@ -1,6 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { forwardedByProxy, isLoopbackAddress, viaTunnel } from "../adminAccess.js";
-import { requireAuth } from "../auth.js";
+import { fromThisMachine, requireAuth } from "../auth.js";
 import { isThisComputersApp } from "./usage.js";
 import { takeSignIn } from "../connectors/oauth.js";
 import { addConnector, answerApproval, beginSignIn, changeConnector, completeSignIn, ConnectorError, connectorView, listConnectors, removeConnector, signOut, startConnector, stopAllConnectors, stopConnector } from "../connectors/connectors.js";
@@ -45,8 +44,8 @@ const security: Array<Record<string, string[]>> = [{ bearerAuth: [] }, { userTok
 /// forwarded, not one from the local network (an owner's password typed
 /// on another device). A connector is a program this computer runs: what
 /// it runs is decided here only (docs/connectors-security-review.md).
-function fromThisComputersApp(req: FastifyRequest, auth: { sessionId?: string; deviceId?: string }): boolean {
-  return isThisComputersApp(auth) && isLoopbackAddress(req.ip) && !viaTunnel(req) && !forwardedByProxy(req);
+function fromThisComputersApp(req: FastifyRequest, auth: { sessionId?: string; deviceId?: string; thisMachine?: boolean }): boolean {
+  return isThisComputersApp(auth) && fromThisMachine(req);
 }
 
 function fail(reply: FastifyReply, err: unknown) {

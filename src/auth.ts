@@ -12,6 +12,7 @@ import { promisify } from "util";
 import { eq } from "drizzle-orm";
 import { db, users, authSessions, devices, DATA_DIR } from "./db.js";
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { forwardedByProxy, isLoopbackAddress, viaTunnel } from "./adminAccess.js";
 
 const scryptAsync = promisify(scrypt);
 const SETUP_TOKEN_PATH = join(DATA_DIR, "setup-token");
@@ -187,9 +188,20 @@ export function peerMayReach(url: string | undefined): boolean {
 /// every way of carrying the token, unless the request is for
 /// /api/v1/peer/*: the scope is kept by the one function every route asks,
 /// not only by a hook that reads the headers (peerSessions.ts).
+/// Whether a request came from this very machine: from a loopback address,
+/// not served by the tunnel (a phone, another computer, the relay), not
+/// forwarded by a proxy (then the proxy is what is local). An owner's
+/// session from anywhere else — its password typed on another device of
+/// the local network, its token carried through the tunnel — is not this
+/// computer's app (routes/usage.ts isThisComputersApp,
+/// docs/connectors-security-review.md).
+export function fromThisMachine(req: FastifyRequest): boolean {
+  return typeof req.ip === "string" && isLoopbackAddress(req.ip) && !!req.headers && !viaTunnel(req) && !forwardedByProxy(req);
+}
+
 export async function authenticate(
   req: FastifyRequest
-): Promise<{ userId: string; sessionId?: string; deviceId?: string } | null> {
+): Promise<{ userId: string; sessionId?: string; deviceId?: string; thisMachine?: boolean } | null> {
   const token = extractAuthToken(req);
   if (!token) return null;
   const digest = sha256(token);
@@ -205,7 +217,7 @@ export async function authenticate(
   if (session) {
     if (isPeerSessionKind(session.clientKind) && !peerMayReach(req.url)) return null;
     if (!session.expiresAt || session.expiresAt > now) {
-      return { userId: session.userId, sessionId: session.id };
+      return { userId: session.userId, sessionId: session.id, thisMachine: fromThisMachine(req) };
     }
   }
 
@@ -229,14 +241,14 @@ export async function authenticate(
 export async function requireAuth(
   req: FastifyRequest,
   reply: FastifyReply
-): Promise<{ userId: string; sessionId?: string; deviceId?: string } | null> {
+): Promise<{ userId: string; sessionId?: string; deviceId?: string; thisMachine?: boolean } | null> {
   const auth = await authenticate(req);
   if (!auth) {
     reply.code(401).send({ error: "Unauthorized" });
     return null;
   }
   // Which session or device asked, too: the answers' usage says who.
-  return { userId: auth.userId, sessionId: auth.sessionId, deviceId: auth.deviceId };
+  return { userId: auth.userId, sessionId: auth.sessionId, deviceId: auth.deviceId, thisMachine: auth.thisMachine };
 }
 
 export function getActivePairingCode(): string | null {

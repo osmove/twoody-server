@@ -298,9 +298,14 @@ export function usageCsv(events: UsageEventRow[]): string {
 
 /// This computer's own app, and nothing else: its session is the owner's
 /// (the account made on first launch, or the pairing with the setup token:
-/// auth_sessions.origin), and never a phone's, which has a tunnel peer.
-export function isThisComputersApp(auth: { sessionId?: string; deviceId?: string }): boolean {
-  if (auth.deviceId || !auth.sessionId) return false;
+/// auth_sessions.origin), and never a phone's, which has a tunnel peer;
+/// and the request comes from this very machine (auth.ts fromThisMachine,
+/// set by authenticate): not through the tunnel or a proxy, not from the
+/// local network — an owner's password typed on another device, or the
+/// app's token carried elsewhere, is not the app
+/// (docs/connectors-security-review.md, « Other routes »).
+export function isThisComputersApp(auth: { sessionId?: string; deviceId?: string; thisMachine?: boolean }): boolean {
+  if (auth.deviceId || !auth.sessionId || auth.thisMachine !== true) return false;
   if (!isOwnerSession(auth.sessionId)) return false;
   const [peer] = db.select({ key: tunnelPeers.publicKey }).from(tunnelPeers).where(eq(tunnelPeers.sessionId, auth.sessionId)).limit(1).all();
   return !peer;
