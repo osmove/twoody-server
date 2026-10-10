@@ -2939,6 +2939,8 @@ export function draftAnnounced(text: string): boolean {
 const TOOL_ROUNDS = 2;
 /// What a round that must call a tool may write: a call is short.
 const FORCED_TOOL_TOKENS = 300;
+/// Said on the last message when the forced round wrote words, not a call.
+const FORCED_AGAIN = "[Do it now with the tool: answer with the tool call only, no text.]";
 
 async function streamLocal(
   baseUrl: string,
@@ -3030,21 +3032,35 @@ async function streamLocal(
     // An outright ask (« rappelle-moi… »): first a short, silent round that
     // must call a tool. A model that writes on instead (2,048 tokens of a
     // call never closed, Qwen3.5 9B, 01/10/2026) falls back to the usual one.
+    // llama.cpp does not hold Qwen3.5 to tool_choice « required »: « Ajoute
+    // une tâche : … » was answered « J'ai ajouté la tâche » 11 times in 16
+    // without a call; asked once more, the call said in the message itself,
+    // it called create_task 11 times in 11 (bench of 11/10/2026).
     let forced: ToolCallPieces[] = [];
     let forcedUsage: Usage | null = null;
     if (options.tools?.required) {
-      try {
-        const attempt = await post({ ...body, ...extras, max_tokens: FORCED_TOOL_TOKENS, tool_choice: "required" });
-        if (attempt.ok) {
+      const said = body.messages as Array<{ role: string; content: unknown }>;
+      const last = said.at(-1);
+      for (let attempt = 0; attempt < 2 && !forced.length; attempt += 1) {
+        // The second time, on the last message only: the prompt read so far is reused.
+        const messages = attempt === 0 || !last || typeof last.content !== "string"
+          ? said
+          : [...said.slice(0, -1), { ...last, content: `${last.content}\n\n${FORCED_AGAIN}` }];
+        if (attempt > 0 && messages === said) break;
+        try {
+          const answer = await post({ ...body, ...extras, messages, max_tokens: FORCED_TOOL_TOKENS, tool_choice: "required" });
+          if (!answer.ok) break;
           const pieces: ToolCallPieces[] = [];
-          forcedUsage = await consumeOpenAIStream(attempt, () => undefined, () => undefined, pieces);
+          const usage = await consumeOpenAIStream(answer, () => undefined, () => undefined, pieces);
+          forcedUsage = usage && forcedUsage ? { ...usage, completion_tokens: usage.completion_tokens + forcedUsage.completion_tokens } : usage ?? forcedUsage;
           forced = pieces.filter((piece) => {
             if (!piece?.name) return false;
             try { JSON.parse(piece.arguments || "{}"); return true; } catch { return false; }
           });
+        } catch (err) {
+          if (signal.aborted) throw err;
+          break;
         }
-      } catch (err) {
-        if (signal.aborted) throw err;
       }
     }
     let res: Response | null = null;

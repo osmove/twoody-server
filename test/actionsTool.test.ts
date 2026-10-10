@@ -18,6 +18,7 @@ delete process.env.TWOODY_EMBEDDING_MODEL;
 type Body = { messages: Array<{ role: string; content: string }>; tools?: Array<{ function: { name: string } }>; max_tokens?: number };
 const bodies: Body[] = [];
 let call: { name: string; arguments: object } | null = null;
+let onlyWhenTold = false;
 const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   if (req.method === "GET") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ data: [{ id: "qwen" }] })); return; }
   let raw = "";
@@ -28,7 +29,10 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     res.writeHead(200, { "content-type": "text/event-stream" });
     const send = (event: object) => res.write(`data: ${JSON.stringify(event)}\n\n`);
     const answered = body.messages.find((message) => message.role === "tool");
-    if (call && body.tools && !answered && body.max_tokens !== 1) {
+    // `onlyWhenTold`: a model that writes words for tool_choice « required »
+    // until the message itself says to call (Qwen3.5 9B on llama.cpp).
+    const told = /answer with the tool call only/.test(String(body.messages.at(-1)?.content ?? ""));
+    if (call && body.tools && !answered && body.max_tokens !== 1 && (!onlyWhenTold || told)) {
       send({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: call.name, arguments: JSON.stringify(call.arguments) } }] } }] });
       send({ choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else {
@@ -137,7 +141,26 @@ test("a model that does not call the tool when it must: its words are not shown,
   const before = bodies.length;
   const final = await ask("Rappelle-moi d'appeler maman demain");
   const sent = bodies.slice(before).filter((body) => body.max_tokens !== 1) as Array<Body & { tool_choice?: string }>;
-  assert.deepEqual(sent.map((body) => body.tool_choice), ["required", "auto"]);
+  assert.deepEqual(sent.map((body) => body.tool_choice), ["required", "required", "auto"]);
+  assert.match(sent[1]!.messages.at(-1)!.content, /\[Do it now with the tool: answer with the tool call only, no text\.\]$/);
+  assert.doesNotMatch(sent[2]!.messages.at(-1)!.content, /Do it now with the tool/, "the answer's round is asked as before");
   assert.equal(final.message, "Réponse.");
   assert.equal(final.actions, undefined);
+});
+
+test("a model that writes « J'ai ajouté la tâche » for the forced round, then calls the tool when told again: the task is made (11/10/2026)", async () => {
+  await app.inject({ method: "PATCH", url: "/me", headers, payload: { user: { memory_enabled: true } } });
+  call = { name: "create_task", arguments: { title: "Renouveler mon passeport" } };
+  onlyWhenTold = true;
+  try {
+    const before = bodies.length;
+    const final = await ask("Ajoute une tâche : renouveler mon passeport");
+    const sent = bodies.slice(before).filter((body) => body.max_tokens !== 1) as Array<Body & { tool_choice?: string }>;
+    assert.deepEqual(sent.slice(0, 2).map((body) => body.tool_choice), ["required", "required"]);
+    assert.equal(final.actions?.[0]?.type, "task");
+    assert.equal(final.actions?.[0]?.title, "Renouveler mon passeport");
+  } finally {
+    call = null;
+    onlyWhenTold = false;
+  }
 });
