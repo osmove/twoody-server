@@ -1,4 +1,6 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { homedir } from "node:os";
+import { delimiter } from "node:path";
 import { outboundFetch } from "../outbound.js";
 
 // A Model Context Protocol client for « Connecteurs » (Capacités, Jimmy,
@@ -12,6 +14,76 @@ const PROTOCOL_VERSION = "2025-06-18";
 const INIT_TIMEOUT_MS = 30_000;
 const CALL_TIMEOUT_MS = 120_000;
 export const MAX_RESULT_CHARS = 12_000;
+/// The most a server may write without a line break: past it, it is
+/// stopped (a server that floods would otherwise fill this process).
+export const MAX_LINE_CHARS = 8 * 1024 * 1024;
+/// How long a stopped server has to end before it and what it started are killed.
+export const KILL_GRACE_MS = 2_000;
+
+// What a connector's program is given of this process's environment: what
+// a program needs to run as in a terminal (where the person is, their
+// PATH, language, temporary folder, proxy), nothing else — never this
+// server's own keys (TWOODY_RUNTIME_KEYS, TWOODY_PAIRING_CODE, the web
+// bridge's key, Google's client secret…), which any program from npm would
+// otherwise read. The connector's own environment, set by the person in
+// this computer's app, comes on top. As the MCP SDK's getDefaultEnvironment.
+const POSIX_ENV = ["HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER", "LANG", "LANGUAGE", "TMPDIR", "TZ", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR"];
+const WINDOWS_ENV = ["APPDATA", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "PATH", "PATHEXT", "PROCESSOR_ARCHITECTURE", "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "USERNAME", "USERDOMAIN", "USERPROFILE", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "PROGRAMDATA", "ALLUSERSPROFILE", "COMMONPROGRAMFILES", "COMSPEC", "WINDIR", "NUMBER_OF_PROCESSORS", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"];
+
+export function connectorEnvironment(own: Record<string, string> | undefined, from: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): Record<string, string> {
+  const windows = platform === "win32";
+  const allowed = new Set(windows ? WINDOWS_ENV : POSIX_ENV);
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(from)) {
+    if (typeof value !== "string" || value.startsWith("()")) continue;
+    const name = key.toUpperCase();
+    if (allowed.has(name) || (!windows && name.startsWith("LC_"))) out[key] = value;
+  }
+  if (!windows) {
+    // Found as in a terminal: npx, uvx or docker from Homebrew, after the person's own PATH.
+    out.PATH = [out.PATH, "/opt/homebrew/bin", "/usr/local/bin"].filter(Boolean).join(delimiter);
+  }
+  return { ...out, ...(own ?? {}) };
+}
+
+// The programs started and not yet ended: killed with this process, should
+// it end without stopping them (the app quit, the server restarted).
+const live = new Set<ChildProcess>();
+
+/// The program and everything it started (npx starts node, which may
+/// start more): its process group on macOS and Linux, its tree on Windows.
+function killTree(child: ChildProcess, signal: NodeJS.Signals, sync = false) {
+  const pid = child.pid;
+  if (!pid) return;
+  if (process.platform === "win32") {
+    const args = ["/pid", String(pid), "/T", "/F"];
+    try {
+      if (sync) execFileSync("taskkill", args, { windowsHide: true, stdio: "ignore" });
+      else execFile("taskkill", args, { windowsHide: true }, () => undefined);
+    } catch {
+      /* already gone */
+    }
+    return;
+  }
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+let exitHookSet = false;
+function killAllAtExit() {
+  if (exitHookSet) return;
+  exitHookSet = true;
+  process.once("exit", () => {
+    for (const child of live) killTree(child, "SIGKILL", true);
+  });
+}
 
 export interface McpToolInfo {
   name: string;
@@ -64,35 +136,63 @@ class StdioConnection implements McpConnection {
   }
 
   async start() {
-    // The person's PATH, so that npx, uvx or docker are found as in a terminal.
-    const env = { ...process.env, PATH: [process.env.PATH, "/opt/homebrew/bin", "/usr/local/bin"].filter(Boolean).join(":"), ...(this.config.env ?? {}) };
-    const child = spawn(this.config.command!, this.config.args ?? [], { env, stdio: ["pipe", "pipe", "pipe"] });
+    // No shell: the command and each argument go to the system as they
+    // are, never read by sh or cmd.exe. Started in the person's home
+    // folder, not wherever this server happens to run; in a process group
+    // of its own, so that stopping it stops what it started too.
+    const child = spawn(this.config.command!, this.config.args ?? [], {
+      env: connectorEnvironment(this.config.env),
+      cwd: homedir(),
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: false,
+      windowsHide: true,
+      detached: process.platform !== "win32",
+    });
     this.child = child;
+    live.add(child);
+    killAllAtExit();
+    // A server that closed its input (or is gone) while a message was
+    // being written to it: its calls fail now, and it is stopped — never
+    // an error thrown at this process, which would end it.
+    child.stdin?.on("error", () => {
+      if (this.child !== child) return;
+      this.failAll("the server closed its input: stopped");
+      this.stop();
+    });
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => this.receive(chunk));
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk: string) => {
       this.stderr = (this.stderr + chunk).slice(-2_000);
     });
-    const failAll = (message: string) => {
-      for (const [id, entry] of this.pending) {
-        clearTimeout(entry.timer);
-        entry.reject(new Error(message));
-        this.pending.delete(id);
-      }
-    };
     child.on("error", (err) => {
-      this.child = null;
-      failAll(`the server could not start: ${err.message}`);
+      live.delete(child);
+      if (this.child === child) this.child = null;
+      this.failAll(`the server could not start: ${err.message}`);
     });
     child.on("exit", (code) => {
-      this.child = null;
-      failAll(`the server stopped (exit ${code})${this.stderr ? `: ${this.stderr.trim().split("\n").pop()}` : ""}`);
+      live.delete(child);
+      if (this.child === child) this.child = null;
+      this.failAll(`the server stopped (exit ${code})${this.stderr ? `: ${this.stderr.trim().split("\n").pop()}` : ""}`);
     });
+  }
+
+  private failAll(message: string) {
+    for (const [id, entry] of this.pending) {
+      clearTimeout(entry.timer);
+      entry.reject(new Error(message));
+      this.pending.delete(id);
+    }
   }
 
   private receive(chunk: string) {
     this.buffer += chunk;
+    if (this.buffer.length > MAX_LINE_CHARS && !this.buffer.includes("\n")) {
+      this.buffer = "";
+      this.failAll("the server sent too much without a line break: stopped");
+      this.stop();
+      return;
+    }
     let newline: number;
     while ((newline = this.buffer.indexOf("\n")) >= 0) {
       const line = this.buffer.slice(0, newline).trim();
@@ -143,8 +243,20 @@ class StdioConnection implements McpConnection {
   stop() {
     for (const entry of this.pending.values()) clearTimeout(entry.timer);
     this.pending.clear();
-    this.child?.kill("SIGTERM");
+    const child = this.child;
     this.child = null;
+    this.buffer = "";
+    if (!child) return;
+    child.stdin?.end();
+    killTree(child, "SIGTERM");
+    // What would not end, and what it started, killed a moment later.
+    setTimeout(() => {
+      if (process.platform === "win32") {
+        if (child.exitCode === null && child.signalCode === null) killTree(child, "SIGKILL");
+        return;
+      }
+      killTree(child, "SIGKILL");
+    }, KILL_GRACE_MS).unref();
   }
 }
 

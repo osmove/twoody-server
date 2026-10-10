@@ -1,8 +1,9 @@
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { forwardedByProxy, isLoopbackAddress, viaTunnel } from "../adminAccess.js";
 import { requireAuth } from "../auth.js";
 import { isThisComputersApp } from "./usage.js";
 import { takeSignIn } from "../connectors/oauth.js";
-import { addConnector, answerApproval, beginSignIn, changeConnector, completeSignIn, ConnectorError, connectorView, listConnectors, removeConnector, signOut, startConnector, stopConnector } from "../connectors/connectors.js";
+import { addConnector, answerApproval, beginSignIn, changeConnector, completeSignIn, ConnectorError, connectorView, listConnectors, removeConnector, signOut, startConnector, stopAllConnectors, stopConnector } from "../connectors/connectors.js";
 import { forgetGoogleDataLink, setGoogleDataEnabled } from "../google/dataLink.js";
 import { GOOGLE_DATA_CONNECTOR_ID, googleDataConnectorView } from "../google/dataTools.js";
 import { meshRequester } from "../sessionTrust.js";
@@ -38,12 +39,25 @@ import { meshRoster } from "../vault/roster.js";
 
 const security: Array<Record<string, string[]>> = [{ bearerAuth: [] }, { userTokenAuth: [] }];
 
+/// This computer's app, on this computer: its session (usage.ts
+/// isThisComputersApp), in a request from this very machine — not one the
+/// tunnel served (a phone, another computer, the relay), not one a proxy
+/// forwarded, not one from the local network (an owner's password typed
+/// on another device). A connector is a program this computer runs: what
+/// it runs is decided here only (docs/connectors-security-review.md).
+function fromThisComputersApp(req: FastifyRequest, auth: { sessionId?: string; deviceId?: string }): boolean {
+  return isThisComputersApp(auth) && isLoopbackAddress(req.ip) && !viaTunnel(req) && !forwardedByProxy(req);
+}
+
 function fail(reply: FastifyReply, err: unknown) {
   if (err instanceof ConnectorError) return reply.code(err.status).send({ error: err.code });
   throw err;
 }
 
 export async function connectorRoutes(app: FastifyInstance) {
+  // Their programs end with this server.
+  app.addHook("onClose", async () => stopAllConnectors());
+
   app.get("/connectors", {
     schema: { tags: ["connectors"], summary: "The person's connectors (MCP servers) and their tools", security },
     handler: async (req, reply) => {
@@ -51,8 +65,10 @@ export async function connectorRoutes(app: FastifyInstance) {
       if (!auth) return;
       // Whether this device's messages get them: what its « Outils » may switch on.
       const fromDevices = isThisComputersApp(auth) || (await meshRequester(req, auth, () => meshRoster().get())) !== null;
+      // What each one runs: for this computer's app only.
+      const detail = fromThisComputersApp(req, auth);
       const google = googleDataConnectorView(auth.userId);
-      reply.send({ connectors: [...listConnectors(auth.userId).map((connector) => connectorView(auth.userId, connector, fromDevices)), ...(google ? [{ ...google, from_devices: fromDevices }] : [])] });
+      reply.send({ connectors: [...listConnectors(auth.userId).map((connector) => connectorView(auth.userId, connector, fromDevices, detail)), ...(google ? [{ ...google, from_devices: fromDevices }] : [])] });
     },
   });
 
@@ -61,7 +77,7 @@ export async function connectorRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      if (!isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
+      if (!fromThisComputersApp(req, auth)) return reply.code(403).send({ error: "desktop_app_only" });
       try {
         const connector = addConnector(auth.userId, req.body);
         // Started at once, so that its tools are known; a failure is said, the connector stays.
@@ -77,7 +93,7 @@ export async function connectorRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      if (!isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
+      if (!fromThisComputersApp(req, auth)) return reply.code(403).send({ error: "desktop_app_only" });
       if (req.params.id === GOOGLE_DATA_CONNECTOR_ID) {
         const input = (req.body && typeof req.body === "object" ? (req.body as { connector?: unknown }).connector ?? req.body : {}) as Record<string, unknown>;
         if (typeof input.enabled === "boolean" && !setGoogleDataEnabled(auth.userId, input.enabled)) return reply.code(404).send({ error: "not_found" });
@@ -96,7 +112,7 @@ export async function connectorRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      if (!isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
+      if (!fromThisComputersApp(req, auth)) return reply.code(403).send({ error: "desktop_app_only" });
       if (req.params.id === GOOGLE_DATA_CONNECTOR_ID) return forgetGoogleDataLink(auth.userId) ? reply.code(204).send() : reply.code(404).send({ error: "not_found" });
       try {
         removeConnector(auth.userId, req.params.id);
@@ -110,7 +126,7 @@ export async function connectorRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      if (!isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
+      if (!fromThisComputersApp(req, auth)) return reply.code(403).send({ error: "desktop_app_only" });
       stopConnector(auth.userId, req.params.id);
       try {
         const { connector } = await startConnector(auth.userId, req.params.id);
@@ -132,7 +148,7 @@ export async function connectorRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      if (!isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
+      if (!fromThisComputersApp(req, auth)) return reply.code(403).send({ error: "desktop_app_only" });
       const host = String(req.headers.host ?? "");
       const hostname = host.replace(/:\d+$/, "");
       if (!["127.0.0.1", "localhost", "[::1]"].includes(hostname)) return reply.code(422).send({ error: "loopback_only" });
@@ -170,7 +186,7 @@ export async function connectorRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      if (!isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
+      if (!fromThisComputersApp(req, auth)) return reply.code(403).send({ error: "desktop_app_only" });
       try {
         reply.send({ connector: connectorView(auth.userId, signOut(auth.userId, req.params.id)) });
       } catch (err) { fail(reply, err); }
@@ -186,7 +202,7 @@ export async function connectorRoutes(app: FastifyInstance) {
       // Who answers: this computer's app, or the very session that asked —
       // still one of the person's own devices, through its own tunnel key.
       // Anyone else is told nothing waits, whatever the id.
-      const thisComputersApp = isThisComputersApp(auth);
+      const thisComputersApp = fromThisComputersApp(req, auth);
       const person = thisComputersApp || (await meshRequester(req, auth, () => meshRoster().get())) !== null;
       if (!person || !answerApproval(auth.userId, id, req.body?.allow === true, req.body?.always === true, { sessionId: auth.sessionId ?? null, thisComputersApp })) return reply.code(404).send({ error: "nothing_waiting" });
       reply.send({ ok: true });

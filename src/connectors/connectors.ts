@@ -164,7 +164,11 @@ export function changeConnector(userId: string, id: string, body: unknown): Conn
       // Another address: the sign-in to the old one goes.
       const sameService = how.url && how.url === connector.url;
       // Another address: its icon is asked of it again.
-      next = { ...next, command: undefined, args: undefined, env: undefined, url: undefined, headers: undefined, oauth_client: null, ...how, tools: [], error: null, ...(sameService ? {} : { oauth: null, auth_required: false, www_authenticate: null, icon: null, icon_checked_at: null }) };
+      // Another program, other arguments, another environment or address:
+      // « Toujours autoriser » was given to what ran before, not to this —
+      // every tool asks again.
+      const same = how.command === connector.command && JSON.stringify(how.args ?? []) === JSON.stringify(connector.args ?? []) && JSON.stringify(how.env ?? {}) === JSON.stringify(connector.env ?? {}) && how.url === connector.url && JSON.stringify(how.headers ?? {}) === JSON.stringify(connector.headers ?? {});
+      next = { ...next, command: undefined, args: undefined, env: undefined, url: undefined, headers: undefined, oauth_client: null, ...how, tools: [], error: null, ...(same ? {} : { auto_tools: [] }), ...(sameService ? {} : { oauth: null, auth_required: false, www_authenticate: null, icon: null, icon_checked_at: null }) };
     }
     if (typeof input.enabled === "boolean") next = { ...next, enabled: input.enabled };
     if (Array.isArray(input.disabled_tools)) next = { ...next, disabled_tools: input.disabled_tools.filter((tool): tool is string => typeof tool === "string").slice(0, 500) };
@@ -189,8 +193,12 @@ export function removeConnector(userId: string, id: string) {
 /// `fromDevices`: whether the device asking may use it in its own
 /// messages — this computer's app, or one of the person's own devices
 /// (queries.ts, 08/10/2026); never a household member's or a device paired
-/// by code.
-export function connectorView(userId: string, connector: Connector, fromDevices = true) {
+/// by code. `detail`: what it runs — its command, arguments (which may
+/// hold a token or a database's password), address, the names of its
+/// environment and headers, and what went wrong (the end of its error
+/// output) — for this computer's app only; any other device gets its
+/// name, its tools and whether something is wrong.
+export function connectorView(userId: string, connector: Connector, fromDevices = true, detail = true) {
   // What the chat really gets, across all the connectors (MAX_CHAT_TOOLS).
   const offered = new Set(connectorChatTools(userId).filter((tool) => tool.connectorId === connector.id).map((tool) => tool.tool));
   const tools = connector.tools.map((tool) => ({ name: tool.name, description: tool.description, enabled: !connector.disabled_tools.includes(tool.name), offered: offered.has(tool.name), tokens: toolTokens(tool), always: (connector.auto_tools ?? []).includes(tool.name) }));
@@ -198,14 +206,14 @@ export function connectorView(userId: string, connector: Connector, fromDevices 
     id: connector.id,
     name: connector.name,
     kind: connector.url ? "http" : "command",
-    command: connector.command ?? null,
-    args: connector.args ?? [],
-    url: connector.url ?? null,
-    env_keys: Object.keys(connector.env ?? {}),
-    header_keys: Object.keys(connector.headers ?? {}),
+    command: detail ? connector.command ?? null : null,
+    args: detail ? connector.args ?? [] : [],
+    url: detail ? connector.url ?? null : null,
+    env_keys: detail ? Object.keys(connector.env ?? {}) : [],
+    header_keys: detail ? Object.keys(connector.headers ?? {}) : [],
     enabled: connector.enabled,
     running: clients.get(runningKey(userId, connector.id))?.client.running === true,
-    error: connector.error,
+    error: connector.error && !detail ? "unavailable" : connector.error,
     tools,
     /// The tools the chat gets from it, and about what they add to every message.
     offered_tools: tools.filter((tool) => tool.offered).length,
@@ -214,7 +222,7 @@ export function connectorView(userId: string, connector: Connector, fromDevices 
     oauth: connector.url ? {
       required: connector.auth_required === true,
       connected: !!(connector.oauth?.access_token || connector.oauth?.refresh_token),
-      service: connector.oauth?.issuer ? new URL(connector.oauth.issuer).host : null,
+      service: detail && connector.oauth?.issuer ? new URL(connector.oauth.issuer).host : null,
       client_id_given: !!connector.oauth_client?.client_id,
     } : null,
     /// Its icon as a data URI (icons.ts), or null: the app shows its plug.
@@ -253,6 +261,12 @@ function runningKey(userId: string, id: string) {
   return `${userId}:${id}`;
 }
 
+/// Every connector's program stopped (this server closing).
+export function stopAllConnectors() {
+  for (const { client } of clients.values()) client.stop();
+  clients.clear();
+}
+
 export function stopConnector(userId: string, id: string) {
   const running = clients.get(runningKey(userId, id));
   running?.client.stop();
@@ -278,9 +292,18 @@ export async function startConnector(userId: string, id: string): Promise<{ clie
       inputSchema: tool.inputSchema && typeof tool.inputSchema === "object" ? tool.inputSchema : { type: "object", properties: {} },
     }));
     // Many tools, read for the first time: none offered until the person picks.
+    // A tool allowed once and for all whose description or parameters
+    // changed since (an updated package, a server that rewrites itself):
+    // asked again — « Toujours autoriser » was given to what it said then.
+    const definition = (tool: StoredTool) => JSON.stringify([tool.description, tool.inputSchema]);
     const updated = update(userId, id, (stored) => ({
       ...stored, tools, error: null, auth_required: false,
       ...(stored.tools.length === 0 && tools.length > PICK_ABOVE_TOOLS ? { disabled_tools: tools.map((tool) => tool.name) } : {}),
+      ...(stored.auto_tools?.length ? { auto_tools: stored.auto_tools.filter((name) => {
+        const before = stored.tools.find((tool) => tool.name === name);
+        const now = tools.find((tool) => tool.name === name);
+        return !!before && !!now && definition(before) === definition(now);
+      }) } : {}),
     }));
     return { client, connector: updated };
   } catch (err) {

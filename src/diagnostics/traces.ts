@@ -126,6 +126,14 @@ export function traceOfMessage(userId: string, messageId: string): TraceRow | nu
 /// AppAnalytics::EventIngestor). Shared only while « Partager des
 /// diagnostics » is ticked (by default in a beta); never the arguments,
 /// texts, titles, file or folder names.
+/// A tool's name as diagnostics may share it: a connector's tool
+/// (mcp__<connector>__<tool>) carries a name the person chose and what
+/// their server calls its tools — shared as « mcp » only.
+function sharedToolName(name: unknown): string {
+  const text = String(name);
+  return text.startsWith("mcp__") ? "mcp" : text;
+}
+
 export function telemetryOf(row: TraceRow): Record<string, string | number | boolean> {
   const detail = row.detail as Record<string, any>;
   const out: Record<string, string | number | boolean | null | undefined> = {
@@ -139,8 +147,8 @@ export function telemetryOf(row: TraceRow): Record<string, string | number | boo
       memory_profile_tokens: detail.memory?.profile_tokens, memory_relevant_tokens: detail.memory?.relevant_tokens, memory_items: detail.memory?.items,
       documents_mode: detail.documents?.mode, documents_decision: detail.documents?.decision, documents_reason: detail.documents?.reason,
       documents_passages: detail.documents?.passages, documents_files: detail.documents?.files, documents_ms: detail.timings?.documents_ms,
-      tools_offered: Array.isArray(detail.tools_offered) ? detail.tools_offered.join(",") : null,
-      tool_calls: calls.length, tool_names: calls.map((call) => call.name).join(","), tool_ms: calls.reduce((sum, call) => sum + (call.ms || 0), 0),
+      tools_offered: Array.isArray(detail.tools_offered) ? detail.tools_offered.map(sharedToolName).join(",") : null,
+      tool_calls: calls.length, tool_names: calls.map((call) => sharedToolName(call.name)).join(","), tool_ms: calls.reduce((sum, call) => sum + (call.ms || 0), 0),
       tool_passages: calls.reduce((sum, call) => sum + (call.passages || 0), 0), tool_errors: calls.filter((call) => call.error).length,
       prompt_messages: detail.prompt?.messages, prompt_system_chars: detail.prompt?.system_chars, prompt_history_chars: detail.prompt?.history_chars,
       prompt_last_chars: detail.prompt?.last_chars, prompt_excerpts_chars: detail.prompt?.excerpts_chars, prompt_remembered: detail.prompt?.remembered,
