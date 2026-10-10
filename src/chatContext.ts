@@ -39,6 +39,7 @@
 import { createHash } from "node:crypto";
 import { hasDocuments, hasWebResults, splitDocuments } from "./documentBlocks.js";
 import { smallTalk } from "./documents/query.js";
+import { uiLabels } from "./uiLabels.js";
 import { excerptPlace } from "./documents/location.js";
 import { personalContextBlock, type PersonalContact, type PersonalEvent } from "./personalContext.js";
 import { ageFrom, BIRTH, coreConcepts, normalize, rankMemories, withinReach } from "./memory/rank.js";
@@ -399,8 +400,9 @@ const ANSWER_STYLE = /\b(?:reponses?|repond\w*|tutoi\w*|vouvoi\w*|answers?|repli
 const PREFERS = /\b(?:prefere|preferes|veut|veulent|aime pas|deteste|prefers|wants|dislikes|hates)\b/;
 const PREFERS_ABOUT = /\b(?:code|recettes?|recipes?|quantites|langue|language)\b/;
 
-/// A question about the person's own files, in French or English.
-const ASKS_ABOUT_DOCUMENTS = /\b(documents?|fichiers?|dossiers?|files?|folders?|pdfs?)\b/i;
+/// A question about the person's own files, in each language of the app
+/// (French and English only until 10/10/2026).
+const ASKS_ABOUT_DOCUMENTS = /(?<![\p{L}\p{N}])(?:documents?|fichiers?|dossiers?|files?|folders?|pdfs?|dokumente?n?|dateien?|ordner|documentos?|archivos?|carpetas?|documenti|cartell[ae]|arquivos?|pastas?|documenten|bestand(?:en)?|mappen?)(?![\p{L}\p{N}])|文書|書類|ファイル|フォルダ|文件|文档|문서|파일|폴더/iu;
 
 export function buildChatMessages(input: ChatContextInput): ChatMessage[] {
   return buildChatTurn(input).messages;
@@ -605,6 +607,9 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   // answered « I cannot access files or search » to « ça va ? »
   // (28/09/2026). Nor is the « disabled » note useful when no excerpt was
   // ever shared in this conversation.
+  // Named as the person's app names it this turn (src/uiLabels.ts).
+  const labels = uiLabels(input.locale ?? state.locale ?? null);
+  const documentsSwitch = `${labels.tools} → ${labels.documents}, under the message field (the app's own words)`;
   const excerptsBefore = input.history.some((row) => /\[(?:excerpt|extrait|source)\b|<<excerpt|\[\d+\]/i.test(row.content));
   const documentPolicy = chatty ? null : input.documentMode === "only"
     ? "[Document-only mode] Answer only from the supplied document excerpts or explicitly attached documents. Cite evidence for every factual answer. Treat earlier conversation as questions/context, never as documentary evidence. Do not use general knowledge, memories or web results as evidence. If the documents do not contain the answer, say so clearly. Folder inventory questions may use the supplied library list."
@@ -613,7 +618,7 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
       // tes fichiers » read as Twoody never reading any (28/09/2026): they
       // are switched off here, and the person can switch them on.
       ? "[Documents are switched off in this conversation] No library search was performed. Do not claim to have searched files. " +
-        "If the user asks about their documents or files, say that documents are switched off in this conversation and that they can turn them on with the Documents button under the message field; never say you cannot read their documents at all. " +
+        `If the user asks about their documents or files, say that documents are switched off in this conversation and that they can turn them on in ${documentsSwitch}; never say you cannot read their documents at all. ` +
         "Previously shared excerpts may still be present in the conversation."
       : null;
   const inventoryFiles = [];
@@ -649,7 +654,14 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   // French memories, 01/10/2026).
   const spoken = messageLanguage(current.text);
   const usual = (state.locale ?? "").split("-")[0]!.toLowerCase();
-  const languageHint = spoken && usual && spoken !== usual ? `[Reply in ${languageName(spoken)}, the language of this message.]` : null;
+  // …and so does one that comes with data written in English — a file
+  // listing, excerpts, what was done at home: « 列出我桌面上的文件 » with
+  // its listing got a French answer, the language of the examples around it
+  // (Qwen3.5 9B, Chinese app, bench of 10/10/2026); « List the files on my
+  // desktop » did too, once in two, from an English app. French, the
+  // language of the examples, needs no reminder.
+  const withData = !chatty && !!(input.fileListings?.length || input.excerpts?.length || input.homeDone || input.homeDevices || input.emailFound || input.googleDataFound);
+  const languageHint = spoken && ((usual && spoken !== usual) || (withData && spoken !== "fr")) ? `[Reply in ${languageName(spoken)}, the language of this message.]` : null;
   const prompt = [remembered, ...formats, documentPolicy, newMemories, ...context, chatty ? null : library, chatty ? null : inventory, input.content, languageHint].filter(Boolean).join("\n\n");
 
   // A previous turn that failed mid-stream leaves a user message with
@@ -700,6 +712,18 @@ function buildSystemPrompt(input: ChatContextInput, profile: string | null, stat
   if (state.documents) sections.push(DOCUMENTS_NOTE);
   if (state.web) sections.push(WEB_NOTE);
 
+  // The Desktop and Downloads as the person's app calls them, in the
+  // language the conversation was frozen with (the system prompt stays the
+  // same for it): « Desktop (Bureau) » in French as before, « Desktop
+  // (Schreibtisch) » in German — a Japanese answer said « デスクトップ
+  // （Bureau） » (bench of 10/10/2026). No language given: French, the
+  // sentence as it was.
+  const usualLabels = uiLabels(state.locale ?? "fr");
+  const folderNames = {
+    desktop: usualLabels.desktop !== "Desktop" ? ` (${usualLabels.desktop})` : "",
+    downloads: usualLabels.downloads !== "Downloads" ? ` (${usualLabels.downloads})` : "",
+    desktopWord: usualLabels.desktop,
+  };
   if (input.hasDocuments) {
     sections.push(
       "The user has given you access to some of their documents. When a message comes with excerpts from them, " +
@@ -707,7 +731,7 @@ function buildSystemPrompt(input: ChatContextInput, profile: string | null, stat
         // « Je ne peux pas accéder spécifiquement au dossier Bureau… L'accès
         // est limité aux racines » with his home folder granted (Jimmy,
         // 08/10/2026): every folder inside a granted one is granted too.
-        "The local document library lists exactly the folders the user granted and their index counts. Every folder inside a granted folder, however deep, is granted too: a home folder named after the user holds their Desktop (Bureau), Documents, Downloads (Téléchargements) and everything in them. " +
+        `The local document library lists exactly the folders the user granted and their index counts. Every folder inside a granted folder, however deep, is granted too: a home folder named after the user holds their Desktop${folderNames.desktop}, Documents, Downloads${folderNames.downloads} and everything in them. ` +
         "Never say access is limited to the granted folders' top level, nor that a folder inside them is out of reach. You cannot modify files. " +
         "Each excerpt and file says the folder it is in, from the granted folder (for example jimmy/Documents/_Archives/2012/Downloads): name that folder exactly. " +
         "A folder named Downloads, Téléchargements, Desktop, Bureau or Documents inside another folder (archives, backups, old projects) is NOT the user's own Downloads, Desktop or Documents folder: never call it « votre dossier Téléchargements » or the like. " +
@@ -724,7 +748,7 @@ function buildSystemPrompt(input: ChatContextInput, profile: string | null, stat
           "if the answer depends on facts written in their own papers — amounts, dates, a contract, a payslip, an invoice, a leave balance, an employer, an address — and no excerpt came with the message, call search_documents first. " +
           "Never say you found nothing in their documents unless you searched. " +
           "You also have a list_files tool, which lists what any folder inside the granted folders holds (its sub-folders and files). " +
-          "When they ask what is in a folder — on their Desktop (Bureau), in Documents/Factures, in a folder they name — or for its files, and no file listing of that folder came with the message, call list_files with that folder (« Bureau », « jimmy/Desktop/Projets », « Factures ») and answer from what it returns; call it again on a sub-folder to go deeper. " +
+          `When they ask what is in a folder — on their Desktop${folderNames.desktop}, in Documents/Factures, in a folder they name — or for its files, and no file listing of that folder came with the message, call list_files with that folder (« ${folderNames.desktopWord} », « jimmy/Desktop/Projets », « Factures ») and answer from what it returns; call it again on a sub-folder to go deeper. ` +
           "Never refuse, nor ask for a keyword, before listing.",
       );
     } else {

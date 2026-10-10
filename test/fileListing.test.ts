@@ -103,7 +103,7 @@ function final(payload: string) {
   assert.ok(block, payload.slice(-800));
   return JSON.parse(block!.split("\n").find((l) => l.startsWith("data: "))!.slice(6));
 }
-const ask = (content: string, headers: Record<string, string> = auth) => app.inject({ method: "POST", url: "/queries", headers, payload: { content } });
+const ask = (content: string, headers: Record<string, string> = auth, locale = "fr-FR") => app.inject({ method: "POST", url: "/queries", headers, payload: { content, locale } });
 const lastPrompt = () => {
   const messages = runtime.calls.filter((c) => c.body.x_purpose !== "background").at(-1)!.body.messages as Array<{ role: string; content: string }>;
   return messages.at(-1)!.content;

@@ -23,24 +23,30 @@ export type FolderAliasId =
 
 export const FOLDER_ALIAS_IDS: readonly FolderAliasId[] = ["downloads", "desktop", "documents", "pictures", "icloud", "onedrive", "googledrive", "dropbox", "home"];
 
-/// How the person calls each folder, accents and case removed (see `plain`).
+/// How the person calls each folder, accents and case removed (see `plain`),
+/// in each language of the app — the names macOS, Windows and Linux give
+/// them there (« Schreibtisch », « Escritorio », « 桌面 », 10/10/2026).
 /// « Documents » and « Images » alone are too common as plain words: only
 /// « dossier Documents », « Documents folder », « ~/Documents » name the folder.
+const FOLDER = String.raw`(?:dossier|repertoire|folder|ordner|carpeta|cartella|pasta|map)`;
 const PATTERNS: Array<[FolderAliasId, RegExp]> = [
-  ["downloads", /\b(telechargements?|telecharges|downloads?|downloaded)\b/],
-  ["desktop", /\b(bureau|desktop)\b/],
-  ["documents", /(\b(dossier|repertoire)s? (de |des |")?documents\b|\bdocuments (folder|directory)\b|~\/documents\b)/],
-  ["pictures", /(\b(dossier|repertoire)s? (d'|de |des |")?(images|photos)\b|\bpictures\b|~\/pictures\b)/],
+  ["downloads", /\b(telechargements?|telecharges|downloads?|downloaded|descargas?|descargados)\b|ダウンロード|下载|下載|다운로드/],
+  // « bureau » in Dutch is a desk; their Desktop is « bureaublad ».
+  ["desktop", /\b(bureau|desktop|schreibtisch|escritorio|scrivania|area de trabalho|bureaublad)\b|デスクトップ|桌面|데스크탑|데스크톱|바탕\s?화면/],
+  ["documents", new RegExp(String.raw`(\b${FOLDER}s? (de |des |der |")?(documents|dokumente|documentos|documenti|documenten)\b|\b(documents|dokumente|documentos|documenti|documenten) (folder|directory|ordner)\b|\bdokumentenordner\b|~\/documents\b)|書類フォルダ|ドキュメントフォルダ|文稿|文档文件夹|문서\s?폴더`)],
+  ["pictures", new RegExp(String.raw`(\b${FOLDER}s? (d'|de |des |")?(images|photos|bilder|imagenes|immagini|imagens|afbeeldingen)\b|\bpictures\b|\bbilderordner\b|~\/pictures\b)|ピクチャ|图片文件夹|사진\s?폴더`)],
   ["icloud", /\bicloud( drive)?\b/],
   ["onedrive", /\bone ?drive\b/],
   ["googledrive", /\bgoogle drive\b/],
   ["dropbox", /\bdropbox\b/],
-  ["home", /\b(dossier (personnel|utilisateur|maison)|home (folder|directory)|repertoire personnel)\b/],
+  ["home", /\b(dossier (personnel|utilisateur|maison)|home (folder|directory)|repertoire personnel|home-?ordner|benutzerordner|personlicher ordner|carpeta (personal|de inicio|de usuario)|cartella (home|personale|utente)|pasta (pessoal|de inicio|do usuario)|thuismap|gebruikersmap|persoonlijke map)\b|ホームフォルダ|主文件夹|个人文件夹|홈\s?폴더/],
 ];
 
-/// Accents removed, lower case, curly quotes made straight.
+/// Accents of the Latin script removed, lower case, curly quotes made
+/// straight. Kana and hangul are kept whole (NFKC): removing every mark
+/// made « デスクトップ » « テスクトッフ » (10/10/2026).
 export function plain(text: string): string {
-  return text.normalize("NFD").replace(/\p{M}/gu, "").replace(/[’‘]/g, "'").toLowerCase();
+  return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").normalize("NFKC").replace(/[’‘]/g, "'").toLowerCase();
 }
 
 /// The folder a message names, if it names one of the usual ones.

@@ -60,6 +60,8 @@ documents), also measure with a real model (root AGENTS.md §5, §7):
 | `memory/` | memory v2: `learner.ts`, `retrieve.ts`, `search.ts`, `rank.ts`, `entities.ts`, `embeddings.ts`, `similar.ts`, `changes.ts` |
 | `memoryLearning.ts` | « Retiens que… »: kept as said and at once, no model involved (what is said in passing is learned by `memory/learner.ts`) |
 | `personalContext.ts` | the person's contacts and events matching a message, on the last message |
+| `uiLabels.ts` | the app's screens and buttons as the person's app names them (« Fähigkeiten → Zuhause », « Ordner hinzufügen »), the Desktop's own words in its ten languages (`test/uiLabels.test.ts` compares them with its dictionaries): said in tool results and notes on the last message only, from the turn's `locale` — never in the system prompt |
+| `intentText.ts` | what the detectors of « do it now » share (`fold`, CJK runs, reminder words): home commands, reminders and tasks, file listings, retries, small talk, Google statistics, the bank, « remember that » understand the ten languages of the app (`test/multilingual.test.ts`) |
 | `projects/` | projects (`projects.ts`) and the chat's action tools (`actions.ts`) |
 | `diagnostics/traces.ts` | one trace per answer; `telemetryOf` = the content-free part that may be shared |
 | `diagnostics/installation.ts` | what the installation is, content-free (capabilities on, first launch's answers, providers by family, default model's name, phones paired): `GET /diagnostics/installation`, for the Desktop's daily `installation_active` |

@@ -1,4 +1,5 @@
 import { MAX_CHAT_TOOLS, toolTokens } from "../connectors/connectors.js";
+import { capabilityPlace } from "../uiLabels.js";
 import { retryAfterMs } from "../microsoft/graph.js";
 import {
   GOOGLE_DATA_URLS, googleDataDoor, GoogleDataDoorClosedError, googleDataFetch, validSearchConsoleSite,
@@ -545,18 +546,20 @@ function wrap(service: string, tool: string, text: string): string {
 const SERVICE: Record<GoogleDataFamily, string> = { analytics: "Google Analytics", search_console: "Google Search Console" };
 
 /// What a refusal is said as, to the model: a short sentence and the code.
-export function googleDataErrorSentence(code: GoogleDataErrorCode, family: GoogleDataFamily): string {
+/// The screen named as the person's app names it (`locale`, src/uiLabels.ts).
+export function googleDataErrorSentence(code: GoogleDataErrorCode, family: GoogleDataFamily, locale: string | null = null): string {
   const service = SERVICE[family];
+  const connectors = capabilityPlace(locale, "connectors");
   const what = family === "analytics" ? "property" : "site";
   const list = family === "analytics" ? "google_analytics_properties" : "search_console_sites";
   const sentence: Partial<Record<GoogleDataErrorCode, string>> = {
-    signin_required: "Google no longer accepts Twoody's sign-in (withdrawn or expired): the user can sign in with Google again in Capacités › Connecteurs.",
+    signin_required: `Google no longer accepts Twoody's sign-in (withdrawn or expired): the user can sign in with Google again in ${connectors}.`,
     admin_consent_required: "the user's Google Workspace administrator does not allow Twoody to read this.",
     signin_failed: "signing in to Google did not work.",
     signin_unreachable: "Google cannot be reached.",
     google_unreachable: "Google cannot be reached.",
-    google_refused: "Google refused Twoody's sign-in: the user can sign in with Google again in Capacités › Connecteurs.",
-    google_data_off: `the user switched ${service} off in Capacités › Connecteurs.`,
+    google_refused: `Google refused Twoody's sign-in: the user can sign in with Google again in ${connectors}.`,
+    google_data_off: `the user switched ${service} off in ${connectors}.`,
     not_linked: "the user's Google account is no longer linked.",
     scope_missing: `the user did not give Twoody permission to read ${service}: they can sign in with Google again and allow it.`,
     api_disabled: `${service}'s API is not enabled yet for Twoody at Google; it is not the user's doing.`,
@@ -575,6 +578,8 @@ export function googleDataErrorSentence(code: GoogleDataErrorCode, family: Googl
 export interface GoogleDataToolContext {
   userId: string;
   timeZone: string | null;
+  /// The language of the person's app, for the screens named.
+  locale?: string | null;
   now?: Date;
 }
 
@@ -797,9 +802,9 @@ export async function runGoogleDataTool(name: string, args: Record<string, unkno
   const session = sessionFor(context.userId);
   if (!(session instanceof GoogleDataSession)) {
     const code = googleDataErrorCode(session);
-    return { text: googleDataErrorSentence(code, family), error: code };
+    return { text: googleDataErrorSentence(code, family, context.locale ?? null), error: code };
   }
-  if (!session.link.granted.includes(family)) return { text: googleDataErrorSentence("scope_missing", family), error: "scope_missing" };
+  if (!session.link.granted.includes(family)) return { text: googleDataErrorSentence("scope_missing", family, context.locale ?? null), error: "scope_missing" };
   try {
     let text: string;
     if (name === "google_analytics_properties") {
@@ -815,6 +820,6 @@ export async function runGoogleDataTool(name: string, args: Record<string, unkno
     return { text, error: text.startsWith("Not done") ? "invalid_arguments" : null };
   } catch (err) {
     const code = googleDataErrorCode(err);
-    return { text: googleDataErrorSentence(code, family), error: code };
+    return { text: googleDataErrorSentence(code, family, context.locale ?? null), error: code };
   }
 }

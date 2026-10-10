@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import { capabilityPlace } from "../uiLabels.js";
 import { capabilityOn } from "../localCapabilities.js";
 import { openSourceMailbox } from "./credentials.js";
 import { saveGmailDraft } from "./gmailMailbox.js";
@@ -126,6 +127,8 @@ export interface DraftPreview {
 
 export interface EmailToolContext {
   userId: string;
+  /// The language of the person's app, for the screens named.
+  locale?: string | null;
   /// The person's time zone (IANA), for the dates shown.
   timeZone: string | null;
   /// About how many characters a result may take (the model's window).
@@ -640,7 +643,7 @@ export function draftMailbox(sources: EmailSource[], named: string | null, answe
 
 async function draft(args: Record<string, unknown>, context: EmailToolContext): Promise<EmailToolResult> {
   const sources = activeSources(context.userId);
-  if (!sources.length) return { text: "Not done: no mailbox is set up (Capacités → E-mails). Tell the user, briefly.", error: "not_configured" };
+  if (!sources.length) return { text: `Not done: no mailbox is set up (${capabilityPlace(context.locale, "email")}). Tell the user, briefly.`, error: "not_configured" };
   const answered = typeof args.in_reply_to === "string" && args.in_reply_to.trim() ? findEmail(context.userId, args.in_reply_to) : null;
   if (typeof args.in_reply_to === "string" && args.in_reply_to.trim() && !answered) {
     // « [6] id: 9e3d… »: the place in the list given as the id (bench of 05/10/2026).

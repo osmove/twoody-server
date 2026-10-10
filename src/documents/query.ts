@@ -1,3 +1,5 @@
+import { CJK } from "../intentText.js";
+
 // Turns a question into an FTS5 MATCH expression. Pure, so it is tested
 // without a database.
 //
@@ -125,17 +127,41 @@ export function metadataScore(name: string, location: string, terms: string[]): 
 // de mon bureau » asked with Documents off (Jimmy, 07/10/2026): the
 // question is the one before, asked again — not « maintenant ? », which
 // names no folder, so nothing was listed. A short message that only says to
-// try again, nothing of its own.
-const RETRY = /\b(?:maintenant|a present|reessaie|reessaye|reessayez|essaie encore|essaye encore|recommence|c est (?:fait|active|bon|ok)|ca y est|voila|vas y|allez y|go|now|try again|again|retry|done|it s on)\b/;
+// try again, nothing of its own — in each language of the app (10/10/2026).
+const RETRY = new RegExp([
+  String.raw`\b(?:maintenant|a present|reessaie|reessaye|reessayez|essaie encore|essaye encore|recommence|c est (?:fait|active|bon|ok)|ca y est|voila|vas y|allez y|go|now|try again|again|retry|done|it s on)\b`,
+  String.raw`\b(?:jetzt|nochmal|noch einmal|versuch(?:e|s)? es (?:nochmal|noch einmal|erneut)|erledigt|fertig|ist (?:an|aktiviert|eingeschaltet)|geht s jetzt)\b`,
+  String.raw`\b(?:ahora|ya esta|listo|hecho|intentalo de nuevo|otra vez|de nuevo|ya)\b`,
+  String.raw`\b(?:adesso|ora|fatto|riprova|di nuovo|ecco|ci siamo|e attivo)\b`,
+  String.raw`\b(?:agora|pronto|feito|tenta de novo|tente de novo|de novo|ja esta|ja ta)\b`,
+  String.raw`\b(?:nu|klaar|gedaan|probeer (?:het )?opnieuw|opnieuw|nog een keer|staat aan)\b`,
+  "できた|できました|有効にした|オンにした|もう一度|もう一回|今は|今度は|やったよ|どう",
+  "好了|弄好了|开好了|再试一次|再试试|现在呢|现在可以了|已经开了|可以了",
+  "됐어|됐어요|켰어|다시 해\\s?봐|다시 해\\s?줘|이제|지금은|다시",
+].join("|"));
 const RETRY_WORDS = new Set([
   "et", "alors", "bon", "ok", "okay", "oui", "voila", "c", "est", "fait", "active", "activee", "activees", "actives", "bon", "ca", "y", "tu", "peux", "pouvez", "vous",
   "maintenant", "a", "present", "le", "la", "les", "faire", "reessaie", "reessaye", "reessayez", "essaie", "essaye", "encore", "recommence", "vas", "allez",
   "go", "now", "try", "again", "retry", "done", "it", "s", "on", "can", "you", "do", "please", "stp", "svp", "merci", "documents", "j", "ai", "je", "l",
+  // German
+  "jetzt", "nochmal", "noch", "einmal", "versuch", "versuche", "versuchs", "es", "erneut", "erledigt", "fertig", "ist", "an", "aktiviert", "eingeschaltet", "geht",
+  "und", "so", "ja", "gut", "kannst", "du", "bitte", "danke", "dokumente", "ich", "habe", "hab", "das", "sie",
+  // Spanish
+  "ahora", "ya", "esta", "listo", "lista", "hecho", "intentalo", "de", "nuevo", "otra", "vez", "si", "vale", "puedes", "por", "favor", "gracias", "lo", "he", "activado", "documentos",
+  // Italian
+  "adesso", "ora", "fatto", "riprova", "di", "ecco", "ci", "siamo", "e", "attivo", "attivato", "puoi", "grazie", "per", "favore", "allora", "ho", "documenti",
+  // Portuguese
+  "agora", "pronto", "feito", "tenta", "tente", "novo", "ja", "ta", "sim", "pode", "obrigado", "obrigada", "ativado", "ativei", "eu",
+  // Dutch
+  "nu", "klaar", "gedaan", "probeer", "het", "opnieuw", "nog", "een", "keer", "staat", "aan", "en", "kun", "je", "kan", "graag", "bedankt", "dank", "ik", "heb", "aangezet", "documenten",
 ]);
+/// Japanese, Chinese, Korean: what a retry may hold besides RETRY.
+const RETRY_CJK = /できた|できました|有効にした|オンにした|もう一度|もう一回|今は|今度は|やったよ|どう|お願い(?:します)?|して|ください|ね|よ|か|は|好了|弄好了|开好了|再试一次|再试试|现在呢|现在可以了|已经开了|可以了|现在|你|再|吧|呢|吗|了|됐어요|됐어|켰어|다시|해\s?봐|해\s?줘|이제|지금은|지금|돼|요|[?!.,、。！？\s]/g;
 
 export function retriesPrevious(text: string): boolean {
-  const plain = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[’']/g, " ").replace(/[!?.,;:…()"«»-]+/g, " ").replace(/\s+/g, " ").trim();
+  const plain = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").normalize("NFKC").toLowerCase().replace(/[’']/g, " ").replace(/[!?.,;:…()"«»¿¡-]+/g, " ").replace(/\s+/g, " ").trim();
   if (!plain || plain.length > 80 || !RETRY.test(plain)) return false;
+  if (CJK.test(plain)) return plain.replace(RETRY_CJK, "").length === 0;
   return plain.split(" ").every((word) => RETRY_WORDS.has(word));
 }
 
@@ -148,12 +174,30 @@ const SMALL_TALK = [
   "comment ca va", "comment vas-tu", "comment vas tu", "comment allez-vous", "tu vas bien", "vous allez bien", "ca va",
   "how are you", "how's it going", "good morning", "good evening", "good night", "au revoir", "a plus", "a bientot",
   "bonne journee", "bonne soiree", "bonne nuit", "thank you", "de rien",
+  // German, Spanish, Italian, Portuguese, Dutch (10/10/2026)
+  "wie geht es dir", "wie geht's", "wie gehts", "guten morgen", "guten tag", "guten abend", "gute nacht", "danke schon", "vielen dank", "bis bald", "alles klar", "tschuss",
+  "como estas", "que tal", "buenos dias", "buenas tardes", "buenas noches", "muchas gracias", "hasta luego", "adios",
+  "come stai", "come va", "buongiorno", "buonasera", "buonanotte", "grazie mille", "a dopo", "arrivederci", "va bene",
+  "tudo bem", "como vai", "bom dia", "boa tarde", "boa noite", "muito obrigado", "muito obrigada", "ate logo", "tchau",
+  "hoe gaat het", "goedemorgen", "goedemiddag", "goedenavond", "welterusten", "dank je wel", "dank je", "tot ziens", "tot straks", "doei",
   "salut", "coucou", "bonjour", "bonsoir", "hello", "hi", "hey", "yo", "merci", "thanks", "ok", "okay", "d'accord",
   "daccord", "oui", "non", "yes", "no", "super", "cool", "top", "parfait", "genial", "bravo", "bye", "re",
+  "hallo", "hoi", "danke", "bedankt", "ja", "nein", "nee", "prima", "hola", "gracias", "vale", "si", "perfecto", "ciao", "grazie", "perfetto",
+  "ola", "oi", "obrigado", "obrigada", "valeu", "beleza", "sim", "nao", "perfeito",
 ];
+/// The same in Japanese, Chinese and Korean, where words are not spaced.
+const SMALL_TALK_CJK = /こんにちは|こんばんは|おはよう(?:ございます)?|ありがとう(?:ございます)?|お元気ですか|元気(?:ですか)?|おやすみ(?:なさい)?|さようなら|またね|はい|いいえ|了解|よろしく|你好吗|你好|您好|早上好|晚上好|晚安|谢谢你|谢谢|多谢|再见|拜拜|好的|没问题|안녕하세요|안녕|좋은 아침|감사합니다|고마워요|고마워|잘 지내요|잘 지내|잘 자요|잘 자|또 봐요|또 봐|네|아니요|좋아요|좋아|오케이|[?!.,、。！？~～\s]/g;
 
 export function smallTalk(text: string): boolean {
-  let rest = ` ${text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[!?.,;:…()"«»]+/g, " ").replace(/\s+/g, " ").trim()} `;
+  const folded = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").normalize("NFKC").toLowerCase();
+  if (CJK.test(folded)) {
+    const said = folded.trim();
+    if (!said || said.length > 40) return false;
+    const left = said.replace(SMALL_TALK_CJK, "");
+    // A name at most (« 你好，小明 »).
+    return left.length < said.replace(/[?!.,、。！？~～\s]/g, "").length && left.length <= 3;
+  }
+  let rest = ` ${folded.replace(/[!?.,;:…()"«»¿¡]+/g, " ").replace(/\s+/g, " ").trim()} `;
   if (rest.trim().length === 0 || rest.length > 80) return false;
   let found = false;
   for (const phrase of SMALL_TALK) {
@@ -168,14 +212,15 @@ export function smallTalk(text: string): boolean {
 }
 
 // « Oui », « vas-y », « d'accord », « je veux bien »: an agreement, nothing
-// asked of its own.
-const AGREEMENT = /^(?:(?:oui|ouais|ok|okay|d accord|daccord|vas y|allez y|go|yes|yep|sure|bien sur|volontiers|c est parti|je veux bien|avec plaisir|s il te plait|s il vous plait|stp|svp|please|merci|parfait|super|top|alors)\s*)+$/;
+// asked of its own — in each language of the app.
+const AGREEMENT = /^(?:(?:oui|ouais|ok|okay|d accord|daccord|vas y|allez y|go|yes|yep|sure|bien sur|volontiers|c est parti|je veux bien|avec plaisir|s il te plait|s il vous plait|stp|svp|please|merci|parfait|super|top|alors|ja|gerne|klar|bitte|genau|si|claro|vale|dale|por favor|certo|va bene|perfetto|sim|pode ser|beleza|com certeza|graag|prima|goed|doe maar|prego)\s*)+$/;
+const AGREEMENT_CJK = /^(?:はい|うん|ええ|お願い(?:します)?|いいよ|いいです|どうぞ|好的|好|是的|是|嗯|可以|行|没问题|네|응|예|좋아요|좋아|그래요|그래|부탁해요|부탁해|[?!.,、。！？~～\s])+$/;
 
 /// A message that asks nothing of its own: an agreement, small talk, or
 /// « réessaie ».
 export function asksNothing(text: string): boolean {
-  const said = text.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[’']/g, " ").replace(/[!?.,;:…()"«»-]+/g, " ").replace(/\s+/g, " ").trim();
-  return !said || AGREEMENT.test(said) || smallTalk(text) || retriesPrevious(text);
+  const said = text.normalize("NFD").replace(/[̀-ͯ]/g, "").normalize("NFKC").toLowerCase().replace(/[’']/g, " ").replace(/[!?.,;:…()"«»¿¡-]+/g, " ").replace(/\s+/g, " ").trim();
+  return !said || AGREEMENT.test(said) || AGREEMENT_CJK.test(said) || smallTalk(text) || retriesPrevious(text);
 }
 
 /// User messages looked back at for the question a retry is about.

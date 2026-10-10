@@ -14,14 +14,29 @@ import { isForgottenFact, learnedFactId, memoryWritten, newMemoryId } from "./va
 // editable in Memories, and never the same fact twice.
 
 const ASKED = /^(?:(?:est-ce que\s+)?(?:tu\s+peux|peux-tu|pourrais-tu)\s+)?(?:retiens|retenir|souviens[- ]toi|rappelle[- ]toi|note|noter|m[ée]morise|m[ée]moriser|n'oublie pas|remember|keep in mind|note that|don't forget)\s*(?:bien\s+)?(?:que|qu'|:|,|that)?\s*/i;
+// The same in German, Spanish, Italian, Portuguese and Dutch (10/10/2026):
+// « Merk dir, dass… », « Recuerda que… », « Ricorda che… », « Lembre que… »,
+// « Onthoud dat… ».
+const ASKED_MORE = /^(?:(?:kannst du|bitte)\s+)?(?:merk(?:e)? dir|vergiss nicht|denk daran|(?:recuerda|recuérdalo|no olvides|ten en cuenta|memoriza|ricorda(?:ti)?|non dimenticare|tieni a mente|memorizza|lembre(?:-se)?|lembra(?:-te)?|não esqueça|nao esqueca|memorize|onthoud|vergeet niet|denk eraan))\s*(?:bitte\s+)?(?:,?\s*(?:dass|que|che|de que|dat)\s+|:\s*|,\s*)/iu;
+// Japanese and Korean put it after the fact (« 私の誕生日は5月3日だと覚えて
+// おいて », « 내 생일은 5월 3일이라는 걸 기억해 줘 »), Chinese before it
+// (« 记住我的生日是5月3日 »).
+const ASKED_AFTER = /\s*(?:(?:だ|です)?(?:って|と|ということを|ことを))?\s*(?:覚えて(?:おいて|て|おいてね|おいてください)|記憶して(?:おいて|ください)?)[。.!！]*$|\s*(?:(?:이)?라는\s?(?:걸|것을)|(?:이)?라고)?\s*기억(?:해|해\s?줘|해\s?둬|해\s?주세요|해\s?두세요)[.!。]*$/u;
+const ASKED_BEFORE = /^(?:请)?(?:记住|記住|别忘了|不要忘记)[:：，,]?\s*/u;
 
 /// What the person asked to be remembered, as they said it; null when the
 /// message asks nothing of the kind.
 export function askedToRemember(text: string): string | null {
-  const trimmed = straightQuotes(text).trim();
-  const match = ASKED.exec(trimmed);
-  if (!match || match[0].length === 0) return null;
-  const fact = trimmed.slice(match[0].length).replace(/[.!\s]+$/, "").trim();
+  const trimmed = straightQuotes(text).normalize("NFC").trim();
+  const match = ASKED.exec(trimmed) ?? ASKED_MORE.exec(trimmed) ?? ASKED_BEFORE.exec(trimmed);
+  let fact: string;
+  if (match && match[0].length > 0) fact = trimmed.slice(match[0].length);
+  else {
+    const after = ASKED_AFTER.exec(trimmed);
+    if (!after || after.index === 0) return null;
+    fact = trimmed.slice(0, after.index);
+  }
+  fact = fact.replace(/[.!。！\s]+$/u, "").trim();
   return fact.length >= 3 && fact.length <= 500 ? capitalize(fact) : null;
 }
 

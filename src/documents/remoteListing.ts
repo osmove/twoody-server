@@ -131,6 +131,8 @@ export async function listFilesAcrossComputers(args: {
   requester: Requester | null;
   /// false: the other computers only (list_files lists this one itself).
   self?: boolean;
+  /// The language of the person's app, for the screens named.
+  locale?: string | null;
 }): Promise<MeshListing> {
   const me = selfIdentity();
   const peers =
@@ -162,7 +164,7 @@ export async function listFilesAcrossComputers(args: {
   });
 
   const listed = results.filter((r) => r.listing?.status === "ok");
-  const said = (r: (typeof results)[number]) => formatListing(r.listing!, args.intent, several ? r.computer_name : null);
+  const said = (r: (typeof results)[number]) => formatListing(r.listing!, args.intent, several ? r.computer_name : null, args.locale ?? null);
   const blocks: string[] = [];
   if (listed.length) {
     blocks.push(...listed.map(said));

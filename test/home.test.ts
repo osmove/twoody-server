@@ -24,6 +24,8 @@ const STATES = [
   { entity_id: "switch.bibliotheque_salon_2", state: "unavailable", attributes: { friendly_name: "Bibliothèque salon" } },
   { entity_id: "switch.guirlande_salon", state: "off", attributes: { friendly_name: "Guirlande salon" } },
   { entity_id: "switch.lumiere_bureau", state: "unavailable", attributes: { friendly_name: "Lumière bureau" } },
+  // A German person's light (10/10/2026).
+  { entity_id: "light.wohnzimmer", state: "off", attributes: { friendly_name: "Wohnzimmer Licht" } },
   { entity_id: "lock.porte", state: "locked", attributes: { friendly_name: "Porte d'entrée" } },
   { entity_id: "sensor.temperature", state: "21", attributes: { friendly_name: "Température" } },
 ];
@@ -115,7 +117,7 @@ test("set up from this computer's app: a wrong token is refused, the token never
   assert.equal(wrong.json().error, "unauthorized");
   const right = await app.inject({ method: "PUT", url: "/api/v1/home/config", headers: desktop, payload: { url: `${haUrl}/`, token: TOKEN } });
   assert.equal(right.statusCode, 200, right.body);
-  assert.equal(right.json().devices, 5);
+  assert.equal(right.json().devices, 6);
   const shown = await app.inject({ method: "GET", url: "/api/v1/home", headers: desktop });
   assert.doesNotMatch(shown.body, new RegExp(TOKEN));
   assert.deepEqual(shown.json().devices.map((d: { entity_id: string }) => d.entity_id).sort(), entities.map((e) => e.entity_id).sort());
@@ -154,20 +156,21 @@ test("on: the chat switches the light at once, says what it did, and never touch
   // 04/10/2026): nothing switched, no device nor tool given to the model.
   called.length = 0;
   asked.length = 0;
-  await app.inject({ method: "POST", url: "/queries", headers: desktop, payload: { text: "Allume la lumière du salon", channel: "desktop", force_new_discussion: true, capabilities_off: ["home"] } });
+  await app.inject({ method: "POST", url: "/queries", headers: desktop, payload: { text: "Allume la lumière du salon", channel: "desktop", force_new_discussion: true, capabilities_off: ["home"], locale: "fr-FR" } });
   assert.deepEqual(called, []);
   assert.ok(!asked[0]!.tools?.some((tool) => tool.function.name === "control_home"));
   assert.doesNotMatch(asked[0]!.messages.at(-1)!.content, /Lumière Salon/);
   // …and the model is told why, so that it does not answer « je suis une
   // intelligence artificielle… » (Jimmy, 06/10/2026).
-  assert.match(asked[0]!.messages.at(-1)!.content, /Maison is left out of this message by its icon/);
+  // Named as the app names it (« Outils », 10/10/2026).
+  assert.match(asked[0]!.messages.at(-1)!.content, /Maison is switched off for this message in Outils, under the message field/);
   const traced = await app.inject({ method: "GET", url: "/diagnostics/turns?kind=chat", headers: desktop });
   assert.equal(traced.statusCode, 200, traced.body);
   assert.deepEqual((traced.json().traces as Array<{ detail: { home?: unknown } }>)[0]!.detail.home, { state: "left_out", devices: 0 });
   // A message that does not ask the home anything is told nothing of it.
   asked.length = 0;
   await app.inject({ method: "POST", url: "/queries", headers: desktop, payload: { text: "Rappelle-moi d'éteindre la lumière ce soir", channel: "desktop", force_new_discussion: true, capabilities_off: ["home"] } });
-  assert.doesNotMatch(asked[0]!.messages.at(-1)!.content, /Maison is left out/);
+  assert.doesNotMatch(asked[0]!.messages.at(-1)!.content, /did not switch anything/);
 });
 
 test("« éteins-la » right after « allume la lumière du salon »: the same device, at once (07/10/2026)", async () => {
@@ -217,7 +220,8 @@ test("Home Assistant refusing the token: nothing switched, the reason said and t
   assert.equal(asksHome("Allume la télé"), true);
   assert.equal(asksHome("ouvre le document de Yoav"), false);
   assert.equal(asksHome("est-ce que la lumière est allumée ?"), false);
-  assert.match(homeUnusedNote("off"), /Capacités → Maison/);
+  assert.match(homeUnusedNote("off", "fr-FR"), /Capacités → Maison/);
+  assert.match(homeUnusedNote("off"), /Capabilities → Home/);
   // The token Home Assistant knows changes: Twoody's is refused.
   const { setHomeConfig } = await import("../src/home/homeAssistant.js");
   setHomeConfig(owner, { url: haUrl, token: "revoked" });
@@ -230,4 +234,20 @@ test("Home Assistant refusing the token: nothing switched, the reason said and t
   const traced = await app.inject({ method: "GET", url: "/diagnostics/turns?kind=chat", headers: desktop });
   assert.deepEqual((traced.json().traces as Array<{ detail: { home?: unknown } }>)[0]!.detail.home, { state: "unauthorized", devices: 0 });
   setHomeConfig(owner, { url: haUrl, token: TOKEN });
+});
+
+test("« Mach das Licht im Wohnzimmer an », then « mach es wieder aus »: done at once, as in French (10/10/2026)", async () => {
+  called.length = 0;
+  asked.length = 0;
+  const first = await app.inject({ method: "POST", url: "/queries", headers: desktop, payload: { text: "Mach das Licht im Wohnzimmer an", channel: "desktop", force_new_discussion: true, locale: "de-DE" } });
+  assert.deepEqual(called, [{ path: "/api/services/light/turn_on", body: { entity_id: "light.wohnzimmer" } }]);
+  const discussion = first.body.match(/"discussion_id":"([^"]+)"/)![1];
+  called.length = 0;
+  await app.inject({ method: "POST", url: "/queries", headers: desktop, payload: { text: "Mach es wieder aus", channel: "desktop", discussion_id: discussion, locale: "de-DE" } });
+  assert.deepEqual(called, [{ path: "/api/services/light/turn_off", body: { entity_id: "light.wohnzimmer" } }]);
+  // Left out in « Werkzeuge »: said with the German app's words.
+  asked.length = 0;
+  await app.inject({ method: "POST", url: "/queries", headers: desktop, payload: { text: "Schalte das Licht im Wohnzimmer aus", channel: "desktop", force_new_discussion: true, capabilities_off: ["home"], locale: "de-DE" } });
+  assert.match(asked[0]!.messages.at(-1)!.content, /Zuhause is switched off for this message in Werkzeuge/);
+  assert.doesNotMatch(asked[0]!.messages.at(-1)!.content, /Capacités|Outils|Maison/);
 });

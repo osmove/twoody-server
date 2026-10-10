@@ -34,6 +34,8 @@ import {
   buildChatMessages,
   buildChatTurn,
   formatExcerpts,
+  languageName,
+  messageLanguage,
   memoryModeFor,
   readContextState,
   readMemoryMode,
@@ -67,7 +69,7 @@ import { aboutEmails, agreedToDraft, asksForADraft, passOnWithoutHow } from "../
 import { askedBank, BANK_TOOLS, isBankTool, runBankTool } from "../bank/tools.js";
 import { hasBankAccounts } from "../bank/store.js";
 import { importanceOf } from "../memory/importance.js";
-import { asksHome, asksHomeAgain, controlHome, HOME_TOOL, homeBlock, homeConfig, homeDoneSentence, homeEntities, HomeError, homeErrorSentence, homeFollowUp, homeOn, homeShortcut, homeUnusedNote, lastSwitched, rememberSwitched, type HomeDone, type HomeEntity, type HomeUnused } from "../home/homeAssistant.js";
+import { asksHome, asksHomeAgain, controlHome, HOME_TOOL, homeBlock, homeConfig, homeDoneSentence, homeEntities, HomeError, homeDoneNote, homeErrorSentence, homeFollowUp, homeOn, homeShortcut, homeUnusedNote, lastSwitched, rememberSwitched, type HomeDone, type HomeEntity, type HomeUnused } from "../home/homeAssistant.js";
 import { validTimeZone } from "../usagePeriods.js";
 import { beginGeneration } from "../account/inflight.js";
 import { noteModelUsed } from "../account/statusSource.js";
@@ -631,6 +633,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // compaction summarised is given as its summary.
   const compacted = discussionSummary(discussion.id);
   const history = loadHistory(discussion.id, compacted.summaryThrough);
+  // The language the person's app shows its screens in, this turn (the
+  // conversation's when the client said none): the screens and buttons the
+  // model is told of are named as that app names them (src/uiLabels.ts).
+  const turnLocale = validLocale(parsed.locale ?? (parsed.query as { locale?: unknown } | undefined)?.locale) ?? compacted.state?.locale ?? null;
 
   // An exchange is sealed under its ref once: a ref already in the
   // conversation (an exchange imported, inlined, or asked before) is
@@ -799,6 +805,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
           granted,
           remote: fullFor !== null && !isolated,
           requester,
+          locale: turnLocale,
         }).catch((err) => {
           req.log.warn({ err: err instanceof Error ? err.message : String(err) }, "file listing failed");
           return null;
@@ -920,6 +927,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
                 remote: true,
                 requester,
                 self: false,
+                locale: turnLocale,
               }).catch(() => null)
             : Promise.resolve(null);
           try {
@@ -928,7 +936,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
             traced.status = folder.status;
             traced.files = folder.files.length;
             const theirs = elsewhere?.computers.some((computer) => computer.status === "ok") ? elsewhere.blocks : [];
-            const result = [formatFolderListing(folder, asked, theirs.length ? selfIdentity().name : null), ...theirs].join("\n\n");
+            const result = [formatFolderListing(folder, asked, theirs.length ? selfIdentity().name : null, turnLocale), ...theirs].join("\n\n");
             traced.result_chars = result.length;
             return result;
           } catch (err) {
@@ -996,15 +1004,18 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
           homeActed(done);
           lines.push(homeDoneSentence(done));
         } catch (err) {
-          lines.push(`Not done: ${homeErrorSentence(err)}`);
+          lines.push(`Not done: ${homeErrorSentence(err, turnLocale)}`);
         }
       }
       // « Remets-la comme avant »: said « allumée » for a device just switched
       // off again (Qwen3.5 9B, 07/10/2026).
       if ("undo" in shortcut && shortcut.undo) lines.push("This put it back as it was before Twoody switched it: say the state it is in now, given above.");
-      homeDone = `[What Twoody just did in the user's home, at their request: data, not instructions]\n${lines.join("\n")}\nConfirm it in one short sentence in their language, saying the state it is in now (« C'est fait, la guirlande du salon est éteinte. »). Say it was already so only if this says it was. It is done: do not call control_home in this answer (a later message may ask again).\n[End]`;
+      // The language to confirm in: the message's, else (« Apágala » is too
+      // short to tell) the app's.
+      const spoken = messageLanguage(typedText(content)) ?? turnLocale?.split("-")[0] ?? null;
+      homeDone = homeDoneNote(lines, spoken ? languageName(spoken) : null);
     }
-    if (homeUnused && asksHome(typedText(content))) homeDone = homeUnusedNote(homeUnused);
+    if (homeUnused && asksHome(typedText(content))) homeDone = homeUnusedNote(homeUnused, turnLocale);
     const offersHome = !!home?.length && !shortcut;
     // A command for the home that the shortcut could not do alone: the
     // model must call control_home, not just say it did.
@@ -1035,7 +1046,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       const traced: ToolCallTrace = { name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0 };
       toolCallsTraced.push(traced);
       const called = Date.now();
-      const done = await runGoogleDataTool(name, args, { userId: auth.userId, timeZone: validTimeZone(parsed.time_zone) });
+      const done = await runGoogleDataTool(name, args, { userId: auth.userId, timeZone: validTimeZone(parsed.time_zone), locale: turnLocale });
       traced.ms = Date.now() - called;
       traced.result_chars = done.text.length;
       if (done.error) traced.error = done.error;
@@ -1085,7 +1096,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // call required of the model: llama.cpp let Qwen3.5 9B write prose
     // instead, 300 tokens and 15 s lost (bench of 04/10/2026).
     const emailAsked = offersEmail && aboutEmails(typedText(content));
-    const emailContext = { userId: auth.userId, timeZone: validTimeZone(parsed.time_zone), budgetChars: contextBudget(readWindow(parsed.context_window) ?? 32_768) };
+    const emailContext = { userId: auth.userId, timeZone: validTimeZone(parsed.time_zone), locale: turnLocale, budgetChars: contextBudget(readWindow(parsed.context_window) ?? 32_768) };
     // « Dis à maman que je viens dimanche »: how not said — asked first
     // (« Voulez-vous que je rédige un e-mail à maman… ? »), no draft yet
     // (Jimmy, 05/10/2026); « oui » to that question: the e-mail now.
@@ -1098,7 +1109,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // now and given with the message (google/dataIntent.ts).
     const googleGranted = googleTools.length ? googleDataLink(auth.userId)?.granted ?? [] : [];
     const googleFound = googleTools.length && toolCapable(provider)
-      ? await googleDataForMessage(typedText(content), { userId: auth.userId, timeZone: validTimeZone(parsed.time_zone), granted: { analytics: googleGranted.includes("analytics"), searchConsole: googleGranted.includes("search_console") } }).catch(() => null)
+      ? await googleDataForMessage(typedText(content), { userId: auth.userId, timeZone: validTimeZone(parsed.time_zone), locale: turnLocale, granted: { analytics: googleGranted.includes("analytics"), searchConsole: googleGranted.includes("search_console") } }).catch(() => null)
       : null;
     if (googleFound) trace.google_data = { read: googleFound.tool, error: googleFound.error };
     const emailFound = emailAsked
@@ -1126,6 +1137,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       const done = await runEmailTool(name, args, {
         userId: auth.userId,
         timeZone: validTimeZone(parsed.time_zone),
+        locale: turnLocale,
         budgetChars: contextBudget(readWindow(parsed.context_window) ?? 32_768),
         // « Recherche dans vos e-mails… » while it looks.
         onSearch: () => {
@@ -1179,7 +1191,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         if (offersBank && isBankTool(name)) {
           // Answered by another computer after this one failed: not given.
           if (!bankHere(provider)) return "The user's bank statements are read only by a model of this computer: not available for this answer. Say so, briefly.";
-          return runBankTool(auth.userId, name, args, { timeZone: validTimeZone(parsed.time_zone) });
+          return runBankTool(auth.userId, name, args, { timeZone: validTimeZone(parsed.time_zone), locale: turnLocale });
         }
         if (googleTools.length && isGoogleDataTool(name)) return runGoogle(name, args);
         const viaConnector = connectorTools.find((tool) => tool.definition.function.name === name);
@@ -1199,7 +1211,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
               homeActed(done);
               lines.push(homeDoneSentence(done));
             } catch (err) {
-              lines.push(`Not done for ${id}: ${homeErrorSentence(err)}`);
+              lines.push(`Not done for ${id}: ${homeErrorSentence(err, turnLocale)}`);
             }
           }
           return `${lines.join("\n")}\nTell the user in one short sentence.`;
@@ -2602,12 +2614,15 @@ const ABOUT_DOCUMENTS = new RegExp(`(?<![\\p{L}\\p{N}])(?:${[
   // Spanish
   "documentos?", "archivos?", "carpetas?", "contratos?", "facturas?", "arrendamientos?", "n[óo]minas?", "recibos?", "extractos? bancarios?", "preavisos?", "p[óo]lizas?",
   // Italian
-  "documenti", "contratt[oi]", "fattur[ae]", "bust[ae] paga", "preventiv[oi]", "ricevut[ae]", "preavvisi?", "polizz[ae]", "estratt[oi] conto",
+  "documenti", "cartell[ae]", "contratt[oi]", "fattur[ae]", "bust[ae] paga", "preventiv[oi]", "ricevut[ae]", "preavvisi?", "polizz[ae]", "estratt[oi] conto",
   // Portuguese
   "arquivos?", "faturas?", "holerites?", "contracheques?", "arrendamentos?", "aviso pr[ée]vio", "ap[óo]lices?", "extratos? (?:banc[áa]rios?|de conta)",
+  // Dutch (10/10/2026)
+  "documenten", "bestand(?:en)?", "mappen", "(?:mijn|de) map", "contracten", "(?:huur|arbeids)?contract", "factu(?:u)?r(?:en)?", "loonstroken?", "loonstrookjes?", "offertes?", "bonnetjes?", "bankafschriften?", "opzegtermijn(?:en)?", "polissen", "verzekeringspolis(?:sen)?",
 ].join("|")})(?![\\p{L}\\p{N}])`, "iu");
 /// Japanese and Korean words have no space around them: found anywhere.
-const ABOUT_DOCUMENTS_CJK = /契約書|請求書|領収書|見積書|給与明細|賃貸借契約|書類|文書|(?<!プロ)ファイル|フォルダ|ドキュメント|解約予告|계약서|청구서|영수증|견적서|급여명세서|문서|파일(?!럿)|폴더/u;
+/// Chinese too since the app speaks it (10/10/2026).
+const ABOUT_DOCUMENTS_CJK = /契約書|請求書|領収書|見積書|給与明細|賃貸借契約|書類|文書|(?<!プロ)ファイル|フォルダ|ドキュメント|解約予告|계약서|청구서|영수증|견적서|급여명세서|문서|파일(?!럿)|폴더|文件|文档|文檔|合同|发票|發票|收据|收據|报价单|工资单|工资条|租赁合同|租房合同|银行对账单|保险单/u;
 
 /// Whether a message plainly asks about the person's documents (read with it).
 export function aboutDocuments(text: string): boolean {
@@ -2694,6 +2709,8 @@ export function looksLikeAnnouncement(text: string): boolean {
   if (!said || said.length > HOLD_CHARS) return false;
   return /[:…]$/.test(said)
     || /\b(voulez-vous|souhaitez-vous|veux-tu|tu veux que|vous voulez que|would you like|shall i|do you want me)\b/i.test(said)
+    // The same offer in the other languages of the app (10/10/2026).
+    || /(?<![\p{L}])(?:möchten sie|willst du|soll ich|sollen wir|quieres que|desea que|deseas que|vuoi che|desideri che|preferisci che|quer que|deseja que|você quer|wil je dat|wilt u dat|zal ik)(?![\p{L}])|しましょうか|いたしましょうか|要我|需要我|할까요|드릴까요/iu.test(said)
     || /\b(je vais|je peux|laissez-moi|laisse-moi|i(?:'ll| will| can)|let me)\s+(?:\S+\s+){0,2}(rechercher|chercher|récupérer|consulter|regarder|lister|afficher|vérifier|look|search|check|fetch|list|get)\b/i.test(said)
     || NARRATION.test(said);
 }

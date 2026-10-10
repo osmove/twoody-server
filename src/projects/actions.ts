@@ -154,40 +154,89 @@ export function runAction(userId: string, name: string, args: Record<string, unk
 
 /// A message that asks for a reminder or a task outright: the model is made
 /// to call the tool (it said « rappel créé » without one, 2 times in 6 with
-/// Qwen3.5 9B, 01/10/2026).
-const ASKS_REMINDER = /\b(?:rappelle[- ]?moi|rappelle[- ]nous|fais[- ]moi penser|n'oublie pas de me rappeler|pense [àa] me rappeler|remind me|reminder to)\b/i;
-const ASKS_TASK = /\b(?:note que je dois|note[- ]moi de|ajoute (?:[àa] ma liste|une t[âa]che|dans mes t[âa]ches)|mets? (?:[çc]a )?dans mes t[âa]ches|add (?:a task|to my (?:to-?do|list|tasks)))\b/i;
+/// Qwen3.5 9B, 01/10/2026). In each language of the app (10/10/2026: only
+/// French and English were heard, « Erinnere mich morgen um 9… » was left
+/// to the model's own choice).
+const ASKS_REMINDER = new RegExp([
+  String.raw`(?<![\p{L}\p{N}])(?:rappelle[- ]?moi|rappelle[- ]nous|fais[- ]moi penser|n'oublie pas de me rappeler|pense [àa] me rappeler|remind me|reminder to|set a reminder)(?![\p{L}\p{N}])`,
+  String.raw`(?<![\p{L}\p{N}])(?:erinnere? (?:mich|uns)|erinnern sie (?:mich|uns)|(?:kannst du|könntest du|konntest du) mich (?:\S+ ){0,6}?erinnern|erinnerung (?:für|an|um)|stell(?:e)? (?:mir )?eine erinnerung)(?![\p{L}\p{N}])`,
+  String.raw`(?<![\p{L}\p{N}])(?:recu[ée]rd(?:a|e)me|recu[ée]rdanos|recordarme|(?:me )?(?:puedes|podr[íi]as) recordar|pon(?:me)? un recordatorio|crea un recordatorio)(?![\p{L}\p{N}])`,
+  String.raw`(?<![\p{L}\p{N}])(?:ricordami|ricordatemi|ricordarmi|ricordaci|mi (?:puoi|potresti) ricordare|(?:metti|imposta|crea) un promemoria)(?![\p{L}\p{N}])`,
+  String.raw`(?<![\p{L}\p{N}])(?:me lembr(?:e|a|ar)|lembr(?:e|a)-me|lembre a gente|(?:cria|crie|coloca|coloque) um lembrete)(?![\p{L}\p{N}])`,
+  String.raw`(?<![\p{L}\p{N}])(?:herinner (?:me|mij|ons)|(?:kun je|kan je|kunt u) (?:me|mij) (?:\S+ ){0,6}?herinneren|(?:zet|maak) een herinnering)(?![\p{L}\p{N}])`,
+  "リマインド|リマインダー|思い出させて|通知して",
+  "提醒我|提醒一下我|提醒下我|设(?:置)?(?:个|一个)?提醒|记得提醒",
+  "리마인드|리마인더|알림\\s?(?:을\\s?)?(?:설정|맞춰|해\\s?줘)|(?:라고|하라고|도록)\\s?(?:나한테\\s?|저한테\\s?)?알려\\s?(?:줘|주세요|줄래)",
+].join("|"), "iu");
+const ASKS_TASK = new RegExp([
+  String.raw`(?<![\p{L}\p{N}])(?:note que je dois|note[- ]moi de|ajoute (?:[àa] ma liste|une t[âa]che|dans mes t[âa]ches)|mets? (?:[çc]a )?dans mes t[âa]ches|add (?:a task|to my (?:to-?do|list|tasks)))(?![\p{L}\p{N}])`,
+  String.raw`(?<![\p{L}\p{N}])(?:notier(?:e)? (?:mir|dir),? dass ich|setz(?:e)? (?:\S+ ){0,3}?auf meine (?:liste|to-?do-?liste|aufgabenliste)|neue aufgabe|(?:füg|fug)(?:e)? (?:\S+ ){0,4}?(?:zu meinen aufgaben|zur (?:aufgaben)?liste) hinzu)(?![\p{L}\p{N}])`,
+  String.raw`(?<![\p{L}\p{N}])(?:(?:apunta|anota) que tengo que|(?:a[ñn]ade|agrega) (?:una tarea|a mi lista|a mis tareas)|nueva tarea)(?![\p{L}\p{N}])`,
+  String.raw`(?<![\p{L}\p{N}])(?:(?:annota|segna) che devo|aggiungi (?:un compito|un'attivit[àa]|alla mia lista|ai miei compiti|alle mie attivit[àa])|nuova attivit[àa])(?![\p{L}\p{N}])`,
+  String.raw`(?<![\p{L}\p{N}])(?:anot(?:a|e) que (?:eu )?(?:preciso|tenho que)|adicion(?:a|e) (?:uma tarefa|[àa] minha lista|nas minhas tarefas)|nova tarefa)(?![\p{L}\p{N}])`,
+  String.raw`(?<![\p{L}\p{N}])(?:noteer dat ik|zet (?:\S+ ){0,3}?op mijn (?:lijst|takenlijst|to-?do-?lijst)|voeg (?:\S+ ){0,4}?toe aan mijn (?:lijst|taken|takenlijst)|nieuwe taak)(?![\p{L}\p{N}])`,
+  "タスク(?:に|を)追加|(?:ToDo|TODO|やること)(?:リスト)?に(?:追加|入れて)",
+  "添加(?:一个)?任务|加(?:到|进)(?:我的)?(?:待办|任务)|新建任务|加个待办",
+  "할\\s?일(?:\\s?목록)?에\\s?추가|작업\\s?추가|투두에\\s?추가",
+].join("|"), "iu");
 
 export function askedAction(text: string): "create_reminder" | "create_task" | null {
-  const plain = text.replace(/[’‘ʼ]/g, "'");
+  const plain = text.normalize("NFC").replace(/[’‘ʼ]/g, "'");
   if (ASKS_REMINDER.test(plain)) return "create_reminder";
   if (ASKS_TASK.test(plain)) return "create_task";
   return null;
 }
 
+// The days in each language of the app (10/10/2026: « morgen », « mañana »,
+// « 明日 » were not read, and the model's own date was kept — Qwen3.5 9B
+// gets « vendredi » wrong). Matched on the text in lower case, NFC.
+const B = String.raw`(?<![\p{L}\p{N}])`;
+const E = String.raw`(?![\p{L}\p{N}])`;
+const day = (latin: string, cjk: string) => new RegExp(`${B}(?:${latin})${E}|${cjk}`, "u");
 const WEEKDAYS: Array<[RegExp, number]> = [
-  [/\b(?:dimanche|sunday)\b/i, 0], [/\b(?:lundi|monday)\b/i, 1], [/\b(?:mardi|tuesday)\b/i, 2], [/\b(?:mercredi|wednesday)\b/i, 3],
-  [/\b(?:jeudi|thursday)\b/i, 4], [/\b(?:vendredi|friday)\b/i, 5], [/\b(?:samedi|saturday)\b/i, 6],
+  [day("dimanche|sunday|sonntag|domingo|domenica|zondag", "日曜|星期日|星期天|周日|礼拜天|일요일"), 0],
+  [day("lundi|monday|montag|lunes|luned[iì]|segunda(?:-feira| feira)?|maandag", "月曜|星期一|周一|礼拜一|월요일"), 1],
+  [day("mardi|tuesday|dienstag|martes|marted[iì]|ter[çc]a(?:-feira| feira)?|dinsdag", "火曜|星期二|周二|礼拜二|화요일"), 2],
+  [day("mercredi|wednesday|mittwoch|mi[ée]rcoles|mercoled[iì]|quarta(?:-feira| feira)|woensdag", "水曜|星期三|周三|礼拜三|수요일"), 3],
+  [day("jeudi|thursday|donnerstag|jueves|gioved[iì]|quinta(?:-feira| feira)|donderdag", "木曜|星期四|周四|礼拜四|목요일"), 4],
+  [day("vendredi|friday|freitag|viernes|venerd[iì]|sexta(?:-feira| feira)?|vrijdag", "金曜|星期五|周五|礼拜五|금요일"), 5],
+  [day("samedi|saturday|samstag|sonnabend|s[áa]bado|sabato|zaterdag", "土曜|星期六|周六|礼拜六|토요일"), 6],
 ];
+const DATE_GIVEN = new RegExp([
+  String.raw`\b\d{1,2}(?:er)?\s+(?:janv|f[ée]vr|mars|avr|mai|juin|juil|ao[ûu]t|sept|oct|nov|d[ée]c)`,
+  String.raw`\b\d{1,2}\/\d{1,2}\b`,
+  String.raw`\b\d{1,2}\.\s?(?:\d{1,2}\.|jan|feb|f[äa]b|m[äa]r|apr|mai|jun|jul|aug|sep|okt|nov|dez)`,
+  String.raw`\b\d{1,2}\s+(?:de\s+)?(?:ene|feb|mar|abr|may|jun|jul|ago|sep|set|oct|out|nov|dic|dez|gen|mag|giu|lug|ott|jan|fev|mrt|mei|okt|dec)`,
+  String.raw`(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b`,
+  String.raw`\d{1,2}\s?月\s?\d{1,2}\s?[日号]|\d{1,2}\s?월\s?\d{1,2}\s?일`,
+].join("|"), "u");
+const NEXT_WEEK = /\b(?:semaine prochaine|next week|n[äa]chste woche|semana que viene|pr[óo]xima semana|semana que vem|prossima settimana|settimana prossima|volgende week)\b|来週|下周|下星期|下礼拜|다음\s?주/u;
+const DAY_AFTER = new RegExp(`${B}(?:apr[èe]s[- ]demain|day after tomorrow|[üu]bermorgen|pasado ma[ñn]ana|dopodomani|depois de amanh[ãa]|overmorgen)${E}|明後日|あさって|后天|後天|모레`, "u");
+// « heute Morgen », « esta mañana »: this morning, not tomorrow.
+const TOMORROW = new RegExp(`${B}(?:demain|tomorrow|(?<!heute |guten |am |jeden |diesen )morgen|(?<!esta |la |por la |de la |cada )ma[ñn]ana|morgen(?:ochtend|middag|avond)|domani|amanh[ãa])${E}|明日|あした|あす|明天|내일`, "u");
+const TODAY = new RegExp(`${B}(?:aujourd'hui|ce soir|cet apr[èe]s[- ]midi|today|tonight|heute|heute (?:abend|morgen|nachmittag)|hoy|esta (?:noche|tarde|ma[ñn]ana)|oggi|stasera|stamattina|hoje|esta noite|hoje [àa] noite|vandaag|vanavond|vanmiddag)${E}|今日|きょう|今夜|今晩|今天|今晚|今夜|오늘`, "u");
 
 /// The day the person named — « demain », « après-demain », « vendredi »
-/// (the next one) — as YYYY-MM-DD in their zone; null when they named none
-/// or gave a date of their own (« le 12 »), which the model reads.
+/// (the next one), and the same in each language of the app — as
+/// YYYY-MM-DD in their zone; null when they named none or gave a date of
+/// their own (« le 12 »), which the model reads.
 export function namedDay(text: string, timeZone: string | null, now = new Date()): string | null {
-  const plain = text.replace(/[’‘ʼ]/g, "'").toLowerCase();
-  if (/\b\d{1,2}(?:er)?\s+(?:janv|f[ée]vr|mars|avr|mai|juin|juil|ao[ûu]t|sept|oct|nov|d[ée]c)|\b\d{1,2}\/\d{1,2}\b/.test(plain)) return null;
+  const plain = text.normalize("NFC").replace(/[’‘ʼ]/g, "'").toLowerCase();
+  if (DATE_GIVEN.test(plain)) return null;
   const local = (at: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: timeZone ?? undefined, year: "numeric", month: "2-digit", day: "2-digit" }).format(at);
   const weekdayOf = (at: Date) => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(new Intl.DateTimeFormat("en-US", { timeZone: timeZone ?? undefined, weekday: "short" }).format(at));
   const plus = (days: number) => local(new Date(now.getTime() + days * 86_400_000));
-  if (/\bapr[èe]s[- ]demain\b|\bday after tomorrow\b/.test(plain)) return plus(2);
-  if (/\bdemain\b|\btomorrow\b/.test(plain)) return plus(1);
-  if (/\baujourd'hui\b|\bce soir\b|\bcet apr[èe]s[- ]midi\b|\btoday\b|\btonight\b/.test(plain)) return plus(0);
+  if (DAY_AFTER.test(plain)) return plus(2);
+  if (TOMORROW.test(plain)) return plus(1);
+  if (TODAY.test(plain)) return plus(0);
   for (const [pattern, weekday] of WEEKDAYS) {
     if (!pattern.test(plain)) continue;
     const today = weekdayOf(now);
     let ahead = (weekday - today + 7) % 7;
     if (ahead === 0) ahead = 7;
-    if (/\b(?:prochain|next)\b/.test(plain) && ahead < 7 && /\b(?:semaine prochaine|next week)\b/.test(plain)) ahead += 7;
+    // « 下周五 », « vendredi de la semaine prochaine »: that day of the week
+    // that starts next Monday — on a Saturday, six days ahead, not thirteen.
+    if (NEXT_WEEK.test(plain)) ahead = ((8 - today) % 7 || 7) + ((weekday + 6) % 7);
     return plus(ahead);
   }
   return null;

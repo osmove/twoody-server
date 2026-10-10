@@ -6,6 +6,8 @@ import { aliasLabel, aliasPaths, cloudAliasPaths, FOLDER_ALIAS_IDS, folderAliasI
 import { folderRisk } from "./folderRisk.js";
 import { spotlightDatesAdded, spotlightItems } from "./spotlight.js";
 import { asksNothing } from "./query.js";
+import { uiLabels } from "../uiLabels.js";
+import { CJK } from "../intentText.js";
 import { entryKind, skipDirectory, skipFile } from "./walk.js";
 
 // The files of the person's granted folders as the file system has them —
@@ -80,37 +82,66 @@ export interface ListingIntent {
   count: boolean;
 }
 
-const RECENT = /\b(plus recente?s?|derniers?|dernieres?|recemment|recente?s?|nouveaux?|nouvelles?|latest|newest|most recent|recent(ly)?|last)\b/;
-const OLDEST = /\b(plus anciens?|plus vieux|plus vieilles?|oldest|earliest)\b/;
-const LARGEST = /\b(plus gros|plus grosses?|plus lourds?|plus lourdes?|volumineux|volumineuses?|largest|biggest|heaviest)\b/;
-const SMALLEST = /\b(plus petits?|plus petites?|plus legers?|smallest|lightest)\b/;
-const COUNT = /\b(combien|nombre de|how many|number of|count)\b/;
-const LIST = /\b(liste[rz]?|listing|list|contenu|contient|contents?|qu'?y a.?t.?il|qu'?est.?ce qu'?il y a|what'?s in|what is in|which files|what files|quels (sont )?(les |mes )?fichiers|quelles? (sont )?(les |mes )?(images|photos|captures)|il y a quoi|j'?ai quoi|montre(-moi)?|show me)\b/;
-const FILE_WORDS = /\b(fichiers?|files?|dossiers?|folders?|telechargements?|downloads?|captures? d'?ecran|screenshots?|pdfs?|images?|photos?|dmg|videos?|installeurs?)\b/;
+// In each language of the app (10/10/2026: « Liste die Dateien auf meinem
+// Schreibtisch auf », « 列出我桌面上的文件 » were left to the model, which
+// asked for a keyword or answered from excerpts). Latin scripts with word
+// boundaries, Japanese, Chinese and Korean without.
+const RECENT = /\b(plus recente?s?|derniers?|dernieres?|recemment|recente?s?|nouveaux?|nouvelles?|latest|newest|most recent|recent(ly)?|last|neueste[nr]?|letzte[nr]?|zuletzt|mas recientes?|ultim[oa]s?|recientes?|piu recenti|ultim[oiae]|recenti|mais recentes?|nieuwste|laatste|recente)\b|最新|最近|新しい|최신|최근/;
+const OLDEST = /\b(plus anciens?|plus vieux|plus vieilles?|oldest|earliest|alteste[nr]?|mas antigu[oa]s?|mas viej[oa]s?|piu vecchi[oe]?|piu antich[ie]|mais antig[oa]s?|mais velh[oa]s?|oudste)\b|一番古い|最も古い|古い順|最旧|最早|最老|가장 오래된/;
+const LARGEST = /\b(plus gros|plus grosses?|plus lourds?|plus lourdes?|volumineux|volumineuses?|largest|biggest|heaviest|gro(?:ß|ss)te[nr]?|mas grandes?|mas pesad[oa]s?|piu grandi|piu pesanti|maiores|mais pesad[oa]s?|grootste)\b|一番大きい|最も大きい|大きい順|最大的|가장 큰/;
+const SMALLEST = /\b(plus petits?|plus petites?|plus legers?|smallest|lightest|kleinste[nr]?|mas pequen[oa]s?|piu piccol[ie]|menores|kleinste)\b|一番小さい|最も小さい|最小的|가장 작은/;
+const COUNT = /\b(combien|nombre de|how many|number of|count|wie viele|anzahl|cuant[oa]s|numero de|quant[ieo]|quantas|quantos|hoeveel|aantal)\b|いくつ|何個|何件|何枚|多少|几个|몇\s?개|개수/;
+const LIST = new RegExp([
+  String.raw`\b(liste[rz]?|listing|list|contenu|contient|contents?|qu'?y a.?t.?il|qu'?est.?ce qu'?il y a|what'?s in|what is in|which files|what files|quels (sont )?(les |mes )?fichiers|quelles? (sont )?(les |mes )?(images|photos|captures)|il y a quoi|j'?ai quoi|montre(-moi)?|show me)\b`,
+  String.raw`\b(liste|auflisten|aufzahlen|zeig(e|t)?( mir)?|was (ist|liegt|befindet sich) (auf|in|im)|welche dateien|inhalt)\b`,
+  String.raw`\b(lista|listar|enumera|muestrame|muestra|que hay (en|sobre)|que archivos|cuales (son )?(los |mis )?archivos|contenido)\b`,
+  String.raw`\b(elenca|elencami|lista|mostrami|cosa c'?e|quali file|contenuto)\b`,
+  String.raw`\b(lista|listar|liste|mostra|mostre|me mostra|o que (tem|ha)|quais (sao )?(os |meus )?arquivos|conteudo)\b`,
+  String.raw`\b(lijst|toon|laat (me )?zien|wat staat er|wat zit er|welke bestanden|inhoud)\b`,
+  "一覧|リスト|見せて|表示して|何がある|なにがある|中身|どんなファイル|列出|列一下|显示|看看|有什么|有哪些|목록|보여\\s?줘|나열|뭐가 있|무엇이 있|어떤 파일",
+].join("|"));
+const FILE_WORDS = /\b(fichiers?|files?|dossiers?|folders?|telechargements?|downloads?|captures? d'?ecran|screenshots?|pdfs?|images?|photos?|dmg|videos?|installeurs?|dateien?|ordner|bildschirmfotos?|bilder|fotos|archivos?|ficheros?|carpetas?|descargas?|capturas? de (pantalla|tela)|imagenes|cartell[ae]|immagini|arquivos?|pastas?|imagens|bestand(en)?|mappen?|schermafbeeldingen|afbeeldingen)\b|ファイル|フォルダ|ダウンロード|スクリーンショット|画像|写真|動画|文件|下载|截图|图片|照片|视频|파일|폴더|다운로드|스크린샷|사진|이미지|동영상/;
+/// Words that name files themselves, not what they say.
+const FILES_THEMSELVES = /\b(fichiers?|files?|telechargements?|downloads?|captures? d'?ecran|screenshots?|dateien?|bildschirmfotos?|archivos?|ficheros?|descargas?|capturas? de (pantalla|tela)|arquivos?|bestand(en)?|schermafbeeldingen)\b|ファイル|ダウンロード|スクリーンショット|文件|下载|截图|파일|다운로드|스크린샷/;
 /// A question about what files say, not about the files themselves.
-const ABOUT_CONTENT = /\b(sur le sujet|qui parlent?|parlant|mentionn\w*|concernant|au sujet|a propos|regarding|about the|that mention|which mention|qui dit|says?)\b/;
+const ABOUT_CONTENT = /\b(sur le sujet|qui parlent?|parlant|mentionn\w*|concernant|au sujet|a propos|regarding|about the|that mention|which mention|qui dit|says?|uber|die erwahnen|sobre el tema|que mencionan?|que hablan?|riguardo|che parlano|che menzionan?|sobre o assunto|que falam|que mencionam|over het|die gaan over)\b|について書|に関する|关于|提到|에 대한|에 관한/;
 
 const KIND_WORDS: Array<[RegExp, string]> = [
-  [/\b(captures? d'?ecran|screenshots?|screen shots?)\b/, "screenshot"],
-  [/\b(images?|photos?|pictures?|png|jpe?g|heic)\b/, "image"],
+  [/\b(captures? d'?ecran|screenshots?|screen shots?|bildschirmfotos?|capturas? de (pantalla|tela)|schermafbeeldingen)\b|スクリーンショット|スクショ|截图|截屏|스크린샷/, "screenshot"],
+  [/\b(images?|photos?|pictures?|png|jpe?g|heic|bilder|fotos|imagenes|immagini|imagens|afbeeldingen|foto's)\b|画像|写真|图片|照片|사진|이미지/, "image"],
   [/\bpdfs?\b/, "pdf"],
-  [/\b(tableurs?|spreadsheets?|excel|xlsx?|csv)\b/, "spreadsheet"],
-  [/\b(presentations?|slides?|powerpoint|pptx?|keynote)\b/, "presentation"],
-  [/\b(videos?|films?|movies?|mp4|mov)\b/, "video"],
-  [/\b(audios?|musiques?|music|mp3|sons?)\b/, "audio"],
+  [/\b(tableurs?|spreadsheets?|excel|xlsx?|csv|tabellen|hojas de calculo|fogli di calcolo|planilhas?|spreadsheets)\b|表計算|スプレッドシート|电子表格|表格|스프레드시트/, "spreadsheet"],
+  [/\b(presentations?|slides?|powerpoint|pptx?|keynote|prasentation(en)?|presentaciones|presentazioni|apresentac(ao|oes)|presentaties)\b|プレゼン|演示文稿|幻灯片|프레젠테이션/, "presentation"],
+  [/\b(videos?|films?|movies?|mp4|mov|video's)\b|動画|ビデオ|视频|影片|동영상|비디오/, "video"],
+  [/\b(audios?|musiques?|music|mp3|sons?|musik|musica)\b|音楽|音声|音乐|音频|음악|오디오/, "audio"],
   [/\b(archives? (zip|compressees?)|zip|rar|7z)\b/, "archive"],
-  [/\b(dmg|installeurs?|installers?|pkg|exe|msi|images? disque|disk images?)\b/, "installer"],
+  [/\b(dmg|installeurs?|installers?|pkg|exe|msi|images? disque|disk images?|installationsprogramm|instaladores?|programmi di installazione)\b/, "installer"],
   [/\b(documents? word|docx?|word)\b/, "document"],
 ];
 
-/// « le dossier Factures », « the Invoices folder », « dossier "Projets 2026" ».
+/// The word for a folder, after which a name may come: « dossier Factures »,
+/// « Ordner Rechnungen », « carpeta Facturas ».
+const FOLDER_WORD = String.raw`(?:dossier|repertoire|répertoire|folder|ordner|carpeta|cartella|pasta|map)`;
+/// « le dossier Factures », « the Invoices folder », « dossier "Projets 2026" »,
+/// « den Ordner Rechnungen », « la carpeta Facturas », « 「請求書」フォルダ »,
+/// « 发票文件夹 », « 청구서 폴더 ».
 function namedFolder(text: string): string | null {
-  const quoted = /(?:dossier|repertoire|folder)\s+[«"“']\s*([^»"”']{1,80}?)\s*[»"”']/i.exec(text);
+  const quoted = new RegExp(String.raw`${FOLDER_WORD}\s+[«"“'„]\s*([^»"”'“]{1,80}?)\s*[»"”'“]`, "i").exec(text);
   if (quoted) return quoted[1]!.trim();
-  const after = /(?:le|du|au|dans le|the) (?:dossier|répertoire|repertoire|folder)\s+([\p{L}\p{N}_][\p{L}\p{N}_ .&'’-]{0,60}?)(?=\s*(?:[?,.!;:]|$| sur | de mon | of my | on my | du mac| de l'?ordinateur))/iu.exec(text);
+  const quotedBefore = /[「『“"«]\s*([^」』”"»]{1,80}?)\s*[」』”"»]\s*(?:という|って|の)?\s*(?:フォルダ|文件夹|폴더)/u.exec(text);
+  if (quotedBefore) return quotedBefore[1]!.trim();
+  const after = new RegExp(String.raw`(?:le|du|au|dans le|the|den|dem|der|im|vom|la|en la|de la|nella|della|na|da|de|in de|van de) ${FOLDER_WORD}\s+([\p{L}\p{N}_][\p{L}\p{N}_ .&'’-]{0,60}?)(?=\s*(?:[?,.!;:]|$| sur | de mon | of my | on my | du mac| de l'?ordinateur| auf | in meinem | en mi | nel mio | no meu | op mijn ))`, "iu").exec(text);
   if (after) return after[1]!.trim();
   const before = /\bthe ([\p{L}\p{N}_][\p{L}\p{N}_ .&-]{0,60}?) folder\b/iu.exec(text);
   if (before) return before[1]!.trim();
+  // A German compound: « den Rechnungsordner » is too loose to read; « Ordner
+  // Rechnungen » above. Japanese, Chinese, Korean: the word just before
+  // « フォルダ », « 文件夹 », « 폴더 », the verbs and particles before it left out.
+  const cjk = /([\p{L}\p{N}_]{1,20}?)\s?(?:の)?(?:フォルダ|文件夹|폴더)/u.exec(text);
+  if (cjk) {
+    const name = cjk[1]!.replace(/^.*[をのにではがと、]/u, "").replace(/^(?:列出|列一下|显示|看看|看一下|打开|查看|告诉我|我的|在|把|里|中)+/u, "").replace(/(?:에|의|에서|안의|안에)$/u, "").trim();
+    if (name && !/^(?:デスクトップ|ダウンロード|桌面|下载|데스크탑|바탕화면|다운로드|文档|書類|문서)$/u.test(name)) return name;
+  }
   return null;
 }
 
@@ -130,11 +161,11 @@ export function listingIntent(text: string): ListingIntent | null {
   const named = folder ? null : namedFolder(text);
   // Without a folder, only a question about « fichiers » themselves, not
   // about what they say: « le document le plus récent sur le bail » is the index's.
-  if (!folder && !named && (!/\b(fichiers?|files?|telechargements?|downloads?|captures? d'?ecran|screenshots?)\b/.test(said) || ABOUT_CONTENT.test(said))) return null;
+  if (!folder && !named && (!FILES_THEMSELVES.test(said) || ABOUT_CONTENT.test(said))) return null;
   const kinds = [...new Set(KIND_WORDS.filter(([pattern]) => pattern.test(said)).map(([, kind]) => kind))];
   // « captures d'écran » is not « images » too.
   const narrowed = kinds.includes("screenshot") ? kinds.filter((kind) => kind !== "image") : kinds;
-  const singular = /\b(le|la|the) (fichier|file|plus|dernier|derniere|most|latest|newest|oldest|largest|biggest)\b/.test(said) && !/\b(les|des|files|fichiers|derniers|dernieres)\b/.test(said);
+  const singular = /\b(le|la|the) (fichier|file|plus|dernier|derniere|most|latest|newest|oldest|largest|biggest)\b|\b(die|der|das) (neueste|letzte|alteste|gro(?:ß|ss)te) datei\b|\bel (archivo|fichero) mas\b|\bel ultimo archivo\b|\bl'?ultimo file\b|\bil file piu\b|\bo (arquivo mais|ultimo arquivo)\b|\bhet (nieuwste|laatste|oudste|grootste) bestand\b/.test(said) && !/\b(les|des|files|fichiers|derniers|dernieres|dateien|archivos|arquivos|bestanden)\b/.test(said);
   return {
     folder,
     folderName: named,
@@ -159,20 +190,36 @@ const FOLLOW_UP_WORDS = new Set([
   "et", "alors", "aussi", "oui", "ok", "stp", "svp", "please", "regarde", "cherche", "va", "vas", "y", "voir", "synchronise", "synchro", "sync", "synced",
   "mac", "ordinateur", "pc", "computer", "chez", "moi", "pardon", "desole", "je", "voulais", "veux", "parler",
   "the", "in", "on", "my", "i", "said", "told", "you", "no", "not", "it", "s", "is", "folder", "and", "what", "about", "also", "mean", "meant", "from",
+  // German, Spanish, Italian, Portuguese, Dutch (10/10/2026)
+  "ich", "habe", "hab", "hatte", "gesagt", "sagte", "meinte", "nein", "doch", "aber", "auf", "dem", "den", "der", "die", "das", "im", "mein", "meinem", "meinen", "meine",
+  "ordner", "bitte", "ja", "schau", "nach", "dir", "du", "es", "ist", "computer", "rechner",
+  "dije", "dicho", "digo", "dicho", "el", "en", "mi", "mis", "carpeta", "si", "por", "favor", "pero", "mira", "busca", "lo", "te", "he", "ordenador",
+  "ti", "ho", "detto", "dicevo", "sulla", "sul", "nella", "nel", "mia", "mio", "cartella", "guarda", "cerca", "intendevo",
+  "eu", "disse", "falei", "na", "no", "em", "minha", "meu", "pasta", "nao", "olha", "procura", "quis", "dizer",
+  "zei", "gezegd", "bedoelde", "op", "het", "van", "mijn", "map", "nee", "kijk", "zoek", "maar", "ik", "heb",
 ]);
-const FOLDER_WORDS = /\b(bureau|desktop|telechargements?|telecharges|downloads?|documents|images|photos|pictures|icloud|drive|one|onedrive|google|dropbox|personnel|utilisateur|maison|home|directory)\b/g;
-const CANNOT_LIST = /\b(ne (?:peux|puis|parviens) pas|n'ai pas acces|impossible|pas en mesure|cannot|can't|unable|not able)\b.{0,120}\b(lister|list|acceder|access|voir|afficher|parcourir|browse|fichiers?|files?|dossiers?|folders?|bureau|desktop)\b/s;
+const FOLDER_WORDS = /\b(bureau|desktop|telechargements?|telecharges|downloads?|documents|images|photos|pictures|icloud|drive|one|onedrive|google|dropbox|personnel|utilisateur|maison|home|directory|schreibtisch|escritorio|scrivania|area|trabalho|bureaublad|descargas?|dokumente|documentos|documenti|documenten)\b/g;
+/// Japanese, Chinese, Korean: the folders, and what may stand around them in
+/// a message that only names one (« デスクトップだよ », « 我说的是桌面 »,
+/// « 바탕화면이라고 했잖아 »).
+const FOLDER_CJK = /デスクトップ|ダウンロード|書類|ドキュメント|ピクチャ|桌面|下载|文稿|文档|图片|데스크탑|데스크톱|바탕\s?화면|다운로드|문서|사진/g;
+const FOLLOW_UP_CJK = /いや|いいえ|違う|ちがう|って|言った|いった|でしょ|だよ|です|だ|の|に|で|ある|上|よ|ね|は|を|フォルダ|中|我说的是|我说|说的是|是|在|上|的|里|不是|不|吧|啊|呢|了|文件夹|中|이라고|라고|했잖아|했어|말했|에|있는|거|아니|아니고|요|이야|야|폴더|안|[?!.,、。！？\s]/g;
+const CANNOT_LIST = new RegExp(String.raw`\b(ne (?:peux|puis|parviens) pas|n'ai pas acces|impossible|pas en mesure|cannot|can't|unable|not able|kann (?:\S+ ){0,5}?nicht|keinen zugriff|nicht moglich|no puedo|no tengo acceso|non posso|non ho accesso|nao posso|nao consigo|nao tenho acesso|kan niet|geen toegang)\b.{0,120}\b(lister|list|acceder|access|voir|afficher|parcourir|browse|fichiers?|files?|dossiers?|folders?|bureau|desktop|auflisten|zugreifen|dateien|ordner|listar|acceder|archivos|carpetas?|elencare|accedere|file|cartell[ae]|arquivos|pastas?|bestanden|mappen?|bureaublad)\b`, "s");
+const CANNOT_LIST_CJK = /(?:できません|できない|無理|无法|不能|没有权限|할 수 없|접근할 수 없|불가능)[\s\S]{0,80}?(?:ファイル|フォルダ|一覧|アクセス|デスクトップ|文件|文件夹|访问|桌面|파일|폴더|접근|데스크탑)|(?:ファイル|フォルダ|一覧|アクセス|デスクトップ|文件|文件夹|访问|桌面|파일|폴더|접근|데스크탑)[\s\S]{0,80}?(?:できません|できない|无法|不能|할 수 없|불가능)/;
 
 /// The folder a short message names, and nothing else: « sur le bureau »,
-/// « non, dans le dossier Factures ». Null when it says more.
+/// « non, dans le dossier Factures », « nein, auf dem Schreibtisch »,
+/// « 桌面上 ». Null when it says more.
 export function namesOnlyAFolder(text: string): Pick<ListingIntent, "folder" | "folderName"> | null {
   const said = plain(text).replace(/[!?.,;:…()«»"“”-]+/g, " ").replace(/\s+/g, " ").trim();
   if (!said || said.length > 100) return null;
   const folder = folderAliasIn(text);
   const named = folder ? null : namedFolder(text);
   if (!folder && !named) return null;
-  const rest = said.replace(FOLDER_WORDS, " ").replace(named ? new RegExp(`\\b${plain(named).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g") : /$^/, " ");
-  const left = rest.split(/[\s']+/).filter((word) => word && !FOLLOW_UP_WORDS.has(word));
+  let rest = said.replace(FOLDER_WORDS, " ").replace(FOLDER_CJK, " ");
+  if (named) rest = rest.split(plain(named)).join(" ");
+  if (CJK.test(rest.replace(FOLLOW_UP_CJK, ""))) return null;
+  const left = rest.split(/[\s']+/).filter((word) => word && !CJK.test(word) && !FOLLOW_UP_WORDS.has(word));
   return left.length <= 1 ? { folder, folderName: named } : null;
 }
 
@@ -199,7 +246,7 @@ export function folderFollowUp(text: string, earlier: string[], lastAnswer: stri
     // still the same request. Anything else: another subject.
     if (!asksNothing(message) && !namesOnlyAFolder(message)) break;
   }
-  if (!asked && !(lastAnswer && CANNOT_LIST.test(plain(lastAnswer)))) return null;
+  if (!asked && !(lastAnswer && (CANNOT_LIST.test(plain(lastAnswer)) || CANNOT_LIST_CJK.test(plain(lastAnswer))))) return null;
   return { sort: asked?.sort ?? "recent", kinds: asked?.kinds ?? [], limit: asked?.limit ?? 15, count: asked?.count ?? false, ...named };
 }
 
@@ -545,27 +592,37 @@ const SORT_WORDS: Record<ListingSort, string> = {
   name: "by name",
 };
 
-/// How to grant a folder, for the model to tell the person.
-export const HOW_TO_GRANT =
-  "To give Twoody access, they open Documents in the Twoody app on that computer and add the folder (« Ajouter un dossier », or the one-click shortcut such as « Téléchargements », « Bureau » or « iCloud Drive »).";
+/// How to grant a folder, for the model to tell the person — the screen and
+/// buttons as their app names them (src/uiLabels.ts; 10/10/2026: « Ajouter
+/// un dossier » told to a German person).
+export function howToGrant(locale: string | null = null): string {
+  const labels = uiLabels(locale);
+  return `To give Twoody access, they open ${labels.documents} in the Twoody app on that computer and add the folder (« ${labels.addFolder} », or the one-click shortcut such as « ${labels.downloads} », « ${labels.desktop} » or « ${labels.icloud} »). Name these exactly as written here.`;
+}
+
+/// Where the folders a conversation may read are chosen, as the app names it.
+export function howToSelect(locale: string | null = null): string {
+  const labels = uiLabels(locale);
+  return `They can select it in ${labels.tools} → ${labels.documents}, under the message field.`;
+}
 
 /**
  * One listing as the model reads it. `computer`: the computer it was made
  * on, named when several of the person's computers take part.
  */
-export function formatListing(listing: Listing, intent: Pick<ListingIntent, "sort" | "kinds" | "count">, computer: string | null = null): string {
+export function formatListing(listing: Listing, intent: Pick<ListingIntent, "sort" | "kinds" | "count">, computer: string | null = null, locale: string | null = null): string {
   const on = computer ? ` on ${computer}` : "";
   if (listing.status !== "ok") {
     const why = {
       not_granted: `is not among the folders the user granted to Twoody${on}, so it cannot be read`,
-      not_selected: `is granted${on} but not among the folders selected for this conversation (the Documents button under the message field)`,
+      not_selected: `is granted${on} but not among the folders selected for this conversation`,
       missing: `does not exist${on}, or is not inside a granted folder`,
       none: `cannot be read: no folder is granted to Twoody${on}`,
     }[listing.status];
     return (
       `[File listing] The user asked about ${listing.label}, which ${why}. Say so plainly, in their language. ` +
       "Do not answer with files or excerpts from other folders, even folders with the same name. " +
-      (listing.status === "not_selected" ? "They can select it with the Documents button." : HOW_TO_GRANT) +
+      (listing.status === "not_selected" ? howToSelect(locale) : howToGrant(locale)) +
       "\n[End of file listing]"
     );
   }

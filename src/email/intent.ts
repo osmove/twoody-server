@@ -11,6 +11,9 @@
 const PATTERNS: RegExp[] = [
   // The mail itself: « mes e-mails », « un courriel », « ma boîte mail », « inbox ».
   /(?<![\p{L}\p{N}])(?:e-?mails?|courriels?|mails?|inbox|bo[iî]te (?:mail|aux lettres|de r[ée]ception)|messagerie)(?![\p{L}\p{N}])/iu,
+  // …and in the other languages of the app (10/10/2026): « meine E-Mails »,
+  // « mis correos », « la mia posta », « 我的邮件 », « 받은 편지함 ».
+  /(?<![\p{L}\p{N}])(?:e-?mail-?(?:postfach|adresse)?|posteingang|correos?(?: electr[óo]nicos?)?|bandeja de entrada|(?:la mia|nella mia|nella) posta|posta in arrivo|caixa de entrada|postvak(?: in)?|inbox)(?![\p{L}\p{N}])|メール|受信トレイ|邮件|郵件|收件箱|이메일|메일|받은\s?편지함/iu,
   // Someone wrote, sent, asked, answered: « René m'a écrit », « ce que Claire m'a demandé ».
   /(?<![\p{L}\p{N}])m['’]\s?(?:a|ont|avait|avaient|aurait)\s+(?:bien\s+)?(?:[ée]crit|envoy[ée]|r[ée]pondu|demand[ée]|transmis|relanc[ée]|propos[ée]|r[ée]clam[ée])/iu,
   /(?<![\p{L}\p{N}])(?:did|has|have)\s+(?!you\b|i\b)[\p{L}\p{N}'’.\- ]{1,40}?\s+(?:written|wrote|write|sent|send|asked|ask|emailed|e-mailed|mailed)\s+(?:me|us|to me|to us|back|anything|something)\b/iu,

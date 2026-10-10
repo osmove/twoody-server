@@ -8,7 +8,8 @@ import {
   filesUnder,
   findNamedFolders,
   formatSize,
-  HOW_TO_GRANT,
+  howToGrant,
+  howToSelect,
   LISTING_KINDS,
   LISTING_SORTS,
   matchesKinds,
@@ -79,23 +80,59 @@ export function readFolderRequest(args: Record<string, unknown>): FolderRequest 
 }
 
 /// The usual folders by the name the model or the person gives them alone
-/// (« Bureau », « Téléchargements », « iCloud Drive »), or null.
+/// (« Bureau », « Téléchargements », « iCloud Drive »), in each language of
+/// the app (« Schreibtisch », « Escritorio », « デスクトップ », « 桌面 »:
+/// the model passes on the person's word, 10/10/2026), or null.
 export function aliasNamed(name: string): FolderAliasId | null {
   const said = plain(name)
-    .replace(/[«»"“”]/g, "")
-    .replace(/^(?:(?:mon|ma|mes|le|la|les|my|the|dossier|folder|repertoire)\s+)+/, "")
-    .replace(/\s+(?:folder|directory)$/, "")
+    .replace(/[«»"“”「」『』]/g, "")
+    .replace(/^(?:(?:mon|ma|mes|le|la|les|my|the|dossier|folder|repertoire|mein|meine|meinen|meinem|der|die|das|den|dem|ordner|mi|mis|el|carpeta|il|lo|mio|mia|cartella|o|a|meu|minha|pasta|mijn|de|het|map)\s+)+/, "")
+    .replace(/(?:\s+(?:folder|directory|ordner)|-?ordner|\s?フォルダ|\s?文件夹|\s?폴더)$/, "")
+    .replace(/^(?:私の|我的|내\s)/, "")
     .trim();
   const names: Record<string, FolderAliasId> = {
     bureau: "desktop",
     desktop: "desktop",
+    schreibtisch: "desktop",
+    escritorio: "desktop",
+    scrivania: "desktop",
+    "area de trabalho": "desktop",
+    bureaublad: "desktop",
+    デスクトップ: "desktop",
+    桌面: "desktop",
+    데스크탑: "desktop",
+    데스크톱: "desktop",
+    바탕화면: "desktop",
+    "바탕 화면": "desktop",
     telechargements: "downloads",
     telechargement: "downloads",
     downloads: "downloads",
     download: "downloads",
+    descargas: "downloads",
+    ダウンロード: "downloads",
+    下载: "downloads",
+    下載: "downloads",
+    다운로드: "downloads",
     documents: "documents",
+    dokumente: "documents",
+    documentos: "documents",
+    documenti: "documents",
+    documenten: "documents",
+    書類: "documents",
+    ドキュメント: "documents",
+    文稿: "documents",
+    文档: "documents",
+    문서: "documents",
     images: "pictures",
     pictures: "pictures",
+    bilder: "pictures",
+    imagenes: "pictures",
+    immagini: "pictures",
+    imagens: "pictures",
+    afbeeldingen: "pictures",
+    ピクチャ: "pictures",
+    图片: "pictures",
+    사진: "pictures",
     icloud: "icloud",
     "icloud drive": "icloud",
     onedrive: "onedrive",
@@ -109,11 +146,20 @@ export function aliasNamed(name: string): FolderAliasId | null {
     personnel: "home",
     "dossier utilisateur": "home",
     "home folder": "home",
+    "home-ordner": "home",
+    benutzerordner: "home",
+    "carpeta personal": "home",
+    "cartella home": "home",
+    "pasta pessoal": "home",
+    thuismap: "home",
+    ホーム: "home",
+    主文件夹: "home",
+    홈: "home",
   };
   if (names[said]) return names[said]!;
   // « le bureau sur iCloud Drive », « Desktop on iCloud »: the Desktop, synced.
-  const synced = /^(bureau|desktop|documents) (?:sur|on|in|dans|de|d'|from) ?(?:mon |my )?icloud(?: drive)?$/.exec(said);
-  if (synced) return synced[1] === "documents" ? "documents" : "desktop";
+  const synced = /^(bureau|desktop|schreibtisch|escritorio|scrivania|area de trabalho|bureaublad|documents|dokumente|documentos|documenti|documenten) (?:sur|on|in|dans|de|d'|from|auf|en|su|no|em|op|im|von) ?(?:mon |my |meinem |mi |mio |meu |mijn )?icloud(?: drive)?$/.exec(said);
+  if (synced) return /^do[ck]ument/.test(synced[1]!) ? "documents" : "desktop";
   return null;
 }
 
@@ -431,16 +477,16 @@ const SORT_WORDS: Record<ListingSort, string> = {
 };
 
 /// A listing as the model reads it: data, not instructions.
-export function formatFolderListing(listing: FolderListing, request: Pick<FolderRequest, "sort" | "kinds">, computer: string | null = null): string {
+export function formatFolderListing(listing: FolderListing, request: Pick<FolderRequest, "sort" | "kinds">, computer: string | null = null, locale: string | null = null): string {
   const on = computer ? ` on ${computer}` : "";
   const asked = `« ${listing.asked.slice(0, 200)} »`;
   if (listing.status !== "ok") {
     const granted = listing.roots?.length ? ` The granted folders${on} are: ${listing.roots.join(", ")} (and every folder inside them).` : "";
     const why = {
-      not_granted: `${asked} is not inside the folders the user granted to Twoody${on}, so it cannot be listed. ${HOW_TO_GRANT}`,
-      not_selected: `${asked} is granted${on} but not among the folders selected for this conversation; they can select it with the Documents button.`,
+      not_granted: `${asked} is not inside the folders the user granted to Twoody${on}, so it cannot be listed. ${howToGrant(locale)}`,
+      not_selected: `${asked} is granted${on} but not among the folders selected for this conversation. ${howToSelect(locale)}`,
       missing: `No folder ${asked} was found inside the granted folders${on}.${granted} Try list_files on a granted folder or on a likely parent folder to look around, or say that the folder was not found.`,
-      none: `No folder is granted to Twoody${on}. ${HOW_TO_GRANT}`,
+      none: `No folder is granted to Twoody${on}. ${howToGrant(locale)}`,
     }[listing.status];
     return `[Folder listing] ${why}\n[End of folder listing]`;
   }
