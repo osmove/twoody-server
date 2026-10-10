@@ -151,11 +151,12 @@ joignable : son ordinateur est éteint ou hors ligne. »
 
 What the code fixed where this contract left it open; the Desktop follows it.
 
-- **Pre-check.** The worker calls `serve` twice: first with `op: null`, before the sealed request is opened (checks
+- **Pre-check.** The worker calls `serve` twice: first with `op: {op: "check"}` (null is accepted too), before the
+  sealed request is opened (checks
   1–6 of `src/shares/policy.ts`: share, expiry, folder, Documents, grantee, device), then with the opened body. A
   refusal at the first call fails the task with `share_refused:<error>` (nothing can be sealed to an unopened
   request); nothing is decrypted and the request id is not spent. Main forwards both payloads to
-  `POST /local_shares/serve` unchanged; the answer to `op: null` is `{ok: true}` or `{ok: false, error}`.
+  `POST /api/v1/local_shares/serve` unchanged; the answer to the check is `{ok: true}` or `{ok: false, error}`.
 - **Serve payload**: `{share_uuid, grantee_user_id, guest: {enc_public, sign_public}, op}`; `grantee_user_id` is the
   principal's `grantee_id` (for an organization share, the requesting member). Always HTTP 200 with the §2 JSON for
   this computer's app; 403 `desktop_app_only` for any other session; body ≤ 64 KB.
@@ -174,8 +175,11 @@ What the code fixed where this contract left it open; the Desktop follows it.
 - **Routes' shapes**: `Local` = {id, folder_id, folder_name, kind, grantee_user_id, grantee_name, organization_id,
   organization_name, label, right, expires_at, created_at, updated_at, revision, revoked_at, revoked_by, published_at,
   status: active|revoked|expired|stopped, stopped_reason}, times ISO 8601, no path. `Device` = {grantee_user_id,
-  fingerprint, enc_public, sign_public, state, first_seen_at, last_seen_at, approved_at, verified_at} (the Desktop
-  computes the safety number). DELETE answers 200 {share}. The approve/refuse/verify routes answer {device}. `sync`
+  fingerprint, enc_public, sign_public, state, first_seen_at, last_seen_at, approved_at, verified_at, safety_number,
+  name_hint} — `safety_number` from this computer's sealed-turn identity (the in-process bridge's, or the Desktop
+  worker's key file next to the server's data folder, `TWOODY_COMPUTE_KEYS_PATH` otherwise), null when it cannot be
+  read; `name_hint` null until a name is relayed. The audit answers `{audit: [...]}`. Every route is served at the
+  root and under `/api/v1`. DELETE answers 200 {share}. The approve/refuse/verify routes answer {device}. `sync`
   puts in `republish` every active, unexpired share absent from the account, published before or not.
   `share_guest_devices` carries `user_id` (unique on user, grantee, fingerprint).
 - **Grantee side**: `share-call` results may carry `share: {label, owner_name}` in the result or beside an error;

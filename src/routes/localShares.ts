@@ -1,5 +1,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { dirname, join } from "node:path";
 import { requireAuth } from "../auth.js";
+import { safetyNumber } from "../compute/computeSeal.js";
+import { DATA_DIR } from "../db.js";
+import { shareHostIdentity, type HostIdentity } from "../shares/hostIdentity.js";
 import { folderName, listFolders } from "../documents/library.js";
 import { capabilityOn } from "../localCapabilities.js";
 import { meshRequester } from "../sessionTrust.js";
@@ -40,9 +44,9 @@ import { isThisComputersApp } from "./usage.js";
 //   POST   /local_shares/devices/approve      {grantee_user_id, fingerprint} → {device: Device}
 //   POST   /local_shares/devices/refuse       the same
 //   POST   /local_shares/devices/verify       the same (safety numbers compared: approved too)
-//   GET    /local_shares/audit?share_id=&before=&limit=   [{id, at, share_id, guest_user_id, guest_fingerprint, op, outcome}]
+//   GET    /local_shares/audit?share_id=&before=&limit=   {audit: [{id, at, share_id, guest_user_id, guest_fingerprint, op, outcome}]}
 //   POST   /local_shares/serve                {share_uuid, grantee_user_id, guest: {enc_public, sign_public}, op}
-//                                              → the answer of §2; `op` null: the check made before opening
+//                                              → the answer of §2; `op` {op: "check"}: the check made before opening
 //
 // For the owner only: this computer's app, or one of the person's own
 // devices (sessionTrust.ts meshRequester) — never a household member's
@@ -87,7 +91,17 @@ function localShare(userId: string, share: ShareRow, folders: ReturnType<typeof 
   };
 }
 
-function localDevice(device: GuestDeviceRow) {
+/// Where the Desktop's bridge worker keeps this computer's keys: next to its
+/// bridge device id, in the app's data folder, which holds this server's.
+const desktopKeyFile = (process as unknown as { parentPort?: unknown }).parentPort ? join(dirname(DATA_DIR), "compute-keys.json") : null;
+
+function localDevice(device: GuestDeviceRow, host: HostIdentity | null) {
+  let safety: string | null = null;
+  try {
+    safety = host ? safetyNumber(host, { encPublic: device.enc_public, signPublic: device.sign_public }) : null;
+  } catch {
+    safety = null;
+  }
   return {
     grantee_user_id: device.grantee_user_id,
     fingerprint: device.fingerprint,
@@ -98,6 +112,11 @@ function localDevice(device: GuestDeviceRow) {
     last_seen_at: iso(device.last_seen_at),
     approved_at: iso(device.approved_at),
     verified_at: iso(device.verified_at),
+    // The number both people compare (« Comparer les numéros de sécurité »);
+    // null while this computer's identity cannot be read here.
+    safety_number: safety,
+    // A name the grantee's device gave itself: none is relayed yet.
+    name_hint: null,
   };
 }
 
@@ -131,7 +150,8 @@ export async function localShareRoutes(app: FastifyInstance) {
       const auth = await owner(req, reply);
       if (!auth) return;
       const folders = listFolders(auth.userId);
-      return reply.send({ shares: sharesOf(auth.userId).map((share) => localShare(auth.userId, share, folders)), devices: guestDevices(auth.userId).map(localDevice) });
+      const host = shareHostIdentity(desktopKeyFile);
+      return reply.send({ shares: sharesOf(auth.userId).map((share) => localShare(auth.userId, share, folders)), devices: guestDevices(auth.userId).map((device) => localDevice(device, host)) });
     },
   });
 
@@ -234,7 +254,7 @@ export async function localShareRoutes(app: FastifyInstance) {
         if (!granteeUserId || !fingerprint) return invalid(reply, "invalid_device");
         const device = decideGuestDevice(auth.userId, granteeUserId, fingerprint, decision);
         if (!device) return reply.code(404).send({ error: "not_found" });
-        return reply.send({ device: localDevice(device) });
+        return reply.send({ device: localDevice(device, shareHostIdentity(desktopKeyFile)) });
       },
     });
   }
@@ -249,7 +269,7 @@ export async function localShareRoutes(app: FastifyInstance) {
       const before = req.query.before === undefined ? undefined : Number(req.query.before);
       const limit = req.query.limit === undefined ? undefined : Number(req.query.limit);
       if ((before !== undefined && !(Number.isInteger(before) && before > 0)) || (limit !== undefined && !(Number.isInteger(limit) && limit > 0))) return invalid(reply, "invalid_page");
-      return reply.send(shareAudit(auth.userId, { shareId, before, limit }));
+      return reply.send({ audit: shareAudit(auth.userId, { shareId, before, limit }) });
     },
   });
 

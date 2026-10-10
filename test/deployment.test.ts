@@ -20,6 +20,7 @@ const NOT_FOR_A_HUMAN = new Set([
   "TWOODY_RUNTIME_KEYS", // the desktop mints one per launch and sends it by message
   "TWOODY_DEVICE_TOKEN", // the app that owns the session supplies it
   "TWOODY_SPEECH_HELPER", // Twoody Desktop names its Mac speech helper (native/speech)
+  "TWOODY_COMPUTE_KEYS_PATH", // where a bridge worker run apart keeps its keys (shares/hostIdentity.ts); the Desktop's is found by itself
   "TWOODY_DEVICE_MIN_SHA",
   "TWOODY_DEVICE_UPDATES_BLOCKED",
   "TWOODY_MCP_URL",

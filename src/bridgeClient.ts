@@ -39,6 +39,7 @@ import { createDeltaRelay } from "./executors/completionStream.js";
 import { executeBridgeTask, isSelfBridgeKind, tesseractReady, whisperReady } from "./executors/index.js";
 import { configuredDefaultModel, downloadedModels } from "./executors/localModels.js";
 import { outboundFetch } from "./outbound.js";
+import { registerShareHostIdentity } from "./shares/hostIdentity.js";
 
 /// What a worker that serves requests on shared folders declares.
 export const FOLDER_SHARE_CAPABILITY = "folder-share-provider";
@@ -282,6 +283,12 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   const computeHost = servesLlm || opts.serveShare
     ? createComputeHost({ path: opts.computeKeysPath ?? join(dirname(opts.deviceIdPath ?? join(homedir(), ".twoody-server", "bridge-device-id")), "compute-keys.json") })
     : null;
+  // The safety numbers of the grantees' devices are computed with this
+  // identity (GET /local_shares), when the server runs in this process.
+  if (computeHost && opts.serveShare) registerShareHostIdentity(() => {
+    const { identity } = computeHost.publicKeys();
+    return { encPublic: identity.enc_public, signPublic: identity.sign_public };
+  });
   let computeKeysPublished = false;
   let computeKeysCheckedAt = 0;
   let computeKeysRefusedUntil = 0;

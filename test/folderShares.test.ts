@@ -45,7 +45,7 @@ async function serve(payload: Record<string, unknown>) {
 async function sharedWithClaire(right: "ask" | "read" = "read", extra: Record<string, unknown> = {}) {
   const made = await share({ folder_id: "f-contracts", kind: "person", grantee_user_id: 42, grantee_name: "Claire", right, ...extra });
   const claire = device();
-  await serve({ share_uuid: made.id, grantee_user_id: "42", guest: claire.guest, op: null });
+  await serve({ share_uuid: made.id, grantee_user_id: "42", guest: claire.guest, op: { op: "check" } });
   await approve("42", claire.fingerprint);
   return { made, claire, ask: (op: unknown, granteeUserId = "42") => serve({ share_uuid: made.id, grantee_user_id: granteeUserId, guest: claire.guest, op }) };
 }
@@ -142,7 +142,7 @@ test("attack 1: a forged share (unknown uuid) is refused and audited; a malforme
   const claire = device();
   const forged = randomUUID();
   assert.deepEqual(await serve({ share_uuid: forged, grantee_user_id: "42", guest: claire.guest, op: { op: "search", query: "loyer" } }), { ok: false, error: "unknown_share" });
-  assert.deepEqual(await serve({ share_uuid: forged, grantee_user_id: "42", guest: claire.guest, op: null }), { ok: false, error: "unknown_share" });
+  assert.deepEqual(await serve({ share_uuid: forged, grantee_user_id: "42", guest: claire.guest, op: { op: "check" } }), { ok: false, error: "unknown_share" });
   assert.deepEqual(auditOf(forged).map((row) => row.outcome), ["unknown_share", "unknown_share"]);
   assert.deepEqual(await serve({ share_uuid: "../../etc", grantee_user_id: "42", guest: claire.guest, op: null }), { ok: false, error: "unknown_share" });
   assert.deepEqual(await serve({ share_uuid: forged, grantee_user_id: "42", guest: { enc_public: "zz", sign_public: "00" }, op: null }), { ok: false, error: "bad_request" });
@@ -159,6 +159,8 @@ test("attack 2: a key the account adds to the grantee is pending, refused until 
   const devices = (await app.inject({ method: "GET", url: "/local_shares", headers: ownerHeaders })).json().devices;
   const pending = devices.find((d: { fingerprint: string }) => d.fingerprint === added.fingerprint);
   assert.equal(pending.state, "pending");
+  assert.equal(pending.safety_number, null, "this computer's identity is not known in this process");
+  assert.equal(pending.name_hint, null);
   assert.equal(pending.grantee_user_id, "42");
   assert.equal(auditOf(made.id).at(-1)!.outcome, "device_pending");
 
@@ -184,7 +186,7 @@ test("attack 4: another grantee named by the account — the share is not theirs
   // Bob (43) has a device approved, for a share of his own.
   const bobShare = await share({ folder_id: "f-contracts", kind: "person", grantee_user_id: "43", right: "ask" });
   const bob = device();
-  await serve({ share_uuid: bobShare.id, grantee_user_id: "43", guest: bob.guest, op: null });
+  await serve({ share_uuid: bobShare.id, grantee_user_id: "43", guest: bob.guest, op: { op: "check" } });
   await approve("43", bob.fingerprint);
 
   // Claire's share asked as Bob, with Bob's approved device: not his.
@@ -336,8 +338,9 @@ test("the audit says who asked what and how it went, newest first, by share — 
   await ask({ op: "browse", path: "" });
   const response = await app.inject({ method: "GET", url: `/local_shares/audit?share_id=${made.id}`, headers: ownerHeaders });
   assert.equal(response.statusCode, 200);
-  const entries = response.json() as Array<{ op: string; outcome: string; share_id: string; guest_user_id: string; guest_fingerprint: string; at: string }>;
+  const entries = response.json().audit as Array<{ op: string; outcome: string; share_id: string; guest_user_id: string; guest_fingerprint: string; at: string }>;
   assert.deepEqual(entries.slice(0, 2).map((e) => [e.op, e.outcome]), [["browse", "right"], ["search", "ok"]]);
+  assert.ok(Array.isArray(entries));
   assert.ok(entries.every((e) => e.share_id === made.id && e.guest_user_id === "42" && /^[0-9a-f-]{24}$/.test(e.guest_fingerprint) && !Number.isNaN(Date.parse(e.at))));
   assert.ok(!response.body.includes("préavis"));
   assert.equal((await app.inject({ method: "GET", url: "/local_shares/audit?share_id=../x", headers: ownerHeaders })).statusCode, 422);

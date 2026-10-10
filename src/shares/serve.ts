@@ -83,11 +83,22 @@ const insideAny = (folders: string[], path: string) => folders.some((folder) => 
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 });
 
+/// The check made before a request is opened: `{op: "check"}` as the bridge
+/// worker sends it (the Desktop's main process passes on an object only),
+/// or null.
+function isCheck(op: unknown): boolean {
+  if (op === null) return true;
+  return !!op && typeof op === "object" && !Array.isArray(op) && Object.keys(op).length === 1 && (op as { op?: unknown }).op === "check";
+}
+
 /**
  * Serves one request. `payload` is what the bridge worker hands over:
  * {share_uuid, grantee_user_id, guest: {enc_public, sign_public}, op}; `op`
- * null is the check made before the request is opened (checks 1–6 of
- * policy.ts), which answers {ok: true} or the refusal.
+ * {op: "check"} (or null) is the check made before the request is opened
+ * (checks 1–6 of policy.ts), which answers {ok: true} or the refusal.
+ * A guest who seals « check » as its body gets that same {ok: true}: the
+ * two calls look alike once the Desktop passed them on, and a check reads
+ * nothing.
  */
 export async function serveShareRequest(userId: string, payload: unknown, now = Date.now()): Promise<ShareAnswer> {
   const record = payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : null;
@@ -99,7 +110,7 @@ export async function serveShareRequest(userId: string, payload: unknown, now = 
   const audit = (op: string, outcome: string) =>
     recordShareAccess(userId, { shareId: request.shareUuid, guestUserId: request.granteeUserId, guestFingerprint: request.guest.fingerprint, op, outcome, at: now });
 
-  if (record.op === null || record.op === undefined) {
+  if (record.op === undefined || isCheck(record.op)) {
     const verdict = checkShareRequest(userId, request, null, now);
     if (!verdict.ok) {
       audit("request", verdict.outcome);

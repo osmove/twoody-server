@@ -46,7 +46,7 @@ const hostPublic = { encPublic: hostKeys.identity.enc_public, signPublic: hostKe
 const claire = createComputeIdentity();
 const claireKey = { enc_public: publicIdentity(claire).encPublic, sign_public: publicIdentity(claire).signPublic };
 const contrats = await share({ folder_id: "f-contracts", kind: "person", grantee_user_id: "42", grantee_name: "Claire", right: "read" });
-await serveShareRequest(user.id, { share_uuid: contrats.id, grantee_user_id: "42", guest: claireKey, op: null });
+await serveShareRequest(user.id, { share_uuid: contrats.id, grantee_user_id: "42", guest: claireKey, op: { op: "check" } });
 await app.inject({ method: "POST", url: "/local_shares/devices/approve", headers: ownerHeaders, payload: { grantee_user_id: "42", fingerprint: identityFingerprint(publicIdentity(claire)) } });
 
 let sealedCount = 0;
@@ -105,7 +105,7 @@ test("a sealed search is answered sealed; the account relays nothing readable", 
   const { request, turn } = seal({ op: "search", query: "loyer du bail", limit: 4 });
   served.length = 0;
   const lines = await relay(args(request));
-  assert.deepEqual(served.map((call) => call.op === null ? null : (call.op as { op: string }).op), [null, "search"], "checked before it is opened, then served");
+  assert.deepEqual(served.map((call) => (call.op as { op: string }).op), ["check", "search"], "checked before it is opened, then served");
   const answer = read(turn, lines);
   assert.equal(answer.ok, true);
   assert.equal(answer.folder.label, "Contrats");
@@ -113,6 +113,20 @@ test("a sealed search is answered sealed; the account relays nothing readable", 
   assert.ok(noAbsolutePath(answer));
   const relayed = JSON.stringify(request) + lines.join("");
   for (const clear of ["loyer", "bail", "Contrats", root]) assert.ok(!relayed.includes(clear), clear);
+});
+
+test("the grantees' devices carry the safety number of this computer's identity, read from the bridge's key file", async () => {
+  const { safetyNumber } = await import("../src/compute/computeSeal.js");
+  process.env.TWOODY_COMPUTE_KEYS_PATH = keysPath;
+  try {
+    const listed = (await app.inject({ method: "GET", url: "/api/v1/local_shares", headers: ownerHeaders })).json();
+    const device = listed.devices.find((d: { fingerprint: string }) => d.fingerprint === identityFingerprint(publicIdentity(claire)));
+    assert.equal(device.safety_number, safetyNumber(hostPublic, publicIdentity(claire)));
+    assert.equal(device.state, "approved");
+    assert.ok(!JSON.stringify(listed).includes(JSON.parse((await import("node:fs")).readFileSync(keysPath, "utf8")).identity.enc_private), "never a private key");
+  } finally {
+    delete process.env.TWOODY_COMPUTE_KEYS_PATH;
+  }
 });
 
 test("a long answer goes in several pieces, read back whole", async () => {
@@ -130,7 +144,7 @@ test("attack 1, 2: an unknown share or an unapproved device is refused before an
   const { request, turn } = seal({ op: "folders" }, { uuid });
   served.length = 0;
   await assert.rejects(relay(args(request, { uuid })), /share_refused:unknown_share/);
-  assert.deepEqual(served, [{ op: null }]);
+  assert.deepEqual(served, [{ op: { op: "check" } }]);
   sqlite.prepare(`INSERT INTO folder_shares (id, user_id, folder_id, kind, grantee_user_id, label, "right", created_at, updated_at) VALUES (?, ?, 'f-contracts', 'person', '42', 'Contrats', 'ask', ?, ?)`).run(uuid, user.id, Date.now(), Date.now());
   assert.equal(read(turn, await relay(args(request, { uuid }))).ok, true, "not burned by the refusal");
 
@@ -139,7 +153,7 @@ test("attack 1, 2: an unknown share or an unapproved device is refused before an
   const sealed = seal({ op: "folders" }, { guest: added });
   served.length = 0;
   await assert.rejects(relay(args(sealed.request, { guest: added })), /share_refused:device_not_approved/);
-  assert.deepEqual(served, [{ op: null }]);
+  assert.deepEqual(served, [{ op: { op: "check" } }]);
 });
 
 test("attack 5: a request relayed twice is answered once; one older than five minutes is stale", async () => {
@@ -202,7 +216,7 @@ test("attack 12: an oversized block is refused before it is opened", async () =>
   const { request } = seal({ op: "folders" });
   served.length = 0;
   await assert.rejects(relay(args({ ...request, ciphertext: "00".repeat(300 * 1024) })), /too_large/);
-  assert.deepEqual(served, [{ op: null }], "never served");
+  assert.deepEqual(served, [{ op: { op: "check" } }], "never served");
 });
 
 // ── the bridge client, against a stand-in account ───────────────────────────
@@ -339,7 +353,7 @@ test("without a serveShare hook the bridge declares no share capability and refu
 test("the worker asks its parent to serve, and takes only the answer to its own question", async () => {
   const posted: Array<{ type: string; id: string; payload: unknown }> = [];
   const channel = createShareServeChannel({ postMessage: (message) => void posted.push(message as never) }, { timeoutMs: 50 });
-  const answer = channel.serve({ share_uuid: contrats.id, op: null });
+  const answer = channel.serve({ share_uuid: contrats.id, op: { op: "check" } });
   assert.equal(posted[0]!.type, "share-serve");
   assert.equal(channel.received({ type: "share-serve-result", id: "someone-else", result: { ok: false } }), true);
   assert.equal(channel.received({ type: "account-call-result", id: posted[0]!.id }), false);

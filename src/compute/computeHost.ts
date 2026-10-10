@@ -85,8 +85,9 @@ export interface SealedShareArgs {
 
 /// What the bridge worker hands the server for one share request
 /// (POST /local_shares/serve, or in-process on a Pi): who asks, through
-/// which device, on which share, and the opened body — `op` null for the
-/// check made before anything is opened. Answers the JSON value of
+/// which device, on which share, and the opened body — `{op: "check"}` for
+/// the check made before anything is opened (an object, as the Desktop's
+/// main process passes on nothing else). Answers the JSON value of
 /// docs/sharing-contracts.md §2.
 export interface ShareServePayload {
   share_uuid: string;
@@ -107,6 +108,10 @@ export const SHARE_PIECE_CHARS = 16_000;
 /// account's integers: a request sealed for one can never be opened as the
 /// other (computeSeal binds the grant id into its keys).
 export const shareGrantId = (uuid: string) => `share:${uuid}`;
+
+/// The operation of the check made before a request is opened. The guest
+/// never sends it: a sealed body that says it is refused (shares/serve.ts).
+export const SHARE_CHECK = Object.freeze({ op: "check" });
 
 export function createComputeHost({ path, now = Date.now }: { path: string; now?: () => number }) {
   let stored = load();
@@ -256,7 +261,7 @@ export function createComputeHost({ path, now = Date.now }: { path: string; now?
 
   /// One request on a folder shared from this computer: checked by the
   /// server before anything is opened (the share, its folder, the grantee,
-  /// the device — `serve` with `op` null), opened for grant id
+  /// the device — `serve` with `{op: "check"}`), opened for grant id
   /// « share:<uuid> » from the device the task names, served, and answered
   /// sealed — `{"h": header}`, then `{"c": piece}`… whose texts joined are
   /// the answer's JSON. A refusal before opening fails the task with
@@ -288,7 +293,7 @@ export function createComputeHost({ path, now = Date.now }: { path: string; now?
       throw new Error("sealed_share_malformed");
     }
     const base = { share_uuid: uuid, grantee_user_id: grantee, guest: { enc_public: enc, sign_public: sign } };
-    const check = (await serve({ ...base, op: null })) as { ok?: unknown; error?: unknown } | null;
+    const check = (await serve({ ...base, op: SHARE_CHECK })) as { ok?: unknown; error?: unknown } | null;
     if (check?.ok !== true) throw new Error(`share_refused:${typeof check?.error === "string" && /^[a-z_]{1,40}$/.test(check.error) ? check.error : "unknown"}`);
     rotate();
     const { body, turn } = openComputeRequest({
