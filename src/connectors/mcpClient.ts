@@ -2,6 +2,7 @@ import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_pro
 import { homedir } from "node:os";
 import { delimiter } from "node:path";
 import { outboundFetch } from "../outbound.js";
+import { windowsLaunch } from "./windowsLaunch.js";
 
 // A Model Context Protocol client for « Connecteurs » (Capacités, Jimmy,
 // 03/10/2026): a server started on this computer (a command, over stdio,
@@ -44,6 +45,18 @@ export function connectorEnvironment(own: Record<string, string> | undefined, fr
     out.PATH = [out.PATH, "/opt/homebrew/bin", "/usr/local/bin"].filter(Boolean).join(delimiter);
   }
   return { ...out, ...(own ?? {}) };
+}
+
+/// What is started for a connector's command: as it is on macOS and
+/// Linux; on Windows, the program found on PATH, `npx`/`npm` run by
+/// `node.exe` with npm's own script, never a `.cmd`/`.bat` through cmd.exe
+/// (windowsLaunch.ts). Throws what the person is told when it cannot start.
+export function launchFor(command: string, args: string[], env: Record<string, string>, platform: NodeJS.Platform = process.platform, exists?: (path: string) => boolean): { command: string; args: string[] } {
+  if (platform !== "win32") return { command, args };
+  const launch = windowsLaunch(command, args, env, homedir(), exists);
+  if ("refused" in launch) throw new Error(`${launch.refused}: ${launch.file}`);
+  if ("missing" in launch) throw new Error(`the program was not found: ${launch.missing}`);
+  return launch;
 }
 
 // The programs started and not yet ended: killed with this process, should
@@ -140,8 +153,10 @@ class StdioConnection implements McpConnection {
     // are, never read by sh or cmd.exe. Started in the person's home
     // folder, not wherever this server happens to run; in a process group
     // of its own, so that stopping it stops what it started too.
-    const child = spawn(this.config.command!, this.config.args ?? [], {
-      env: connectorEnvironment(this.config.env),
+    const env = connectorEnvironment(this.config.env);
+    const { command, args } = launchFor(this.config.command!, this.config.args ?? [], env);
+    const child = spawn(command, args, {
+      env,
       cwd: homedir(),
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
