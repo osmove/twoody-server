@@ -178,6 +178,16 @@ export function aliasPaths(id: FolderAliasId, system: AliasSystem): string[] {
 /// ~/Desktop — the same folder, left out here — or, on some Macs, a folder
 /// of its own, listed when ~/Desktop is not granted but iCloud Drive is.
 /// Real paths, those aliasPaths already gives left out.
+/// iCloud Drive's « Desktop » or « Documents » when it is the very folder
+/// ~/Desktop or ~/Documents (« Bureau et Documents » synced, a link): its
+/// place in iCloud Drive (« iCloud Drive/Desktop »), else null.
+export function syncedInCloud(id: FolderAliasId, system: AliasSystem): string | null {
+  if (system.platform !== "darwin" || (id !== "desktop" && id !== "documents")) return null;
+  const name = id === "desktop" ? "Desktop" : "Documents";
+  const real = system.realDirectory(posix.join(system.home, "Library", "Mobile Documents", "com~apple~CloudDocs", name));
+  return real && aliasPaths(id, system).includes(real) ? `iCloud Drive/${name}` : null;
+}
+
 export function cloudAliasPaths(id: FolderAliasId, system: AliasSystem): string[] {
   if (system.platform !== "darwin" || (id !== "desktop" && id !== "documents")) return [];
   const local = new Set(aliasPaths(id, system));

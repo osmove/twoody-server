@@ -349,6 +349,16 @@ async function locate(asked: string, pool: GrantedRoot[], system: AliasSystem): 
   return { kind: "none", outside };
 }
 
+/// The folder a path names inside `pool` — « Documents/Factures »,
+/// « Bureau/Projets », « jimmy/Desktop/Projets » — as list_files finds it,
+/// for the file listing joined to a message (fileListing.ts); null when
+/// no such folder is there.
+export async function folderAtPath(path: string, pool: GrantedRoot[], system: AliasSystem): Promise<{ real: string; root: GrantedRoot; others: string[] } | null> {
+  if (!pool.length) return null;
+  const located = await locate(path, pool, system);
+  return located.kind === "place" ? located : null;
+}
+
 type Entry = { name: string; kind: "dir" | "file"; size: number; mtime: number };
 
 /// One folder's own entries, as the walk sees them.

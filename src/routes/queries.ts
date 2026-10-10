@@ -796,7 +796,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     const lastReply = [...history].reverse().find((row) => row.role === "assistant")?.content ?? null;
     const followUp = access.mode === "off" || retried || listingIntent(documentQuestion) ? null : folderFollowUp(documentQuestion, earlierAsks, lastReply);
     if (followUp) trace.folder_follow_up = true;
-    const intent = access.mode === "off" ? null : listingIntent(documentQuestion) ?? followUp;
+    // « Voilà c'est fait » is that listing asked again too: answered « Ok. »
+    // with it in front of the model (bench of 10/10/2026).
+    const listingAsked = access.mode === "off" ? null : listingIntent(documentQuestion);
+    const intent = listingAsked && retried ? { ...listingAsked, again: true } : listingAsked ?? followUp;
     const listing: Promise<MeshListing | null> = intent
       ? listFilesAcrossComputers({
           userId: auth.userId,

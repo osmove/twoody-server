@@ -57,7 +57,7 @@ symlinkSync(join(home, "Library"), join(home, "Desktop", "raccourci"));
 
 const { aliasNamed, formatFolderListing, listFolder, readFolderRequest } = await import("../src/documents/folderListing.js");
 const { cloudAliasPaths, nodeAliasSystem } = await import("../src/documents/folderAliases.js");
-const { folderFollowUp, listGrantedFiles, listingIntent, namesOnlyAFolder } = await import("../src/documents/fileListing.js");
+const { folderFollowUp, formatListing, listGrantedFiles, listingIntent, namesOnlyAFolder } = await import("../src/documents/fileListing.js");
 const { asksNothing, questionBefore } = await import("../src/documents/query.js");
 const { setSpotlightEnabled } = await import("../src/documents/spotlight.js");
 setSpotlightEnabled(false);
@@ -163,6 +163,32 @@ test("a path from a granted folder or a usual one, a name, or a name under a usu
   assert.equal(listingIntent("Il y a quoi dans le dossier Factures d'Osmove ?")?.folderName, "Factures d'Osmove");
   const named = await listGrantedFiles({ intent: { folder: null, folderName: "Factures d'Osmove", sort: "recent", kinds: [], limit: 15 }, roots: all });
   assert.deepEqual([named.status, named.where], ["ok", ["jimmy/Documents/Osmove/Factures"]]);
+  // Said as a path in a message (bench of 10/10/2026: « qu'est-ce qu'il y a
+  // dans Documents/Factures ? » got « Voulez-vous que je liste… ? »): the
+  // folder list_files finds, listed with the message.
+  assert.equal(listingIntent("qu'est-ce qu'il y a dans Documents/Factures ?")?.folderName, "Documents/Factures");
+  assert.equal(listingIntent("liste ~/Desktop/Projets")?.folderName, "Desktop/Projets");
+  const byPath = await listGrantedFiles({ intent: { folder: null, folderName: "Documents/Factures", sort: "recent", kinds: [], limit: 15 }, roots: all });
+  assert.deepEqual([byPath.status, byPath.where, byPath.files.map((f) => f.name)], ["ok", ["jimmy/Documents/Osmove/Factures"], ["Facture Ordatel mars 2026.pdf"]]);
+  assert.equal((await listGrantedFiles({ intent: { folder: null, folderName: "Bureau/Projets", sort: "recent", kinds: [], limit: 15 }, roots: all })).where[0], "jimmy/Desktop/Projets");
+  assert.equal((await listGrantedFiles({ intent: { folder: null, folderName: "Documents/Factures", sort: "recent", kinds: [], limit: 15 }, roots: [roots.downloads], granted: all })).status, "not_selected");
+  assert.equal((await listGrantedFiles({ intent: { folder: null, folderName: "Documents/Devis", sort: "recent", kinds: [], limit: 15 }, roots: all })).status, "missing");
+  assert.equal((await listGrantedFiles({ intent: { folder: null, folderName: "jimmy/../../etc", sort: "recent", kinds: [], limit: 15 }, roots: all })).status, "missing");
+  for (const message of ["liste les fichiers et/ou dossiers", "les fichiers du 10/10/2026", "liste les fichiers de https://example.com/a/b", "montre-moi 1/2 des fichiers"]) {
+    assert.equal(listingIntent(message)?.folderName ?? null, null, message);
+  }
+  // A follow-up naming the folder again is told to give the files.
+  const again = folderFollowUp("Bureau est le dossier desktop sur iCloud Drive", ["Je t'ai dit sur le bureau", "Voilà c'est fait", "Oui", Q1], null);
+  assert.equal(again?.again, true);
+  // …and told the Desktop is iCloud Drive's Desktop too, when it is (a link).
+  const desktopFiles = await listGrantedFiles({ intent: { ...again!, folder: "desktop", folderName: null }, roots: all });
+  if (process.platform === "darwin") {
+    assert.equal(desktopFiles.inCloud, "iCloud Drive/Desktop");
+    const said = formatListing(desktopFiles, again!);
+    assert.match(said, /also iCloud Drive\/Desktop/);
+    assert.match(said, /asking again for these files/);
+  }
+  assert.equal((await listGrantedFiles({ intent: { ...again!, folder: "downloads", folderName: null }, roots: all })).inCloud, undefined);
   // A granted folder's name; iCloud Drive's « Desktop », a link to ~/Desktop.
   assert.deepEqual((await list("iCloud Drive")).folders.map((f) => f.name).sort(), ["Notes iCloud"]);
   assert.equal((await list("iCloud Drive/Desktop")).where, "jimmy/Desktop");
@@ -312,16 +338,24 @@ test("Jimmy's conversation: « Voilà c'est fait » lists the Desktop asked two 
     const last = (body: Body) => body.messages.at(-1)!.content;
     assert.match(last(done.sent[0]!), /\[File listing from the file system: Desktop \(~\/Desktop\), at jimmy\/Desktop, newest first/);
     assert.ok(last(done.sent[0]!).includes("Twoody-0.13.86.dmg"));
+    // Asked again, and told so (it was answered « Ok. », 10/10/2026).
+    assert.match(last(done.sent[0]!), /asking again for these files/);
     const told = await ask("Je t'ai dit sur le bureau", { discussion_id: discussion, document_access: { mode: "all" } });
     assert.match(last(told.sent[0]!), /\[File listing from the file system: Desktop \(~\/Desktop\), at jimmy\/Desktop/);
+    assert.match(last(told.sent[0]!), /asking again for these files/);
     const cloudToo = await ask("Bureau est le dossier desktop sur iCloud Drive", { discussion_id: discussion, document_access: { mode: "all" } });
     assert.match(last(cloudToo.sent[0]!), /at jimmy\/Desktop/);
+    if (process.platform === "darwin") assert.match(last(cloudToo.sent[0]!), /also iCloud Drive\/Desktop/);
     const trace = (await app.inject({ method: "GET", url: `/diagnostics/turns?kind=chat&limit=3&discussion_id=${discussion}`, headers })).json().traces;
     assert.equal(trace.find((t: { detail: { folder_follow_up?: boolean } }) => t.detail.folder_follow_up) !== undefined, true);
     // « sur le bureau » in a conversation about something else: nothing listed.
     const other = await ask("Quelle est la capitale du Japon ?", { force_new_discussion: true });
     const unrelated = await ask("et sur le bureau ?", { discussion_id: other.final.discussion_id });
     assert.doesNotMatch(last(unrelated.sent[0]!), /File listing/);
+    // A listing asked the first time is not « asked again ».
+    const fresh = await ask("liste les fichiers de mon bureau", { force_new_discussion: true });
+    assert.match(last(fresh.sent[0]!), /File listing/);
+    assert.doesNotMatch(last(fresh.sent[0]!), /asking again/);
   } finally {
     toolArgs = { folder: "Bureau" };
   }

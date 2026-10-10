@@ -135,8 +135,11 @@ export async function listFilesAcrossComputers(args: {
   locale?: string | null;
 }): Promise<MeshListing> {
   const me = selfIdentity();
+  // A path (« Documents/Factures ») is this computer's own, as list_files'
+  // is: another computer's folders are asked by a usual folder or a name.
+  const path = !!args.intent.folderName?.includes("/");
   const peers =
-    args.requester && args.remote && args.access.mode !== "off"
+    args.requester && args.remote && args.access.mode !== "off" && !path
       ? meshPeers(args.userId).flatMap((peer) => {
           const scope = remoteScope(args.access, peer.computerId);
           return scope ? [{ peer, scope }] : [];

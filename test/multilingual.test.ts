@@ -259,8 +259,24 @@ test("« list the files on my desktop » in every language: the Desktop listed; 
     ["바탕화면에 있는 파일 목록 보여줘", "desktop recent"],
     ["청구서 폴더에 있는 파일 보여줘", "«청구서» recent"],
     ["list the files on my desktop", "desktop recent"],
+    // « What do I have on my desktop? » (bench of 10/10/2026: offered, not listed).
+    ["Qu'est-ce que j'ai sur mon bureau ?", "desktop recent"],
+    ["Qu'ai-je sur mon bureau ?", "desktop recent"],
+    ["What do I have on my desktop?", "desktop recent"],
+    ["What's on my desktop?", "desktop recent"],
+    ["Was habe ich auf meinem Schreibtisch?", "desktop recent"],
+    ["¿Qué tengo en mi escritorio?", "desktop recent"],
+    ["Cosa ho sulla scrivania?", "desktop recent"],
+    ["O que eu tenho na minha área de trabalho?", "desktop recent"],
+    ["Wat heb ik op mijn bureaublad?", "desktop recent"],
+    ["デスクトップに何がありますか？", "desktop recent"],
+    ["我桌面上有什么？", "desktop recent"],
+    ["바탕화면에 뭐 있어?", "desktop recent"],
   ];
   for (const [message, expected] of asked) assert.equal(intent(message), expected, message);
+  for (const message of ["Qu'est-ce que j'ai à faire sur mon bureau aujourd'hui ?", "What do I have to do today?", "Was habe ich heute zu tun?", "¿Qué tengo que hacer hoy?", "Cosa ho da fare oggi?", "O que eu tenho que fazer hoje?", "Wat heb ik vandaag te doen?", "Qu'est-ce que j'ai demain ?"]) {
+    assert.equal(intent(message), null, message);
+  }
   for (const message of ["Wie spät ist es?", "Was steht in meinem Mietvertrag über die Kündigungsfrist?", "¿Qué dice mi contrato sobre el preaviso?", "我的合同里写了什么？", "Ich sitze am Schreibtisch", "Mi escritorio es de madera"]) {
     assert.equal(intent(message), null, message);
   }

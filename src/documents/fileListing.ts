@@ -2,7 +2,7 @@ import { lstat, readdir } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
-import { aliasLabel, aliasPaths, cloudAliasPaths, FOLDER_ALIAS_IDS, folderAliasIn, nodeAliasSystem, plain, type AliasSystem, type FolderAliasId } from "./folderAliases.js";
+import { aliasLabel, aliasPaths, cloudAliasPaths, FOLDER_ALIAS_IDS, folderAliasIn, nodeAliasSystem, plain, syncedInCloud, type AliasSystem, type FolderAliasId } from "./folderAliases.js";
 import { folderRisk } from "./folderRisk.js";
 import { spotlightDatesAdded, spotlightItems } from "./spotlight.js";
 import { asksNothing } from "./query.js";
@@ -80,6 +80,10 @@ export interface ListingIntent {
   kinds: string[];
   limit: number;
   count: boolean;
+  /// The files asked again: a message that only names the folder again
+  /// (folderFollowUp, « Je t'ai dit sur le bureau »), or a retry
+  /// (« Voilà c'est fait »).
+  again?: boolean;
 }
 
 // In each language of the app (10/10/2026: « Liste die Dateien auf meinem
@@ -92,13 +96,13 @@ const LARGEST = /\b(plus gros|plus grosses?|plus lourds?|plus lourdes?|volumineu
 const SMALLEST = /\b(plus petits?|plus petites?|plus legers?|smallest|lightest|kleinste[nr]?|mas pequen[oa]s?|piu piccol[ie]|menores|kleinste)\b|一番小さい|最も小さい|最小的|가장 작은/;
 const COUNT = /\b(combien|nombre de|how many|number of|count|wie viele|anzahl|cuant[oa]s|numero de|quant[ieo]|quantas|quantos|hoeveel|aantal)\b|いくつ|何個|何件|何枚|多少|几个|몇\s?개|개수/;
 const LIST = new RegExp([
-  String.raw`\b(liste[rz]?|listing|list|contenu|contient|contents?|qu'?y a.?t.?il|qu'?est.?ce qu'?il y a|what'?s in|what is in|which files|what files|quels (sont )?(les |mes )?fichiers|quelles? (sont )?(les |mes )?(images|photos|captures)|il y a quoi|j'?ai quoi|montre(-moi)?|show me)\b`,
-  String.raw`\b(liste|auflisten|aufzahlen|zeig(e|t)?( mir)?|was (ist|liegt|befindet sich) (auf|in|im)|welche dateien|inhalt)\b`,
-  String.raw`\b(lista|listar|enumera|muestrame|muestra|que hay (en|sobre)|que archivos|cuales (son )?(los |mis )?archivos|contenido)\b`,
-  String.raw`\b(elenca|elencami|lista|mostrami|cosa c'?e|quali file|contenuto)\b`,
-  String.raw`\b(lista|listar|liste|mostra|mostre|me mostra|o que (tem|ha)|quais (sao )?(os |meus )?arquivos|conteudo)\b`,
-  String.raw`\b(lijst|toon|laat (me )?zien|wat staat er|wat zit er|welke bestanden|inhoud)\b`,
-  "一覧|リスト|見せて|表示して|何がある|なにがある|中身|どんなファイル|列出|列一下|显示|看看|有什么|有哪些|목록|보여\\s?줘|나열|뭐가 있|무엇이 있|어떤 파일",
+  String.raw`\b(liste[rz]?|listing|list|contenu|contient|contents?|qu'?y a.?t.?il|qu'?est.?ce qu'?il y a|what'?s in|what is in|which files|what files|quels (sont )?(les |mes )?fichiers|quelles? (sont )?(les |mes )?(images|photos|captures)|il y a quoi|j'?ai quoi|qu'?est.?ce que j'?ai(?! a )|qu'?ai.?je|montre(-moi)?|show me|what'?s on|what is on|what (?:do|did) i (?:have|keep)(?! to)|what have i got)\b`,
+  String.raw`\b(liste|auflisten|aufzahlen|zeig(e|t)?( mir)?|was (ist|liegt|befindet sich) (auf|in|im)|was gibt es (auf|in|im)|was hab(e)? ich(?! (noch )?zu)|welche dateien|inhalt)\b`,
+  String.raw`\b(lista|listar|enumera|muestrame|muestra|que hay (en|sobre)|que tengo(?! que)|que archivos|cuales (son )?(los |mis )?archivos|contenido)\b`,
+  String.raw`\b(elenca|elencami|lista|mostrami|cosa c'?e|(che )?cosa ho(?! da)|quali file|contenuto)\b`,
+  String.raw`\b(lista|listar|liste|mostra|mostre|me mostra|o que (tem|ha)|o que (eu )?tenho(?! que| de)|quais (sao )?(os |meus )?arquivos|conteudo)\b`,
+  String.raw`\b(lijst|toon|laat (me )?zien|wat staat er|wat zit er|wat heb ik(?! (nog )?te)|welke bestanden|inhoud)\b`,
+  "一覧|リスト|見せて|表示して|何がある|なにがある|何があり|なにがあり|何が入って|中身|どんなファイル|列出|列一下|显示|看看|有什么|有哪些|목록|보여\\s?줘|나열|뭐가 있|뭐 있|무엇이 있|어떤 파일",
 ].join("|"));
 const FILE_WORDS = /\b(fichiers?|files?|dossiers?|folders?|telechargements?|downloads?|captures? d'?ecran|screenshots?|pdfs?|images?|photos?|dmg|videos?|installeurs?|dateien?|ordner|bildschirmfotos?|bilder|fotos|archivos?|ficheros?|carpetas?|descargas?|capturas? de (pantalla|tela)|imagenes|cartell[ae]|immagini|arquivos?|pastas?|imagens|bestand(en)?|mappen?|schermafbeeldingen|afbeeldingen)\b|ファイル|フォルダ|ダウンロード|スクリーンショット|画像|写真|動画|文件|下载|截图|图片|照片|视频|파일|폴더|다운로드|스크린샷|사진|이미지|동영상/;
 /// Words that name files themselves, not what they say.
@@ -145,6 +149,22 @@ function namedFolder(text: string): string | null {
   return null;
 }
 
+/// A folder said by its path: « Documents/Factures », « ~/Desktop/Projets »,
+/// « jimmy/Desktop/Projets/Twoody » (bench of 10/10/2026: « qu'est-ce qu'il y
+/// a dans Documents/Factures ? » was left to a model that offered to list
+/// it). Not a date, a link, « et/ou » nor « 1/2 ».
+const PATH = /(?:^|[\s«"“'(`])(~?\/?(?:[\p{L}\p{N}_][\p{L}\p{N}_.&~-]*\/)+[\p{L}\p{N}_][\p{L}\p{N}_.&~-]*?)\/?(?=$|[\s?!,;:»"”')`]|\.(?:\s|$))/u;
+const NOT_A_PATH = /^(?:et\/ou|and\/or|und\/oder|y\/o|e\/o|e\/ou|en\/of|he\/she|il\/elle|on\/off|oui\/non|yes\/no)$/i;
+export function folderPathIn(text: string): string | null {
+  const found = PATH.exec(text.normalize("NFC"));
+  if (!found) return null;
+  const path = found[1]!.replace(/^~?\//, "");
+  const segments = path.split("/");
+  if (segments.length < 2 || NOT_A_PATH.test(path) || !segments.some((segment) => /\p{L}{2}/u.test(segment))) return null;
+  if (segments.some((segment) => segment === ".." || segment.startsWith("."))) return null;
+  return path;
+}
+
 /**
  * Whether a message asks about files themselves — the newest, the oldest,
  * the largest, how many, what a folder holds, files of a kind — and how.
@@ -152,13 +172,14 @@ function namedFolder(text: string): string | null {
  */
 export function listingIntent(text: string): ListingIntent | null {
   const said = plain(text);
-  const folder = folderAliasIn(text);
+  const path = folderPathIn(text);
+  const folder = path ? null : folderAliasIn(text);
   const sort: ListingSort | null = OLDEST.test(said) ? "oldest" : LARGEST.test(said) ? "largest" : SMALLEST.test(said) ? "smallest" : RECENT.test(said) ? "recent" : null;
   const count = COUNT.test(said);
   const list = LIST.test(said);
   if (!sort && !count && !list) return null;
-  if (!FILE_WORDS.test(said) && !folder) return null;
-  const named = folder ? null : namedFolder(text);
+  if (!FILE_WORDS.test(said) && !folder && !path) return null;
+  const named = path ?? (folder ? null : namedFolder(text));
   // Without a folder, only a question about « fichiers » themselves, not
   // about what they say: « le document le plus récent sur le bail » is the index's.
   if (!folder && !named && (!FILES_THEMSELVES.test(said) || ABOUT_CONTENT.test(said))) return null;
@@ -213,10 +234,11 @@ const CANNOT_LIST_CJK = /(?:できません|できない|無理|无法|不能|�
 export function namesOnlyAFolder(text: string): Pick<ListingIntent, "folder" | "folderName"> | null {
   const said = plain(text).replace(/[!?.,;:…()«»"“”-]+/g, " ").replace(/\s+/g, " ").trim();
   if (!said || said.length > 100) return null;
-  const folder = folderAliasIn(text);
-  const named = folder ? null : namedFolder(text);
+  const path = folderPathIn(text);
+  const folder = path ? null : folderAliasIn(text);
+  const named = path ?? (folder ? null : namedFolder(text));
   if (!folder && !named) return null;
-  let rest = said.replace(FOLDER_WORDS, " ").replace(FOLDER_CJK, " ");
+  let rest = (path ? said.split(plain(path)).join(" ") : said).replace(FOLDER_WORDS, " ").replace(FOLDER_CJK, " ");
   if (named) rest = rest.split(plain(named)).join(" ");
   if (CJK.test(rest.replace(FOLLOW_UP_CJK, ""))) return null;
   const left = rest.split(/[\s']+/).filter((word) => word && !CJK.test(word) && !FOLLOW_UP_WORDS.has(word));
@@ -247,7 +269,7 @@ export function folderFollowUp(text: string, earlier: string[], lastAnswer: stri
     if (!asksNothing(message) && !namesOnlyAFolder(message)) break;
   }
   if (!asked && !(lastAnswer && (CANNOT_LIST.test(plain(lastAnswer)) || CANNOT_LIST_CJK.test(plain(lastAnswer))))) return null;
-  return { sort: asked?.sort ?? "recent", kinds: asked?.kinds ?? [], limit: asked?.limit ?? 15, count: asked?.count ?? false, ...named };
+  return { sort: asked?.sort ?? "recent", kinds: asked?.kinds ?? [], limit: asked?.limit ?? 15, count: asked?.count ?? false, again: true, ...named };
 }
 
 export interface ListedFile {
@@ -279,6 +301,9 @@ export interface Listing {
   others?: string[];
   /// Where the list comes from: Spotlight (and the folder's first level), or the walk.
   source?: "spotlight" | "walk";
+  /// The same folder in iCloud Drive (« iCloud Drive/Desktop »), when
+  /// « Bureau et Documents » is synced.
+  inCloud?: string;
 }
 
 export interface GrantedRoot {
@@ -504,6 +529,14 @@ export async function listGrantedFiles(args: {
     };
     starts = reach(roots);
     if (!starts.length) return empty(reach(granted).length ? "not_selected" : "not_granted");
+  } else if (folderName && folderName.includes("/")) {
+    // « Documents/Factures »: found as list_files finds a path (imported
+    // when needed: folderListing.ts imports this module).
+    const { folderAtPath } = await import("./folderListing.js");
+    const found = await folderAtPath(folderName, roots, system);
+    if (!found) return empty((await folderAtPath(folderName, granted, system)) ? "not_selected" : "missing");
+    starts = [{ start: found.real, root: found.root }];
+    if (found.others.length) others = found.others;
   } else if (folderName) {
     const found = await findNamedFolders(roots, folderName);
     if (!found.length) return empty((await findNamedFolders(granted, folderName)).length ? "not_selected" : "missing");
@@ -515,12 +548,14 @@ export async function listGrantedFiles(args: {
   }
 
   const walked = await filesIn(starts, args.intent.kinds, args.intent.sort, limit);
+  const inCloud = folder ? syncedInCloud(folder, system) : null;
   return {
     status: "ok",
     label,
     where: [...new Set(starts.map(({ start, root }) => shown(root, start)))],
     ...walked,
     ...(others?.length ? { others } : {}),
+    ...(inCloud ? { inCloud } : {}),
   };
 }
 
@@ -610,7 +645,7 @@ export function howToSelect(locale: string | null = null): string {
  * One listing as the model reads it. `computer`: the computer it was made
  * on, named when several of the person's computers take part.
  */
-export function formatListing(listing: Listing, intent: Pick<ListingIntent, "sort" | "kinds" | "count">, computer: string | null = null, locale: string | null = null): string {
+export function formatListing(listing: Listing, intent: Pick<ListingIntent, "sort" | "kinds" | "count" | "again">, computer: string | null = null, locale: string | null = null): string {
   const on = computer ? ` on ${computer}` : "";
   if (listing.status !== "ok") {
     const why = {
@@ -633,12 +668,20 @@ export function formatListing(listing: Listing, intent: Pick<ListingIntent, "sor
   const lines = listing.files.map((file) => `- ${file.name} · ${file.kind} · ${formatSize(file.size)} · modified ${day(file.modified_at)}${file.added_at ? ` · added ${day(file.added_at)}` : ""} · in ${file.folder}`);
   const total = `${listing.total}${listing.limited ? "+" : ""} matching file${listing.total === 1 ? "" : "s"} in all${listing.files.length < listing.total ? `, the first ${listing.files.length} shown` : ""}.`;
   const others = listing.others?.length ? `\nOther folders with the same name (not listed): ${listing.others.join(", ")}. Say which one was listed.` : "";
+  // « Bureau est le dossier desktop sur iCloud Drive »: it is, on a Mac
+  // syncing « Bureau et Documents »; the model said it was not (10/10/2026).
+  const cloud = listing.inCloud ? `\nThis folder is also ${listing.inCloud}: iCloud syncs it on this computer, the very same folder and files.` : "";
   const notes =
     "\nThis lists every regular file there, indexed or not (screenshots, disk images and so on included); modified is the file system's modification date, added the day the file arrived in its folder (a download's date). " +
     "Answer questions about the newest, oldest or largest files, counts and what this folder holds from this listing, and name the folder as shown above. " +
     (intent.count ? "For a count, use the number of matching files. " : "") +
+    // « Bureau est le dossier desktop sur iCloud Drive », said to have the
+    // Desktop listed at last, was answered with a lecture on where the
+    // Desktop is, « Voilà c'est fait » with « Ok. » (Qwen3.5 9B, bench of
+    // 10/10/2026).
+    (intent.again ? "The user is asking again for these files (naming the folder again, or saying it is done): list them from this listing; do not discuss where the folder is. " : "") +
     "Files or excerpts from other folders are not in this folder.";
-  return `${header}\n${lines.length ? lines.join("\n") : "(no matching file)"}\n${total}${others}${notes}\n[End of file listing]`;
+  return `${header}\n${lines.length ? lines.join("\n") : "(no matching file)"}\n${total}${others}${cloud}${notes}\n[End of file listing]`;
 }
 
 /// A listing intent as a peer or a tool call sends it, checked.
