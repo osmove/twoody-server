@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { sqlite } from "../db.js";
 import { emailsSchema } from "../migrations/0004_emails.js";
-import { buildMatchQuery } from "../documents/query.js";
+import { buildMatchQuery, cjkTerms, queryTerms, termsFound } from "../documents/query.js";
+import { cjkSnippet, cjkWordsFound, hasCjk, likePatterns } from "../documents/cjk.js";
 import type { MailSecurity } from "../outbound.js";
 import { asksSomething, automatedSender, type AttachmentInfo, type FlagState, type FolderRole, type MailAddress } from "./parse.js";
 
@@ -703,6 +704,8 @@ export function searchEmails(userId: string, search: EmailSearch): EmailHit[] {
   if (search.folder) { filters.push("e.status = ?"); values.push(search.folder); }
   const words = search.query ? buildMatchQuery(search.query) : null;
   const sender = search.from?.trim() ?? "";
+  const cjk = search.query ? cjkTerms(search.query) : [];
+  if (cjk.length) return emailsByPairs(search.query!, cjk, sender, filters, values, limit);
   // The sender's words, all of them, among the people (the index folds
   // accents: « rene » finds « René »); checked against the sender alone
   // below.
@@ -722,6 +725,32 @@ export function searchEmails(userId: string, search: EmailSearch): EmailHit[] {
     if (found.length >= limit) break;
   }
   return found;
+}
+
+/// How many e-mails the search by pairs reads at most, newest first.
+const PAIRS_SCAN = 2_000;
+
+/// A search in Japanese, Chinese or Korean (10/10/2026): email_fts cuts
+/// words at spaces only (src/documents/cjk.ts), so the e-mails holding any
+/// pair of the words' characters are read, newest first, and those holding
+/// most of a word's pairs kept — the more words, then the newer, first.
+function emailsByPairs(query: string, cjk: string[], sender: string, filters: string[], values: Array<string | number>, limit: number): EmailHit[] {
+  const patterns = likePatterns(cjk);
+  const others = queryTerms(query).filter((term) => !hasCjk(term));
+  const near = patterns.map(() => "(e.subject LIKE ? OR e.people LIKE ? OR e.text_body LIKE ?)").join(" OR ");
+  const rows = sqlite.prepare(`SELECT e.* FROM emails e WHERE ${filters.join(" AND ")} AND (${near})
+      ORDER BY e.provider_internal_date DESC LIMIT ?`)
+    .all(...values, ...patterns.flatMap((pattern) => [pattern, pattern, pattern]), PAIRS_SCAN) as Array<Record<string, unknown>>;
+  const scored: Array<{ hit: EmailHit; found: number; at: number }> = [];
+  for (const row of rows) {
+    const email = emailOf(row);
+    if (sender && !fromSender(email, sender)) continue;
+    const text = `${email.subject ?? ""}\n${String(row.people ?? "")}\n${email.text_body ?? ""}`;
+    const words = cjkWordsFound(text, cjk);
+    if (words === 0) continue;
+    scored.push({ hit: { ...email, snippet: cjkSnippet(email.text_body ?? email.subject ?? "", cjk, 100) }, found: words + termsFound(text, others), at: Number(row.provider_internal_date) || 0 });
+  }
+  return scored.sort((a, b) => b.found - a.found || b.at - a.at).slice(0, limit).map((entry) => entry.hit);
 }
 
 /// Received e-mails the person has not answered yet, that ask them

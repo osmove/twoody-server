@@ -200,6 +200,11 @@ function decodeEntities(text: string): string {
 
 function tidy(text: string): string {
   return text
+    // Chinese and Japanese PDFs often map their glyphs to the Kangxi
+    // radicals that look like the characters (« ⽅ » U+2F45 for « 方 », « ⽉ »
+    // for « 月 »): the characters themselves, or « 解除通知期为三个⽉ » is not
+    // found as « 三个月 » (10/10/2026).
+    .replace(/[\u2e80-\u2fdf]/g, (radical) => radical.normalize("NFKC"))
     .replace(/\r\n?/g, "\n")
     .replace(/[ \t\f\v ]+/g, " ")
     .replace(/ ?\n ?/g, "\n")

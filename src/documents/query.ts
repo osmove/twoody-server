@@ -1,4 +1,6 @@
 import { CJK } from "../intentText.js";
+import { cjkFound, cjkWords, gramsMatch, hasCjk, withoutCjk } from "./cjk.js";
+import { languageStem, searchLanguage, smallWord } from "./languages.js";
 
 // Turns a question into an FTS5 MATCH expression. Pure, so it is tested
 // without a database.
@@ -13,6 +15,10 @@ import { CJK } from "../intentText.js";
 //     "résiliation".
 // Terms are OR-ed: BM25 then ranks passages that contain more of them,
 // and the rarer ones, first.
+//
+// Japanese, Chinese and Korean words are terms too, but searched in
+// document_grams by their pairs of characters (cjk.ts, 10/10/2026): the
+// MATCH expression here holds the other languages' words only.
 
 const STOPWORDS = new Set([
   // Common short words; short subject terms such as CV, RH and AI remain searchable.
@@ -34,30 +40,54 @@ const STOPWORDS = new Set([
 
 const MAX_TERMS = 12;
 
+/// The words to search for: German, Spanish, Italian, Portuguese or Dutch
+/// ones without their language's small words and as the prefix their
+/// singular and plural share, « rechnung* » (languages.ts); Japanese,
+/// Chinese and Korean ones cut at their particles (cjk.ts).
 export function queryTerms(text: string): string[] {
   const seen = new Set<string>();
   const terms: string[] = [];
-  for (const word of words(text)) {
+  const latin = words(withoutCjk(text));
+  const language = searchLanguage(latin, STOPWORDS);
+  for (const word of [...latin, ...cjkWords(text)]) {
     // Short subjects (CV, RH, AI) matter as much as numbers and codes.
-    const keep = word.length >= 2 || /\d/.test(word);
-    if (!keep || STOPWORDS.has(word) || seen.has(word)) continue;
-    seen.add(word);
-    terms.push(word);
+    const keep = word.length >= 2 || /\d/.test(word) || hasCjk(word);
+    if (!keep || STOPWORDS.has(word) || (language && smallWord(language, word))) continue;
+    const prefix = language && !hasCjk(word) ? languageStem(language, word) : null;
+    const term = prefix ? `${prefix}*` : word;
+    if (seen.has(term)) continue;
+    seen.add(term);
+    terms.push(term);
     if (terms.length >= MAX_TERMS) break;
   }
   return terms;
 }
 
-/// null when the text holds nothing worth searching for.
+/// The MATCH expression on document_chunks (and the other unicode61
+/// indexes) for the text's words in the other languages; null when it holds
+/// nothing worth searching for there.
 export function buildMatchQuery(text: string): string | null {
-  const terms = queryTerms(text);
+  const terms = queryTerms(text).filter((term) => !hasCjk(term));
   if (terms.length === 0) return null;
   return terms.map(matchTerm).join(" OR ");
+}
+
+/// The text's Japanese, Chinese and Korean words (cjk.ts): searched in
+/// document_grams, or by their pairs where there is no such index.
+export function cjkTerms(text: string): string[] {
+  return queryTerms(text).filter(hasCjk);
+}
+
+/// The MATCH expression on document_grams; null when the text has no word
+/// of those scripts.
+export function buildGramsQuery(text: string): string | null {
+  return gramsMatch(cjkTerms(text));
 }
 
 function matchTerm(term: string): string {
   // Tokens are letters and digits only, so quoting is enough to keep
   // FTS5 operators (AND, OR, NOT, NEAR) literal.
+  if (term.endsWith("*")) return `"${term.slice(0, -1)}"*`;
   if (matchedWhole(term)) return `"${term}"`;
   return `"${stem(term)}"*`;
 }
@@ -72,10 +102,13 @@ function words(text: string): string[] {
 }
 
 /// How many of the terms a text holds, matched as the MATCH expression
-/// matches them: a short word or a code whole, a longer word by its stem.
+/// matches them: a short word or a code whole, a longer word by its stem;
+/// a Japanese, Chinese or Korean word by most of its pairs (cjkFound).
 export function termsFound(text: string, terms: string[]): number {
   const present = new Set(words(text));
   return terms.filter((term) => {
+    if (hasCjk(term)) return cjkFound(text, term);
+    if (term.endsWith("*")) return [...present].some((word) => word.startsWith(term.slice(0, -1)));
     if (matchedWhole(term)) return present.has(term);
     const prefix = stem(term);
     return [...present].some((word) => word.startsWith(prefix));
@@ -112,7 +145,8 @@ export function selectPassages<T extends { document_id: string; text: string; sc
 }
 
 /// Not linguistics — just enough to bridge singular / plural and the
-/// commonest French and English endings.
+/// commonest French and English endings (the five other Latin-script
+/// languages of the app have theirs in languages.ts).
 function stem(term: string): string {
   const stripped = term.replace(/(ements|ement|ations|ation|ions|ion|ees|ee|es|er|ez|ent|ing|ed|s|x|e)$/, "");
   return stripped.length >= 4 ? stripped : term.slice(0, Math.max(4, term.length - 1));

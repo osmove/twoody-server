@@ -1,5 +1,6 @@
 import { sqlite } from "../db.js";
-import { buildMatchQuery, queryTerms, termsFound } from "../documents/query.js";
+import { buildMatchQuery, cjkTerms, queryTerms, termsFound } from "../documents/query.js";
+import { cjkSnippet, cjkWordsFound, hasCjk, likePatterns } from "../documents/cjk.js";
 import { embedMemoryQuery, memoryEmbeddingsEnabled, memoryEmbeddingText, memoryVectors } from "./embeddings.js";
 import { ensureLinked, entitiesInText, findEntity, normaliseName } from "./entities.js";
 
@@ -14,7 +15,10 @@ import { ensureLinked, entitiesInText, findEntity, normaliseName } from "./entit
 // no threshold: this is a search, retrieval (retrieve.ts) is what admits.
 //
 // Conversations: the FTS5 index of the messages (message_fts, db.ts), which
-// never holds a conversation in « Aucune » — private ones included.
+// never holds a conversation in « Aucune » — private ones included. A
+// question in Japanese, Chinese or Korean is looked for by its words' pairs
+// of characters in the messages that index holds (cjk.ts, 10/10/2026): the
+// index cuts words at spaces only.
 
 export class SearchError extends Error {
   constructor(public status: number, public code: string) {
@@ -202,8 +206,10 @@ export function searchConversations(
   const q = (options.q ?? "").trim();
   if (!q) throw new SearchError(422, "q_required");
   const match = buildMatchQuery(q);
-  if (!match) return [];
+  const cjk = cjkTerms(q);
   const limit = options.limit ?? 10;
+  if (cjk.length) return conversationsByPairs(userId, q, cjk, options.after ?? 0, options.before ?? Number.MAX_SAFE_INTEGER, limit);
+  if (!match) return [];
   let rows: Array<Omit<ConversationHit, "created_at"> & { created_at: number }>;
   try {
     rows = sqlite.prepare(
@@ -229,6 +235,37 @@ export function searchConversations(
     // bm25() is negative, lower is better: given as a positive relevance.
     score: round(-row.score),
   }));
+}
+
+/// How many rows the search by pairs reads at most, newest first.
+const PAIRS_SCAN = 2_000;
+
+/// The messages holding the question's Japanese, Chinese or Korean words
+/// (most of each word's pairs), and its other words, best first: the more
+/// words, then the newer. The same conversations as the index's search.
+function conversationsByPairs(userId: string, q: string, cjk: string[], after: number, before: number, limit: number): ConversationHit[] {
+  const patterns = likePatterns(cjk);
+  const others = queryTerms(q).filter((term) => !hasCjk(term));
+  const rows = sqlite.prepare(
+    `SELECT f.discussion_id, d.title, f.message_id, m.role, m.created_at, f.content
+       FROM message_fts f
+       JOIN messages m ON m.id = f.message_id
+       JOIN discussions d ON d.id = f.discussion_id
+      WHERE f.user_id = ? AND d.user_id = ?
+        AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = d.project_id AND p.isolated = 1)
+        AND m.created_at >= ? AND m.created_at < ?
+        AND f.discussion_id IN (SELECT discussion_id FROM message_fts_conversations)
+        AND (${patterns.map(() => "f.content LIKE ?").join(" OR ")})
+      ORDER BY m.created_at DESC
+      LIMIT ?`,
+  ).all(userId, userId, after, before, ...patterns, PAIRS_SCAN) as Array<Omit<ConversationHit, "created_at" | "snippet" | "score"> & { created_at: number; content: string }>;
+  return rows
+    .map((row) => ({ row, words: cjkWordsFound(row.content, cjk) }))
+    .filter((hit) => hit.words > 0)
+    .map((hit) => ({ ...hit, found: hit.words + termsFound(hit.row.content, others) }))
+    .sort((a, b) => b.found - a.found || b.row.created_at - a.row.created_at)
+    .slice(0, limit)
+    .map(({ row: { content, ...row }, found }) => ({ ...row, snippet: clip(cjkSnippet(content, cjk)), created_at: iso(row.created_at), score: found }));
 }
 
 // ── as a tool gives them to a model ───────────────────────────────────────

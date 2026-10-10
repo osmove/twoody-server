@@ -85,3 +85,31 @@ test("a database a newer Twoody migrated is refused, not misread", () => {
   db.pragma(`user_version = ${SCHEMA_VERSION + 1}`);
   assert.throws(() => migrate(db, { dataDir: dir, log: quiet }), /newer than this server/);
 });
+
+test("migration 9 indexes the Japanese, Chinese and Korean passages already there by their pairs, every passage kept as it was", () => {
+  const dir = mkdtempSync(join(tmpdir(), "twoody-migrations-"));
+  const db = new Database(join(dir, "local.db"));
+  migrate(db, { dataDir: dir, log: quiet });
+  // A library indexed by version 8: passages, and no document_grams yet.
+  db.exec("DROP TABLE document_grams");
+  db.pragma("user_version = 8");
+  db.prepare("INSERT INTO users (id, email, created_at) VALUES ('u1', 'u@example.com', ?)").run(Date.now());
+  const passages = [
+    ["ja", "各当事者は、三か月の解約予告期間をもって書面で通知する。"],
+    ["fr", "Chaque partie peut le résilier avec un préavis de trois mois."],
+    ["zh", "解除通知期为三个月。"],
+    ["ko", "3개월의 해지 예고 기간을 두고"],
+  ];
+  for (const [id, text] of passages) db.prepare("INSERT INTO document_chunks (text, document_id, user_id, page, position) VALUES (?, ?, 'u1', 1, 0)").run(text, id);
+  const before = db.prepare("SELECT rowid, text, document_id FROM document_chunks ORDER BY rowid").all();
+
+  migrate(db, { dataDir: dir, log: quiet });
+  assert.equal(schemaVersion(db), SCHEMA_VERSION);
+  assert.equal(readdirSync(join(dir, "backups")).length, 1, "a copy of the database from before");
+  assert.deepEqual(db.prepare("SELECT rowid, text, document_id FROM document_chunks ORDER BY rowid").all(), before, "the passages as they were");
+  assert.deepEqual((db.prepare("SELECT document_id FROM document_grams ORDER BY rowid").all() as Array<{ document_id: string }>).map((row) => row.document_id), ["ja", "zh", "ko"]);
+  const found = (query: string) => (db.prepare("SELECT c.document_id FROM document_grams g JOIN document_chunks c ON c.rowid = g.rowid WHERE document_grams MATCH ?").all(query) as Array<{ document_id: string }>).map((row) => row.document_id);
+  assert.deepEqual(found('"解約 約予 予告 告期 期間"'), ["ja"]);
+  assert.deepEqual(found('"解除 除通 通知 知期"'), ["zh"]);
+  assert.deepEqual(found('"해지" AND "예고" AND "기간"'), ["ko"]);
+});

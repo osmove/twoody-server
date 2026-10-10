@@ -2621,8 +2621,10 @@ const ABOUT_DOCUMENTS = new RegExp(`(?<![\\p{L}\\p{N}])(?:${[
   "documenten", "bestand(?:en)?", "mappen", "(?:mijn|de) map", "contracten", "(?:huur|arbeids)?contract", "factu(?:u)?r(?:en)?", "loonstroken?", "loonstrookjes?", "offertes?", "bonnetjes?", "bankafschriften?", "opzegtermijn(?:en)?", "polissen", "verzekeringspolis(?:sen)?",
 ].join("|")})(?![\\p{L}\\p{N}])`, "iu");
 /// Japanese and Korean words have no space around them: found anywhere.
-/// Chinese too since the app speaks it (10/10/2026).
-const ABOUT_DOCUMENTS_CJK = /契約書|請求書|領収書|見積書|給与明細|賃貸借契約|書類|文書|(?<!プロ)ファイル|フォルダ|ドキュメント|解約予告|계약서|청구서|영수증|견적서|급여명세서|문서|파일(?!럿)|폴더|文件|文档|文檔|合同|发票|發票|收据|收據|报价单|工资单|工资条|租赁合同|租房合同|银行对账单|保险单/u;
+/// Chinese too since the app speaks it (10/10/2026). The notice period in
+/// each, as « préavis » or « Kündigungsfrist » above: « 解除通知期 » alone was
+/// answered « not in your documents » without searching them (10/10/2026).
+const ABOUT_DOCUMENTS_CJK = /契約書|請求書|領収書|見積書|給与明細|賃貸借契約|書類|文書|(?<!プロ)ファイル|フォルダ|ドキュメント|解約予告|予告期間|해지\s?예고|예고\s?기간|解除通知|解约通知|通知期|계약서|청구서|영수증|견적서|급여명세서|문서|파일(?!럿)|폴더|文件|文档|文檔|合同|发票|發票|收据|收據|报价单|工资单|工资条|租赁合同|租房合同|银行对账单|保险单/u;
 
 /// Whether a message plainly asks about the person's documents (read with it).
 export function aboutDocuments(text: string): boolean {

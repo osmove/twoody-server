@@ -9,6 +9,7 @@ import { bank } from "./0005_bank.js";
 import { isolatedProjects } from "./0006_isolated_projects.js";
 import { retireClientFiles } from "./0007_retire_client_files.js";
 import { folderShares } from "./0008_folder_shares.js";
+import { documentGrams } from "./0009_document_grams.js";
 
 // Versioned migrations (03/10/2026, docs/schema-convergence.md): the
 // database's version is SQLite's `user_version`. A database at 0 — fresh,
@@ -35,6 +36,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 6, name: "isolated_projects", up: isolatedProjects },
   { version: 7, name: "retire_client_files", up: retireClientFiles },
   { version: 8, name: "folder_shares", up: folderShares },
+  { version: 9, name: "document_grams", up: documentGrams },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

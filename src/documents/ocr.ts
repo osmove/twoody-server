@@ -8,12 +8,27 @@ import { access, constants } from "node:fs/promises";
 // scan stays unread, as before.
 //
 // The helper answers {"engine":"vision","pages":[{"page":1,"text":"…"}]}.
+//
+// Languages (10/10/2026: a Japanese scan came out as garbage — the helper
+// was asked for French and English only): the helper's own choice by
+// default, Vision detecting the language among the app's ten with the
+// person's first (TWOODY_OCR_PREFER, which the Desktop sets to the app's
+// language); TWOODY_OCR_LANGUAGES, a list (« fr-FR,en-US »), reads with
+// that list alone.
 
 /// A whole scanned book is not read in one sitting: past this many pages
 /// the rest stays unread, and the document says so through its gaps.
 export const MAX_OCR_PAGES = 300;
 /// About a second a page on Apple silicon; generous for older Macs.
 const TIMEOUT_MS = 15 * 60 * 1000;
+
+/// What the helper is told about languages: nothing (it detects them), the
+/// person's language to try first, or the list it must read with.
+export function ocrLanguageArgs(env: NodeJS.ProcessEnv = process.env): string[] {
+  const languages = env.TWOODY_OCR_LANGUAGES?.trim();
+  const prefer = env.TWOODY_OCR_PREFER?.trim();
+  return [...(languages ? ["--languages", languages] : []), ...(prefer && /^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})*$/.test(prefer) ? ["--prefer", prefer] : [])];
+}
 
 export function ocrAvailable(): boolean {
   return Boolean(process.env.TWOODY_OCR_BIN);
@@ -30,7 +45,7 @@ export async function ocrPages(path: string, pages: number[]): Promise<Map<numbe
     return null;
   }
   const wanted = pages.slice(0, MAX_OCR_PAGES);
-  const args = [path, "--pages", wanted.join(","), "--languages", process.env.TWOODY_OCR_LANGUAGES || "fr-FR,en-US"];
+  const args = [path, "--pages", wanted.join(","), ...ocrLanguageArgs()];
   const stdout = await new Promise<string | null>((resolve) => {
     execFile(bin, args, { timeout: TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 }, (error, out, err) => {
       if (error) {

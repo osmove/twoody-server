@@ -150,7 +150,9 @@ The person grants folders; the server indexes them into SQLite and answers
 with citations. Nothing leaves the SQLite file.
 
 - `extract.ts` pure-JS extraction (unpdf, fflate for .docx/.odt, RTF, HTML,
-  text); no shelling out. `ocr.ts` uses the helper the Desktop provides.
+  text); no shelling out. `ocr.ts` uses the helper the Desktop provides
+  (Vision detects the language; `TWOODY_OCR_PREFER` the app's language
+  first, `TWOODY_OCR_LANGUAGES` a fixed list).
   Spreadsheets (.xlsx/.xlsm/.ods, and CSV/TSV that are tables) and
   presentations (.pptx/.pptm/.ppsx/.odp, speaker notes included) are read
   part by part from the zip (`zipParts.ts`: pictures never inflated, a
@@ -163,7 +165,18 @@ with citations. Nothing leaves the SQLite file.
   passage's name, page and first line — sources carry it as `location`.
 - `chunk.ts` ~1200-character passages; a PDF page or a slide starts a new
   one; a spreadsheet's block is kept whole.
-- `query.ts` question → FTS5 query; `library.ts` grants
+- `query.ts` question → FTS5 query (French and English stopwords and
+  stems; `languages.ts` those of German, Spanish, Italian, Portuguese and
+  Dutch, for a question whose small words are theirs: plurals met through
+  a prefix, « rechnung* », « factu* »); `cjk.ts` Japanese, Chinese and Korean
+  (10/10/2026): unicode61 does not cut them into words, so their runs are
+  also indexed as overlapping pairs of characters in `document_grams`
+  (migration 9, rowid = the passage's rowid in `document_chunks`, written
+  and deleted with it in `library.ts`), a question's runs cut at particles
+  and function words; the other languages' expressions are unchanged
+  (`test/cjkSearch.test.ts`). The conversations' and e-mails' indexes have
+  SQL triggers, which cannot cut text: a question in those scripts is
+  looked for there by LIKE on the pairs. `library.ts` grants
   (`folderRisk.ts`/`canonicalFolder` refuse roots, a whole home, `~/Library`,
   hidden paths; symlinks not followed), incremental indexing, BM25 search
   including file and folder names.

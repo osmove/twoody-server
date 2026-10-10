@@ -1,3 +1,4 @@
+import { bigrams, cjkRuns, cjkWords, withoutCjk } from "../documents/cjk.js";
 import { importanceBonus } from "./importance.js";
 
 // How well each memory answers a message (docs/memory-v2-design.md §3,
@@ -100,10 +101,13 @@ export function normalize(text: string): string {
 /// A birth date: « né le 14 mars 1984 », « née en 1987 », « born on 3 May 2001 ».
 export const BIRTH = /\b(?:nee?s?\s+(?:le\s+(?:\d{1,2}|1er)\s+\p{L}+\s+\d{4}|en\s+\d{4})|born\s+(?:on\s+|in\s+)?(?:\d{1,2}\s+\p{L}+\s+\d{4}|\p{L}+\s+\d{1,2},?\s+\d{4}|\d{4}))/u;
 
-/// A memory's words, accents and case removed.
+/// A memory's words, accents and case removed; its Japanese, Chinese and
+/// Korean as pairs of characters (documents/cjk.ts: those scripts do not
+/// space their words, or glue particles to them — 10/10/2026).
 export function memoryWords(text: string): string[] {
-  const normal = normalize(text);
+  const normal = normalize(withoutCjk(text));
   const words = normal.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 2);
+  for (const run of cjkRuns(text)) words.push(...bigrams(run).filter((pair) => [...pair].length === 2));
   if (BIRTH.test(normal)) words.push("naissance");
   return words;
 }
@@ -147,9 +151,13 @@ export function sameWord(token: string, word: string): boolean {
 
 export function keywords(text: string): Set<string> {
   const tokens = new Set<string>();
-  for (const word of normalize(text).split(/[^\p{L}\p{N}]+/u)) {
+  for (const word of normalize(withoutCjk(text)).split(/[^\p{L}\p{N}]+/u)) {
     if (word.length >= 3 && !STOPWORDS.has(word)) tokens.add(word);
   }
+  // A Japanese, Chinese or Korean word of the message, cut at its particles,
+  // as its pairs: each pair is matched whole (sameWord), as memoryWords
+  // holds them.
+  for (const word of cjkWords(text)) for (const pair of bigrams(word)) if ([...pair].length === 2) tokens.add(pair);
   return tokens;
 }
 

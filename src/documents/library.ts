@@ -12,7 +12,8 @@ import { extractSections, maxBytesFor } from "./extract.js";
 import { folderRisk } from "./folderRisk.js";
 import { capabilityOn, setLocalCapability } from "../localCapabilities.js";
 import { folderReadable, walk } from "./walk.js";
-import { buildMatchQuery, metadataScore, queryTerms, selectPassages } from "./query.js";
+import { buildGramsQuery, buildMatchQuery, metadataScore, queryTerms, selectPassages, termsFound } from "./query.js";
+import { cjkSnippet, hasCjk, indexGrams } from "./cjk.js";
 
 // The user's document library: the folders they granted, the index
 // built from them, and the search that feeds /queries.
@@ -141,6 +142,9 @@ export function removeFolder(userId: string, folderId: string): boolean {
   if (!folder) return false;
 
   sqlite.transaction(() => {
+    sqlite
+      .prepare("DELETE FROM document_grams WHERE document_id IN (SELECT id FROM documents WHERE folder_id = ?)")
+      .run(folderId);
     sqlite
       .prepare("DELETE FROM document_chunks WHERE document_id IN (SELECT id FROM documents WHERE folder_id = ?)")
       .run(folderId);
@@ -304,11 +308,18 @@ async function indexFile(userId: string, given: string, path: string): Promise<v
   const insertChunk = sqlite.prepare(
     "INSERT INTO document_chunks (text, document_id, user_id, page, position) VALUES (?, ?, ?, ?, ?)",
   );
+  const insertGrams = sqlite.prepare("INSERT INTO document_grams (rowid, grams, document_id) VALUES (?, ?, ?)");
   sqlite.transaction(() => {
     sqlite.prepare("DELETE FROM document_labels WHERE document_id = ?").run(id);
     sqlite.prepare("DELETE FROM document_embeddings WHERE document_id = ?").run(id);
+    sqlite.prepare("DELETE FROM document_grams WHERE document_id = ?").run(id);
     sqlite.prepare("DELETE FROM document_chunks WHERE document_id = ?").run(id);
-    for (const chunk of chunks) insertChunk.run(chunk.text, id, userId, chunk.page, chunk.position);
+    for (const chunk of chunks) {
+      const { lastInsertRowid } = insertChunk.run(chunk.text, id, userId, chunk.page, chunk.position);
+      // Japanese, Chinese and Korean, by pairs of characters (cjk.ts).
+      const grams = indexGrams(chunk.text);
+      if (grams) insertGrams.run(lastInsertRowid, grams, id);
+    }
     const values = {
       userId,
       folderId,
@@ -331,6 +342,7 @@ function deleteDocument(id: string): void {
   sqlite.transaction(() => {
     sqlite.prepare("DELETE FROM document_labels WHERE document_id = ?").run(id);
     sqlite.prepare("DELETE FROM document_embeddings WHERE document_id = ?").run(id);
+    sqlite.prepare("DELETE FROM document_grams WHERE document_id = ?").run(id);
     sqlite.prepare("DELETE FROM document_chunks WHERE document_id = ?").run(id);
     sqlite.prepare("DELETE FROM documents WHERE id = ?").run(id);
   })();
@@ -357,11 +369,14 @@ export function searchPassages(userId: string, question: string, limit = 6, fold
   if (folderIds?.length === 0) return [];
   const scope = folderIds ? ` AND d.folder_id IN (${folderIds.map(() => "?").join(",")})` : "";
   const match = buildMatchQuery(question);
-  if (!match) return [];
+  const grams = buildGramsQuery(question);
+  if (!match && !grams) return [];
 
   let rows: Array<Passage & { score: number }>;
   try {
-    rows = sqlite
+    rows = grams
+      ? gramRows(userId, match, grams, queryTerms(question), scope, folderIds ?? [], limit * 4)
+      : sqlite
       .prepare(
         `SELECT c.document_id, d.name, d.path, c.page, c.text,
                 snippet(document_chunks, 0, '', '', '…', 24) AS snippet,
@@ -403,6 +418,35 @@ export function searchPassages(userId: string, question: string, limit = 6, fold
     if (seen.has(key)) return false;
     seen.add(key); return true;
   }).slice(0, limit);
+}
+
+/// Passages for a question with Japanese, Chinese or Korean words: found by
+/// their pairs in document_grams, and by the other words in
+/// document_chunks, a passage's two BM25 scores added (both negative, lower
+/// is better). A passage sharing a single pair with a longer word (« 通知 »
+/// of « 解除通知期 ») holds none of the question's words: left out. The
+/// question without those scripts never comes here: its search is the one
+/// above, as it was.
+function gramRows(userId: string, match: string | null, grams: string, terms: string[], scope: string, folderIds: string[], limit: number): Array<Passage & { score: number }> {
+  const hits = match
+    ? `SELECT rowid AS id, bm25(document_chunks) AS s FROM document_chunks WHERE document_chunks MATCH ?
+        UNION ALL SELECT rowid AS id, bm25(document_grams) AS s FROM document_grams WHERE document_grams MATCH ?`
+    : "SELECT rowid AS id, bm25(document_grams) AS s FROM document_grams WHERE document_grams MATCH ?";
+  const rows = sqlite
+    .prepare(
+      `WITH hits AS MATERIALIZED (${hits})
+       SELECT c.document_id, d.name, d.path, c.page, c.text, SUM(h.s) AS score
+         FROM hits h
+         JOIN document_chunks c ON c.rowid = h.id
+         JOIN documents d ON d.id = c.document_id
+        WHERE c.user_id = ? ${scope}
+        GROUP BY h.id
+        ORDER BY score
+        LIMIT ?`,
+    )
+    .all(...(match ? [match, grams] : [grams]), userId, ...folderIds, limit) as Array<Omit<Passage, "snippet"> & { score: number }>;
+  const words = terms.filter(hasCjk);
+  return rows.filter((row) => termsFound(row.text, terms) > 0).map((row) => ({ ...row, snippet: cjkSnippet(row.text, words) }));
 }
 
 /** Paginated metadata only; every row is scoped to the caller and a current grant. */

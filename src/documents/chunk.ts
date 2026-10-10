@@ -42,7 +42,7 @@ function chunkText(text: string, target: number): string[] {
       chunks.push(current);
       // Start the next chunk with the tail of this one.
       const tail = current.slice(-CHUNK_OVERLAP_CHARS);
-      const boundary = tail.search(/[\s.;:!?]\S/);
+      const boundary = tail.search(/[\s.;:!?。！？；：、]\S/);
       current = boundary === -1 ? "" : tail.slice(boundary + 1).trimStart();
     }
     current = current ? `${current}\n${piece}` : piece;
@@ -53,6 +53,9 @@ function chunkText(text: string, target: number): string[] {
 
 /// Paragraphs first; a paragraph longer than the target is cut into
 /// sentences, and a sentence longer than the target into hard slices.
+/// Japanese and Chinese end a sentence with « 。 », « ！ » or « ？ » and no
+/// space after it: a long paragraph of theirs was cut every 1,200
+/// characters wherever that fell, mid-word, with no overlap (10/10/2026).
 function splitToFit(text: string, target: number): string[] {
   const out: string[] = [];
   for (const paragraph of text.split(/\n{2,}|\n(?=\S)/)) {
@@ -62,7 +65,7 @@ function splitToFit(text: string, target: number): string[] {
       out.push(trimmed);
       continue;
     }
-    for (const sentence of trimmed.split(/(?<=[.!?…])\s+/)) {
+    for (const sentence of trimmed.split(/(?<=[.!?…])\s+|(?<=[。！？])/)) {
       if (sentence.length <= target) {
         out.push(sentence);
         continue;
