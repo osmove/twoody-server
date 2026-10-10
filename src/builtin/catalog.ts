@@ -183,16 +183,62 @@ export const CATALOG: CatalogModel[] = [
   },
 ];
 
-/// Keep a conservative RAM recommendation on Windows/Linux, including PCs
-/// that fall back to CPU. GPU acceleration does not guarantee enough VRAM.
-/// macOS uses the catalogue RAM floor.
-export function recommendedModel(totalRamBytes: number, catalog: CatalogModel[] = CATALOG, platform: NodeJS.Platform = process.platform): CatalogModel | null {
+/// What a computer offers a model, beyond its memory: where the engine will
+/// run it (catalogView, the Desktop's model screen).
+export interface MachineFacts {
+  /// `process.arch`. A Mac with an Intel processor ("x64") has no Metal build
+  /// of the engine (runtimeManifest.ts: llama.cpp's macOS x64 release is
+  /// CPU-only): it runs a model on its processor, like a PC without a graphics
+  /// card, and its memory is not shared with a GPU.
+  arch?: string;
+  /// The memory of its largest graphics card with memory of its own (Vulkan,
+  /// `dedicatedGpuMemory()` in acceleration.ts), in bytes; null or absent for
+  /// none, an integrated one (it shares the system's memory) or unknown.
+  dedicatedVramBytes?: number | null;
+}
+
+const GIB = 1024 ** 3;
+/// A graphics card that holds Qwen3.5 9B whole, with its 32 768-token
+/// window in an f16 cache (Vulkan has no q8_0 cache without flash
+/// attention) and its vision file: 5.4 GiB of weights + 1 GiB of cache +
+/// 0.3 GiB of work buffers + 1.15 GiB for images, plus llama.cpp's 1 GiB
+/// margin (measured with b11146 on Metal, 10/10/2026, the cache recomputed
+/// in f16). A "10 GB" card reports 10 240 MiB.
+export const VRAM_FOR_9B_BYTES = 9.5 * GIB;
+
+/// The model offered first, by this computer's memory and where the engine
+/// runs it (measured 10/10/2026 on an M5, b11146, the app's settings):
+///   - a Mac with Apple silicon: its memory is the GPU's. The largest of
+///     Twoody's models it holds next to the system and the app — 4B on
+///     8 GB (with its vision file, some 3.8 GiB in all at 8 192 tokens), 9B
+///     from 16 GB (some 7.4 GiB at 32 768 tokens). The 9B on 8 GB does not
+///     fit the GPU's share of it (about 5.3 GiB): 19 or 20 of its 34 layers
+///     on the GPU, the others copied for the processor (1.8 GiB more, some
+///     8.8 GiB in all); even with memory to spare, it read a 3 000-token
+///     prompt eleven times slower than the 4B (65 against 742 tokens a
+///     second) and wrote three times slower (9 against 29).
+///   - on the processor (Linux, an Intel Mac, a PC without a graphics card
+///     of its own): the 4B below 32 GB. On 4 cores the 9B read 16 tokens a
+///     second and wrote 4, the 4B 24 to 36 and 6 to 11 (a busy M5): a
+///     3 000-token prompt is minutes either way, and the 9B's twice as
+///     long. The 9B from 32 GB.
+///   - a PC whose graphics card holds the 9B whole (VRAM_FOR_9B_BYTES) and
+///     16 GB of memory: the 9B.
+/// The person can always choose the other size.
+export function recommendedModel(
+  totalRamBytes: number,
+  catalog: CatalogModel[] = CATALOG,
+  platform: NodeJS.Platform = process.platform,
+  machine: MachineFacts = {},
+): CatalogModel | null {
   if (catalog.length === 0) return null;
-  const ramGb = totalRamBytes / 1024 ** 3;
+  const ramGb = totalRamBytes / GIB;
   // The measured models first; any other only when the catalogue has none.
   const candidates = catalog.some((model) => model.recommendable) ? catalog.filter((model) => model.recommendable) : catalog;
   const sorted = [...candidates].sort((a, b) => a.minRamGb - b.minRamGb);
-  if (platform !== "darwin" && ramGb + 0.5 < 32) return sorted[0];
+  const unifiedMemory = platform === "darwin" && machine.arch !== "x64";
+  const largeCard = (machine.dedicatedVramBytes ?? 0) >= VRAM_FOR_9B_BYTES && ramGb + 0.5 >= 16;
+  if (!unifiedMemory && !largeCard && ramGb + 0.5 < 32) return sorted[0];
   // A "16 GB" Mac reports a little under 16 GiB.
   const fitting = sorted.filter((model) => model.minRamGb <= ramGb + 0.5);
   return fitting.length > 0 ? fitting[fitting.length - 1] : sorted[0];
@@ -265,7 +311,7 @@ export function loadCatalog(env: NodeJS.ProcessEnv = process.env): { models: Cat
 /// Whether a model runs comfortably on a computer with this much memory
 /// (the same half-gigabyte allowance as the recommendation).
 export function modelFits(model: CatalogModel, totalRamBytes: number): boolean {
-  return model.minRamGb <= totalRamBytes / 1024 ** 3 + 0.5;
+  return model.minRamGb <= totalRamBytes / GIB + 0.5;
 }
 
 export interface CatalogEntryView extends CatalogModel {
@@ -280,9 +326,10 @@ export function catalogView(
   installedIds: Iterable<string>,
   totalRamBytes: number,
   platform: NodeJS.Platform = process.platform,
+  machine: MachineFacts = {},
 ): CatalogEntryView[] {
   const installed = new Set(installedIds);
-  const recommended = recommendedModel(totalRamBytes, models, platform)?.id ?? null;
+  const recommended = recommendedModel(totalRamBytes, models, platform, machine)?.id ?? null;
   return models.map((model) => ({
     ...model,
     installed: installed.has(model.id),

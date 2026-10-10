@@ -4,11 +4,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DownloadError, downloadModel, isInstalled, removeModel } from "../src/builtin/downloads.js";
+import { DownloadError, downloadModel, freeDiskBytes, isInstalled, removeModel, SPACE_MARGIN_BYTES, spaceToInstall } from "../src/builtin/downloads.js";
 
 const content = randomBytes(3 * 1024 * 1024 + 123);
 const sha256 = createHash("sha256").update(content).digest("hex");
@@ -152,3 +152,24 @@ test("cancelling keeps what was received, for the next attempt", () =>
     const kept = statSync(join(dir, "Tiny-Q8_0.gguf.part")).size;
     assert.ok(kept > 0 && kept < content.length, `kept ${kept} bytes`);
   }));
+
+// Checked before the first byte, for the model and its vision file at once:
+// running out of room between the two would leave gigabytes for nothing.
+test("the room an install needs counts what is already there, and the margin once", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "twoody-models-"));
+  try {
+    const model = entry("http://127.0.0.1:9/");
+    const vision = { ...model, id: "Tiny-Q8_0.mmproj", file: "Tiny-Q8_0.mmproj.gguf", bytes: 1_000 };
+    const both = [{ dir, model }, { dir, model: vision }];
+    assert.equal(await spaceToInstall(both), content.length + 1_000 + SPACE_MARGIN_BYTES);
+    writeFileSync(join(dir, "Tiny-Q8_0.gguf.part"), content.subarray(0, 1_000_000));
+    assert.equal(await spaceToInstall(both), content.length - 1_000_000 + 1_000 + SPACE_MARGIN_BYTES);
+    writeFileSync(join(dir, "Tiny-Q8_0.gguf"), content);
+    writeFileSync(join(dir, "Tiny-Q8_0.mmproj.gguf"), Buffer.alloc(1_000));
+    assert.equal(await spaceToInstall(both), 0);
+    // A folder not made yet: its disk's room.
+    assert.ok(((await freeDiskBytes(join(dir, "not", "yet"))) ?? 0) > 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

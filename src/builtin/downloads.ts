@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream, promises as fs } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { once } from "node:events";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -37,13 +37,15 @@ export class DownloadError extends Error {
   constructor(
     public code: "cancelled" | "not_enough_space" | "checksum_mismatch" | "forbidden_url" | "http_error" | "incomplete",
     message: string,
+    /// For "not_enough_space": what the disk lacks, in bytes, for the screen.
+    public space?: { needed: number; free: number },
   ) {
     super(message);
   }
 }
 
 // Room left on the disk once the model is there.
-const SPACE_MARGIN_BYTES = 2 * 1024 ** 3;
+export const SPACE_MARGIN_BYTES = 2 * 1024 ** 3;
 const MAX_REDIRECTS = 5;
 const PROGRESS_EVERY_MS = 200;
 /// A download that receives nothing for this long is stopped; tried again,
@@ -70,13 +72,31 @@ async function fileSize(path: string): Promise<number> {
   }
 }
 
-async function freeBytes(dir: string): Promise<number | null> {
-  try {
-    const stats = await fs.statfs(dir);
-    return Number(stats.bavail) * Number(stats.bsize);
-  } catch {
-    return null;
+/// The free space of the disk that holds `dir` — or, before it exists, its
+/// nearest folder that does; null when it cannot be told.
+export async function freeDiskBytes(dir: string): Promise<number | null> {
+  for (let at = dir; ; at = dirname(at)) {
+    try {
+      const stats = await fs.statfs(at);
+      return Number(stats.bavail) * Number(stats.bsize);
+    } catch {
+      if (dirname(at) === at) return null;
+    }
   }
+}
+
+/// What installing these files still needs on the disk: each one's size
+/// less what is there already (installed, or a partial file that resumes),
+/// and the margin once — a model and its vision file are one install, and
+/// running out of room between the two would leave gigabytes for nothing.
+export async function spaceToInstall(files: Array<{ dir: string; model: CatalogModel }>): Promise<number> {
+  let needed = 0;
+  for (const { dir, model } of files) {
+    if (await isInstalled(dir, model)) continue;
+    const partial = await fileSize(`${modelPath(dir, model)}.part`);
+    needed += model.bytes - (partial <= model.bytes ? partial : 0);
+  }
+  return needed > 0 ? needed + SPACE_MARGIN_BYTES : 0;
 }
 
 /// One GET with Node's own HTTP client. fetch (undici, in Electron 44)
@@ -133,9 +153,10 @@ export async function downloadModel(
     received = 0;
   }
 
-  const free = await freeBytes(dir);
-  if (free !== null && free < model.bytes - received + SPACE_MARGIN_BYTES) {
-    throw new DownloadError("not_enough_space", `${model.bytes - received + SPACE_MARGIN_BYTES - free} bytes short`);
+  const free = await freeDiskBytes(dir);
+  const needed = model.bytes - received + SPACE_MARGIN_BYTES;
+  if (free !== null && free < needed) {
+    throw new DownloadError("not_enough_space", `${needed - free} bytes short`, { needed, free });
   }
 
   const report = (state: DownloadState, bytesPerSecond = 0) =>

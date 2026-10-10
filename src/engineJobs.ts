@@ -64,7 +64,8 @@ export class JobError extends Error {
 export async function engineCatalog(): Promise<{ models: CatalogEntryView[]; overridden: boolean }> {
   const { models, overridden } = loadCatalog(engine().env);
   const installed = await engine().manager.installedModels();
-  return { models: catalogView(models, installed, totalmem(), engine().platform), overridden };
+  // An Intel Mac runs its models on the processor (catalog.ts MachineFacts).
+  return { models: catalogView(models, installed, totalmem(), engine().platform, { arch: engine().arch }), overridden };
 }
 
 /// The runtime for this computer, installed when it is not there.

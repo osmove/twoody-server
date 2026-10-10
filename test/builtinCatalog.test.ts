@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CATALOG, catalogView, isAllowedDownloadUrl, loadCatalog, modelFits, recommendedModel, visionDownload } from "../src/builtin/catalog.js";
-import { accelerationArgs, countGpuDevices, selectRuntimeEngine } from "../src/builtin/acceleration.js";
+import { accelerationArgs, countGpuDevices, dedicatedGpuMemory, selectRuntimeEngine } from "../src/builtin/acceleration.js";
 import { failureOf } from "../src/builtin/failure.js";
 import { mkdir } from "node:fs/promises";
 
@@ -91,6 +91,47 @@ test("CPU-only Windows and Linux recommend 9B from 32 GiB, keeping both choices"
     assert.equal(recommendedModel(16 * GIB, [], platform), null);
     assert.equal(recommendedModel(16 * GIB, [CATALOG[1]], platform)!.id, CATALOG[1].id);
   }
+});
+
+// A first launch on a modest computer (10/10/2026): where the engine runs
+// the model decides as much as how much memory there is.
+test("an Intel Mac runs on its processor: the 4B below 32 GB, like a PC without a graphics card", () => {
+  for (const gb of [8, 16, 24]) assert.equal(recommendedModel(gb * GIB, CATALOG, "darwin", { arch: "x64" })!.id, "Qwen3.5-4B-Q4_K_M");
+  assert.equal(recommendedModel(32 * GIB, CATALOG, "darwin", { arch: "x64" })!.id, "Qwen3.5-9B-Q4_K_M");
+  // Apple silicon: its memory is the GPU's.
+  assert.equal(recommendedModel(15.9 * GIB, CATALOG, "darwin", { arch: "arm64" })!.id, "Qwen3.5-9B-Q4_K_M");
+  assert.equal(recommendedModel(8 * GIB, CATALOG, "darwin", { arch: "arm64" })!.id, "Qwen3.5-4B-Q4_K_M");
+});
+
+test("a PC whose graphics card holds the 9B whole gets the 9B from 16 GB; a smaller or shared one does not", () => {
+  const MIB = 1024 ** 2;
+  const pick = (ramGb: number, vramMib: number | null) => recommendedModel(ramGb * GIB, CATALOG, "win32", { dedicatedVramBytes: vramMib === null ? null : vramMib * MIB })!.id;
+  assert.equal(pick(16, 12_288), "Qwen3.5-9B-Q4_K_M");
+  assert.equal(pick(15.8, 10_240), "Qwen3.5-9B-Q4_K_M"); // a "16 GB" PC, a "10 GB" card
+  assert.equal(pick(16, 8_192), "Qwen3.5-4B-Q4_K_M");
+  assert.equal(pick(8, 24_576), "Qwen3.5-4B-Q4_K_M"); // the card is large, the computer is not
+  assert.equal(pick(16, null), "Qwen3.5-4B-Q4_K_M");
+  assert.equal(pick(32, null), "Qwen3.5-9B-Q4_K_M");
+  // Linux runs on its processor whatever the card says.
+  assert.equal(recommendedModel(16 * GIB, CATALOG, "linux")!.id, "Qwen3.5-4B-Q4_K_M");
+  assert.equal(catalogView(CATALOG, [], 16 * GIB, "win32", { dedicatedVramBytes: 12 * GIB }).find((entry) => entry.recommended)!.id, "Qwen3.5-9B-Q4_K_M");
+});
+
+test("a graphics card's own memory is read from Vulkan's device list; an integrated one does not count", () => {
+  const discrete = [
+    "ggml_vulkan: Found 2 Vulkan devices:",
+    "ggml_vulkan: 0 = NVIDIA GeForce RTX 4070 (NVIDIA) | uma: 0 | fp16: 1 | bf16: 0 | warp size: 32 | shared memory: 49152 | int dot: 1 | matrix cores: NV_coopmat2",
+    "ggml_vulkan: 1 = Intel(R) UHD Graphics 770 (Intel Corporation) | uma: 1 | fp16: 1 | bf16: 0 | warp size: 32 | shared memory: 32768 | int dot: 1 | matrix cores: none",
+    "Available devices:",
+    "  Vulkan0: NVIDIA GeForce RTX 4070 (12282 MiB, 11468 MiB free)",
+    "  Vulkan1: Intel(R) UHD Graphics 770 (16233 MiB, 16000 MiB free)",
+  ].join("\n");
+  assert.equal(dedicatedGpuMemory(discrete), 12_282 * 1024 ** 2);
+  const integrated = "ggml_vulkan: 0 = AMD Radeon(TM) Graphics (AMD proprietary driver) | uma: 1 | fp16: 1\n  Vulkan0: AMD Radeon(TM) Graphics (16384 MiB, 15000 MiB free)";
+  assert.equal(dedicatedGpuMemory(integrated), null);
+  // The kind not said: not counted.
+  assert.equal(dedicatedGpuMemory("  Vulkan0: GPU (8192 MiB, 7000 MiB free)"), null);
+  assert.equal(dedicatedGpuMemory(""), null);
 });
 
 test("the pinned entries are the Desktop's, byte for byte", () => {

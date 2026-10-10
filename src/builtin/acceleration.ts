@@ -45,6 +45,23 @@ export function countGpuDevices(output: string, backend: "metal" | "vulkan"): nu
   return [...output.matchAll(pattern)].length;
 }
 
+/// The memory of the largest graphics card with memory of its own, from
+/// what `llama-server --list-devices` says on Windows: Vulkan names each
+/// device (`ggml_vulkan: 0 = <name> (<driver>) | uma: 0 | …`) and its size
+/// (`Vulkan0: <name> (12288 MiB, 11000 MiB free)`). An integrated GPU
+/// (`uma: 1`) shares the system's memory, which is counted already; a
+/// device whose kind is not said is not counted. Null when there is none.
+export function dedicatedGpuMemory(output: string): number | null {
+  const shared = new Map<number, boolean>();
+  for (const match of output.matchAll(/ggml_vulkan:\s*(\d+)\s*=[^\n]*?\|\s*uma:\s*([01])\b/g)) shared.set(Number(match[1]), match[2] === "1");
+  let largest = 0;
+  for (const match of output.matchAll(/^\s*Vulkan(\d+):\s+.+\((\d+) MiB,/gm)) {
+    if (shared.get(Number(match[1])) !== false) continue;
+    largest = Math.max(largest, Number(match[2]) * 1024 ** 2);
+  }
+  return largest > 0 ? largest : null;
+}
+
 export function accelerationArgs(backend: Acceleration): string[] {
   // Leave layer count unset on GPU: llama.cpp fits layers to available memory
   // and keeps a 1 GiB margin. Forcing all layers can fail on smaller GPUs.
