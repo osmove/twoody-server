@@ -146,3 +146,39 @@ joignable : son ordinateur est éteint ou hors ligne. »
   « Partagés avec moi » (off by default); Settings › Organisations, for admins « Dossiers partagés » and « Règles de
   partage ». Publishing to the account is done by the renderer after the server made the share (POST, then PATCH
   `published`), and the sync runs when Documents opens and every 15 minutes.
+
+## 5. As built in twoody-server (L2 and the server half of L4, 10/10/2026)
+
+What the code fixed where this contract left it open; the Desktop follows it.
+
+- **Pre-check.** The worker calls `serve` twice: first with `op: null`, before the sealed request is opened (checks
+  1–6 of `src/shares/policy.ts`: share, expiry, folder, Documents, grantee, device), then with the opened body. A
+  refusal at the first call fails the task with `share_refused:<error>` (nothing can be sealed to an unopened
+  request); nothing is decrypted and the request id is not spent. Main forwards both payloads to
+  `POST /local_shares/serve` unchanged; the answer to `op: null` is `{ok: true}` or `{ok: false, error}`.
+- **Serve payload**: `{share_uuid, grantee_user_id, guest: {enc_public, sign_public}, op}`; `grantee_user_id` is the
+  principal's `grantee_id` (for an organization share, the requesting member). Always HTTP 200 with the §2 JSON for
+  this computer's app; 403 `desktop_app_only` for any other session; body ≤ 64 KB.
+- **Checks' order**: the grantee of a person share is checked before the device is recorded (an account naming
+  someone the share is not to records nothing in « Appareils en attente »); a wrong grantee answers `unknown_share`
+  (audited `wrong_grantee`). Isolated, refused or removed folder → `folder_gone` (audited `folder_isolated`,
+  `folder_refused`, `folder_gone`). Rate buckets: `search` 30/min; `folders`, `browse`, `text` 120/min.
+- **Ops**: `text` ≤ 100 000 characters (`truncated`); `browse` 100 entries a page, sorted by name; an unknown field,
+  an unknown op (`raw` included until L5), a path outside the folder → `bad_request`.
+- **Replay**: request ids are remembered in memory only; after a restart a copy relayed again within its five
+  minutes is served again — read-only, and sealed to keys only the guest's device holds.
+- **Bridge**: the worker declares `folder-share-provider` only when it has a `serveShare` hook; extra task args
+  (`sealed`, `guest_fingerprint`, `request_bytes`) are ignored. Tasks of kind `share_request` without a
+  `folder_share` principal, and `folder_share` principals on any other kind, fail with `shared_task_refused`; a
+  compute task whose grant id contains « : » too.
+- **Routes' shapes**: `Local` = {id, folder_id, folder_name, kind, grantee_user_id, grantee_name, organization_id,
+  organization_name, label, right, expires_at, created_at, updated_at, revision, revoked_at, revoked_by, published_at,
+  status: active|revoked|expired|stopped, stopped_reason}, times ISO 8601, no path. `Device` = {grantee_user_id,
+  fingerprint, enc_public, sign_public, state, first_seen_at, last_seen_at, approved_at, verified_at} (the Desktop
+  computes the safety number). DELETE answers 200 {share}. The approve/refuse/verify routes answer {device}. `sync`
+  puts in `republish` every active, unexpired share absent from the account, published before or not.
+  `share_guest_devices` carries `user_id` (unique on user, grantee, fingerprint).
+- **Grantee side**: `share-call` results may carry `share: {label, owner_name}` in the result or beside an error;
+  codes `device_not_approved` read as « … doit d'abord l'autoriser », `unknown_share`, `revoked`, `expired`, `right`,
+  `folder_gone`, `documents_off`, `share_unavailable`, `unknown_key`, `key_changed` as « n'est plus accessible »,
+  anything else (`host_offline`, `timeout`, `host_error`, `bad_request`…) as « n'est pas joignable ».

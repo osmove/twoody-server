@@ -12,6 +12,7 @@ import { smallTalk } from "./query.js";
 import { documentLocations, followUpQuestion, retrieveDocuments, scopedFolders } from "./retrieval.js";
 import { EMBED_MODEL } from "./semantic.js";
 import { fuseRankedLists } from "./vectorMath.js";
+import { shareCaller, shareCitationLink, shareDisplayName, sharedFolderUuids, shareDeadlineMs, shareMissingSentence, type ShareLabel } from "../shares/guest.js";
 
 // Document retrieval across the person's trusted computers
 // (docs/mesh-design.md §2, lot S4), by the computer building the turn:
@@ -40,6 +41,14 @@ import { fuseRankedLists } from "./vectorMath.js";
 // none; folders chosen by id ask only the computers they belong to
 // ("<computer_id>:<folder_id>"; a bare id is this computer's). A computer
 // not in the roster is never asked, whatever the account lists.
+//
+// Folders other people share with the person (docs/sharing-contracts.md
+// §3, shares/guest.ts) are asked too when the access names them one by one
+// ("share:<uuid>", never with « all »): through the Desktop, which seals
+// the search to the owner's computer, each waited for 4 s, fused with the
+// rest, named « Contrats · de Jimmy » and cited as
+// twoody://share/<uuid>/<document_id>. One out of reach is said in a line:
+// « Le dossier « Contrats » de Jimmy n'est pas joignable… ».
 
 /// How long a computer is waited for, by the way its search goes.
 const deadlines = { direct: 1_500, relay: 3_000 };
@@ -111,6 +120,9 @@ export interface MeshPassage {
   folder?: string;
   rel_path?: string;
   path?: string;
+  /// A passage of a folder someone else shares with the person: which share,
+  /// as the Desktop names it.
+  share?: { uuid: string; label: string | null; owner_name: string | null };
 }
 
 export interface MeshFile {
@@ -145,12 +157,28 @@ export type ComputerOutcome = {
   passages: number;
 };
 
+/// A shared folder asked for a turn.
+export type ShareOutcome = {
+  share_uuid: string;
+  label: string | null;
+  owner_name: string | null;
+  /// answered; late (past 4 s); unreachable (its owner's computer, the
+  /// account or the Desktop did not answer); busy (rate limited); pending
+  /// (this device not yet approved by the owner); refused (revoked, expired,
+  /// stopped…); none (nothing to ask)
+  status: "answered" | "late" | "unreachable" | "busy" | "pending" | "refused" | "none";
+  took_ms: number | null;
+  passages: number;
+};
+
 export interface MeshRetrieval {
   passages: MeshPassage[];
   files: MeshFile[];
   total: number;
   /// This computer first, then each computer asked (or left out).
   computers: ComputerOutcome[];
+  /// The shared folders the access named, asked or not.
+  shares?: ShareOutcome[];
   /// One line for the model when a computer is missing from the excerpts.
   note: string | null;
   /// Whether another computer's passage is among `passages`.
@@ -161,6 +189,11 @@ export interface MeshRetrieval {
 /// The citation link of a source: streamed from the computer that holds it.
 export function citationLink(computerId: string, documentId: string): string {
   return `twoody://doc/${encodeURIComponent(computerId)}/${encodeURIComponent(documentId)}`;
+}
+
+/// A passage's citation link: its computer's, or its share's.
+export function passageLink(passage: Pick<MeshPassage, "computer_id" | "document_id" | "share">): string {
+  return passage.share ? shareCitationLink(passage.share.uuid, passage.document_id) : citationLink(passage.computer_id, passage.document_id);
 }
 
 /// This computer's folder ids in a request's access: bare ids, or ids
@@ -307,6 +340,116 @@ async function ask(peer: PeerRow, body: Omit<SearchBody, "deadline_ms">, request
   }
 }
 
+// ── folders shared with the person ───────────────────────────────────────
+
+/// What a refusal of the owner's computer, the account or the Desktop
+/// means for the turn.
+function shareStatusOf(code: unknown): ShareOutcome["status"] {
+  switch (code) {
+    case "device_not_approved":
+      return "pending";
+    case "rate_limited":
+    case "busy":
+    case "desktop_busy":
+      return "busy";
+    case "unknown_share":
+    case "revoked":
+    case "expired":
+    case "right":
+    case "folder_gone":
+    case "documents_off":
+    case "share_unavailable":
+    case "unknown_key":
+    case "key_changed":
+      return "refused";
+    case "timeout":
+      return "late";
+    // host_error, bad_request, too_large, and any code not known yet: said
+    // as « n'est pas joignable », as the account's final event means them.
+    default:
+      return "unreachable";
+  }
+}
+
+/// A shared folder's passage, as far as it holds to the contract: a path
+/// inside the shared folder at most, never an absolute one.
+function readSharedPassage(raw: unknown, uuid: string, share: ShareLabel | null): MeshPassage | null {
+  const p = raw as Record<string, unknown> | null;
+  if (!p || typeof p !== "object") return null;
+  const name = cleanName(p.name);
+  if (typeof p.document_id !== "string" || !LOCAL_ID.test(p.document_id) || !name || typeof p.text !== "string" || !p.text.trim()) return null;
+  const relPath = cleanRelPath(p.path);
+  return {
+    computer_id: `share:${uuid}`,
+    computer_name: shareDisplayName(share),
+    local: false,
+    document_id: p.document_id,
+    name,
+    page: Number.isInteger(p.page) && (p.page as number) >= 1 ? (p.page as number) : null,
+    text: p.text.slice(0, 10_000),
+    snippet: p.text.slice(0, 240),
+    folder: share?.label ?? "Dossier partagé",
+    // The folder holding it, from the shared folder: « Contrats/2026 ».
+    ...(relPath ? { rel_path: relPath } : {}),
+    share: { uuid, label: share?.label ?? null, owner_name: share?.owner_name ?? null },
+  };
+}
+
+type AskedShare = { outcome: ShareOutcome; passages: MeshPassage[] };
+
+/// One shared folder's search, through the Desktop, within 4 s.
+async function askShare(uuid: string, q: string): Promise<AskedShare> {
+  const started = Date.now();
+  const outcome = (status: ShareOutcome["status"], share: ShareLabel | null, passages = 0, took: number | null = Date.now() - started): ShareOutcome => ({
+    share_uuid: uuid,
+    label: share?.label ?? null,
+    owner_name: share?.owner_name ?? null,
+    status,
+    took_ms: took,
+    passages,
+  });
+  const call = shareCaller();
+  // Without the Desktop (a Pi), or nothing to look for.
+  if (!call) return { outcome: outcome("unreachable", null, 0, null), passages: [] };
+  if (!q) return { outcome: outcome("none", null, 0, null), passages: [] };
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<"late">((resolve) => {
+    timer = setTimeout(() => resolve("late"), shareDeadlineMs());
+  });
+  try {
+    const answer = await Promise.race([call(uuid, { op: "search", query: q, limit: 8 }, shareDeadlineMs()), late]);
+    if (answer === "late") return { outcome: outcome("late", null), passages: [] };
+    if (!answer.ok) return { outcome: outcome(shareStatusOf(answer.code), answer.share), passages: [] };
+    const result = answer.result as { ok?: unknown; error?: unknown; passages?: unknown } | null;
+    if (!result || result.ok !== true) return { outcome: outcome(shareStatusOf(result?.error), answer.share), passages: [] };
+    const passages: MeshPassage[] = [];
+    let used = 0;
+    for (const raw of Array.isArray(result.passages) ? result.passages.slice(0, 8) : []) {
+      const passage = readSharedPassage(raw, uuid, answer.share);
+      if (!passage || used >= 10_000) continue;
+      passage.text = passage.text.slice(0, 10_000 - used);
+      used += passage.text.length;
+      passages.push(passage);
+    }
+    return { outcome: outcome("answered", answer.share, passages.length), passages };
+  } catch {
+    return { outcome: outcome("unreachable", null), passages: [] };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/// The lines for the model about shared folders that were not searched.
+export function sharesNote(shares: ShareOutcome[]): string | null {
+  const said = shares.flatMap((share) => {
+    const label = share.label && share.owner_name ? { label: share.label, owner_name: share.owner_name } : null;
+    if (share.status === "late" || share.status === "unreachable" || share.status === "busy") return [shareMissingSentence(label, "unreachable")];
+    if (share.status === "pending" || share.status === "refused") return [shareMissingSentence(label, share.status)];
+    return [];
+  });
+  return said.length ? `[${said.join(" ")} Its documents are missing from these excerpts; if the answer may be there, say so briefly.]` : null;
+}
+
 const MISSING: Partial<Record<ComputerOutcome["status"], string>> = {
   late: "did not answer in time",
   offline: "is offline",
@@ -358,6 +501,11 @@ export async function retrieveAcrossComputers(args: {
 
   const hint = followUp ? [...args.history].reverse().find((row) => row.role === "user")?.content.slice(-2_000) : undefined;
   const q = args.question.trim().slice(0, 2_000);
+  // Folders shared with the person, named one by one in the access: for the
+  // person only (their own devices), never a conversation given to someone
+  // else's computer. Only the question is sent.
+  const shareUuids = !requester || args.remote === false || (!followUp && smallTalk(args.question)) ? [] : sharedFolderUuids(args.access);
+  const sharesAsked = Promise.all(shareUuids.map((uuid) => askShare(uuid, q)));
   let remoteDone = 0;
   const remote = Promise.all(
     peers.map(async ({ peer, scope }): Promise<Asked> => {
@@ -381,6 +529,7 @@ export async function retrieveAcrossComputers(args: {
   const local = await retrieveDocuments(args.userId, args.question, args.history, args.localFolders);
   const localMs = Date.now() - started;
   const answers = await remote;
+  const shared = await sharesAsked;
   const where = documentLocations(args.userId, [...local.passages.map((p) => p.document_id), ...local.files.map((f) => f.id)]);
   const own: MeshPassage[] = local.passages.map((p) => ({
     computer_id: me.id,
@@ -398,11 +547,14 @@ export async function retrieveAcrossComputers(args: {
   }));
 
   const lists = answers.filter((a) => a.passages.length);
-  const passages = lists.length
+  const sharedLists = shared.filter((a) => a.passages.length);
+  const passages = lists.length || sharedLists.length
     ? fuseRankedLists(
         [
           { key: me.id, passages: own, embedModel: local.semantic === "used" ? EMBED_MODEL : null },
           ...lists.map((a) => ({ key: a.outcome.computer_id, passages: a.passages, embedModel: a.embedModel })),
+          // A shared folder's scores are its owner's: ranked by place only.
+          ...sharedLists.map((a) => ({ key: `share:${a.outcome.share_uuid}`, passages: a.passages, embedModel: null })),
         ],
         { limit: 8, budgetChars: args.budgetChars },
       )
@@ -418,14 +570,17 @@ export async function retrieveAcrossComputers(args: {
     { computer_id: me.id, computer_name: me.name, status: "answered", transport: null, took_ms: localMs, passages: own.length },
     ...answers.map((a) => a.outcome),
   ];
+  const shares = shared.map((a) => a.outcome);
+  const note = [missingNote(computers), sharesNote(shares)].filter((line): line is string => !!line).join("\n") || null;
   return {
     passages,
     files,
     total: local.total + answers.reduce((sum, a) => sum + a.files.length, 0),
     computers,
-    note: missingNote(computers),
+    ...(shares.length ? { shares } : {}),
+    note,
     remote: passages.some((p) => !p.local),
-    timing: { local_ms: localMs, remote_ms: peers.length ? remoteDone - started : null, total_ms: Date.now() - started },
+    timing: { local_ms: localMs, remote_ms: peers.length ? remoteDone - started : shareUuids.length ? Date.now() - started : null, total_ms: Date.now() - started },
   };
 }
 

@@ -74,6 +74,40 @@ export function isSealedTurn(args: unknown): args is SealedTurnArgs & { sealed_r
   return !!args && typeof args === "object" && typeof (args as SealedTurnArgs).sealed_request === "object";
 }
 
+/// A grantee's request on a folder shared from this computer
+/// (docs/sharing-contracts.md §1–§3): the account's principal beside the
+/// sealed body, as for a compute turn.
+export interface SealedShareArgs {
+  principal?: { kind?: unknown; share_uuid?: unknown; revision?: unknown; grantee_id?: unknown };
+  sealed_request?: SealedRequest;
+  guest_key?: { enc_public?: unknown; sign_public?: unknown };
+}
+
+/// What the bridge worker hands the server for one share request
+/// (POST /local_shares/serve, or in-process on a Pi): who asks, through
+/// which device, on which share, and the opened body — `op` null for the
+/// check made before anything is opened. Answers the JSON value of
+/// docs/sharing-contracts.md §2.
+export interface ShareServePayload {
+  share_uuid: string;
+  grantee_user_id: string;
+  guest: { enc_public: string; sign_public: string };
+  op: unknown;
+}
+export type ServeShare = (payload: ShareServePayload) => Promise<unknown>;
+
+const SHARE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const GRANTEE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const KEY_HEX = /^[0-9a-f]{64}$/;
+/// An answer goes back in pieces of at most this many characters of its
+/// JSON: each one sealed and relayed as one line by the account.
+export const SHARE_PIECE_CHARS = 16_000;
+
+/// The grant id a share's requests are sealed for. Compute grants are the
+/// account's integers: a request sealed for one can never be opened as the
+/// other (computeSeal binds the grant id into its keys).
+export const shareGrantId = (uuid: string) => `share:${uuid}`;
+
 export function createComputeHost({ path, now = Date.now }: { path: string; now?: () => number }) {
   let stored = load();
   const seen = new Map<string, number>();
@@ -190,6 +224,9 @@ export function createComputeHost({ path, now = Date.now }: { path: string; now?
     const grantId = String(args.principal?.grant_id ?? "");
     const guestKey = args.guest_key;
     if (!grantId || !guestKey?.enc_public || !guestKey?.sign_public || !isSealedTurn(args)) throw new Error("sealed_turn_malformed");
+    // A compute grant is a bare id; a share's (« share:<uuid> ») or any
+    // other namespaced one is never a model turn, whatever the task says.
+    if (grantId.includes(":")) throw new Error("shared_task_refused");
     rotate();
     const guest: PublicIdentity = { encPublic: guestKey.enc_public, signPublic: guestKey.sign_public };
     pin(grantId, guest);
@@ -217,11 +254,72 @@ export function createComputeHost({ path, now = Date.now }: { path: string; now?
     }
   }
 
+  /// One request on a folder shared from this computer: checked by the
+  /// server before anything is opened (the share, its folder, the grantee,
+  /// the device — `serve` with `op` null), opened for grant id
+  /// « share:<uuid> » from the device the task names, served, and answered
+  /// sealed — `{"h": header}`, then `{"c": piece}`… whose texts joined are
+  /// the answer's JSON. A refusal before opening fails the task with
+  /// « share_refused:<reason> »: nothing can be sealed to a request that was
+  /// not opened, and the account learns no more than the reason.
+  ///
+  /// Request ids seen are kept in memory only: after a restart, a request
+  /// relayed again within its five minutes would be served again. Accepted:
+  /// every operation only reads, and its answer is sealed to keys the
+  /// guest's device made for that one request, which the account cannot
+  /// read.
+  async function runSealedShare({
+    args,
+    serve,
+    send,
+  }: {
+    args: SealedShareArgs;
+    serve: ServeShare;
+    send: (line: string) => Promise<void>;
+  }): Promise<{ sealed: true }> {
+    const principal = args.principal ?? {};
+    const uuid = typeof principal.share_uuid === "string" && SHARE_UUID.test(principal.share_uuid) ? principal.share_uuid : null;
+    const grantee = typeof principal.grantee_id === "number" && Number.isSafeInteger(principal.grantee_id) && principal.grantee_id > 0
+      ? String(principal.grantee_id)
+      : typeof principal.grantee_id === "string" && GRANTEE_ID.test(principal.grantee_id) ? principal.grantee_id : null;
+    const enc = args.guest_key?.enc_public;
+    const sign = args.guest_key?.sign_public;
+    if (principal.kind !== "folder_share" || !uuid || !grantee || typeof enc !== "string" || typeof sign !== "string" || !KEY_HEX.test(enc) || !KEY_HEX.test(sign) || !isSealedTurn(args)) {
+      throw new Error("sealed_share_malformed");
+    }
+    const base = { share_uuid: uuid, grantee_user_id: grantee, guest: { enc_public: enc, sign_public: sign } };
+    const check = (await serve({ ...base, op: null })) as { ok?: unknown; error?: unknown } | null;
+    if (check?.ok !== true) throw new Error(`share_refused:${typeof check?.error === "string" && /^[a-z_]{1,40}$/.test(check.error) ? check.error : "unknown"}`);
+    rotate();
+    const { body, turn } = openComputeRequest({
+      host: identity(),
+      prekeys: prekeySecrets(),
+      guest: { encPublic: enc, signPublic: sign },
+      request: args.sealed_request,
+      grantId: shareGrantId(uuid),
+      now: now(),
+      markSeen,
+    });
+    try {
+      const result = await serve({ ...base, op: body ?? {} });
+      const json = JSON.stringify(result && typeof result === "object" ? result : { ok: false, error: "bad_request" });
+      const answer = startComputeResponse(turn);
+      const line = (value: unknown) => `${JSON.stringify(value)}\n`;
+      await send(line({ h: answer.header }));
+      for (let at = 0; at < json.length; at += SHARE_PIECE_CHARS) await send(line({ c: answer.piece(json.slice(at, at + SHARE_PIECE_CHARS)) }));
+      await send(line({ c: answer.finish("") }));
+      return { sealed: true };
+    } finally {
+      forgetTurn(turn);
+    }
+  }
+
   return {
     rotate,
     publicKeys,
     pins: () => structuredClone(stored.pins),
     runSealedTurn,
+    runSealedShare,
     /// For tests.
     markSeen,
   };

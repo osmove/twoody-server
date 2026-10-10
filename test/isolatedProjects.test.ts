@@ -318,7 +318,7 @@ test("retiring the client files closes the open ones, keeps their walls and dele
     assert.ok(row.done_at);
   }
   assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM project_notes").get() as { n: number }).n, notes);
-  assert.equal(SCHEMA_VERSION, 7);
+  assert.ok(SCHEMA_VERSION >= 7, "migration 7 is there (8 and later follow it)");
   // Its conversations are refused a new message: closed.
   const discussion = sqlite.prepare("SELECT d.id FROM discussions d JOIN projects p ON p.id = d.project_id WHERE p.isolated = 1 LIMIT 1").get() as { id: string } | undefined;
   if (discussion) {

@@ -79,6 +79,7 @@ documents), also measure with a real model (root AGENTS.md §5, §7):
 | `router/` | « Automatique »: which computer of the account answers (docs/multi-computer-design.md) |
 | `tunnel/` | encrypted relay tunnel and direct transport to the person's devices |
 | `compute/` | sealed compute requests from shared/household devices |
+| `shares/` | folder sharing (docs/sharing-design.md, docs/sharing-contracts.md): `store.ts` (migration 8: `folder_shares`, `share_guest_devices`, the audit's share columns; the account can only restrict, `syncShares`), `policy.ts` (the checks of every request, in order; rate limits), `serve.ts` (folders, search, browse, text, paths relative to the shared folder; `serveShareInProcess` for a server running its own bridge client), `parentServe.ts` (the bridge worker asks the Desktop to serve), `guest.ts` (the grantee's side: `share:<uuid>` in a turn's folder ids, calls through the Desktop's port, 4 s); routes `routes/localShares.ts` |
 | `bridgeClient.ts`, `bridgeWorker.ts`, `executors/`, `routes/bridge.ts` | the Bridge (§7) |
 | `mobileAgentBridge.ts`, `remoteCodeBridge.ts` | IPC to the parent Desktop for the phone's Agent and Twoody Code; absent when run alone |
 | `outbound.ts`, `runtimeAuth.ts`, `adminAccess.ts`, `rateLimit.ts`, `localAccess.ts`, `sessionTrust.ts`, `webOrigin.ts` | security gates (§6) |

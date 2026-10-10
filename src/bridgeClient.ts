@@ -34,11 +34,14 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { dirname, join } from "node:path";
-import { createComputeHost, isSealedTurn } from "./compute/computeHost.js";
+import { createComputeHost, isSealedTurn, type ServeShare } from "./compute/computeHost.js";
 import { createDeltaRelay } from "./executors/completionStream.js";
 import { executeBridgeTask, isSelfBridgeKind, tesseractReady, whisperReady } from "./executors/index.js";
 import { configuredDefaultModel, downloadedModels } from "./executors/localModels.js";
 import { outboundFetch } from "./outbound.js";
+
+/// What a worker that serves requests on shared folders declares.
+export const FOLDER_SHARE_CAPABILITY = "folder-share-provider";
 
 const POLL_WAIT_SECONDS = 25;
 const POLL_BUDGET_MS = (POLL_WAIT_SECONDS + 10) * 1000;
@@ -153,6 +156,12 @@ export interface BridgeClientOptions {
   /// Called after each completion with the model that ran, so a host
   /// process can show which model this machine last served.
   onServed?: (model: string) => void;
+  /// Serves a request on a folder shared from this computer, once opened
+  /// (docs/sharing-contracts.md §3): in-process when this server runs the
+  /// bridge client itself (a Pi, shares/serve.ts), through the parent
+  /// process in the Desktop's worker (bridgeWorker.ts). Without it, share
+  /// requests are refused.
+  serveShare?: ServeShare;
 }
 
 export type BridgeClientState = "online" | "auth_failed" | "unreachable";
@@ -196,6 +205,8 @@ export function readBridgeClientEnv(): BridgeClientOptions | null {
  *   document-provider    →  search, read, list_folders, list_dir
  *   local-llm-provider   →  llm_infer
  *   smart-home-proxy     →  smart_home_proxy
+ *   folder-share-provider →  share_request (added by startBridgeClient
+ *                           when a serveShare hook is given, not here)
  *
  * Override with `TWOODY_BRIDGE_CAPABILITIES` (comma-separated) to pin
  * the advertised set explicitly. */
@@ -251,6 +262,12 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   const nickname = asciiHeaderValue(opts.deviceNickname ?? "twoody-server") || "twoody-server";
   const servesLlm = opts.capabilities?.includes("local-llm-provider") ?? false;
   let stopped = false;
+  // The account hands a share_request only to a worker that says it can
+  // serve one (twoody-backend 6484738a): said only when it can.
+  const capabilities = [
+    ...(opts.capabilities ?? []),
+    ...(opts.serveShare && !opts.capabilities?.includes(FOLDER_SHARE_CAPABILITY) ? [FOLDER_SHARE_CAPABILITY] : []),
+  ];
   /// Sent with every request to the backend.
   const authHeaders: Record<string, string> = {
     "X-User-Token": opts.userToken,
@@ -260,7 +277,9 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   // The keys of sealed turns for the people this computer is shared with
   // (compute/computeHost.ts), next to the device id; published to the
   // account at start and when the daily prekey changes.
-  const computeHost = servesLlm
+  // Shared folders' requests are sealed to the same keys: one identity, one
+  // safety number for this computer, whatever is shared on it.
+  const computeHost = servesLlm || opts.serveShare
     ? createComputeHost({ path: opts.computeKeysPath ?? join(dirname(opts.deviceIdPath ?? join(homedir(), ".twoody-server", "bridge-device-id")), "compute-keys.json") })
     : null;
   let computeKeysPublished = false;
@@ -354,7 +373,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
         report("online");
         if (task) {
           console.log(
-            `[bridge-client] claimed task ${task.id} kind=${task.kind} args=${isSharedTask(task) ? "<another person's turn>" : argsPreview(task.args)}`,
+            `[bridge-client] claimed task ${task.id} kind=${task.kind} args=${isSharedTask(task) || isFolderShareTask(task) ? "<another person's turn>" : argsPreview(task.args)}`,
           );
           recordHistory({
             id:         task.id,
@@ -365,7 +384,9 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
           // A completion can run for a minute or more. Presence on the
           // backend only lives 90 s and is renewed by polling, so the
           // loop keeps polling while the model writes.
-          if (task.kind === "llm_infer") void handleTask(task);
+          // A share request waits on the server (and, in the Desktop, on its
+          // main process): not on the poll either.
+          if (task.kind === "llm_infer" || task.kind === "share_request") void handleTask(task);
           else await handleTask(task);
         }
       } catch (error) {
@@ -405,8 +426,8 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
         "X-Bridge-Device-OS": deviceOsName(),
         Accept: "application/json",
       };
-      if (opts.capabilities && opts.capabilities.length > 0) {
-        headers["X-Bridge-Capabilities"] = opts.capabilities.join(",");
+      if (capabilities.length > 0) {
+        headers["X-Bridge-Capabilities"] = capabilities.join(",");
       }
       if (computeHost && Date.now() >= computeKeysRefusedUntil && (!computeKeysPublished || Date.now() - computeKeysCheckedAt > 60 * 60 * 1000)) {
         computeKeysCheckedAt = Date.now();
@@ -482,6 +503,14 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   }
 
   async function runTask(task: Task): Promise<unknown> {
+    // Another person's request on a folder shared from this computer: a
+    // sealed share_request and nothing else, whatever the task says.
+    if (isFolderShareTask(task)) {
+      assertSealedShareTask(task);
+      return runSealedShareRequest(task);
+    }
+    // A share request is only ever a folder share's.
+    if (task.kind === "share_request") throw new Error("shared_task_refused");
     // Another person's turn on this computer (a compute grant on the
     // account): a sealed completion and nothing else, whatever the task says.
     if (isSharedTask(task)) {
@@ -554,6 +583,21 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
         })) as { model_used?: string };
         return { model: result?.model_used };
       },
+    });
+  }
+
+  /// A grantee's request on a shared folder: opened with this computer's
+  /// keys, served by the server, answered sealed (compute/computeHost.ts
+  /// runSealedShare).
+  async function runSealedShareRequest(task: Task): Promise<unknown> {
+    if (!computeHost || !opts.serveShare) throw new Error("shared_task_refused");
+    return computeHost.runSealedShare({
+      args: task.args,
+      serve: opts.serveShare,
+      send: (line) =>
+        patchTask(task.id, { status: "streaming", delta: line }).catch((err) => {
+          console.warn(`[bridge-client] sealed piece not delivered for task ${task.id}: ${err instanceof Error ? err.message : err}`);
+        }),
     });
   }
 
@@ -716,6 +760,25 @@ export function isSharedTask(task: { args?: Record<string, unknown> }): boolean 
 /// in clear from an app too old to seal it — is refused.
 export function assertSealedSharedTask(task: { kind: string; args: Record<string, unknown> }): void {
   if (task.kind !== "llm_infer" || !isSealedTurn(task.args)) throw new Error("shared_task_refused");
+}
+
+/// A request of someone a folder of this computer is shared with
+/// (docs/sharing-contracts.md §1: principal {kind: "folder_share",
+/// share_uuid, revision, grantee_id}).
+export function isFolderShareTask(task: { args?: Record<string, unknown> }): boolean {
+  const principal = task.args?.principal as { kind?: unknown } | undefined;
+  return principal?.kind === "folder_share";
+}
+
+/// The only thing a share's principal may do here: a share_request sealed
+/// on the grantee's device, with the device's keys beside it. Anything else
+/// — another kind (a completion, a search, a read…), or a request in clear —
+/// is refused before anything is asked of the server.
+export function assertSealedShareTask(task: { kind: string; args: Record<string, unknown> }): void {
+  const guest = task.args.guest_key as { enc_public?: unknown; sign_public?: unknown } | undefined;
+  if (task.kind !== "share_request" || !isSealedTurn(task.args) || typeof guest?.enc_public !== "string" || typeof guest?.sign_public !== "string") {
+    throw new Error("shared_task_refused");
+  }
 }
 
 function argsPreview(args: Record<string, unknown>): string {

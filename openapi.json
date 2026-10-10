@@ -6543,6 +6543,152 @@
         }
       }
     },
+    "/local_shares": {
+      "get": {
+        "summary": "The folders this computer shares, and the grantees' devices that reached it (the owner only)",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Share a Documents folder with a household member, an organization co-member or a whole organization (the owner only)",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_shares/{id}": {
+      "patch": {
+        "summary": "Change a share's right, expiry or label, or mark it published to the account (the owner only)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Stop a share at once (the row is kept, revoked by the owner)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_shares/sync": {
+      "post": {
+        "summary": "Reconcile with the account's list: revoked there is revoked here; absent there is to publish again; nothing there extends a share",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_shares/devices/approve": {
+      "post": {
+        "summary": "Approve a grantee's device for every share of this computer to that person (the owner only)",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_shares/devices/refuse": {
+      "post": {
+        "summary": "Refuse a grantee's device for every share of this computer to that person (the owner only)",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_shares/devices/verify": {
+      "post": {
+        "summary": "Verify a grantee's device for every share of this computer to that person (the owner only)",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_shares/audit": {
+      "get": {
+        "summary": "Who asked what of the shared folders, and what came of it: never a question, never a path (the owner only)",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/local_shares/serve": {
+      "post": {
+        "summary": "Serve a grantee's request on a shared folder, opened by this computer's bridge worker (this computer's app only)",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/code/sessions": {
       "get": {
         "summary": "Twoody Code: folders open on this computer and their sessions (paired phone)",
@@ -13672,6 +13818,152 @@
           {
             "userTokenAuth": []
           }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_shares": {
+      "get": {
+        "summary": "The folders this computer shares, and the grantees' devices that reached it (the owner only)",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "summary": "Share a Documents folder with a household member, an organization co-member or a whole organization (the owner only)",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_shares/{id}": {
+      "patch": {
+        "summary": "Change a share's right, expiry or label, or mark it published to the account (the owner only)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Stop a share at once (the row is kept, revoked by the owner)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_shares/sync": {
+      "post": {
+        "summary": "Reconcile with the account's list: revoked there is revoked here; absent there is to publish again; nothing there extends a share",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_shares/devices/approve": {
+      "post": {
+        "summary": "Approve a grantee's device for every share of this computer to that person (the owner only)",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_shares/devices/refuse": {
+      "post": {
+        "summary": "Refuse a grantee's device for every share of this computer to that person (the owner only)",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_shares/devices/verify": {
+      "post": {
+        "summary": "Verify a grantee's device for every share of this computer to that person (the owner only)",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_shares/audit": {
+      "get": {
+        "summary": "Who asked what of the shared folders, and what came of it: never a question, never a path (the owner only)",
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/local_shares/serve": {
+      "post": {
+        "summary": "Serve a grantee's request on a shared folder, opened by this computer's bridge worker (this computer's app only)",
+        "tags": [
+          "documents"
         ],
         "responses": {
           "200": {

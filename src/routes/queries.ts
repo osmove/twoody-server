@@ -13,7 +13,7 @@ import { projectCards } from "../projects/projects.js";
 import { ACTION_TOOLS, askedAction, runAction, type ChatAction } from "../projects/actions.js";
 import { createHash } from "node:crypto";
 import { idleForMs, inflight } from "../account/inflight.js";
-import { citationLink, folderOf, localFolderIds, meshPeers, retrieveAcrossComputers, type MeshPassage, type MeshRetrieval } from "../documents/remote.js";
+import { folderOf, localFolderIds, meshPeers, passageLink, retrieveAcrossComputers, type MeshPassage, type MeshRetrieval } from "../documents/remote.js";
 import { folderFollowUp, listingIntent } from "../documents/fileListing.js";
 import { aliasNamed, formatFolderListing, LIST_FILES_TOOL, listFolder, readFolderRequest } from "../documents/folderListing.js";
 import { questionBefore, retriesPrevious, smallTalk } from "../documents/query.js";
@@ -835,6 +835,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       passages: retrieved.passages.length,
       files: retrieved.files.length,
       computers: retrieved.computers.map((computer) => ({ name: computer.computer_name, status: computer.status, passages: computer.passages })),
+      // Folders shared with the person (shares/guest.ts): how each answered,
+      // and how many of the passages given are someone else's.
+      ...(retrieved.shares?.length ? { shares: retrieved.shares.map((share) => ({ status: share.status, passages: share.passages, took_ms: share.took_ms })) } : {}),
+      shared_passages: retrieved.passages.filter((passage) => passage.share).length,
     };
     trace.timings = { documents_ms: plainlyDocuments && access.mode !== "off" ? Date.now() - documentsStarted : null };
     // What the search_documents tool found, when the model used it.
@@ -863,12 +867,23 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       // The page, slide, or sheet and rows the clients show (location.ts).
       location: passageLocation(passage.name, passage.page, passage.text),
       snippet: passage.snippet,
-      url: citationLink(passage.computer_id, passage.document_id),
+      // A shared folder's: twoody://share/<uuid>/<document_id>, opened
+      // through its owner's computer (with « Lire les fichiers » only).
+      url: passageLink(passage),
+      ...(passage.share ? { share: passage.share } : {}),
       ...(passage.local && !shared && passage.path ? { path: passage.path } : {}),
     });
     const sources = passages.map(sourceOf);
     const documentFolders = allowedFolders;
-    const excerptOf = (passage: MeshPassage, remote: boolean) => ({ name: passage.name, page: passage.page, text: passage.text, computer: remote ? passage.computer_name : null, folder: folderOf(passage.folder, passage.rel_path) ?? null });
+    // Someone else's document (a shared folder) is said to be theirs.
+    const excerptOf = (passage: MeshPassage, remote: boolean) => ({
+      name: passage.name,
+      page: passage.page,
+      text: passage.text,
+      computer: remote && !passage.share ? passage.computer_name : null,
+      folder: folderOf(passage.folder, passage.rel_path) ?? null,
+      ...(passage.share ? { sharedBy: passage.share.owner_name ?? "someone else" } : {}),
+    });
     // The search_documents tool: its passages numbered after the ones given
     // with the message, cited the same way.
     const documentTools: ChatTools = {
@@ -1530,6 +1545,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       // out (late, offline…): the client can say it.
       documents:    {
         computers: (searchedByTool ?? retrieved).computers.map(({ computer_id, computer_name, status, passages: found }) => ({ computer_id, computer_name, status, passages: found })),
+        // The folders shared with the person that were asked.
+        ...((searchedByTool ?? retrieved).shares?.length ? { shares: (searchedByTool ?? retrieved).shares } : {}),
         ...(listed ? { listing: listed.computers } : {}),
       },
       ...(vaultConversationId ? { vault_conversation_id: vaultConversationId, catch_up: { status: caughtUp!.status, missing_refs: caughtUp!.missing } } : {}),

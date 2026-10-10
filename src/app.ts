@@ -51,6 +51,7 @@ import { wsRoutes } from "./routes/ws.js";
 import { tunnelDirectRoutes } from "./routes/tunnelDirect.js";
 import { thisSecurityCode } from "./tunnel/identity.js";
 import { localDocumentRoutes } from "./routes/localDocuments.js";
+import { localShareRoutes } from "./routes/localShares.js";
 import { accountLinkRoutes } from "./routes/accountLink.js";
 import { peerRoutes } from "./routes/peer.js";
 import { peersRoutes } from "./routes/peers.js";
@@ -201,6 +202,8 @@ export async function buildApp() {
   await app.register(voiceRoutes);
   await app.register(transcriptionRoutes);
   await app.register(localDocumentRoutes);
+  // The folders this computer shares (docs/sharing-contracts.md §3).
+  await app.register(localShareRoutes);
   await app.register(wsRoutes);
   await app.register(tunnelDirectRoutes);
   await app.register(remoteCodeRoutes);
@@ -249,6 +252,7 @@ export async function buildApp() {
   await app.register(voiceRoutes, { prefix: "/api/v1" });
   await app.register(transcriptionRoutes, { prefix: "/api/v1" });
   await app.register(localDocumentRoutes, { prefix: "/api/v1" });
+  await app.register(localShareRoutes, { prefix: "/api/v1" });
   await app.register(mobileAgentRoutes, { prefix: "/api/v1" });
   await app.register(remoteCodeRoutes, { prefix: "/api/v1" });
   await app.register(accountLinkRoutes, { prefix: "/api/v1" });

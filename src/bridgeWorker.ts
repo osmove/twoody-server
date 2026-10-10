@@ -15,10 +15,19 @@
 //     Electron's utilityProcess. The account token then never appears in
 //     the process environment, which other processes of the same user
 //     can read.
+//
+// Requests on folders shared from this computer (docs/sharing-contracts.md
+// §3–§4) are opened here, with this computer's keys, and served by the
+// Desktop's embedded server, which holds the documents: this process has no
+// database. It asks the parent {type: "share-serve", id, payload}; the
+// Desktop's main process calls POST /local_shares/serve with this
+// computer's app session and answers {type: "share-serve-result", id,
+// result}. Run alone (no parent), share requests are refused.
 
 import { readBridgeClientEnv, startBridgeClient, type BridgeClientHandle, type BridgeClientState } from "./bridgeClient.js";
 import { configureLocalModels } from "./executors/localModels.js";
 import { configureRuntimeKeys } from "./runtimeAuth.js";
+import { createShareServeChannel } from "./shares/parentServe.js";
 
 interface ConfigureMessage {
   type: "configure";
@@ -40,7 +49,7 @@ interface ModelsMessage {
   runtimeKeys?: Record<string, string>;
 }
 
-type ParentMessage = ConfigureMessage | ModelsMessage | { type: "stop" };
+type ParentMessage = ConfigureMessage | ModelsMessage | { type: "share-serve-result"; id?: unknown; result?: unknown } | { type: "stop" };
 
 interface ParentPort {
   on(event: "message", listener: (event: { data: ParentMessage }) => void): void;
@@ -49,6 +58,9 @@ interface ParentPort {
 
 const parentPort = (process as unknown as { parentPort?: ParentPort }).parentPort;
 let client: BridgeClientHandle | null = null;
+
+// The answers of the parent to share requests (shares/parentServe.ts).
+const shares = parentPort ? createShareServeChannel(parentPort) : null;
 
 function start(options: Omit<ConfigureMessage, "type" | "endpoints" | "defaultModel">) {
   client?.stop();
@@ -61,6 +73,7 @@ function start(options: Omit<ConfigureMessage, "type" | "endpoints" | "defaultMo
     deviceNickname: options.deviceNickname,
     deviceIdPath: options.deviceIdPath,
     capabilities: ["local-llm-provider"],
+    ...(shares ? { serveShare: (payload: unknown) => shares.serve(payload) } : {}),
     onServed: (model: string) => parentPort?.postMessage({ type: "served", model }),
     onState: (state: BridgeClientState) => {
       console.log(`[bridge-worker] ${state}`);
@@ -79,6 +92,8 @@ if (parentPort) {
     } else if (data.type === "models") {
       if (data.runtimeKeys) configureRuntimeKeys(data.runtimeKeys);
       configureLocalModels({ endpoints: data.endpoints, defaultModel: data.defaultModel });
+    } else if (data.type === "share-serve-result") {
+      shares?.received(data);
     } else if (data.type === "stop") {
       client?.stop();
       process.exit(0);

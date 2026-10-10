@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { TunnelParentPort } from "../tunnel/index.js";
 import { BackendError, setBackendRelay, type BackendRelay } from "./backend.js";
+import { readShareLabel, setShareCaller, type ShareCallOutcome } from "../shares/guest.js";
 
 // Inside Twoody Desktop, the mesh's calls to the account go through the
 // Desktop's main process, by message — never out of this server.
@@ -107,6 +108,68 @@ export function relayAccountThroughDesktop(port: TunnelParentPort): () => void {
     for (const [id, request] of pending) {
       clearTimeout(request.timer);
       request.reject(new BackendError(502, "desktop_unreachable", "the Desktop is gone"));
+      pending.delete(id);
+    }
+  };
+}
+
+// Folders someone else shares with the person (docs/sharing-contracts.md §3
+// « Grantee side »): the Desktop's main process holds the person's device
+// keys, seals each request to the owner's computer, sends it through the
+// account and opens the answer. Same port and shape as the account's calls:
+// {type: "share-call", id, share_uuid, op} → {type: "share-call-result", id,
+// result} or {…, error: {code}}, each with `share: {label, owner_name}`
+// when the Desktop knows the share (the account's « received » list). Only
+// the operation — a search's query, never the conversation — goes out.
+
+export const SHARE_CALL_REQUEST = "share-call";
+export const SHARE_CALL_RESULT = "share-call-result";
+const MAX_SHARE_PENDING = 32;
+
+/// Installs the share calls on the Desktop's port (index.ts). Returns what undoes it.
+export function relayShareCallsThroughDesktop(port: TunnelParentPort): () => void {
+  const pending = new Map<string, { resolve: (value: ShareCallOutcome) => void; timer: ReturnType<typeof setTimeout> }>();
+  port.on("message", ({ data }) => {
+    const message = data as { type?: unknown; id?: unknown; result?: unknown; error?: unknown; share?: unknown } | null;
+    if (message?.type !== SHARE_CALL_RESULT || typeof message.id !== "string") return;
+    const request = pending.get(message.id);
+    if (!request) return;
+    pending.delete(message.id);
+    clearTimeout(request.timer);
+    const result = message.result as { share?: unknown } | null | undefined;
+    const share = readShareLabel(result?.share ?? message.share);
+    if (message.error !== undefined && message.error !== null) {
+      const code = (message.error as { code?: unknown }).code;
+      request.resolve({ ok: false, code: typeof code === "string" && /^[a-z_]{1,64}$/.test(code) ? code : "unreachable", share });
+    } else {
+      request.resolve({ ok: true, result: message.result ?? null, share });
+    }
+  });
+  setShareCaller((shareUuid, op, timeoutMs) => {
+    if (pending.size >= MAX_SHARE_PENDING) return Promise.resolve({ ok: false, code: "desktop_busy", share: null });
+    return new Promise((resolve) => {
+      const id = randomUUID();
+      // Never waited for past the turn's budget: a late answer is dropped.
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        resolve({ ok: false, code: "timeout", share: null });
+      }, timeoutMs);
+      timer.unref?.();
+      pending.set(id, { resolve, timer });
+      try {
+        port.postMessage({ type: SHARE_CALL_REQUEST, id, share_uuid: shareUuid, op });
+      } catch {
+        pending.delete(id);
+        clearTimeout(timer);
+        resolve({ ok: false, code: "desktop_unreachable", share: null });
+      }
+    });
+  });
+  return () => {
+    setShareCaller(null);
+    for (const [id, request] of pending) {
+      clearTimeout(request.timer);
+      request.resolve({ ok: false, code: "desktop_unreachable", share: null });
       pending.delete(id);
     }
   };

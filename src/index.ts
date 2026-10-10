@@ -5,6 +5,7 @@ import { buildApp } from "./app.js";
 import { ensureSetupToken, getActivePairingCode } from "./auth.js";
 import { startBonjour } from "./bonjour.js";
 import { readBridgeClientEnv, startBridgeClient } from "./bridgeClient.js";
+import { serveShareInProcess } from "./shares/serve.js";
 import { db, users } from "./db.js";
 import { LOCAL_ONLY, isPrivateUrl } from "./outbound.js";
 import {
@@ -27,7 +28,7 @@ import { isFresh } from "./pairing.js";
 import { startMeshLinks, startPeerStatusPoller } from "./peers/index.js";
 import { startRosterRefresh } from "./vault/roster.js";
 import { desktopVaultAccount } from "./vault/desktopAccount.js";
-import { relayAccountThroughDesktop } from "./account/desktopRelay.js";
+import { relayAccountThroughDesktop, relayShareCallsThroughDesktop } from "./account/desktopRelay.js";
 import { sealDiscussionTitle, setDesktopVault, startVaultService } from "./vault/service.js";
 import { startMemorySync } from "./vault/memories.js";
 import { startMemoryWork } from "./memory/changes.js";
@@ -194,7 +195,9 @@ try {
   if (bridgeOpts && !bridgeAllowed) {
     console.log(`  Local-only mode: bridge client to ${bridgeOpts.backendUrl} not started.\n`);
   }
-  const bridgeClient = bridgeOpts && bridgeAllowed ? startBridgeClient(bridgeOpts) : null;
+  // Requests on folders shared from this computer are served here, by this
+  // very server (shares/serve.ts): it holds the documents.
+  const bridgeClient = bridgeOpts && bridgeAllowed ? startBridgeClient({ ...bridgeOpts, serveShare: serveShareInProcess }) : null;
   if (bridgeClient) {
     const caps = bridgeOpts!.capabilities?.length ? bridgeOpts!.capabilities.join(",") : "<none>";
     console.log(`  Bridge client connected to ${bridgeOpts!.backendUrl} (device id ${bridgeClient.deviceId.slice(0, 8)}…, capabilities: ${caps})\n`);
@@ -297,6 +300,9 @@ try {
     // And so do the mesh's: the account's computers, request_access and its
     // answer (account/desktopRelay.ts).
     relayAccountThroughDesktop(parentPort);
+    // And the requests on folders shared with the person, which the Desktop
+    // seals with the person's device keys (shares/guest.ts).
+    relayShareCallsThroughDesktop(parentPort);
     parentPort.on("message", ({ data }) => {
       const type = (data as { type?: unknown } | null)?.type;
       if (type === "account" || type === "tunnel") desktopAccount(data);

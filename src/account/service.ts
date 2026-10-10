@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { deriveCapabilities, readBridgeClientEnv, startBridgeClient, type BridgeClientHandle } from "../bridgeClient.js";
+import { serveShareInProcess } from "../shares/serve.js";
 import { isPrivateUrl, LOCAL_ONLY } from "../outbound.js";
 import { runningTunnel, startTunnelService, type TunnelService } from "../tunnel/index.js";
 import { startApprovalLoop, type ApprovalLoop } from "./approvals.js";
@@ -159,6 +160,9 @@ export function startAccountService(options: {
         deviceId,
         computeKeysPath: computeKeysPathFor(deviceId),
         capabilities: deriveCapabilities(),
+        // Requests on folders shared from this computer, served by this very
+        // server, which holds the documents (shares/serve.ts).
+        serveShare: serveShareInProcess,
       });
       bridgeDeviceUuid = bridge.deviceId;
     })().finally(() => {
