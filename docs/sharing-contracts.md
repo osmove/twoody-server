@@ -253,3 +253,29 @@ GET /shared_folders/:uuid/file?path=…   or   ?document_id=…        (optional
 lists the share as `ask`); its results carry `share: {label, owner_name, right}`. « Partagés avec moi » › « Parcourir »
 (right `read`), « Ouvrir » (a temporary file in the system's temporary folder, deleted when Twoody quits), « Enregistrer
 sous… » (only where the person chooses); both marked as downloaded. A cited shared document opens the same way.
+
+## 7. Lot L6, the iPhone (twoody-app, 11/10/2026)
+
+The phone uses only routes that exist, each through its own sealed tunnel to its paired computer (the person's own
+device: `meshRequester` person branch, `localShares.ts owner`) or on the account with its own session; it never calls
+what widens a share (`POST`/`PATCH /local_shares`, `devices/approve`, `devices/verify` stay `desktop_app_only`).
+
+| Screen | Calls |
+|---|---|
+| Documents › « Dossiers partagés » › « Partagés avec moi » | account `GET /api/v1/folder_shares` (`received`: owner, label, right, end, `computer.online`); « Ne plus recevoir » (person shares only) `DELETE /api/v1/folder_shares/:uuid` |
+| « Poser une question sur ce dossier », « Outils » › « Partagés avec moi » | the chat's `document_access` `{mode: "selected" \| "only", folderIds: [..., "share:<uuid>"]}` on `/queries` (never with `mode: "all"`; switched on from « all », the folders the computers list are kept: `GET /local_documents/folders` and `/computers`) |
+| « Parcourir » (right `read`) | computer `GET /shared_folders/:uuid/browse?path=&offset=`; a 404 without the contract's JSON reads as a computer older than L5 |
+| A file, a cited shared document (`share.right == "read"`) | computer `GET /shared_folders/:uuid/file?path=…` or `?document_id=…`, `Range: bytes=N-(N+2 MiB-1)`; `X-Twoody-Sha256` must not change between pieces and the whole is checked against it; 25 MB at most; handed to the share sheet from the app's cache |
+| « Ce que vous partagez » | computer `GET /local_shares` (403 `owner_only` → the account's `given` list alone); « Arrêter le partage »: computer `DELETE /local_shares/:id` first when it holds the share, then account `DELETE /api/v1/folder_shares/:uuid`; another computer's share on the account alone (that computer revokes it at its next sync) |
+
+TODO (server, for the phone):
+- **Bounded Range on `/shared_folders/:uuid/file`.** `resumeFrom` accepts only `bytes=N-` and otherwise sends the
+  whole file (200). The phone asks `bytes=N-M` pieces of 2 MiB because the relay queues about 3 MB
+  (`mesh-design.md` §8): on the same network the whole file comes in one answer and is used, through the relay a file
+  over ~3 MB is expected to fail until the route answers `bytes=N-M` with 206 and `Content-Range`. Not verified on a
+  real iPhone.
+- **Device approval said ahead.** The Desktop probes each online share with `{op: "folders"}` through its IPC;
+  the phone has no route for it, so « En attente : … doit autoriser … » is said only when a question or a browse is
+  refused (`device_not_approved`). A route would also show in the owner's « Consultations ».
+- **Safety number.** The device the owner approves is the paired computer, whose compute key the phone does not
+  know: the iPhone shows no safety number (compare it on the computer's « Partagés avec moi »).
