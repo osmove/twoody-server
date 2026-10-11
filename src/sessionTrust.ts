@@ -395,6 +395,61 @@ export async function meshRequester(req: FastifyRequest, auth: { sessionId?: str
   return device ? { id: `person:${device}`, name: nameOf(row) } : null;
 }
 
+/// Why a session is not the person here (personStanding below), for the
+/// device asking about itself — never about anyone else:
+///
+///   not_your_device         another computer's `peer:` session, a firmware
+///                           device's token: never the person;
+///   owner_elsewhere         the owner's session, but not from this machine
+///                           nor through the tunnel from its own key;
+///   not_sealed              not through the tunnel from the session's own key;
+///   no_device_access        a device's session that never proved which vault
+///                           device it is (a phone paired by code that has
+///                           not sent its device-access yet, or is no member
+///                           of the history);
+///   device_access_expired   it did, but that statement ran out: the device
+///                           signs a new one (POST /session/device-access);
+///   history_unreadable      this computer cannot read the encrypted history
+///                           right now (no vault handed by the Desktop, the
+///                           account unreachable before a first look);
+///   not_in_history          the history does not list its vault device as
+///                           one of the person's (a household member's, one
+///                           that left or was revoked), or its statement is
+///                           not signed by that device's key.
+export type PersonReason = "not_your_device" | "owner_elsewhere" | "not_sealed" | "no_device_access" | "device_access_expired" | "history_unreadable" | "not_in_history";
+export type PersonStanding = { person: boolean; reason: PersonReason | null; until: number | null };
+
+/// Whether a session is the person here, as meshRequester decides, and
+/// when not, why — what the device's « Outils » says instead of a generic
+/// « not from here » (Jimmy's iPhone, 11/10/2026: its device-access had run
+/// out a day before, nothing said so). `until`: when a person device's
+/// statement runs out (Unix s). Decides nothing: every route still asks
+/// meshRequester, which this mirrors (test/personStanding.test.ts holds
+/// them equal).
+export async function personStanding(req: FastifyRequest, auth: { sessionId?: string | null; deviceId?: string | null; thisMachine?: boolean }, roster: () => Promise<Roster | null> | Roster | null, now = Date.now()): Promise<PersonStanding> {
+  const no = (reason: PersonReason): PersonStanding => ({ person: false, reason, until: null });
+  if (auth.deviceId || !auth.sessionId) return no("not_your_device");
+  const row = sessionRow(auth.sessionId);
+  if (isOwnerSession(auth.sessionId)) return ownerHere(req, auth) ? { person: true, reason: null, until: null } : no("owner_elsewhere");
+  if (!row || isPeerSessionKind(row.kind) || row.requesterComputerId) return no("not_your_device");
+  if (!sealedFromSessionKey(req, auth.sessionId)) return no("not_sealed");
+  if (!row.vaultDeviceId || !row.deviceAccessJson) return no("no_device_access");
+  const kept = keptStatement(row, now);
+  if (!kept) {
+    // Kept but past its `exp` (or no longer for a key of this session).
+    let exp: unknown = null;
+    try {
+      exp = (JSON.parse(row.deviceAccessJson) as { exp?: unknown } | null)?.exp ?? null;
+    } catch {
+      exp = null;
+    }
+    return no(typeof exp === "number" && exp * 1000 <= now ? "device_access_expired" : "no_device_access");
+  }
+  const verified = await Promise.resolve(roster()).catch(() => null);
+  if (!verified) return no("history_unreadable");
+  return personDeviceOf(auth.sessionId, verified) ? { person: true, reason: null, until: kept.exp } : no("not_in_history");
+}
+
 export async function isPersonOrOwner(req: FastifyRequest, auth: { sessionId?: string | null; thisMachine?: boolean }, roster: () => Promise<Roster | null> | Roster | null): Promise<boolean> {
   return (await meshRequester(req, auth, roster)) !== null;
 }

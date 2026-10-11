@@ -1092,11 +1092,15 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     };
     // E-mails (Capacités, src/email/): the copy of the person's mailbox on
     // this computer, searched and read by a model of this very computer —
-    // never another one, even of theirs: the copy does not leave it — in
-    // this computer's app, the only one that asks, for now, before a draft
-    // is saved (the phone: later).
+    // never another one, even of theirs: the copy does not leave it — for
+    // this computer's app and, since 11/10/2026, the person's own devices
+    // (their iPhone), exactly as the connectors: never a household member's
+    // phone nor a device paired by code (meshRequester). A draft is asked
+    // on the device that sent the message, answered only by that session or
+    // this computer's app (connectors.ts answerApproval), never « Toujours
+    // autoriser ». Nothing is ever sent: a draft only.
     const emailHere = (candidate: Provider) => candidate.kind === "local_openai" && onThisComputer(candidate);
-    const offersEmail = emailHere(provider) && access.mode !== "only" && !left.has("email") && isThisComputersApp(auth) && emailToolsAvailable(auth.userId);
+    const offersEmail = emailHere(provider) && access.mode !== "only" && !left.has("email") && (isThisComputersApp(auth) || requester !== null) && emailToolsAvailable(auth.userId);
     // « Qu'est-ce que René m'a écrit ? », « Réponds à René… »: the e-mails
     // are looked up here and come with the message, as documents do — never
     // answered « voulez-vous que je cherche ? » (email/intent.ts). Not by a

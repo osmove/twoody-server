@@ -160,3 +160,45 @@ tunnel, with the published server's admin token from elsewhere; a wrong password
    boundary by design (a one-time token read off the screen), unchanged here.
 5. Items 3 to 7 of the list above are unchanged.
 
+
+## 11/10/2026 — « Outils » on Jimmy's iPhone: why it was not the person, and E-mails from the phone
+
+**What happened.** On Jimmy's iPhone (OTA 0.2.61, Desktop 0.13.95), « Outils » greyed the connectors
+with the generic « Pour l'instant… », showed no « Recherche Internet » and no E-mails. In a read-only
+copy of his Mac's `local.db`, the iPhone's session (`pair:iPhone`, paired by QR code: no origin, no
+rule) held a device-access/v2 whose `exp` was 10/10/2026 07:10 UTC; the iPhone asked the Mac three
+times on 11/10 (06:58–07:13 UTC, `message_traces`) and no fresh statement came. A replay of that copy
+(`buildApp()`, `TWOODY_LOCAL_ONLY=1`, a fake roster listing the iPhone's real vault device id with a
+key of ours, a request stamped by the tunnel from the iPhone's real tunnel key) showed: before,
+`devices.web` false and `/memories` 403; one `POST /session/device-access` signed for that key and
+this computer, 200; after, `devices.web` true and `/memories` 200. So the server takes a renewal for
+that very session; the statement simply was not renewed, and nothing said so — `/connectors` and
+`/local_capabilities` answer 200 with `from_devices: false` / `web: false`, which never made the
+phone sign again (only a 403 did). 67d3984, 795a568 and ce2a5b0 did not cause it: the statement had
+run out (10/10 09:10 in Paris) before any of them was written, and none changed the person branch of
+`meshRequester`, `renewDeviceAccess` or the tunnel's stamp (the replay ran on them).
+
+**What changed.**
+
+- `sessionTrust.ts personStanding`: for the device asking about itself, whether it is the person
+  here and if not why — `not_your_device`, `owner_elsewhere`, `not_sealed`, `no_device_access`,
+  `device_access_expired`, `history_unreadable`, `not_in_history` — and when its statement runs out.
+  It decides nothing: every route still asks `meshRequester`, which it mirrors
+  (`test/personStanding.test.ts` checks both on every kind of session).
+- `GET /local_capabilities` `devices` carries `person`, `reason`, `until` and `email`; `GET /connectors`
+  carries `person: {person, reason}`. The iPhone signs a fresh device-access when told
+  `no_device_access` or `device_access_expired`, and says the reason in « Outils » meanwhile.
+- E-mails (`routes/queries.ts offersEmail`) is offered to the person's own devices exactly as the
+  connectors: `isThisComputersApp(auth) || meshRequester(...) !== null`, a model of this very computer
+  only, a draft asked on the device that sent the message and answered only by its session or this
+  computer's app (`answerApproval`), never « Toujours autoriser », nothing sent. Linking a mailbox and
+  `/email/*` stay for this computer's app. What leaves the computer: the answer and the draft's
+  preview (recipients, subject, start of the text) go to the person's own iPhone, sealed by the
+  tunnel — as a connector's answer already does; the privacy policy's E-mails paragraph should say it
+  (as its Connecteurs paragraph does for the iPhone) before this ships.
+
+Attack tests (`test/personStanding.test.ts`): a household member's phone (rule 2), a device paired by
+code that is no member, the iPhone's token without its tunnel key or through another key, the owner's
+token from the network, another computer's peer session — none is the person, none is offered the
+e-mail tools, none can answer the iPhone's draft question; a statement signed by a key the history
+does not list for that device is `not_in_history`.

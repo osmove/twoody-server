@@ -269,7 +269,8 @@ const messageCount = () => (sqlite.prepare("SELECT COUNT(*) AS n FROM messages")
 const lastUserMessage = () => (sqlite.prepare("SELECT content FROM messages WHERE role = 'user' ORDER BY rowid DESC LIMIT 1").get() as { content: string }).content;
 
 test("GET /local_capabilities: devices.web once the Desktop handed over its web search, for the person's own devices", async () => {
-  const devicesOf = async (headers: Record<string, string>) => (await app.inject({ url: "/local_capabilities", headers })).json().devices;
+  // `web` (`email`, `person` and why: test/personStanding.test.ts).
+  const devicesOf = async (headers: Record<string, string>) => ({ web: (await app.inject({ url: "/local_capabilities", headers })).json().devices.web });
   assert.deepEqual(await devicesOf(phone.headers), { web: false }, "no door handed over");
   process.env.TWOODY_WEB_BRIDGE_URL = BRIDGE_URL;
   process.env.TWOODY_WEB_BRIDGE_KEY = "too-short";

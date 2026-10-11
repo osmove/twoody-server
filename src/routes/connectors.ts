@@ -5,7 +5,7 @@ import { takeSignIn } from "../connectors/oauth.js";
 import { addConnector, answerApproval, beginSignIn, changeConnector, completeSignIn, ConnectorError, connectorView, listConnectors, removeConnector, signOut, startConnector, stopAllConnectors, stopConnector } from "../connectors/connectors.js";
 import { forgetGoogleDataLink, setGoogleDataEnabled } from "../google/dataLink.js";
 import { GOOGLE_DATA_CONNECTOR_ID, googleDataConnectorView } from "../google/dataTools.js";
-import { meshRequester } from "../sessionTrust.js";
+import { meshRequester, personStanding } from "../sessionTrust.js";
 import { meshRoster } from "../vault/roster.js";
 
 // « Connecteurs » (Capacités, Jimmy, 03/10/2026), src/connectors/connectors.ts:
@@ -63,12 +63,17 @@ export async function connectorRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      // Whether this device's messages get them: what its « Outils » may switch on.
-      const fromDevices = isThisComputersApp(auth) || (await meshRequester(req, auth, () => meshRoster().get())) !== null;
+      // Whether this device's messages get them: what its « Outils » may
+      // switch on — and if not, why (`person`, sessionTrust.ts personStanding).
+      const standing = isThisComputersApp(auth) ? { person: true, reason: null } : await personStanding(req, auth, () => meshRoster().get());
+      const fromDevices = standing.person;
       // What each one runs: for this computer's app only.
       const detail = fromThisComputersApp(req, auth);
       const google = googleDataConnectorView(auth.userId);
-      reply.send({ connectors: [...listConnectors(auth.userId).map((connector) => connectorView(auth.userId, connector, fromDevices, detail)), ...(google ? [{ ...google, from_devices: fromDevices }] : [])] });
+      reply.send({
+        connectors: [...listConnectors(auth.userId).map((connector) => connectorView(auth.userId, connector, fromDevices, detail)), ...(google ? [{ ...google, from_devices: fromDevices }] : [])],
+        person: { person: standing.person, reason: standing.reason },
+      });
     },
   });
 
