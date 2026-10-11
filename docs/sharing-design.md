@@ -183,7 +183,7 @@ later. The account never becomes a project's authority. Isolated projects are ne
   partage », approvals, « Consultations ».
 - **L4** grantee, `ask`: `prepareShare`, `share-call`, shared fan-out and citations, « Partagés avec moi »,
   « Outils » group.
-- **L5** `read`: browse, text, raw over the relay (chunked, 25 MB, Range).
+- **L5** `read`: browse, text, raw over the relay (chunked, 25 MB, Range). **Done 11/10/2026**, see §10.
 - **L6** organizations (admin lists, revocation, policy) and iPhone.
 - **L7** phone-only grantee. **L8** signed organization roster. **L9** shared projects.
 
@@ -226,3 +226,58 @@ account relays; seat suspended → refused, shown stopped on both sides; real 9B
 - Never: let the account create, extend or retarget a share; serve an unapproved device; put shared folders in « Tous
   les dossiers autorisés »; share an isolated folder; send absolute paths or questions to the account; write rights in
   v1; extend the same-account tunnel across accounts.
+
+## 10. Lot L5 as built (11/10/2026)
+
+Contracts: `sharing-contracts.md` §6. Where the design was silent, the safest simple choice:
+
+- **Chunks, not a stream.** One sealed `share_request` per 1 MiB of a file (`{op: "raw", path | document_id, offset,
+  length}`), so nothing new on the account: the same relay, the same 30 requests a minute and one at a time per (share,
+  device), the same 300 KB request bound. A chunk is ~2.8 MB once base64 and sealed (hex); the owner's bridge sends
+  the sealed lines ≤ 256 KB a PATCH (~10 per chunk). Measured end to end on one machine (fake account): 5.1 MB in
+  6 requests, 14.4 MB relayed, 63 PATCHes, ~0.5 s — through Heroku it will be slower (not measured).
+- **25 MB a file**, refused before a byte (`too_large`): a file larger than that is not handed out through a share.
+- **Which files**: what a browse of the share lists (`documents/browse.ts browsedFile`: real path inside the shared
+  folder, no link on the way, nothing hidden or skipped, folderRisk), indexed or not, never inside an isolated
+  project's folder; opened `O_NOFOLLOW` and checked to be the same inode as the resolved path; by `document_id` only
+  an index row of the share's folders, resolved the same way. A hard link inside the shared folder to a file outside
+  is the owner's own doing and is served (it is that folder's content).
+- **Integrity**: every chunk says the whole file's hash (sha-256, kept per inode/size/date), size and date; the
+  grantee's computer checks each chunk's hash, that the version never changes, and the whole file's hash before its
+  last byte goes to the caller; a body shorter than announced is a failure. The sealed channel's AEAD already refuses
+  a tampered byte; the hashes catch a lying owner's computer and a file changing under the download.
+- **Resumable**: the grantee's server waits out `busy`, `rate_limited`, `timeout` (≤ 90 s a chunk) and answers
+  `Range: bytes=N-` and `bytes=N-M` (the iPhone's 2 MiB pieces); the Desktop resumes a cut download from where it
+  stopped (three times) while the file's hash is the same, and starts again once if it changed.
+- **Nothing cached**: the grantee's server writes nothing; the Desktop writes « Ouvrir » to a folder of the system's
+  temporary folder made for the run (`twoody-shared-…`, removed at quit, and at the next start after a crash) and
+  « Enregistrer sous… » only where the person chose (through `.twoody-part`); both marked as downloaded; a file whose
+  type is not a document's is shown in its folder, never opened; its name made safe, its extension the type's.
+- **Audit**: every request, as before; `text` and `raw` rows name the file and the bytes sent (never a path);
+  « Consultations » groups a file's chunks to one device in one line.
+- **« En attente » said ahead**: `GET /shared_folders/:uuid/status` seals the owner's own check (`{op: "check"}`):
+  nothing read, no row when allowed.
+- **Chat**: passages of a `read` share carry `share.right` (from the account's list — the owner's computer still
+  refuses an original to an `ask` share); their excerpt says the file can be opened from its source and the model may
+  offer it; the Desktop opens a cited shared document through the same route. Measured with Qwen3.5 9B on a read
+  share (3 runs): cited 3/3, right amount 3/3, the cited file opened 3/3; the model offered in words to open it 1/3
+  (the source under the answer is the offer).
+
+Found on the way, fixed (11/10/2026):
+- **The guest's key erased after its first turn** (`computeSeal.ts sealComputeRequest`, in the Desktop, the app and
+  the server's copy): a turn held the device's own encryption key, and `forgetTurn` zeroed it — every sealed request
+  after the first of a run (shared computers and shared folders) failed to open on the host (`decrypt`) until the app
+  restarted. The turn now keeps a copy.
+- **A refusal before opening said as `host_error`** by the account (`SealedShareRequest`): `device_not_approved`
+  never reached a grantee through the relay, so « En attente : … doit autoriser » was never shown in production. The
+  account now passes the owner's code from a short list (twoody-backend 61a235d3, **not deployed**).
+
+Attack tests (rule 12; `test/folderSharesRead.test.ts`, `twoody-bench/scripts/shared-files-e2e.mts`): `..`,
+absolute paths, a link to a file outside, a link swapped in after a listing, a folder made a link, hidden, skipped and
+isolated paths, another folder's documents, an `ask` share asking for an original (and the account inflating it to
+`read`), expired and revoked on the owner's clock while relayed, a device the account adds, oversized and malformed
+requests, a file over 25 MB, a replayed sealed request, a sealed line tampered with, a lying owner's computer (chunk
+unlike its hash, a changing file, a wrong offset, too many bytes, a whole unlike its hash), the rate.
+
+Not verified: through the real account on Heroku (sizes of the deltas, Redis, the router), on a real second Mac,
+on Windows and Linux, the Desktop screens by eye (built and typed, not looked at), the iPhone with these routes.
