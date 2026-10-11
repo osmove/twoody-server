@@ -146,7 +146,11 @@ By default the server listens on `http://0.0.0.0:3000`.
 
 On first boot, when no local user exists, the Server writes a setup token to the
 data directory and prints it to the logs. Use it with `/auth/signup` or a client
-onboarding flow to create the first local account.
+onboarding flow to create the first local account. `/auth/signup` and
+`/auth/signin` take the password only on this machine, sealed through the tunnel,
+or with `TWOODY_ADMIN_TOKEN` (`x-admin-token`) on a server published behind https:
+from another machine of the network they answer `403 signin_local_only` — pair it
+instead (`twoody setup` → `pair`, with the pairing code).
 
 For a one-shot 8-character pairing code:
 

@@ -71,13 +71,13 @@ machine (signed in, or paired with a code) and sets the default; the person's iP
 
 ## Residual risks — Jimmy's decision
 
-1. **`meshRequester` takes the owner's session from anywhere** (`sessionTrust.ts`). Gated by it: the synchronised
+1. ~~**`meshRequester` takes the owner's session from anywhere**~~ — fixed 11/10/2026 (follow-up below). (`sessionTrust.ts`). Gated by it: the synchronised
    history, the memories, the other computers' documents, connector tools in the chat, `/diagnostics/full` (whole
    prompts). An owner token from the local network (password on a headless server, sniffed in clear) reads them.
    Recommended: the same `ownerHere` as for shares (this machine, or the tunnel from the session's own key). What
    breaks: the CLI signed in from another machine loses memories, history and full diagnostics there; the Desktop's
    hidden « self-hosted » sign-in. A mesh change: its own tests (`deviceTools`, `meshDocuments`, `vaultMemories`).
-2. **`/auth/signin` off this machine**: a password sent in clear on the local network gives an owner session (now
+2. ~~**`/auth/signin` off this machine**~~ — fixed 11/10/2026 (follow-up below): a password sent in clear on the local network gives an owner session (now
    refused by every route above, but not by `meshRequester` or the rest). Recommended: refuse sign-in that is neither
    loopback nor through the tunnel, unless the server is published with `TWOODY_ADMIN_TOKEN`; the CLI on another
    machine then pairs with a code (`twoody pair`).
@@ -94,3 +94,69 @@ machine (signed in, or paired with a code) and sets the default; the person's iP
    computer (the phone asks, the Desktop shows and decides), not a route the phone calls.
 7. Unchanged from the previous review and still open: `GET /local_documents/folders` full paths to other devices,
    `GET /email/status`, `/built_in_capabilities`, `/members/*`, `/bridge/*`.
+
+## Follow-up, 11 October 2026: residuals 1 and 2 (approved by Jimmy)
+
+Attack tests: `test/ownerHere.test.ts` (each attack passed on the code before, checked on an export of
+`fa23518`).
+
+### Residual 1 — `meshRequester`'s owner branch: this machine or its own tunnel
+
+`meshRequester` (`sessionTrust.ts`) now takes the owner's session only where `ownerHere` holds — as
+the share writes and `mayPin` already did: a request from this very machine (`auth.thisMachine`:
+loopback, not served by the tunnel, not forwarded by a proxy), or through the tunnel from the very
+key that session was paired with (a phone given a headless server's setup token). Not over the local
+network, not through a proxy, not with the relay's stamp alone, not inside another device's tunnel.
+Everything behind it at once: the memories and the entities (`requirePerson`), the synchronised
+history (`mayReachHistory`), the traces (`/diagnostics/turns`, `/messages/:id`, `/full`,
+`/telemetry`, `/installation`), the person's tools (`POST /tool_calls` `memory_search`…), the
+connectors in a chat (`from_devices`), the other computers' documents, sealing a turn into the
+history. The console (`ownerRequest`: this machine, or the admin token) is unchanged; so is the
+person branch (a device-access through its own key), which is what the iPhone paired with the Mac is.
+
+Tested: the owner's token from the local network, the relay without a key, another device's tunnel,
+a proxy — refused (`person_device_required`, no memory written, `from_devices: false`); the Desktop
+on loopback, the CLI's owner session on this machine, the iPhone and a setup-token phone through their
+own tunnel — still served. The whole suite (1 140 tests) passes unchanged.
+
+**What breaks, for whom.** The CLI signed in with the password from another machine loses the
+memories, the history, the traces and the person's tools there (it pairs instead, and gets what a
+paired CLI gets); the Desktop's hidden « self-hosted » sign-in against a remote server the same; a
+phone paired with a headless server's setup token **without** a tunnel key (an old pairing). Nothing
+changes for the Desktop on its own machine, the iPhone paired with the Mac (a person, through its own
+tunnel), nor a Pi adopted through the account.
+
+### Residual 2 — the password only on this machine
+
+`routes/session.ts mayTakePassword`: `/auth/signin` and `/auth/signup` (and their `/api/v1` twins)
+take the password only from this very machine, sealed through the tunnel (`tunnelPeerKey`: the
+tunnel's own stamp, from loopback, no proxy — a forged stamp from the network is not one), or with the
+admin token in the request (`x-admin-token` or `Bearer`) on a server published with
+`TWOODY_ADMIN_TOKEN` (the operator's own https in front). Otherwise `403 signin_local_only`, whose
+message points to `twoody pair`; checked before the rate limiter and the password. `twoody-cli`
+(`src/signinHere.ts`, `login.ts`, `setup.ts`) reads that code and says to pair this machine instead
+(`twoody setup` → `pair`, with the code `twoody serve` shows or one `twoody pair` makes there);
+smoke test `scripts/smoke-signin-here.mjs`.
+
+Tested: the password from the local network, through a proxy, with the relay's stamp alone, with a
+forged tunnel stamp from the network, with a wrong or missing admin token — refused, no token;
+sign-up the same. Legitimate: on this machine (the admin token set or not), sealed through the
+tunnel, with the published server's admin token from elsewhere; a wrong password is still 401.
+
+### Residual risks — still open
+
+1. **Sessions already given**: an owner session a remote CLI obtained before today stays valid where
+   the owner's origin alone counts (`choosesForThePerson`: providers, `pair/register`,
+   `system_prompt`). It can no longer read the person's data (residual 1), but can still choose the
+   models. Option: expire owner sessions made by `/auth/signin` from elsewhere (their address is not
+   kept today), or ask `ownerHere` in `choosesForThePerson` too (the CLI paired with a code keeps it).
+2. **A sign-in through the tunnel** (a device paired by code that knows the password) gets an owner
+   session; that session holds no tunnel key, so `ownerHere` refuses it everywhere but on this
+   machine: it may choose the models (as above), not read the person's data.
+3. **The admin token** travels with the request: over plain http on a network, it is as exposed as the
+   password was. Publishing with `TWOODY_ADMIN_TOKEN` assumes https in front (README).
+4. **Pairing secrets on the network**: `/auth/pair` (setup token, or the code on the screen) and
+   `/session/cli` (the code) still travel in clear on the local network at pairing — the trust
+   boundary by design (a one-time token read off the screen), unchanged here.
+5. Items 3 to 7 of the list above are unchanged.
+

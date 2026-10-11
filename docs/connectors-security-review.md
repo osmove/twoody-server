@@ -65,14 +65,13 @@ Checked and found sound (tests that attack, passing before and after):
 1. ~~**Windows**: `npx`/`npm` connectors do not start without a shell~~ — done in the follow-up
    below (`npx` resolved to `node.exe <npm>\bin\npx-cli.js`, other `.cmd`/`.bat` refused). Group
    kill on Windows (`taskkill /T`) is still written but not run on a Windows machine.
-2. **Unpinned packages**: `npx -y pkg` fetches whatever is published at each start. Fix 2 re-asks
-   when tools change, not when behaviour does. Option: warn in the Desktop when a package has no
-   `@version`, or pin at add time.
+2. ~~**Unpinned packages**: `npx -y pkg` fetches whatever is published at each start~~ — pinned at
+   add time since 11/10/2026 (follow-up below); transitive dependencies still float.
 3. **No sandbox**: the program has the person's rights (files, network, `local.db`). A sandbox
    (macOS `sandbox-exec` is deprecated; containers) is a product decision.
-4. **« Toujours autoriser » and prompt injection**: an always-allowed tool runs without asking when
-   a document, an e-mail, a web page or another tool's result talks the model into it. By design;
-   options: offer it only for read-only tools, or for the session only.
+4. ~~**« Toujours autoriser » and prompt injection**~~ — read-only tools only since 11/10/2026
+   (follow-up below); a read-only tool can still be talked into a call, and its server's word is
+   taken.
 5. ~~**Other routes still trust `isThisComputersApp` alone**~~ — done in the follow-up below;
    the borderline routes are listed there for Jimmy.
 6. **Abrupt end**: if the server is killed without its `exit` handler (SIGKILL, Windows
@@ -188,3 +187,78 @@ fixed there with attack tests; `meshRequester`, `/auth/signin` and the rest are 
 | `/diagnostics/full`, `/diagnostics/installation` | any person session (tunnel included) | full prompts; the Desktop reads them locally — could be this machine only |
 | `/bridge/tasks`, `/bridge/folders*` | any token | CLI and workers |
 | `/auth/signin`, `/auth/signup` | password → owner session | such a session from the local network is no longer « this computer's app »; whether sign-in should exist outside loopback at all is a product choice |
+
+## Follow-up, 11 October 2026: residuals 2 and 4 (approved by Jimmy)
+
+### Residual 4 — « Toujours autoriser » for read-only tools only
+
+`src/connectors/connectors.ts mayAlwaysAllow`: a tool may be allowed once and for all only when its
+server's MCP annotations say `readOnlyHint: true` and not `destructiveHint: true`. Every other tool —
+one that writes, sends, deletes, or whose server says nothing — is asked at every call, whatever was
+allowed before.
+
+- The two hints are kept with the listed tools (`StoredTool.annotations`, booleans only: `"true"`
+  counts for nothing) and compared at each start like the description and the parameters: a server
+  that stops saying a tool only reads loses that tool's grant (`startConnector`).
+- `GET /connectors`: each tool says `may_always` and `read_only`; `always` is true only when given
+  **and** counting. `PATCH auto_tools` takes only eligible tools, as last listed (a connector not yet
+  started has none).
+- The chat's `event: approval` says `may_always`; `POST /queries/approval {always: true}` on another
+  tool allows that call alone and answers `{ ok: true, always: false }`.
+- **No data deleted**: a grant given before to a tool that is not read-only stays in
+  `connectors.json`, ignored; one given to a tool listed before the hints were kept (no
+  `annotations` yet) is not dropped by the comparison, and counts again once the tool is read again
+  and says it only reads. Saving the list from the screen keeps the ignored ones too.
+- Desktop (`Chat.tsx`, `ConnectorsPage.tsx`, `connectorInput.ts offerAlways`) and iPhone
+  (`ApprovalCard.js`, `utils/chatApprovals.js`): « Toujours autoriser » only where `may_always` is
+  true (missing: an older server, hidden); otherwise « Cet outil peut modifier des choses : il demande
+  à chaque fois. » (chat) or « Demande à chaque fois : il peut modifier des choses » (« Choisir les
+  outils »), in the ten languages.
+
+Attack tests (`test/connectorsSecurity.test.ts`, failing on the code before): a tool that says
+nothing, then « always » answered from the chat anyway; a tool that says both read-only and
+destructive, hints that are strings; a server that stops saying its tool only reads; a grant stored
+before on a tool that is not read-only. Legitimate: `test/connectors.test.ts` (`lookup`, read-only,
+always allowed from the list and from the chat).
+
+**Residual risks.**
+- The hints are the server's own word: a hostile or taken-over program may call a tool that writes
+  « read-only ». Pinning (below) and the comparison at each start narrow it to what the person
+  installed.
+- A read-only tool can still be talked into a call by a prompt injection, and what it is given goes
+  to its service (a search sent to a remote API may carry what the model read).
+- Servers that annotate nothing (many today) lose « Toujours autoriser » altogether: every call is
+  asked. Which of the 63 catalog services annotate their tools was not checked.
+
+### Residual 2 — `npx`/`uvx` packages pinned at add time (Twoody Desktop)
+
+`twoody-desktop/src/shared/packagePin.ts` (parsing, validation, rewriting) and
+`src/main/packageVersion.ts` (IPC `connectors:packageVersion`):
+
+- a command `npx [-y|--yes] pkg`, `npx -p pkg cmd`, `uvx pkg`, `uvx --from pkg cmd` (`npx.cmd`,
+  `npx.exe`, a full path too) whose package has no exact version — a name alone or a dist-tag such as
+  `@latest` — is pinned before the confirmation: the main process asks npm's registry
+  (`https://registry.npmjs.org/<pkg>/<tag>`, scoped names encoded) or PyPI (`info.version`) once, 5 s
+  at most, no redirect followed; name and tag are checked there again whatever the page sends; only an
+  exact version (semver, PEP 440) is written as `pkg@<version>`. A range, a git or https spec, an
+  unknown option, a name with spaces or shell characters is never sent anywhere: said not pinned;
+- the confirmation (`commandsToRun`) shows the pinned line exactly; what could not be pinned
+  (offline, 404, a bad answer) is said there and left as written, and the connector shows « Version
+  non fixée : le paquet téléchargé peut changer à chaque démarrage. » with « Fixer la version »;
+- an update is an explicit action: « Mettre à jour » asks for the latest version, says when it is the
+  same, otherwise shows « pkg : 1.2.3 → 1.4.0 » and the new exact line to approve, then writes
+  `{command, args}` — the server empties « Toujours autoriser » when the arguments change — and
+  starts the connector again. Catalog entries (https) are unaffected.
+
+Tests: `twoody-desktop/test/packagePin.test.mjs`, `test/packageVersion.test.mjs` (`npx -y "pkg; rm -rf
+~"`, spaces, `..`, URL-like names, a registry answering `1.0.0 && evil` or `../x`, another package's
+manifest, offline, 404, timeout).
+
+**Residual risks.** Only the package named is pinned: its own dependencies are resolved by npm or uv
+when it is fetched. The version is asked of the public registries, not of a registry the person set
+in `~/.npmrc` or `uv.toml` (the pinned version may not exist there: the start fails and says so).
+**New data sent**: the Desktop now sends a package's name to registry.npmjs.org or pypi.org when a
+connector is added or updated — to be described in the privacy policy before it ships (rule 11,
+Jimmy's validation). Twoody Code's MCP servers (`main/code/mcp.ts`) are not pinned. Not run on
+Windows nor in the packaged app.
+
