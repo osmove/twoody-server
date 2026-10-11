@@ -28,7 +28,8 @@ import { createDeltaRelay } from "../executors/completionStream.js";
 // answer. The account relays blocks it cannot read.
 //
 // The keys live in one file, readable by this user only (like the
-// tunnel's): an identity (X25519 + Ed25519) kept for good, and a prekey
+// tunnel's), or, in Twoody Desktop, sealed by its main process
+// (ComputeKeyStore below): an identity (X25519 + Ed25519) kept for good, and a prekey
 // (X25519 + ML-KEM-768) made every day and whose secrets are erased 48 h
 // later. What this computer computes, its owner can see: nothing here
 // changes that, and nothing of a turn is written anywhere.
@@ -117,23 +118,63 @@ export const shareGrantId = (uuid: string) => `share:${uuid}`;
 /// never sends it: a sealed body that says it is refused (shares/serve.ts).
 export const SHARE_CHECK = Object.freeze({ op: "check" });
 
-export function createComputeHost({ path, now = Date.now }: { path: string; now?: () => number }) {
+/// Where the keys go instead of `path`, when the process that runs the host
+/// can keep them better than a file: Twoody Desktop seals them with
+/// safeStorage (the Keychain on macOS, DPAPI on Windows) in its main process,
+/// which hands them to its bridge worker at start and is handed them back
+/// whenever they change (bridgeWorker.ts; cryptography audit of 11/10/2026).
+/// `path` then holds the public identity only, for the safety numbers the
+/// Desktop's embedded server shows (shares/hostIdentity.ts). A headless
+/// server (a Pi) has no store: its keys stay in `path`, readable by its user
+/// only.
+export interface ComputeKeyStore {
+  /// The keys' JSON as last saved, or null when there are none yet.
+  initial: string | null;
+  /// Called with the keys' JSON each time they change.
+  save(json: string): void;
+}
+
+function writePrivately(path: string, content: string) {
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, content, { mode: 0o600 });
+  chmodSync(temporary, 0o600);
+  renameSync(temporary, path);
+}
+
+export function createComputeHost({ path, now = Date.now, store }: { path: string; now?: () => number; store?: ComputeKeyStore }) {
+  let made = false;
   let stored = load();
   const seen = new Map<string, number>();
+  // With a store, the public file is written at once (new keys are saved
+  // first): the embedded server reads it before the first prekey is made.
+  if (store) {
+    if (made) save();
+    else writePublic();
+  }
+
+  function parse(raw: string): StoredKeys | null {
+    const parsed = JSON.parse(raw) as StoredKeys;
+    if (parsed?.v === 1 && parsed.identity?.enc_private && parsed.identity?.sign_private) {
+      return { ...parsed, pins: parsed.pins ?? {}, prekeys: Array.isArray(parsed.prekeys) ? parsed.prekeys : [] };
+    }
+    return null;
+  }
 
   function load(): StoredKeys {
-    if (existsSync(path)) {
+    const source = store ? "the sealed store" : path;
+    const raw = store ? store.initial : existsSync(path) ? readFileSync(path, "utf8") : null;
+    if (raw !== null) {
       try {
-        const parsed = JSON.parse(readFileSync(path, "utf8")) as StoredKeys;
-        if (parsed?.v === 1 && parsed.identity?.enc_private && parsed.identity?.sign_private) {
-          return { ...parsed, pins: parsed.pins ?? {}, prekeys: Array.isArray(parsed.prekeys) ? parsed.prekeys : [] };
-        }
+        const parsed = parse(raw);
+        if (parsed) return parsed;
       } catch {
-        // An unreadable file is replaced: the guests will see a new key,
+        // Unreadable keys are replaced: the guests will see a new key,
         // which their devices refuse until it is verified again.
       }
-      console.warn(`[compute] ${path} unreadable; making new keys. Guests must verify this computer again.`);
+      console.warn(`[compute] ${source} unreadable; making new keys. Guests must verify this computer again.`);
     }
+    made = true;
     const identity = createComputeIdentity();
     return {
       v: 1,
@@ -143,12 +184,19 @@ export function createComputeHost({ path, now = Date.now }: { path: string; now?
     };
   }
 
+  /// The public half of the identity, all `path` holds when there is a store.
+  function writePublic() {
+    const own = publicIdentity(identity());
+    writePrivately(path, JSON.stringify({ v: 1, identity: { enc_public: own.encPublic, sign_public: own.signPublic } }));
+  }
+
   function save() {
-    mkdirSync(dirname(path), { recursive: true });
-    const temporary = `${path}.${process.pid}.tmp`;
-    writeFileSync(temporary, JSON.stringify(stored), { mode: 0o600 });
-    chmodSync(temporary, 0o600);
-    renameSync(temporary, path);
+    if (store) {
+      store.save(JSON.stringify(stored));
+      writePublic();
+      return;
+    }
+    writePrivately(path, JSON.stringify(stored));
   }
 
   function identity(): ComputeIdentity {

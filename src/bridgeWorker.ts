@@ -23,6 +23,14 @@
 // Desktop's main process calls POST /local_shares/serve with this
 // computer's app session and answers {type: "share-serve-result", id,
 // result}. Run alone (no parent), share requests are refused.
+//
+// This computer's keys for sealed turns and shares (compute/computeHost.ts)
+// are kept by the parent, sealed by safeStorage, when it says so: its
+// `configure` carries `computeKeys: {json}` (the keys as last saved, or
+// null), and each change goes back as {type: "compute-keys", json}. The
+// worker announces it can in its "ready" ({computeKeyStore: true}), so that
+// a Desktop never moves the keys away from a worker that would not find
+// them. Without it, the keys stay in compute-keys.json.
 
 import { readBridgeClientEnv, startBridgeClient, type BridgeClientHandle, type BridgeClientState } from "./bridgeClient.js";
 import { configureLocalModels } from "./executors/localModels.js";
@@ -40,6 +48,8 @@ interface ConfigureMessage {
   defaultModel?: string | null;
   /// Keys of the runtimes that ask for one, by base URL (see runtimeAuth.ts).
   runtimeKeys?: Record<string, string>;
+  /// This computer's sealed-turn keys, kept by the parent (see above).
+  computeKeys?: { json: string | null };
 }
 
 interface ModelsMessage {
@@ -74,6 +84,14 @@ function start(options: Omit<ConfigureMessage, "type" | "endpoints" | "defaultMo
     deviceIdPath: options.deviceIdPath,
     capabilities: ["local-llm-provider"],
     ...(shares ? { serveShare: (payload: unknown) => shares.serve(payload) } : {}),
+    ...(parentPort && options.computeKeys
+      ? {
+        computeKeyStore: {
+          initial: typeof options.computeKeys.json === "string" ? options.computeKeys.json : null,
+          save: (json: string) => parentPort.postMessage({ type: "compute-keys", json }),
+        },
+      }
+      : {}),
     onServed: (model: string) => parentPort?.postMessage({ type: "served", model }),
     onState: (state: BridgeClientState) => {
       console.log(`[bridge-worker] ${state}`);
@@ -99,7 +117,7 @@ if (parentPort) {
       process.exit(0);
     }
   });
-  parentPort.postMessage({ type: "ready" });
+  parentPort.postMessage({ type: "ready", computeKeyStore: true });
 } else {
   const env = readBridgeClientEnv();
   if (!env) {

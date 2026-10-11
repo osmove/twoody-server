@@ -34,7 +34,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { dirname, join } from "node:path";
-import { createComputeHost, isSealedTurn, type ServeShare } from "./compute/computeHost.js";
+import { createComputeHost, isSealedTurn, type ComputeKeyStore, type ServeShare } from "./compute/computeHost.js";
 import { createDeltaRelay } from "./executors/completionStream.js";
 import { executeBridgeTask, isSelfBridgeKind, tesseractReady, whisperReady } from "./executors/index.js";
 import { configuredDefaultModel, downloadedModels } from "./executors/localModels.js";
@@ -150,6 +150,9 @@ export interface BridgeClientOptions {
   /// Where the keys of sealed shared turns are kept (default: next to the
   /// device id, compute-keys.json).
   computeKeysPath?: string;
+  /// Keeps those keys instead of computeKeysPath, which then holds their
+  /// public half only (Twoody Desktop: sealed by safeStorage).
+  computeKeyStore?: ComputeKeyStore;
   capabilities?: string[];
   /// Called when the link to the backend changes state, so a host
   /// process can tell its user whether this machine is reachable.
@@ -281,7 +284,10 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   // Shared folders' requests are sealed to the same keys: one identity, one
   // safety number for this computer, whatever is shared on it.
   const computeHost = servesLlm || opts.serveShare
-    ? createComputeHost({ path: opts.computeKeysPath ?? join(dirname(opts.deviceIdPath ?? join(homedir(), ".twoody-server", "bridge-device-id")), "compute-keys.json") })
+    ? createComputeHost({
+      path: opts.computeKeysPath ?? join(dirname(opts.deviceIdPath ?? join(homedir(), ".twoody-server", "bridge-device-id")), "compute-keys.json"),
+      store: opts.computeKeyStore,
+    })
     : null;
   // The safety numbers of the grantees' devices are computed with this
   // identity (GET /local_shares), when the server runs in this process.
