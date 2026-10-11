@@ -283,7 +283,8 @@ export function sealComputeRequest({guest, host, prekey, grantId, requestId, now
     request: {...header, nonce: toHex(nonce), ciphertext: toHex(ciphertext), signature: toHex(signature)},
     turn: {
       grantId, requestId, requestHash: requestDigest(aad, ciphertext),
-      guestEncPrivate: guest.encPrivate, ekPrivate, respKemSecret: respKem.secretKey, chain, ctx,
+      // A copy: forgetTurn erases the turn's secrets, never the device's own key.
+      guestEncPrivate: guest.encPrivate.slice(), ekPrivate, respKemSecret: respKem.secretKey, chain, ctx,
     },
   };
 }

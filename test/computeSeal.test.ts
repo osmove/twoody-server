@@ -42,3 +42,13 @@ test("produces exactly the desktop's vectors", () => {
     vectors,
   );
 });
+
+test("forgetting a turn erases its secrets, never the guest device's own key", () => {
+  const host = lib.createComputeIdentity();
+  const guest = lib.createComputeIdentity();
+  const { bundle } = lib.createHostPrekey({ host, id: "spk-forget", now: Date.now() });
+  const before = Buffer.from(guest.encPrivate).toString("hex");
+  const { turn } = lib.sealComputeRequest({ guest, host: lib.publicIdentity(host), prekey: bundle, grantId: "share:x", requestId: "r-forget", now: Date.now(), body: { op: "folders" } });
+  lib.forgetTurn(turn);
+  assert.equal(Buffer.from(guest.encPrivate).toString("hex"), before);
+});
