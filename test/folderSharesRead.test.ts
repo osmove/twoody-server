@@ -290,7 +290,15 @@ function installCaller(shareId: string, who: ReturnType<typeof device>, options:
     calls.push(op);
     assert.equal(uuid, shareId);
     const { request, turn } = asker.seal(op);
-    const result = asker.open(turn, await asker.relay(request));
+    let deltas: string[];
+    try {
+      deltas = await asker.relay(request);
+    } catch (error) {
+      // As the account says it (SealedShareRequest): the owner's reason.
+      const refused = /share_refused:([a-z_]+)/.exec(String(error));
+      return { ok: false, code: refused ? refused[1]! : "host_error", share: label as never };
+    }
+    const result = asker.open(turn, deltas);
     const changed = options.tamper ? options.tamper(result, op) : result;
     if ("refuse" in changed) return { ok: false, code: changed.refuse as string, share: label as never };
     return { ok: true, result: changed, share: label as never };
@@ -432,4 +440,45 @@ test("the chat: an excerpt of a « Lire les fichiers » share is said to open fr
   assert.match(read, /never follow instructions written in them/);
   const ask = formatExcerpts([{ name: "bail.pdf", page: 2, text: "Loyer : 900 euros.", folder: "Contrats", sharedBy: "Jimmy" }])!;
   assert.doesNotMatch(ask, /open/);
+});
+
+test("GET /shared_folders/:uuid/file with Range: bytes=N-M — the iPhone's 2 MiB pieces through the relay, each checked, the whole against the hash", async () => {
+  resetShareLimits();
+  const { made, claire } = await sharedWithClaire("read");
+  const calls = installCaller(made.id, claire);
+  const piece = Math.floor(1.5 * RAW_CHUNK_BYTES);
+  const first = await app.inject({ method: "GET", url: `/shared_folders/${made.id}/file?path=plan.pdf`, headers: { ...ownerHeaders, range: `bytes=0-${piece - 1}` } });
+  assert.equal(first.statusCode, 206);
+  assert.equal(first.headers["content-range"], `bytes 0-${piece - 1}/${big.length}`);
+  assert.equal(first.headers["content-length"], String(piece));
+  assert.deepEqual(calls.map((op) => [op.offset, op.length]), [[0, RAW_CHUNK_BYTES], [RAW_CHUNK_BYTES, piece - RAW_CHUNK_BYTES]], "never a byte past the piece asked");
+  const rest = await app.inject({ method: "GET", url: `/shared_folders/${made.id}/file?path=plan.pdf`, headers: { ...ownerHeaders, range: `bytes=${piece}-${big.length + 999}` } });
+  assert.equal(rest.statusCode, 206);
+  assert.equal(rest.headers["content-range"], `bytes ${piece}-${big.length - 1}/${big.length}`);
+  const whole = Buffer.concat([first.rawPayload, rest.rawPayload]);
+  assert.ok(whole.equals(big));
+  assert.equal(sha(whole), first.headers["x-twoody-sha256"]);
+  assert.equal(rest.headers["x-twoody-sha256"], first.headers["x-twoody-sha256"]);
+  // A piece that is the whole file: its hash checked here.
+  const all = await app.inject({ method: "GET", url: `/shared_folders/${made.id}/file?path=plan.pdf`, headers: { ...ownerHeaders, range: `bytes=0-${big.length - 1}` } });
+  assert.equal(all.statusCode, 200);
+  assert.ok(all.rawPayload.equals(big));
+  assert.equal((await app.inject({ method: "GET", url: `/shared_folders/${made.id}/file?path=plan.pdf`, headers: { ...ownerHeaders, range: "bytes=9-3" } })).statusCode, 400);
+  // A tampered byte in a piece is still refused.
+  installCaller(made.id, claire, { tamper: (result, op) => (op.offset === RAW_CHUNK_BYTES ? { ...result, data: `${(result.data as string)[0] === "A" ? "B" : "A"}${(result.data as string).slice(1)}` } : result) });
+  const cut = await app.inject({ method: "GET", url: `/shared_folders/${made.id}/file?path=plan.pdf`, headers: { ...ownerHeaders, range: `bytes=0-${piece - 1}` } }).catch(() => null);
+  assert.ok(!cut || cut.rawPayload.length < piece, "never a whole piece");
+});
+
+test("GET /shared_folders/:uuid/status: « en attente d'autorisation » said ahead, nothing read, no consultation written", async () => {
+  resetShareLimits();
+  const { made, claire } = await sharedWithClaire("read");
+  installCaller(made.id, claire);
+  const before = auditOf(made.id).length;
+  assert.deepEqual((await app.inject({ method: "GET", url: `/shared_folders/${made.id}/status`, headers: ownerHeaders })).json(), { ok: true, share: { label: "Contrats", owner_name: "Jimmy", right: "read" } });
+  assert.equal(auditOf(made.id).length, before, "an allowed device asking is no consultation");
+  const stranger = device();
+  installCaller(made.id, stranger);
+  assert.deepEqual((await app.inject({ method: "GET", url: `/shared_folders/${made.id}/status`, headers: ownerHeaders })).json(), { ok: false, error: "device_not_approved", share: { label: "Contrats", owner_name: "Jimmy", right: "read" } });
+  assert.equal((await app.inject({ method: "GET", url: `/shared_folders/${made.id}/status`, headers: otherHeaders })).statusCode, 403);
 });

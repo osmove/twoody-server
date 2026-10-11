@@ -231,8 +231,12 @@ household member's phone, a device paired by code, or a `peer:` session). The iP
 GET /shared_folders/:uuid/browse?path=&offset=
       → {ok: true, entries: [§2 browse entries], next_offset, share: {label, owner_name, right}}
       | {ok: false, error, share?}                     (HTTP 200 for every answer of the owner's computer)
-GET /shared_folders/:uuid/file?path=…   or   ?document_id=…        (optional header Range: bytes=N-)
-      → 200 (206 from N) the file's bytes. Headers: Content-Length, Content-Type (the owner's type through the
+GET /shared_folders/:uuid/status
+      → {ok: true, share?} | {ok: false, error, share?}   whether this computer's device may ask: the owner's check
+        made before a request is opened, sealed as `{op: "check"}` — nothing read, and no row in the owner's audit
+        when allowed; `device_not_approved` while the owner has not allowed it (« En attente : … doit autoriser »)
+GET /shared_folders/:uuid/file?path=…   or   ?document_id=…    (optional Range: bytes=N- or bytes=N-M)
+      → 200 the whole file, or 206 with Content-Range for N- or N-M (M past the end: to the end; M < N: 400). Headers: Content-Length, Content-Type (the owner's type through the
         server's list, else application/octet-stream), X-Twoody-Sha256 (whole file, hex), X-Twoody-Size,
         X-Twoody-File-Name (encodeURIComponent of the owner's name), Content-Disposition attachment,
         X-Content-Type-Options nosniff, Content-Security-Policy sandbox, Cache-Control private, no-store.
@@ -244,9 +248,10 @@ GET /shared_folders/:uuid/file?path=…   or   ?document_id=…        (optional
 - Assembled from 1 MiB chunks, one at a time, through the Desktop (`share-call` with `{op: "raw", …}`); each chunk's
   hash checked; `busy`, `rate_limited`, `timeout` waited out and the same chunk asked again (≤ 90 s per chunk); the
   file changing on the owner's disk between chunks (another `sha256`, `size` or `modified_at`) ends it (`changed`).
-- From 0, the whole file's hash is checked before its last chunk is written: a body shorter than Content-Length
-  (the connection closed) means it failed — never keep it. From N (Range), the caller checks the whole file against
-  `X-Twoody-Sha256`, which must be the one it started with (else the file changed: start again from 0).
+- The whole file (no Range, or a range covering it): its hash is checked before its last chunk is written — a body
+  shorter than Content-Length (the connection closed) means it failed; never keep it. A part (N-, N-M): never a byte
+  past M is asked of the owner; the caller checks the whole file against `X-Twoody-Sha256`, which must be the same
+  for every part (else the file changed: start again from 0).
 - Nothing is written to disk on this computer: the bytes go to the caller as they arrive.
 
 **Desktop (grantee)**: `share-call` takes `{op: "raw", …}` (`browse`, `text`, `raw` refused at once when the account
@@ -269,13 +274,11 @@ what widens a share (`POST`/`PATCH /local_shares`, `devices/approve`, `devices/v
 | « Ce que vous partagez » | computer `GET /local_shares` (403 `owner_only` → the account's `given` list alone); « Arrêter le partage »: computer `DELETE /local_shares/:id` first when it holds the share, then account `DELETE /api/v1/folder_shares/:uuid`; another computer's share on the account alone (that computer revokes it at its next sync) |
 
 TODO (server, for the phone):
-- **Bounded Range on `/shared_folders/:uuid/file`.** `resumeFrom` accepts only `bytes=N-` and otherwise sends the
-  whole file (200). The phone asks `bytes=N-M` pieces of 2 MiB because the relay queues about 3 MB
-  (`mesh-design.md` §8): on the same network the whole file comes in one answer and is used, through the relay a file
-  over ~3 MB is expected to fail until the route answers `bytes=N-M` with 206 and `Content-Range`. Not verified on a
-  real iPhone.
-- **Device approval said ahead.** The Desktop probes each online share with `{op: "folders"}` through its IPC;
-  the phone has no route for it, so « En attente : … doit autoriser … » is said only when a question or a browse is
-  refused (`device_not_approved`). A route would also show in the owner's « Consultations ».
+- ~~**Bounded Range on `/shared_folders/:uuid/file`.**~~ Done (11/10/2026): `bytes=N-M` answers 206 with
+  `Content-Range`, only those bytes asked of the owner (§6). Not verified on a real iPhone.
+- ~~**Device approval said ahead.**~~ Done (11/10/2026): `GET /shared_folders/:uuid/status` (§6), the owner's
+  check alone — no consultation written when allowed. Needs the account of 11/10/2026 (twoody-backend 61a235d3, not
+  deployed): before it, the account said every refusal before opening as `host_error`, so `device_not_approved` never
+  reached a grantee through the relay (the Desktop's « En attente » state included).
 - **Safety number.** The device the owner approves is the paired computer, whose compute key the phone does not
   know: the iPhone shows no safety number (compare it on the computer's « Partagés avec moi »).

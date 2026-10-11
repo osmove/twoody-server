@@ -96,14 +96,15 @@ export interface Chunk {
 }
 
 /// One chunk at `offset`, checked; refusals that pass waited out.
-export async function fetchChunk(uuid: string, ref: FileRef, offset: number, options: { expected?: SharedFile; aborted?: () => boolean } = {}): Promise<Chunk> {
+export async function fetchChunk(uuid: string, ref: FileRef, offset: number, options: { expected?: SharedFile; aborted?: () => boolean; length?: number } = {}): Promise<Chunk> {
+  const length = Math.min(CHUNK_BYTES, Math.max(1, options.length ?? CHUNK_BYTES));
   const call = shareCaller();
   if (!call) throw new SharedFileError("no_account");
   const started = clock();
   let label: ShareLabel | null = null;
   for (;;) {
     if (options.aborted?.()) throw new SharedFileError("aborted", label);
-    const outcome = await call(uuid, { op: "raw", ...ref, offset, length: CHUNK_BYTES }, CALL_TIMEOUT_MS).catch(() => ({ ok: false as const, code: "unreachable", share: null }));
+    const outcome = await call(uuid, { op: "raw", ...ref, offset, length }, CALL_TIMEOUT_MS).catch(() => ({ ok: false as const, code: "unreachable", share: null }));
     label = outcome.share ?? label;
     let code: string;
     if (!outcome.ok) code = outcome.code;
@@ -111,7 +112,7 @@ export async function fetchChunk(uuid: string, ref: FileRef, offset: number, opt
       const result = outcome.result as Record<string, unknown> | null;
       if (!result || typeof result !== "object") throw new SharedFileError("bad_answer", label);
       if (result.ok !== true) code = typeof result.error === "string" && /^[a-z_]{1,40}$/.test(result.error) ? result.error : "bad_answer";
-      else return checkedChunk(result, offset, options.expected, label);
+      else return checkedChunk(result, offset, length, options.expected, label);
     }
     const wait = waitFor(code);
     if (wait === null || clock() - started + wait > CHUNK_PATIENCE_MS) throw new SharedFileError(code, label);
@@ -119,7 +120,7 @@ export async function fetchChunk(uuid: string, ref: FileRef, offset: number, opt
   }
 }
 
-function checkedChunk(result: Record<string, unknown>, offset: number, expected: SharedFile | undefined, share: ShareLabel | null): Chunk {
+function checkedChunk(result: Record<string, unknown>, offset: number, length: number, expected: SharedFile | undefined, share: ShareLabel | null): Chunk {
   const file = readFile(result.file);
   if (!file) throw new SharedFileError("bad_answer", share);
   if (file.size > MAX_FILE_BYTES) throw new SharedFileError("too_large", share);
@@ -127,7 +128,7 @@ function checkedChunk(result: Record<string, unknown>, offset: number, expected:
   if (result.offset !== offset || offset > file.size) throw new SharedFileError("bad_answer", share);
   if (typeof result.data !== "string" || result.data.length > Math.ceil(CHUNK_BYTES / 3) * 4 || !BASE64.test(result.data)) throw new SharedFileError("bad_answer", share);
   const bytes = Buffer.from(result.data, "base64");
-  const wanted = Math.min(CHUNK_BYTES, file.size - offset);
+  const wanted = Math.min(length, file.size - offset);
   // Every byte asked for, no more: a short chunk would leave the download
   // going round, a long one would write past the file.
   if (bytes.length !== wanted || result.length !== bytes.length) throw new SharedFileError("bad_answer", share);
@@ -138,17 +139,20 @@ function checkedChunk(result: Record<string, unknown>, offset: number, expected:
 }
 
 /**
- * The file from `start`, chunk by chunk to `write`. From 0, the whole
- * file's hash is checked before its last chunk is handed over: a caller
- * that got every byte got the file as it is on the owner's disk. From
- * further on, the caller checks it (it holds the bytes before `start`).
- * `onFirst` gets the file's description before any byte.
+ * The file from `start` to `end` (inclusive; the file's end when absent
+ * or past it), chunk by chunk to `write`. The whole file, from 0 to its
+ * end: its hash is checked before its last chunk is handed over — a caller
+ * that got every byte got the file as it is on the owner's disk. A part of
+ * it: the caller checks the whole once it holds every part, against the
+ * hash the first chunk gave (`first`, fetched by the caller to answer with
+ * the file's description before any byte).
  */
 export async function downloadSharedFile(
   uuid: string,
   ref: FileRef,
   options: {
     start?: number;
+    end?: number;
     first?: Chunk;
     write: (bytes: Buffer) => Promise<void> | void;
     aborted?: () => boolean;
@@ -157,18 +161,19 @@ export async function downloadSharedFile(
   const start = options.start ?? 0;
   const first = options.first ?? (await fetchChunk(uuid, ref, start, { aborted: options.aborted }));
   const file = first.file;
-  const whole = start === 0 ? createHash("sha256") : null;
+  const last = Math.min(options.end ?? file.size - 1, file.size - 1);
+  const whole = start === 0 && last === file.size - 1 ? createHash("sha256") : null;
   let chunk = first;
   let offset = start;
   for (;;) {
     whole?.update(chunk.bytes);
     offset += chunk.bytes.length;
-    if (chunk.eof) {
+    if (chunk.eof || offset > last) {
       if (whole && whole.digest("hex") !== file.sha256) throw new SharedFileError("bad_answer", chunk.share);
       await options.write(chunk.bytes);
       return { file, bytes: offset - start, share: first.share };
     }
     await options.write(chunk.bytes);
-    chunk = await fetchChunk(uuid, ref, offset, { expected: file, aborted: options.aborted });
+    chunk = await fetchChunk(uuid, ref, offset, { expected: file, aborted: options.aborted, length: last - offset + 1 });
   }
 }

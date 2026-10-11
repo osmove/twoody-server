@@ -12,9 +12,13 @@ import { owner } from "./localShares.js";
 //
 //   GET /shared_folders/:uuid/browse?path=&offset=
 //         → {ok: true, entries, next_offset, share} | {ok: false, error, share?}
-//   GET /shared_folders/:uuid/file?path=… | ?document_id=…   (Range: bytes=N-)
+//   GET /shared_folders/:uuid/file?path=… | ?document_id=…   (Range: bytes=N- or bytes=N-M)
 //         → the file's bytes, X-Twoody-Sha256, X-Twoody-Size, X-Twoody-File-Name;
 //           JSON {error, share?} before any byte otherwise
+//   GET /shared_folders/:uuid/status
+//         → {ok: true, share?} | {ok: false, error, share?}: whether this
+//           computer's device may ask (device_not_approved: the owner must
+//           still allow it), read nothing and counted as no consultation
 //
 // Each call goes to the owner's computer sealed, through the Desktop
 // (share-call, shares/guest.ts) and the account; that computer checks the
@@ -84,12 +88,17 @@ function readEntry(raw: unknown) {
   };
 }
 
-/// `Range: bytes=N-` (the rest of the file from N); null for none, or for
-/// any other form (the whole file is sent).
-export function resumeFrom(header: string | string[] | undefined): number | null {
+/// `Range: bytes=N-` (the rest of the file from N) or `bytes=N-M` (N to M,
+/// inclusive — the phone asks 2 MiB pieces through the relay); null for
+/// none, or for any other form (the whole file is sent); "invalid" for an
+/// end before its start.
+export function rangeOf(header: string | string[] | undefined): { start: number; end: number | null } | "invalid" | null {
   const value = Array.isArray(header) ? header[0] : header;
-  const match = value ? /^bytes=(\d{1,9})-$/.exec(value.trim()) : null;
-  return match ? Number(match[1]) : null;
+  const match = value ? /^bytes=(\d{1,9})-(\d{1,9})?$/.exec(value.trim()) : null;
+  if (!match) return null;
+  const start = Number(match[1]);
+  const end = match[2] === undefined ? null : Number(match[2]);
+  return end !== null && end < start ? "invalid" : { start, end };
 }
 
 export async function sharedFolderRoutes(app: FastifyInstance) {
@@ -120,6 +129,28 @@ export async function sharedFolderRoutes(app: FastifyInstance) {
     },
   });
 
+  app.get<{ Params: { uuid: string } }>("/shared_folders/:uuid/status", {
+    schema: { tags: ["documents"], summary: "Whether this computer may ask a folder someone shares with the person — or waits for its owner's « Autoriser » — read nothing, no consultation (the person's own sessions)" },
+    handler: async (req, reply) => {
+      const auth = await owner(req, reply);
+      if (!auth) return;
+      const uuid = req.params.uuid.toLowerCase();
+      if (!SHARE_UUID.test(uuid)) return reply.code(400).send({ ok: false, error: "bad_request" });
+      const call = shareCaller();
+      if (!call) return reply.send({ ok: false, error: "no_account" });
+      // The owner's check made before a request is opened (shares/serve.ts):
+      // answered {ok: true} once this device is allowed, never audited then;
+      // refused like any request otherwise.
+      const outcome = await call(uuid, { op: "check" }, BROWSE_TIMEOUT_MS).catch(() => ({ ok: false as const, code: "unreachable", share: null }));
+      const share = outcome.share ?? null;
+      if (!outcome.ok) return reply.header("Cache-Control", "private, no-store").send({ ok: false, error: outcome.code, ...(share ? { share } : {}) });
+      const result = outcome.result as Record<string, unknown> | null;
+      const ok = result?.ok === true;
+      const error = ok ? null : typeof result?.error === "string" && /^[a-z_]{1,40}$/.test(result.error) ? result.error : "bad_answer";
+      return reply.header("Cache-Control", "private, no-store").send({ ok, ...(error ? { error } : {}), ...(share ? { share } : {}) });
+    },
+  });
+
   app.get<{ Params: { uuid: string }; Querystring: { path?: string; document_id?: string } }>("/shared_folders/:uuid/file", {
     schema: { tags: ["documents"], summary: "A file of a folder someone shares with the person with « Lire les fichiers », fetched sealed in chunks from its owner's computer and checked against its hash (the person's own sessions)" },
     handler: async (req, reply) => {
@@ -131,7 +162,9 @@ export async function sharedFolderRoutes(app: FastifyInstance) {
       if (path !== undefined && (typeof path !== "string" || !path || path.length > 4096)) return refuse(reply, "bad_request");
       if (documentId !== undefined && (typeof documentId !== "string" || !DOCUMENT_ID.test(documentId))) return refuse(reply, "bad_request");
       const ref: FileRef = path !== undefined ? { path } : { document_id: documentId! };
-      const start = resumeFrom(req.headers.range) ?? 0;
+      const range = rangeOf(req.headers.range);
+      if (range === "invalid") return refuse(reply, "bad_request");
+      const start = range?.start ?? 0;
 
       let gone = false;
       reply.raw.on("close", () => {
@@ -139,17 +172,19 @@ export async function sharedFolderRoutes(app: FastifyInstance) {
       });
       let first: Chunk;
       try {
-        first = await fetchChunk(uuid, ref, start, { aborted: () => gone });
+        first = await fetchChunk(uuid, ref, start, { aborted: () => gone, length: range?.end != null ? range.end - start + 1 : undefined });
       } catch (error) {
         if (error instanceof SharedFileError) return refuse(reply, error.code, error.share);
         return refuse(reply, "unreachable");
       }
       const { file } = first;
+      const end = range?.end != null ? Math.min(range.end, Math.max(file.size - 1, 0)) : file.size - 1;
+      const partial = start > 0 || end < file.size - 1;
       const out = new PassThrough();
       reply
-        .code(start > 0 ? 206 : 200)
+        .code(partial ? 206 : 200)
         .header("Content-Type", servedContentType(file.content_type))
-        .header("Content-Length", String(file.size - start))
+        .header("Content-Length", String(Math.max(0, end - start + 1)))
         .header("Accept-Ranges", "bytes")
         .header("X-Twoody-Sha256", file.sha256)
         .header("X-Twoody-Size", String(file.size))
@@ -158,9 +193,10 @@ export async function sharedFolderRoutes(app: FastifyInstance) {
         .header("X-Content-Type-Options", "nosniff")
         .header("Content-Security-Policy", "sandbox; default-src 'none'")
         .header("Cache-Control", "private, no-store");
-      if (start > 0) reply.header("Content-Range", `bytes ${start}-${Math.max(start, file.size - 1)}/${file.size}`);
+      if (partial) reply.header("Content-Range", `bytes ${start}-${Math.max(start, end)}/${file.size}`);
       void downloadSharedFile(uuid, ref, {
         start,
+        end,
         first,
         aborted: () => gone,
         write: async (bytes) => {
