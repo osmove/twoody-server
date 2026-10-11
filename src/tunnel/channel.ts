@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, timingSafeEqual, type KeyObject } from "node:crypto";
+import { createCipheriv, createDecipheriv, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, type KeyObject } from "node:crypto";
 
 // The encrypted channel between two of the same person's devices — a
 // phone and the computer that runs their Twoody — when they are not on
@@ -27,7 +27,18 @@ import { createCipheriv, createDecipheriv, createPublicKey, diffieHellman, gener
 //     is never reused because it only ever goes up, and the receiver
 //     refuses anything it has already seen — that is the replay
 //     protection, and it is also why a dropped connection must start a
-//     new session rather than resume this one.
+//     new session rather than resume this one;
+//   - key confirmation is implicit: the first frame that opens is the
+//     proof that the other side derived the same keys, so holds the
+//     paired static key and answered this session's ephemeral key. The
+//     keys mix both sides' fresh ephemeral halves, so no frame can be
+//     sealed for a session before both ephemeral keys are known, and a
+//     frame from another session never opens in this one. Nothing is
+//     acted on before a frame opens (hostLink.ts takes a pending session
+//     only then; the client sends its request sealed and trusts only the
+//     sealed answer). A separate confirmation message would prove nothing
+//     more and cost a round trip; the unused one that existed was
+//     removed on 11/10/2026.
 //
 // What this does NOT defend against: a relay that refuses to forward, or
 // forwards late. It can silence a conversation; it cannot read or forge
@@ -180,18 +191,6 @@ export class Channel {
       if (seen + WINDOW < this.highestSeen) this.received.delete(seen);
     }
     return plaintext;
-  }
-
-  /// Proves to the other side that both derived the same keys, before
-  /// anything real is sent. Comparing in constant time costs nothing and
-  /// avoids answering "how wrong was I" to someone guessing.
-  confirmation(): Buffer {
-    return Buffer.from(hkdfSync("sha256", this.sendKey, this.receiveKey, "twoody tunnel confirm", KEY_BYTES));
-  }
-
-  accepts(confirmation: Buffer): boolean {
-    const expected = Buffer.from(hkdfSync("sha256", this.receiveKey, this.sendKey, "twoody tunnel confirm", KEY_BYTES));
-    return confirmation.length === expected.length && timingSafeEqual(confirmation, expected);
   }
 }
 

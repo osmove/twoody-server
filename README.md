@@ -472,6 +472,12 @@ To update such an install from a laptop that has a checkout,
 rsyncs it to `/opt/twoody-server` and restarts `twoody-server.service`
 (defaults and overrides in the script's header).
 
+The keys of a server on its own are files only its user can read (0600),
+not encrypted: nobody is there to unlock a keyring at boot. Put its data
+folder on an encrypted volume — `docs/encrypted-storage.md` sets one up on
+Raspberry Pi OS; the server says at start, in `/health` (`data_at_rest`)
+and in Twoody Desktop's « Appareils » when it is not.
+
 Jimmy's own Pi does not use either path: it runs the server as the user
 service `twoody-next` (port 3031, data in `~/twoody-next/data`), installed
 from an `npm pack` tarball; the procedure is in `~/Dev/twoody/AGENTS.md`

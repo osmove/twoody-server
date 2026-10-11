@@ -1,3 +1,5 @@
+import type { DataAtRest } from "../dataAtRest.js";
+
 // The status object a computer publishes (heartbeat, /api/v1/peer/status),
 // test/fixtures/computer-status.schema.json. What this computer says of
 // itself is built by `buildStatus` (account/statusSource.ts); what a peer
@@ -17,6 +19,16 @@ export interface ComputerStatus {
   /// The engine its « Moteur » preference resolves to (docs/builtin-runtime-design.md
   /// §4), null when none; absent from a computer that does not say.
   engine?: StatusEngine | null;
+  /// Whether its data folder is on an encrypted volume (dataAtRest.ts).
+  /// Only in the answer to the person's other computers (/peer/status),
+  /// never in the heartbeat to the account; absent when not said.
+  data_at_rest?: DataAtRest;
+}
+
+const DATA_AT_REST: readonly DataAtRest[] = ["encrypted", "not_encrypted", "unknown"];
+
+function readDataAtRest(value: unknown): DataAtRest | undefined {
+  return typeof value === "string" && (DATA_AT_REST as readonly string[]).includes(value) ? (value as DataAtRest) : undefined;
 }
 
 export const STATUS_ENGINES = ["builtin", "ollama", "lmstudio", "mlx", "custom"] as const;
@@ -81,6 +93,8 @@ export function readStatus(raw: unknown): ComputerStatus | null {
   // Optional, and ignored rather than refused when it is not one of ours.
   const engine = readEngine(s.engine);
   if (engine !== undefined) status.engine = engine;
+  const atRest = readDataAtRest(s.data_at_rest);
+  if (atRest !== undefined) status.data_at_rest = atRest;
   return Buffer.byteLength(JSON.stringify(status)) <= STATUS_MAX_BYTES ? status : null;
 }
 
@@ -113,6 +127,8 @@ export function boundStatus(status: ComputerStatus): ComputerStatus {
   };
   const engine = readEngine(status.engine);
   if (engine !== undefined) out.engine = engine;
+  const atRest = readDataAtRest(status.data_at_rest);
+  if (atRest !== undefined) out.data_at_rest = atRest;
   while (Buffer.byteLength(JSON.stringify(out)) > STATUS_MAX_BYTES && out.models.length > 0) {
     const dropped = out.models.pop()!;
     delete out.tps[dropped.id];

@@ -12,7 +12,8 @@ import { securityCode } from "../vault/contracts.js";
 // The key outlives everything else: it is what a phone recognises the
 // computer by, and changing it asks every paired device to pair again.
 // So it is written once, to a file only this account can read, and read
-// back afterwards.
+// back afterwards — or, inside Twoody Desktop, sealed by the system's
+// protected storage and handed over at start (TunnelKeyStore below).
 //
 // The trust in the whole tunnel rests on the moment these keys are
 // exchanged, which is the pairing on the LAN — the person read a token
@@ -29,6 +30,49 @@ const PRIVATE_KEY_PREFIX = Buffer.from("302e020100300506032b656e04220420", "hex"
 
 let cached: StaticIdentity | null = null;
 
+/// Where the key is kept when not in IDENTITY_PATH. Inside Twoody Desktop
+/// the key is sealed by the system's protected storage (safeStorage: the
+/// macOS Keychain, DPAPI, the Linux keyring) in the Desktop's main
+/// process, which hands it over by message at start
+/// (src/tunnel/desktopKeyStore.ts); this process then never writes it to a
+/// file. Its `save` is called with a key made here, when none was handed.
+export interface TunnelKeyStore {
+  /// The key as kept (64 hex characters), or null: none kept yet.
+  initial: string | null;
+  save(hex: string): void;
+}
+
+let store: TunnelKeyStore | null = null;
+/// Set when the key is sealed somewhere this process cannot open now (a
+/// Linux keyring locked since): no new key is made in its place, since
+/// every paired device pins the one sealed.
+let lockedReason: string | null = null;
+
+export class TunnelKeyLockedError extends Error {
+  readonly code = "tunnel_key_locked";
+}
+
+/// From now on the key comes from `keyStore` (null: the file again).
+export function useTunnelKeyStore(keyStore: TunnelKeyStore | null): void {
+  store = keyStore;
+  lockedReason = null;
+  cached = null;
+}
+
+/// The key exists but cannot be read for now: everything that needs it
+/// fails with TunnelKeyLockedError rather than replacing it.
+export function lockTunnelIdentity(reason: string): void {
+  store = null;
+  lockedReason = reason;
+  cached = null;
+}
+
+/// Whether the key is kept by a store rather than in a file here, or
+/// locked away (for /health and the tests).
+export function tunnelKeyKeeping(): "file" | "store" | "locked" {
+  return lockedReason !== null ? "locked" : store ? "store" : "file";
+}
+
 /// This computer's security code (src/vault/contracts.ts securityCode):
 /// what a person compares with the code the Desktop or the app shows for
 /// it. Null when the key cannot be read.
@@ -43,6 +87,22 @@ export function thisSecurityCode(): string | null {
 /// The key pair for this computer, made the first time it is asked for.
 export function tunnelIdentity(): StaticIdentity {
   if (cached) return cached;
+  if (lockedReason !== null) throw new TunnelKeyLockedError(lockedReason);
+
+  if (store) {
+    const kept = store.initial === null ? null : readIdentity(store.initial.trim());
+    if (kept) {
+      cached = kept;
+      return kept;
+    }
+    if (store.initial !== null) console.warn("[tunnel] the key handed over is not one this version understands; making a new one. Paired devices must pair again.");
+    const made = createIdentity();
+    // Kept from now on: a second call must not make another one.
+    store = { initial: privateKeyHex(made.privateKey), save: store.save };
+    store.save(store.initial!);
+    cached = made;
+    return made;
+  }
 
   if (existsSync(IDENTITY_PATH)) {
     const parsed = readIdentity(readFileSync(IDENTITY_PATH, "utf8").trim());

@@ -35,11 +35,15 @@ test("the two devices end up with the same keys and can talk both ways", () => {
 
   assert.equal(computer.open(phone.seal("bonjour")).toString(), "bonjour");
   assert.equal(phone.open(computer.seal("bonjour à toi")).toString(), "bonjour à toi");
+});
 
-  // And each recognises the other's confirmation, which is what lets a
-  // session refuse to start rather than fail on the first real message.
-  assert.ok(computer.accepts(phone.confirmation()));
-  assert.ok(phone.accepts(computer.confirmation()));
+test("the first frame that opens is the key confirmation: there is no other to forget to check", () => {
+  // A confirmation method nobody called used to sit on Channel; the
+  // protocol relies on the AEAD of the first frame instead (channel.ts).
+  assert.equal("confirmation" in Channel.prototype, false);
+  assert.equal("accepts" in Channel.prototype, false);
+  const { phone, computer } = pair(createIdentity(), createIdentity());
+  assert.equal(computer.open(phone.seal("hello")).toString(), "hello");
 });
 
 test("a frame the relay edited is refused", () => {
@@ -116,8 +120,9 @@ test("a relay that puts itself in the middle cannot read anything", () => {
     peerStatic: phone.publicKey,
   });
 
-  assert.equal(relayChannel.accepts(phoneChannel.confirmation()), false);
   assert.throws(() => relayChannel.open(phoneChannel.seal("mot de passe")), (err: ChannelError) => err.code === "not_authentic");
+  // Nor can it seal a first frame the phone would take for the computer's.
+  assert.throws(() => phoneChannel.open(relayChannel.seal("c'est moi")), (err: ChannelError) => err.code === "not_authentic");
 });
 
 test("a static key that is not the expected one fails the session", () => {
@@ -142,7 +147,6 @@ test("a static key that is not the expected one fails the session", () => {
     peerStatic: phone.publicKey,
   });
 
-  assert.equal(computerChannel.accepts(phoneChannel.confirmation()), false);
   assert.throws(() => computerChannel.open(phoneChannel.seal("salut")), (err: ChannelError) => err.code === "not_authentic");
 });
 

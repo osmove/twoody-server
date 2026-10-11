@@ -3,6 +3,8 @@ import { requireAuth } from "../auth.js";
 import { atCapacity, beginGeneration } from "../account/inflight.js";
 import { buildStatus, localModels, noteModelUsed } from "../account/statusSource.js";
 import type { Purpose } from "../account/status.js";
+import { DATA_DIR } from "../db.js";
+import { dataAtRest } from "../dataAtRest.js";
 import { LocalOnlyError, outboundFetch } from "../outbound.js";
 import { unpairSession } from "../pairing.js";
 import { runtimeAuthHeaders } from "../runtimeAuth.js";
@@ -54,7 +56,10 @@ export async function peerRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      return reply.send(await buildStatus(auth.userId));
+      // Whether its data is on an encrypted volume, for the person's
+      // other computers only: the heartbeat to the account (buildStatus
+      // alone) does not carry it.
+      return reply.send({ ...(await buildStatus(auth.userId)), data_at_rest: dataAtRest(DATA_DIR) });
     },
   });
 

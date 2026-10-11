@@ -12,6 +12,10 @@ EnvironmentFile=/etc/twoody-server.env
 ExecStart=/usr/bin/node /opt/twoody-server/dist/index.js
 Restart=always
 RestartSec=5
+# Exit 78: TWOODY_DATA_ENCRYPTION=require and the data folder is not on an
+# encrypted volume yet (not opened since the boot): no restart loop, it
+# starts once the volume is opened (docs/encrypted-storage.md).
+RestartPreventExitStatus=78
 # The built-in model engine (llama-server, and the model process it starts)
 # runs in this unit's control group: stopping the service stops it too,
 # even if the server did not get to (docs/builtin-runtime-design.md §3).

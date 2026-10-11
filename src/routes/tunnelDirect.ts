@@ -21,7 +21,14 @@ import { allTunnelPeers, tunnelIdentity } from "../tunnel/identity.js";
 export async function tunnelDirectRoutes(app: FastifyInstance) {
   app.get("/tunnel", { websocket: true }, (socket, req) => {
     const rendezvous = String((req.query as { rendezvous?: string }).rendezvous ?? "").toLowerCase();
-    const identity = tunnelIdentity();
+    let identity: ReturnType<typeof tunnelIdentity>;
+    try {
+      identity = tunnelIdentity();
+    } catch {
+      // The key is locked in a keyring for now (tunnel/desktopKeyStore.ts).
+      socket.close(1013, "unavailable");
+      return;
+    }
     const peer = allTunnelPeers().find((candidate) => rendezvousId(identity.publicKey, candidate.publicKey) === rendezvous);
     if (!peer) {
       socket.close(1008, "unknown");

@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 // First: failures are written down from here on (crashReports.ts).
 import "./crashReports.js";
+// Then: no data written outside an encrypted volume when one is required.
+import "./dataGuard.js";
 import { buildApp } from "./app.js";
 import { ensureSetupToken, getActivePairingCode } from "./auth.js";
 import { startBonjour } from "./bonjour.js";
 import { readBridgeClientEnv, startBridgeClient } from "./bridgeClient.js";
 import { serveShareInProcess } from "./shares/serve.js";
-import { db, users } from "./db.js";
+import { DATA_DIR, db, users } from "./db.js";
+import { dataAtRest } from "./dataAtRest.js";
 import { LOCAL_ONLY, isPrivateUrl } from "./outbound.js";
 import {
   readTunnelEnv,
@@ -39,6 +42,7 @@ import { onTitled, startTitles } from "./discussionTitles.js";
 import { builtinAddress, initEngine, preloadBuiltin, stopEngine } from "./engine.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { desktopKeepsTunnelKey, tunnelKeyFromDesktop, type KeyParentPort } from "./tunnel/desktopKeyStore.js";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 const HOST = process.env.HOST ?? "0.0.0.0";
@@ -81,6 +85,13 @@ const migrated = (() => {
   }
 })();
 
+// Inside Twoody Desktop, this computer's tunnel key is sealed by the
+// Desktop (safeStorage) and handed over now, before anything can ask for it.
+if (desktopChild && desktopKeepsTunnelKey()) {
+  const handed = await tunnelKeyFromDesktop((process as unknown as { parentPort: KeyParentPort }).parentPort);
+  if (handed === "locked") console.warn("  The tunnel key is sealed in a keyring that cannot be opened now: devices paired with this computer cannot reach it until it is.");
+}
+
 const app = await buildApp();
 const setupToken = ensureSetupToken();
 // The answers kept before model calls were recorded, copied once; the machine's
@@ -104,6 +115,11 @@ try {
   console.log(`\nTwoody Server ready on http://${HOST}:${PORT}\n`);
   if (LOCAL_ONLY) {
     console.log("  Local-only mode: calls outside this machine / the private network are refused.\n");
+  }
+  // On its own (a Pi, a NAS), this server's keys are 0600 files: said when
+  // nothing but the file's mode protects them (dataAtRest.ts).
+  if (!desktopChild && dataAtRest(DATA_DIR) === "not_encrypted") {
+    console.warn(`  ${DATA_DIR} is not on an encrypted volume: this computer's keys and conversations are readable by whoever takes its disk. See docs/encrypted-storage.md.\n`);
   }
   if (!runtimeEngine.managedByDesktop) {
     const { prefs, source } = runtimeEngine.prefs.read();
@@ -350,14 +366,19 @@ try {
           relay: tunnel?.relayState ?? null,
         });
       if (credentials) {
-        tunnel = startTunnelService({
-          ...credentials,
-          localBaseUrl,
-          onError: onTunnelError,
-          onLinksChanged: report,
-          onRelayStateChanged: report,
-        });
-        announceTunnel(tunnel);
+        try {
+          tunnel = startTunnelService({
+            ...credentials,
+            localBaseUrl,
+            onError: onTunnelError,
+            onLinksChanged: report,
+            onRelayStateChanged: report,
+          });
+          announceTunnel(tunnel);
+        } catch (err) {
+          // The tunnel key locked in a keyring (tunnel/desktopKeyStore.ts).
+          console.warn(`  The tunnel did not start: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
       report();
     });

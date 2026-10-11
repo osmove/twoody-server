@@ -52,6 +52,10 @@
     "engine": {
       "enum": ["builtin", "ollama", "lmstudio", "mlx", "custom", null],
       "description": "Optional: the engine its « Moteur » preference resolves to (twoody-server docs/builtin-runtime-design.md §4), null when none answers. Readers ignore a value they do not know."
+    },
+    "data_at_rest": {
+      "enum": ["encrypted", "not_encrypted", "unknown"],
+      "description": "Optional, only in the answer to another computer of the person (GET /api/v1/peer/status), never in the heartbeat to the account: whether its data folder is on an encrypted volume (twoody-server src/dataAtRest.ts). Readers ignore a value they do not know."
     }
   },
   "examples": [
