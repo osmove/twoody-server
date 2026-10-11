@@ -496,7 +496,12 @@ stored as the assistant's message, ending with an ellipsis.
 A headless Linux deployment has no Mac long-polling
 `/bridge/tasks/next`, so set `TWOODY_SELF_BRIDGE=1` to run `search`,
 `read`, `list_folders`, `list_dir`, and `llm_infer` in the same Node
-process. The executors live under `src/executors/`:
+process for this server's own `/bridge` routes. Tasks a Twoody account
+hands over through its bridge are another matter: since 11/10/2026 the
+bridge client runs only sealed requests (a shared computer's turn, a
+shared folder's request) and refuses everything in clear
+(`bridge_plaintext_refused`), and it no longer sends Home Assistant's
+states to the account. The executors live under `src/executors/`:
 
 - **`search`** — ripgrep content match + `find` filename match, ranks
   filename hits higher, scoped to `TWOODY_BRIDGE_FOLDERS`.

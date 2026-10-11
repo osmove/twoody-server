@@ -295,7 +295,7 @@ test("a runtime error is reported with its status", async () => {
 
 // ─── The worker against a fake backend ──────────────────────────────────────
 
-test("the worker relays a completion to the backend: heartbeat, ordered deltas, envelope", async () => {
+test("the worker refuses a completion in clear from the account: nothing runs, nothing streamed; heartbeat as before", async () => {
   const { mkdtempSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
@@ -397,28 +397,19 @@ test("the worker relays a completion to the backend: heartbeat, ordered deltas, 
     assert.equal(heartbeat.loaded_model, "mlx-community/Qwen3-14B-4bit");
     assert.deepEqual(states, ["online"]);
 
-    const last = patches[patches.length - 1];
-    assert.equal(last.status, "done");
-    const streamed = patches.slice(0, -1);
-    assert.ok(streamed.length >= 2, "the text arrives in several pieces");
-    assert.ok(streamed.every((patch) => patch.status === "streaming"));
-    const expected = "Le préavis est de six mois, selon l'article 9 du contrat.";
-    assert.equal(streamed.map((patch) => patch.delta).join(""), expected, "in order, nothing lost");
+    // 11/10/2026: a turn of the person's own handed by the account in clear
+    // (llm_infer without a seal) is refused before the model is asked: the
+    // account would read the answer, and could have forged the question.
+    assert.equal(patches.length, 1, "one report, the refusal, and no piece of text");
+    assert.equal(patches[0].status, "error");
+    assert.match(patches[0].error_message!, /^bridge_plaintext_refused:llm_infer:/);
+    assert.ok(!patches[0].error_message!.includes("préavis"), "nothing of the task in the refusal");
+    assert.equal(runtime.requests.length, 0, "the model was never asked");
 
-    assert.equal(last.result!.model_used, "glm4:9b");
-    assert.equal(typeof last.result!.latency_ms, "number");
-    const completion = JSON.parse(last.result!.response_json as string);
-    assert.equal(completion.choices[0].message.content, expected);
-    assert.equal(completion.usage.completion_tokens, 11);
-    assert.equal(runtime.requests[0].model, "glm4:9b", "the model the user picked is the one that ran");
-
-    // The worker kept polling while the model wrote, and the poll that
-    // follows the completion names the model that just ran.
-    assert.ok(pollsAfterClaim >= 1, "the worker kept polling");
+    // It keeps polling, with its heartbeat.
     const seen = polls.length;
     for (let i = 0; i < 100 && polls.length === seen; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(polls[polls.length - 1].wait, "25", "then it settles into long polls");
-    assert.equal(JSON.parse(polls[polls.length - 1].heartbeat!).loaded_model, "glm4:9b");
+    assert.ok(polls.length > seen, "the worker keeps polling");
   } finally {
     client.stop();
     const closed = new Promise<void>((resolve) => backend.close(() => resolve()));

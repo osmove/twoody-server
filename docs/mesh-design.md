@@ -139,6 +139,27 @@ allowlist/sealed tunnel/CORS unchanged. Rate limits + audit on peer document rou
 the computer E2EE; excerpts/files move between the owner's computers possibly via the encrypted relay; headless
 computers hold history keys on disk; routing metadata listed; base prompt wording.
 
+### 6b. Nothing in clear through the account (11/10/2026)
+Rule 12 applied to content: the account relays only what it cannot read. Closed on that day —
+- the bridge: `bridgeClient.ts` runs sealed requests only (a shared computer's turn, a shared folder's request) and
+  refuses any task in clear (`bridge_plaintext_refused:<kind>`: an unsealed `llm_infer` of the person's own,
+  `search`, `read`, `list_*`, `transcribe`, `ocr_image`, `smart_home_proxy`); it declares `local-llm-provider` and
+  `folder-share-provider` only and no longer pushes Home Assistant's states to the account
+  (`test/bridgePlaintext.test.ts`). The account (twoody-backend `PlaintextContent`, `BridgeQueue::PlaintextRefused`)
+  no longer creates such tasks either; a computer of an older version is simply never handed one.
+- questions in clear to the account (`POST /queries` without a seal): refused before anything is stored; the iPhone
+  and the web app send nothing to the account but a sealed question (`ChatView.js`), and keep an unsent queue sealed
+  into the vault (`conversationSync.js`); the Desktop reads an account conversation kept in clear but never continues
+  it through the account (`Chat.tsx`).
+- the older conversations kept in clear: moved into the vault by the apps (`migrateToVault`, Desktop and app); the
+  account verifies which have their sealed copy from the public ids (`SealedCopies`) and can erase those only, behind
+  `TWOODY_ERASE_SEALED_PLAINTEXT` (Jimmy's decision). A headless server has no account archive to move.
+
+What a Pi needs: the next `twoody-server` package (its bridge then refuses tasks in clear and stops the catalog
+push). `HOME_ASSISTANT_URL`/`HOME_ASSISTANT_TOKEN` stay for its own « Maison »; `TWOODY_SELF_BRIDGE`/
+`TWOODY_BRIDGE_FOLDERS` keep serving its own `/bridge` routes only. Before the update, an old Pi still pushes the
+catalog every four minutes: the account answers 410 and keeps nothing.
+
 ## 7. Lots
 P0 contracts (fixtures: computer-binding-v1, device-access-v1, memory-event schema, peer-documents-search schema,
 rank-table) → B1 backend (vault_devices kind/account_computer_id/binding, vault_events.stream + memory kind,

@@ -1,17 +1,23 @@
-// Long-poll bridge client that turns this twoody-server into a Mac Bridge
-// for an upstream Twoody backend (api.twoody.com or self-hosted Rails).
+// Long-poll bridge client: the door through which a Twoody account hands
+// this computer the sealed requests of the people it is shared with.
 //
-// Why it exists: the backend's `SmartHomeProcessor` enqueues
-// `smart_home_proxy` bridge tasks (Home Assistant REST calls). Without a
-// client on the user's LAN, those tasks sit in the queue forever — the
-// backend can't reach the user's HA directly. This module long-polls the
-// backend's `/bridge/tasks/next`, runs each task locally against the
-// twoody-server's `HOME_ASSISTANT_URL`, and PATCHes the result back.
+// What it runs (11/10/2026, end to end everywhere): another person's turn
+// on a computer shared with them (llm_infer sealed with computeSeal, a
+// compute grant's principal) and a request on a folder shared from here
+// (share_request, sealed the same way). Nothing else. The account is taken
+// as possibly malicious (AGENTS.md rule 12): a task in clear — a completion
+// of the person's own (llm_infer without a seal), a document search or
+// read, a folder listing, a transcription, an OCR, a Home Assistant call
+// (smart_home_proxy, « Path C ») — is refused before anything runs, so the
+// account can neither read nor steer the person's content through it.
+// The person's own devices reach this computer through the sealed tunnel
+// instead (src/tunnel/). This client no longer pushes Home Assistant's
+// states to the account either (the « catalog prewarm »).
 //
-// Contract mirrors `twoody-mac/apps/macos/TwoodyMac/Bridge/BridgeService.swift`:
+// Contract (twoody-backend BridgeTasksController):
 //   GET  /bridge/tasks/next?wait=25   →  204 or 200 {id, kind, args}
 //   PATCH /bridge/tasks/:id            ←  {status: "done"|"error", result|error_message}
-//   PATCH /bridge/tasks/:id            ←  {status: "streaming", delta}   (llm_infer, repeated)
+//   PATCH /bridge/tasks/:id            ←  {status: "streaming", delta}   (sealed lines, repeated)
 //
 // Auth: X-User-Token bearer (same token the chat clients use). The managed
 // backend binds a session to the device that signed in: a token minted
@@ -22,13 +28,10 @@
 // the backend's devices table). A server linked to an account passes its
 // own instead (account.json bridge_device_id, account/store.ts), so two
 // installs on one machine never send the same id.
-// Heartbeat: a worker that serves `llm_infer` also sends
+// Heartbeat: a worker that serves shared turns also sends
 // X-Bridge-Heartbeat on every poll — the models its runtimes hold, the
 // one in use, the machine's memory. That list is what lets the apps
-// offer each local model by name.
-//
-// Only the kinds this client knows how to run get claimed; everything
-// else is reported as an error so the backend's waiter unblocks.
+// offer each model of a shared computer by name.
 
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -36,7 +39,7 @@ import { homedir, totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import { createComputeHost, isSealedTurn, type ComputeKeyStore, type ServeShare } from "./compute/computeHost.js";
 import { createDeltaRelay } from "./executors/completionStream.js";
-import { executeBridgeTask, isSelfBridgeKind, tesseractReady, whisperReady } from "./executors/index.js";
+import { executeBridgeTask } from "./executors/index.js";
 import { configuredDefaultModel, downloadedModels } from "./executors/localModels.js";
 import { outboundFetch } from "./outbound.js";
 import { registerShareHostIdentity } from "./shares/hostIdentity.js";
@@ -86,14 +89,6 @@ function explainDeviceRefusal(code: string, deviceId: string): string {
   }
 }
 
-// Catalog prewarm cadence. Backend caches with a 5-min TTL; we
-// refresh every 4 min so there's no measurable window where the LLM
-// would fall back to home_search_entities on a cold cache. First push
-// fires ~5s after boot so the bridge has time to register presence
-// before any state arrives.
-const CATALOG_PREWARM_INITIAL_DELAY_MS = 5_000;
-const CATALOG_PREWARM_INTERVAL_MS = 4 * 60 * 1000;
-
 type Task = {
   id: string;
   kind: string;
@@ -140,8 +135,11 @@ export interface BridgeClientOptions {
   /// The device token of the app whose session `userToken` belongs to,
   /// when that session is device-bound.
   deviceToken?: string;
-  homeAssistantUrl: string;
-  homeAssistantToken: string;
+  /// Unused since 11/10/2026: Home Assistant is no longer reached on the
+  /// account's behalf (smart_home_proxy refused, no catalog pushed). Kept
+  /// so that callers written before still type-check.
+  homeAssistantUrl?: string;
+  homeAssistantToken?: string;
   deviceNickname?: string;
   deviceIdPath?: string;
   /// The bridge device id to use, instead of the one kept at deviceIdPath
@@ -180,69 +178,46 @@ export function readBridgeClientEnv(): BridgeClientOptions | null {
   const userToken = process.env.TWOODY_USER_TOKEN;
   if (!backendUrl || !userToken) return null;
 
-  // HA env vars stay required only when the Pi is expected to serve
-  // smart_home_proxy tasks. The Linux executor kinds (`search` / `read`
-  // / `llm_infer` / `list_*`) work without HA — so the bridge client
-  // can run with empty HA creds and still cover the document and LLM
-  // surfaces. Keep the smart_home_proxy handler honest: it'll error
-  // back to the backend if HA isn't configured.
-  const homeAssistantUrl = process.env.HOME_ASSISTANT_URL ?? "";
-  const homeAssistantToken = process.env.HOME_ASSISTANT_TOKEN ?? "";
-
   return {
     backendUrl: backendUrl.replace(/\/+$/, ""),
     userToken,
     deviceToken: process.env.TWOODY_DEVICE_TOKEN?.trim() || undefined,
-    homeAssistantUrl: homeAssistantUrl.replace(/\/+$/, ""),
-    homeAssistantToken,
     deviceNickname: process.env.TWOODY_BRIDGE_DEVICE_NICKNAME,
     capabilities: deriveCapabilities(),
   };
 }
 
-/** Compute the list of task classes this worker can handle, based on
- * the env that's actually configured at boot. Sent to the upstream as
- * `X-Bridge-Capabilities` so the backend can avoid routing a task to
- * a worker that can't fulfil it (multi-host case: Pi-1 with HA, Pi-2
- * with files only, Mac with macOS-specific tasks).
+/** The task classes this worker takes, sent to the account as
+ * `X-Bridge-Capabilities` so it hands each task to a worker that serves
+ * it:
  *
- *   document-provider    →  search, read, list_folders, list_dir
- *   local-llm-provider   →  llm_infer
- *   smart-home-proxy     →  smart_home_proxy
- *   folder-share-provider →  share_request (added by startBridgeClient
- *                           when a serveShare hook is given, not here)
+ *   local-llm-provider    →  llm_infer, sealed (another person's turn on
+ *                            a computer shared with them)
+ *   folder-share-provider →  share_request, sealed (added by
+ *                            startBridgeClient when a serveShare hook is
+ *                            given, not here)
  *
- * Override with `TWOODY_BRIDGE_CAPABILITIES` (comma-separated) to pin
- * the advertised set explicitly. */
+ * The classes of tasks in clear (document-provider, smart-home-proxy,
+ * audio-transcribe-provider, ocr-provider) are never declared any more:
+ * this client refuses those tasks (11/10/2026), and a worker that says it
+ * takes them would only make the account wait for a refusal.
+ *
+ * `TWOODY_BRIDGE_CAPABILITIES` (comma-separated) still pins the set, but
+ * only within what this client serves. */
+export const SERVED_CAPABILITIES = ["local-llm-provider", FOLDER_SHARE_CAPABILITY] as const;
+
 export function deriveCapabilities(): string[] {
   const override = process.env.TWOODY_BRIDGE_CAPABILITIES;
   if (override && override.trim().length > 0) {
     return override
       .split(",")
       .map((token) => token.trim())
-      .filter((token) => token.length > 0);
+      .filter((token) => (SERVED_CAPABILITIES as readonly string[]).includes(token));
   }
   const caps: string[] = [];
-  const selfBridge = process.env.TWOODY_SELF_BRIDGE === "1";
-  const hasFolders = (process.env.TWOODY_BRIDGE_FOLDERS ?? "").trim().length > 0;
-  if (selfBridge && hasFolders) caps.push("document-provider");
   if (`${process.env.BRIDGE_LOCAL_LLM_ENDPOINT ?? ""}${process.env.BRIDGE_LOCAL_LLM_ENDPOINTS ?? ""}`.trim().length > 0) {
     caps.push("local-llm-provider");
   }
-  if (
-    (process.env.HOME_ASSISTANT_URL ?? "").trim().length > 0 &&
-    (process.env.HOME_ASSISTANT_TOKEN ?? "").trim().length > 0
-  ) {
-    caps.push("smart-home-proxy");
-  }
-  // Advertised only when the whisper.cpp binary + model exist on
-  // disk. Same probe as the in-process executor, so the cap string
-  // never lies about what the worker can actually run.
-  if (whisperReady()) caps.push("audio-transcribe-provider");
-  // OCR is the cheapest port from twoody-mac (Vision.framework →
-  // tesseract). Advertise only when tesseract is present so a host
-  // without it (default install) doesn't claim ocr_image tasks.
-  if (tesseractReady()) caps.push("ocr-provider");
   return caps;
 }
 
@@ -304,7 +279,6 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   let tokensPerSecond: number | null = null;
 
   void pollLoop();
-  void catalogPrewarmLoop();
 
   return {
     stop() {
@@ -312,64 +286,6 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
     },
     deviceId,
   };
-
-  // Periodically push the household's HA entity list to the backend
-  // so the LLM's prompt_guidance always carries the catalog and the
-  // first command after a Pi reboot doesn't pay for a cold-cache
-  // home_search_entities round-trip. No-op when HA isn't configured
-  // — that just means this Pi isn't the smart-home worker and the
-  // backend's cache will populate the legacy way (on the first
-  // home_search_entities tool call).
-  async function catalogPrewarmLoop() {
-    if (!opts.homeAssistantUrl || !opts.homeAssistantToken) return;
-
-    await sleep(CATALOG_PREWARM_INITIAL_DELAY_MS, () => stopped);
-    while (!stopped) {
-      try {
-        await prewarmCatalogOnce();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[bridge-client] catalog prewarm failed: ${message}`);
-      }
-      await sleep(CATALOG_PREWARM_INTERVAL_MS, () => stopped);
-    }
-  }
-
-  async function prewarmCatalogOnce() {
-    const haRes = await outboundFetch(`${opts.homeAssistantUrl}/api/states`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${opts.homeAssistantToken}`,
-        Accept: "application/json",
-      },
-    });
-    if (!haRes.ok) {
-      throw new Error(`HA /api/states status=${haRes.status}`);
-    }
-    const states = await haRes.json();
-    if (!Array.isArray(states)) {
-      throw new Error("HA /api/states returned non-array");
-    }
-
-    const pushRes = await outboundFetch(`${opts.backendUrl}/smart_home/catalog.json`, {
-      method: "POST",
-      headers: { ...authHeaders, "Content-Type": "application/json" },
-      body: JSON.stringify({ states }),
-    });
-    if (!pushRes.ok) {
-      const body = await pushRes.text().catch(() => "");
-      throw new Error(`backend /smart_home/catalog status=${pushRes.status} body=${body.slice(0, 200)}`);
-    }
-    const payload = (await pushRes.json().catch(() => ({}))) as {
-      entities?: number;
-      cached?: number;
-      received?: number;
-    };
-    const cached = payload.cached ?? payload.entities ?? "?";
-    console.log(
-      `[bridge-client] catalog prewarm pushed ${states.length} HA states (${cached} controllable cached)`,
-    );
-  }
 
   async function pollLoop() {
     let consecutiveFailures = 0;
@@ -530,50 +446,10 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
       assertSealedSharedTask(task);
       return runSealedInference(task);
     }
-    switch (task.kind) {
-      case "smart_home_proxy":
-        return runSmartHomeProxy(task.args, opts);
-      default:
-        if (isSelfBridgeKind(task.kind)) {
-          // Pi-as-worker for an upstream Twoody backend: the cloud's
-          // LocalFilesProcessor and LocalLlmService enqueue `search` /
-          // `read` / `list_folders` / `list_dir` / `llm_infer` tasks
-          // that the legacy Mac Bridge used to claim. The Pi reuses
-          // the same in-process executors here.
-          if (task.kind === "llm_infer") return runStreamedInference(task);
-          return executeBridgeTask(task.kind, task.args);
-        }
-        throw new Error(`unsupported_kind:${task.kind}`);
-    }
-  }
-
-  // Relays the text to the backend while the model writes it. The pieces
-  // land in order (the backend appends them to a list and replays it),
-  // and the stream from the runtime never waits for a request: a slow
-  // uplink must not slow the model down.
-  async function runStreamedInference(task: Task): Promise<unknown> {
-    const relay = createDeltaRelay((delta) =>
-      patchTask(task.id, { status: "streaming", delta }).catch((err) => {
-        console.warn(`[bridge-client] delta not delivered for task ${task.id}: ${err instanceof Error ? err.message : err}`);
-      }),
-    );
-
-    try {
-      return await executeBridgeTask("llm_infer", task.args, {
-        onDelta: relay.push,
-        onStats: ({ model, completionTokens, latencyMs }) => {
-          lastModel = model;
-          opts.onServed?.(model);
-          if (completionTokens > 0 && latencyMs > 0) {
-            const measured = completionTokens / (latencyMs / 1000);
-            tokensPerSecond = tokensPerSecond === null ? measured : tokensPerSecond * 0.7 + measured * 0.3;
-          }
-        },
-      });
-    } finally {
-      // Every piece must be in before the task is reported as over.
-      await relay.drain();
-    }
+    // Anything else is a task in clear: the account would read what this
+    // computer answers (and could forge what it asks). Refused, whatever
+    // its kind, before anything runs.
+    throw new Error(plaintextRefusal(task.kind));
   }
 
   /// Another person's turn, sealed from their device to this computer: the
@@ -589,9 +465,13 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
       runModel: async (body, onPiece) => {
         const result = (await executeBridgeTask("llm_infer", { openai_body_json: JSON.stringify(body) }, {
           onDelta: onPiece,
-          onStats: ({ model }) => {
+          onStats: ({ model, completionTokens, latencyMs }) => {
             lastModel = model;
             opts.onServed?.(model);
+            if (completionTokens > 0 && latencyMs > 0) {
+              const measured = completionTokens / (latencyMs / 1000);
+              tokensPerSecond = tokensPerSecond === null ? measured : tokensPerSecond * 0.7 + measured * 0.3;
+            }
           },
         })) as { model_used?: string };
         return { model: result?.model_used };
@@ -659,48 +539,15 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   }
 }
 
-// ── Smart Home proxy ──────────────────────────────────────────────────
+// ── Tasks in clear ────────────────────────────────────────────────────
 
-async function runSmartHomeProxy(
-  args: Record<string, unknown>,
-  opts: BridgeClientOptions,
-): Promise<{ status: number; body: unknown }> {
-  if (!opts.homeAssistantUrl || !opts.homeAssistantToken) {
-    throw new Error("home_assistant_not_configured");
-  }
-  const method = String(args.method ?? "GET").toUpperCase();
-  const path = String(args.path ?? "");
-  if (!path.startsWith("/")) {
-    throw new Error(`smart_home_proxy.path must start with '/'; got ${JSON.stringify(args.path)}`);
-  }
-  if (method !== "GET" && method !== "POST") {
-    throw new Error(`smart_home_proxy.method must be GET or POST; got ${method}`);
-  }
-
-  const url = `${opts.homeAssistantUrl}${path}`;
-  const init: RequestInit = {
-    method,
-    headers: {
-      Authorization: `Bearer ${opts.homeAssistantToken}`,
-      Accept: "application/json",
-    },
-  };
-  if (method === "POST" && args.body !== undefined && args.body !== null) {
-    init.body = JSON.stringify(args.body);
-    (init.headers as Record<string, string>)["Content-Type"] = "application/json";
-  }
-
-  const res = await outboundFetch(url, init);
-  const text = await res.text();
-  let parsed: unknown = text;
-  if (text) {
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      // keep raw text; HA error pages aren't always JSON
-    }
-  }
-  return { status: res.status, body: parsed };
+/// What the account is told when it hands this computer a task in clear
+/// (its error_message, shown to whoever asked): the kind and the way out,
+/// never anything of the task. `bridge_plaintext_refused` is the code the
+/// account maps to its message.
+export function plaintextRefusal(kind: string): string {
+  const safe = /^[a-z_]{1,40}$/.test(kind) ? kind : "unknown";
+  return `bridge_plaintext_refused:${safe}: this computer answers only sealed requests; ask it from Twoody on a device connected to it (its own encrypted channel), or update the app that asked`;
 }
 
 // ── Heartbeat ─────────────────────────────────────────────────────────

@@ -242,13 +242,21 @@ runtime URL can be passed through it.
   person's own.
 - Do not log secrets, LLM keys, tokens or local paths.
 
-## 7. The Bridge (legacy contract, still used)
+## 7. The Bridge (legacy contract, sealed requests only)
 
 The Bridge lets a worker run tasks for a backend by long-polling
-`/bridge/tasks/next`. Today it matters mainly for one thing: a computer
-lending its models to the person's account. `src/bridgeWorker.ts` runs
-`bridgeClient.ts` alone (no Fastify, no SQLite — keep it free of `db.js`
-imports); the Desktop forks it and configures it by message.
+`/bridge/tasks/next`. Since 11/10/2026 the account's bridge carries only
+sealed requests: another person's turn on a computer shared with them
+(`llm_infer` with a compute grant's principal and a `sealed_request`) and a
+request on a folder shared from here (`share_request`). `bridgeClient.ts`
+refuses every task in clear before it runs — the person's own unsealed
+`llm_infer`, `search`, `read`, `list_*`, `transcribe`, `ocr_image`,
+`smart_home_proxy` — with `bridge_plaintext_refused:<kind>`, declares
+`local-llm-provider` and `folder-share-provider` only, and no longer pushes
+Home Assistant's states to the account (`test/bridgePlaintext.test.ts`).
+`src/bridgeWorker.ts` runs `bridgeClient.ts` alone (no Fastify, no SQLite —
+keep it free of `db.js` imports); the Desktop forks it and configures it by
+message.
 
 - Task kinds (`routes/bridge.ts`): `search`, `read`, `list_folders`,
   `list_dir`, `open_document`, `thumbnail`, `llm_infer`, `photos_recent`,
@@ -257,16 +265,18 @@ imports); the Desktop forks it and configures it by message.
   `tools.ts::executeLocalTool`: `smart_home`, `spotify`, `device_command`,
   `members_list`, `list_household_members`, `stereo_pair`.
 - With `TWOODY_SELF_BRIDGE=1` the in-process executors (`src/executors/`)
+  serve this server's own `/bridge` routes (never the account's tasks) and
   run `search`, `read`, `list_folders`, `list_dir`, `llm_infer`,
   `transcribe`, `ocr_image` (Linux tools: ripgrep, find, pdftotext,
   whisper, tesseract). Granted folders on Linux come from
   `TWOODY_BRIDGE_FOLDERS` (`executors/folders.ts`, denylist of system
   paths); `executors/idCache.ts` keeps real paths off the wire.
-- Capabilities a worker declares (`X-Bridge-Capabilities`):
-  `document-provider`, `local-llm-provider`, `voice-device`.
-- `llm_infer` contract (the Rails backend depends on it): stream, PATCH
-  `{status: "streaming", delta}` in order, finish with
-  `{response_json, model_used, latency_ms}`. A model no runtime lists is
+- Capabilities the bridge client declares (`X-Bridge-Capabilities`):
+  `local-llm-provider`, `folder-share-provider`; `TWOODY_BRIDGE_CAPABILITIES`
+  can only narrow them.
+- Sealed `llm_infer` contract: PATCH `{status: "streaming", delta}` with
+  sealed lines in order (`compute/computeHost.ts runSealedTurn`), then
+  `{status: "done", result: {sealed: true}}`. A model no runtime lists is
   refused (`model_not_installed`): the backend can never trigger a download.
   The poll loop must not wait for a completion (presence lasts 90 s).
 - The task queue is in memory (`taskMap` in `routes/bridge.ts`).

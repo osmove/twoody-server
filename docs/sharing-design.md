@@ -220,9 +220,9 @@ account relays; seat suspended → refused, shown stopped on both sides; real 9B
 - Relay capacity (Heroku Redis Mini, Postgres essential-0): cap, rate-limit, prefer excerpts; bridge per-delta limits
   not verified.
 - The owner's computer must be awake with « Répondre aux autres appareils » on.
-- To check apart from sharing: on the Pi, `TWOODY_SELF_BRIDGE=1` with `TWOODY_BRIDGE_FOLDERS` lets bridgeClient run
-  unsealed `search`/`read` tasks from the account (`executors/index.ts` SELF_BRIDGE_KINDS) — a path where the
-  account token alone reads documents. Shares never use these kinds.
+- ~~To check apart from sharing: on the Pi, `TWOODY_SELF_BRIDGE=1` with `TWOODY_BRIDGE_FOLDERS` lets bridgeClient run
+  unsealed `search`/`read` tasks from the account~~ — closed 11/10/2026: bridgeClient refuses every task in clear
+  (`bridge_plaintext_refused`, `test/bridgePlaintext.test.ts`). Shares never used these kinds.
 - Never: let the account create, extend or retarget a share; serve an unapproved device; put shared folders in « Tous
   les dossiers autorisés »; share an isolated folder; send absolute paths or questions to the account; write rights in
   v1; extend the same-account tunnel across accounts.

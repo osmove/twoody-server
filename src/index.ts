@@ -196,16 +196,15 @@ try {
     });
   }
 
-  // Bridge client — long-polls an upstream Twoody backend so the
-  // backend's smart_home_proxy / Mac-Bridge tasks land on this LAN.
-  // Inert unless TWOODY_BACKEND_URL + TWOODY_USER_TOKEN +
-  // HOME_ASSISTANT_URL + HOME_ASSISTANT_TOKEN are all set. Failures
-  // here don't affect the HTTP listener; the user can drop the
-  // backend env vars to disable it.
+  // Bridge client — long-polls an upstream Twoody backend for the sealed
+  // requests of the people this computer is shared with (nothing in
+  // clear: bridgeClient.ts). Inert unless TWOODY_BACKEND_URL +
+  // TWOODY_USER_TOKEN are set. Failures here don't affect the HTTP
+  // listener; the user can drop the backend env vars to disable it.
   const bridgeOpts = readBridgeClientEnv();
-  // The bridge client ships document text, LLM output and Home
-  // Assistant state to its upstream backend, so local-only mode keeps
-  // it off unless that backend is itself on the private network.
+  // The bridge client talks to its upstream backend (sealed requests
+  // only), so local-only mode keeps it off unless that backend is itself
+  // on the private network.
   const bridgeAllowed =
     !bridgeOpts || !LOCAL_ONLY || (await isPrivateUrl(bridgeOpts.backendUrl));
   if (bridgeOpts && !bridgeAllowed) {
