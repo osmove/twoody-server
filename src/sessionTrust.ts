@@ -372,22 +372,30 @@ const nameOf = (row: SessionRow | null): string | null => {
 /// This server's owner, or one of the person's own devices (above): who may
 /// have this computer seal into the encrypted history, reach the other
 /// computers' documents through it, read the synchronised history and the
-/// memories, or write one. Null for anyone else. A person's device counts
-/// only for a request that came through the tunnel from the very key its
-/// session was given to (a token alone, over the network, is not that
-/// device), with its device-access not expired. `roster` is only asked for
-/// when the session is not the owner's.
-export async function meshRequester(req: FastifyRequest, auth: { sessionId?: string | null }, roster: () => Promise<Roster | null> | Roster | null): Promise<Requester | null> {
+/// memories, or write one, use the connectors in a chat, read the whole
+/// traces (/diagnostics/full). Null for anyone else. A person's device
+/// counts only for a request that came through the tunnel from the very key
+/// its session was given to (a token alone, over the network, is not that
+/// device), with its device-access not expired. The owner's session counts
+/// only where its token cannot have been carried by someone else (ownerHere
+/// below: this very machine, or the tunnel from its own key — Jimmy,
+/// 11/10/2026): not over the local network, where a password typed on
+/// another machine travels in clear, nor through a proxy, nor inside
+/// another device's tunnel. The CLI signed in from another machine is no
+/// longer the person here: it pairs (`twoody pair`) and gets the rest
+/// (docs/trust-routes-review.md). `roster` is only asked for when the
+/// session is not the owner's.
+export async function meshRequester(req: FastifyRequest, auth: { sessionId?: string | null; thisMachine?: boolean }, roster: () => Promise<Roster | null> | Roster | null): Promise<Requester | null> {
   if (!auth.sessionId) return null;
   const row = sessionRow(auth.sessionId);
-  if (isOwnerSession(auth.sessionId)) return { id: "owner", name: nameOf(row) };
+  if (isOwnerSession(auth.sessionId)) return ownerHere(req, auth) ? { id: "owner", name: nameOf(row) } : null;
   if (!row || isPeerSessionKind(row.kind) || !row.vaultDeviceId) return null;
   if (!sealedFromSessionKey(req, auth.sessionId)) return null;
   const device = personDeviceOf(auth.sessionId, await Promise.resolve(roster()).catch(() => null));
   return device ? { id: `person:${device}`, name: nameOf(row) } : null;
 }
 
-export async function isPersonOrOwner(req: FastifyRequest, auth: { sessionId?: string | null }, roster: () => Promise<Roster | null> | Roster | null): Promise<boolean> {
+export async function isPersonOrOwner(req: FastifyRequest, auth: { sessionId?: string | null; thisMachine?: boolean }, roster: () => Promise<Roster | null> | Roster | null): Promise<boolean> {
   return (await meshRequester(req, auth, roster)) !== null;
 }
 

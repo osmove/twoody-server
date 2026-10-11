@@ -47,7 +47,7 @@ const KINDS = new Set(["user", "feedback", "project", "reference"]);
 /// device paired by code that is no member of the history, one the console
 /// approved or a firmware device. Replies 403 otherwise (the app then signs
 /// a fresh device-access, POST /session/device-access).
-export async function requirePerson(req: FastifyRequest, reply: FastifyReply, auth: { sessionId?: string }): Promise<boolean> {
+export async function requirePerson(req: FastifyRequest, reply: FastifyReply, auth: { sessionId?: string; thisMachine?: boolean }): Promise<boolean> {
   if (ownerRequest(req) || (await isPersonOrOwner(req, auth, () => meshRoster().get()))) return true;
   reply.code(403).send({ error: "person_device_required" });
   return false;

@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { eq } from "drizzle-orm";
 import { allowSecretAttempt } from "../rateLimit.js";
 import { forgetTunnelPeersOfSession } from "../tunnel/identity.js";
@@ -6,7 +6,9 @@ import { pairDevice } from "../pairing.js";
 import { tunnelPeersChanged } from "../tunnel/index.js";
 import { readDeviceAccess } from "../account/approvals.js";
 import { accountCredentials } from "../account/service.js";
-import { renewDeviceAccess } from "../sessionTrust.js";
+import { renewDeviceAccess, tunnelPeerKey } from "../sessionTrust.js";
+import { adminToken } from "../adminAccess.js";
+import { ownerRequest } from "../localAccess.js";
 import { meshRoster } from "../vault/roster.js";
 import { approverNotPinned, firstAnchorRenewal } from "./peerVault.js";
 import {
@@ -16,6 +18,7 @@ import {
   pairingCodes,
 } from "../db.js";
 import {
+  fromThisMachine,
   authenticate,
   generateId,
   getActivePairingCode,
@@ -28,6 +31,23 @@ import {
   verifyPassword,
   createAuthSession,
 } from "../auth.js";
+
+/// Where this server's password may be typed (Jimmy, 11/10/2026,
+/// docs/trust-routes-review.md): on this very machine (loopback, not served
+/// by the tunnel, not forwarded by a proxy), or sealed through the tunnel
+/// (a device paired with this computer, end to end), or with the admin
+/// token on a server its operator published with TWOODY_ADMIN_TOKEN (behind
+/// their own https). Never over the local network in clear, where whoever
+/// listens would get the owner's session. Another machine pairs instead:
+/// `twoody pair` and the code this computer shows (/session/cli).
+export function mayTakePassword(req: FastifyRequest): boolean {
+  return fromThisMachine(req) || tunnelPeerKey(req) !== null || (adminToken() !== null && ownerRequest(req));
+}
+
+const PASSWORD_HERE_ONLY = {
+  error: "signin_local_only",
+  message: "Sign in on the machine that runs Twoody Server. From another machine, pair it instead: run `twoody pair` there with the code this server shows.",
+};
 
 export async function sessionRoutes(app: FastifyInstance) {
   app.post<{
@@ -53,6 +73,8 @@ export async function sessionRoutes(app: FastifyInstance) {
       },
     },
     handler: async (req, reply) => {
+      // The password chosen here, and the setup token, in clear: this machine only.
+      if (!mayTakePassword(req)) return reply.code(403).send({ ...PASSWORD_HERE_ONLY, message: "Create the first account on the machine that runs Twoody Server (or pair a device with its setup token). From another machine, pair it with `twoody pair` once the account exists." });
       if (!allowSecretAttempt(req, reply, "auth/signup")) return;
       const email = req.body.email?.trim().toLowerCase();
       const password = req.body.password ?? "";
@@ -114,6 +136,7 @@ export async function sessionRoutes(app: FastifyInstance) {
       },
     },
     handler: async (req, reply) => {
+      if (!mayTakePassword(req)) return reply.code(403).send(PASSWORD_HERE_ONLY);
       if (!allowSecretAttempt(req, reply, "auth/signin")) return;
       const email = req.body.email?.trim().toLowerCase();
       const password = req.body.password ?? "";

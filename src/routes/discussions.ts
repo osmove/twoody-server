@@ -31,7 +31,7 @@ import { isThisComputersApp } from "./usage.js";
 // deletes and imports only this computer's own conversations.
 
 /// Whether this request may reach the synchronised history.
-export async function mayReachHistory(req: FastifyRequest, auth: { sessionId?: string }): Promise<boolean> {
+export async function mayReachHistory(req: FastifyRequest, auth: { sessionId?: string; thisMachine?: boolean }): Promise<boolean> {
   return ownerRequest(req) || (await isPersonOrOwner(req, auth, () => meshRoster().get()));
 }
 
