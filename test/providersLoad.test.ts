@@ -22,6 +22,8 @@ delete process.env.BRIDGE_LOCAL_LLM_ENDPOINT;
 let inMemory = "Qwen3.5-9B-Q4_K_M";
 let loadMs = 150;
 const warmed: string[] = [];
+/// Every request the runtime got, streamed or not.
+const asked: Array<{ model: string; stream: boolean; max_tokens?: number; messages: Array<{ role: string; content: string }> }> = [];
 const readBody = async (req: IncomingMessage) => {
   let raw = "";
   for await (const chunk of req) raw += chunk;
@@ -36,6 +38,16 @@ const router = createServer(async (req, res) => {
   }
   if (req.method === "POST" && path === "/v1/chat/completions") {
     const body = await readBody(req);
+    asked.push({ model: body.model, stream: body.stream === true, max_tokens: body.max_tokens, messages: body.messages });
+    if (body.stream) {
+      // A turn, or the start of a new conversation read ahead.
+      await new Promise((resolve) => setTimeout(resolve, body.model === inMemory ? 5 : loadMs));
+      inMemory = body.model;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "Réponse." } }] })}\n\n`);
+      res.end("data: [DONE]\n\n");
+      return;
+    }
     warmed.push(body.model);
     await new Promise((resolve) => setTimeout(resolve, loadMs));
     inMemory = body.model;
@@ -135,4 +147,81 @@ test("the person's devices only: never another computer of the account, never wi
   assert.equal((await app.inject({ method: "POST", url: "/api/v1/providers/load", headers: peer, payload: { model: "Qwen3.5-4B-Q4_K_M" }, ...lan })).statusCode, 403);
   assert.equal((await app.inject({ method: "POST", url: "/api/v1/providers/load", headers: askedByComputer, payload: { model: "Qwen3.5-4B-Q4_K_M" }, ...lan })).statusCode, 403);
   assert.equal((await app.inject({ method: "GET", url: "/api/v1/providers/load?model=Qwen3.5-4B-Q4_K_M", headers: peer, ...lan })).statusCode, 403);
+});
+
+// « Prêt » (Jimmy, 11/10/2026): once a model chosen on a device is in
+// memory, the start of that device's new conversation is read with it, so
+// that the first question reads only itself; a background read for the
+// model chosen before never loads it back in its place.
+test("a model chosen after a conversation: loaded, the start of the device's new conversation read with it, then ready", async () => {
+  const { forgetWarmStateForTests, warmNewConversation } = await import("../src/routes/queries.js");
+  forgetWarmStateForTests();
+  forgetModelLoads();
+  inMemory = "Qwen3.5-9B-Q4_K_M";
+  const ask = (headers: Record<string, string>, text: string) => app.inject({ method: "POST", url: "/queries", headers, payload: { text, channel: "device", force_new_discussion: true, context_window: 16_384, locale: "fr" } });
+  assert.equal((await ask(owner, "Bonjour")).statusCode, 200);
+  assert.equal((await ask(phone, "Salut")).statusCode, 200);
+  const phoneTurn = asked.filter((call) => call.stream && call.max_tokens !== 1).at(-1)!;
+  assert.equal(phoneTurn.model, "Qwen3.5-9B-Q4_K_M");
+
+  const before = asked.length;
+  const reply = await app.inject({ method: "POST", url: "/api/v1/providers/load", headers: phone, payload: { model: "Qwen3.5-4B-Q4_K_M" } });
+  assert.equal(reply.statusCode, 202);
+  const seen = new Set<string>([reply.json().load.state]);
+  for (let i = 0; i < 200; i += 1) {
+    const load = (await app.inject({ method: "GET", url: "/api/v1/providers/load?model=Qwen3.5-4B-Q4_K_M", headers: phone })).json().load;
+    seen.add(load.state);
+    if (load.state === "preparing") assert.equal(load.progress, 1, "in memory: the load is done");
+    if (load.state === "ready") break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.deepEqual([...seen], ["loading", "preparing", "ready"]);
+  const calls = asked.slice(before);
+  assert.deepEqual(calls.map((call) => [call.model, call.stream, call.max_tokens]), [["Qwen3.5-4B-Q4_K_M", false, 1], ["Qwen3.5-4B-Q4_K_M", true, 1]]);
+  assert.equal(calls[1]!.messages[0]!.role, "system");
+  assert.equal(calls[1]!.messages[0]!.content, phoneTurn.messages[0]!.content, "the very start the phone's next new conversation sends");
+
+  // Chosen again while it holds that start: ready at once, nothing read.
+  const again = await app.inject({ method: "POST", url: "/api/v1/providers/load", headers: phone, payload: { model: "Qwen3.5-4B-Q4_K_M" } });
+  assert.equal(again.statusCode, 200);
+  assert.equal(again.json().load.state, "ready");
+  assert.equal(asked.length, before + 2);
+
+  // A memory saved: the app's start changed, but it was made for the 9B,
+  // which the runtime let go of — read in the background, it would load
+  // the 9B back in place of the model just chosen.
+  await app.inject({ method: "POST", url: "/memories", headers: owner, payload: { memory: { content: "Je joue du piano le mardi" } } });
+  assert.equal(await warmNewConversation(desktop.user_id), "none");
+  assert.equal(asked.length, before + 2);
+  assert.equal(inMemory, "Qwen3.5-4B-Q4_K_M");
+
+  // The person is about to ask on the phone: its start is read with the 4B.
+  assert.equal(await warmNewConversation(`${desktop.user_id}|remote`, { wake: true }), "warmed");
+  assert.equal(asked.at(-1)!.model, "Qwen3.5-4B-Q4_K_M");
+});
+
+test("this computer's app asks for a model just loaded: the start read, answered once done", async () => {
+  const { forgetWarmStateForTests } = await import("../src/routes/queries.js");
+  forgetWarmStateForTests();
+  inMemory = "Qwen3.5-9B-Q4_K_M";
+  await app.inject({ method: "POST", url: "/queries", headers: owner, payload: { text: "Bonsoir", channel: "desktop", force_new_discussion: true, context_window: 16_384, locale: "fr" } });
+  const before = asked.length;
+  const first = await app.inject({ method: "POST", url: "/queries/warm", headers: owner, payload: { model: "Qwen3.5-4B-Q4_K_M", fresh: true } });
+  assert.equal(first.statusCode, 200);
+  assert.equal(first.json().status, "warmed");
+  assert.equal(asked.at(-1)!.model, "Qwen3.5-4B-Q4_K_M");
+  assert.equal(asked.at(-1)!.max_tokens, 1);
+  assert.equal((await app.inject({ method: "POST", url: "/queries/warm", headers: owner, payload: { model: "Qwen3.5-4B-Q4_K_M" } })).json().status, "unchanged");
+  // Loaded again (it slept, or another took its place): read again.
+  assert.equal((await app.inject({ method: "POST", url: "/queries/warm", headers: owner, payload: { model: "Qwen3.5-4B-Q4_K_M", fresh: true } })).json().status, "warmed");
+  // A model no runtime here holds: nothing is sent anywhere.
+  const count = asked.length;
+  assert.equal((await app.inject({ method: "POST", url: "/queries/warm", headers: owner, payload: { model: "gpt-5" } })).json().status, "none");
+  assert.equal(asked.length, count);
+  assert.ok(count > before);
+  assert.equal((await app.inject({ method: "POST", url: "/queries/warm", payload: { model: "Qwen3.5-4B-Q4_K_M" } })).statusCode, 401);
+  // Another computer of the account: never.
+  const lan = { remoteAddress: "192.168.1.30" };
+  assert.equal((await app.inject({ method: "POST", url: "/queries/warm", headers: peer, payload: { model: "Qwen3.5-4B-Q4_K_M" }, ...lan })).statusCode, 403);
+  assert.equal(asked.length, count);
 });

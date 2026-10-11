@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { clientOf, isThisComputersApp } from "./usage.js";
+import { requirePerson } from "./runtime.js";
 import { recordUsageEvent, type UsageEventInput } from "../usageStore.js";
 import { askedToRemember, rememberFacts } from "../memoryLearning.js";
 import { learnAfterAnswer, learnSoon, setLearningModel, type LearnMessages } from "../memory/learner.js";
@@ -207,10 +208,20 @@ export async function queryRoutes(app: FastifyInstance) {
   // chat opened): what a new conversation starts with is read now, while
   // they speak or type.
   app.post("/queries/warm", {
-    schema: { tags: ["queries"], summary: "Read ahead the start of a new conversation, while the person speaks or types", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    schema: { tags: ["queries"], summary: "Read ahead the start of a new conversation, while the person speaks or types, or for a model just loaded ({model, fresh}: answered once read)", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
+      // A model just chosen and loaded (Twoody Desktop, modelWarmth.ts):
+      // the start read for it now, answered once done (« Prêt »). Only a
+      // model this computer's runtimes hold is ever asked (resolveProvider),
+      // and only by this computer's person, as /providers/load.
+      const model = (req.body as { model?: unknown } | null)?.model;
+      if (typeof model === "string" && /^[\w.:/-]{1,200}$/.test(model)) {
+        if (!(await requirePerson(req, reply))) return;
+        const fresh = (req.body as { fresh?: unknown }).fresh === true;
+        return reply.send({ status: await prepareConversationStart(auth, model, { fresh }) });
+      }
       // In an isolated project, its own start: another tool set, its
       // summary and notes (src/projects/isolation.ts).
       const asked = (req.body as { project_id?: unknown } | null)?.project_id;
@@ -2175,7 +2186,12 @@ function noteSystemSent(key: string, provider: Provider, system: string, tools: 
   const digest = digestOf(`${system}\n${JSON.stringify(tools ?? [])}`);
   systemsSent.set(`${systemKey(provider)}\n${key}`, digest);
   runtimeHolds.set(systemKey(provider), digest);
+  if ("baseUrl" in provider && "model" in provider) modelChosenOn.set(provider.baseUrl, provider.model);
 }
+
+/// The model last asked of each runtime by a person — a turn, a model
+/// chosen and prepared (prepareConversationStart): the one it holds.
+const modelChosenOn = new Map<string, string>();
 
 /// What each runtime read last — it holds one start at a time: a start
 /// asked ahead by the person (`wake`) is read unless it is that one, a
@@ -2244,6 +2260,11 @@ export async function warmNewConversation(key: string, { wake = false }: { wake?
   const held = wake ? runtimeHolds.get(systemKey(next.provider)) === digest_ : systemsSent.get(sentKey) === digest_;
   if (held && !slept) return "unchanged";
   if (slept && !wake) return "asleep";
+  // The runtime holds one model at a time (Twoody Desktop's router,
+  // --models-max 1): a start read in the background for another model than
+  // the one last chosen there would load it in its place (11/10/2026).
+  const chosen = modelChosenOn.get(next.provider.baseUrl);
+  if (!wake && chosen && chosen !== next.provider.model) return "none";
   if (inflight() > 0) return "busy";
   const warmStarted = Date.now();
   const done = beginGeneration("chat");
@@ -2258,6 +2279,50 @@ export async function warmNewConversation(key: string, { wake = false }: { wake?
   } finally {
     done();
   }
+}
+
+/// A model chosen on a device and loaded (src/modelLoads.ts): the start of
+/// this person's new conversation on that device, read into the runtime's
+/// prompt cache for that model, so that the first question reads only
+/// itself (« Prêt »). `fresh`: the model was just loaded — whatever was
+/// noted as read for it went with its previous load. Resolves with what
+/// was done; never throws.
+export async function prepareConversationStart(
+  auth: { userId: string } & Parameters<typeof isThisComputersApp>[0],
+  model: string,
+  { fresh = false }: { fresh?: boolean } = {},
+): Promise<"warmed" | "unchanged" | "busy" | "none" | "asleep"> {
+  try {
+    const key = warmKey(auth);
+    if (!(await restoreWarmSeed(key))) return "none";
+    const last = lastTurnInputs.get(key);
+    if (!last) return "none";
+    const provider = await resolveProvider(userOfKey(key), model).catch(() => null);
+    if (!provider || provider.kind !== "local_openai" || provider.model !== model) return "none";
+    // From now on this person's new conversations here start with it,
+    // after a restart too.
+    lastTurnInputs.set(key, { ...last, provider });
+    saveWarmSeed(key, last.input, provider, last.tools);
+    modelChosenOn.set(provider.baseUrl, model);
+    if (fresh) {
+      runtimeHolds.delete(systemKey(provider));
+      for (const sent of [...systemsSent.keys()]) if (sent.startsWith(`${systemKey(provider)}\n`)) systemsSent.delete(sent);
+    }
+    return await warmNewConversation(key, { wake: true });
+  } catch {
+    return "none";
+  }
+}
+
+/// Whether the start of this person's new conversation with `model` is
+/// still to be read: known, and not the one the runtime holds.
+export async function conversationStartPending(auth: { userId: string } & Parameters<typeof isThisComputersApp>[0], model: string): Promise<boolean> {
+  const key = warmKey(auth);
+  if (!(await restoreWarmSeed(key).catch(() => false))) return false;
+  const next = newConversationSystem(key);
+  if (!next || next.provider.kind !== "local_openai") return false;
+  const provider = { ...next.provider, model };
+  return runtimeHolds.get(systemKey(provider)) !== digestOf(`${next.system}\n${JSON.stringify(next.tools ?? [])}`) || idleForMs() > RUNTIME_SLEEPS_AFTER_MS;
 }
 
 // What the next new conversation is built from, kept on disk: after a
@@ -2318,6 +2383,7 @@ export function forgetWarmStateForTests() {
   lastTurnInputs.clear();
   systemsSent.clear();
   runtimeHolds.clear();
+  modelChosenOn.clear();
 }
 
 let warmWatch: NodeJS.Timeout | null = null;

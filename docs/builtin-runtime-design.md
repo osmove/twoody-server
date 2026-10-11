@@ -87,3 +87,45 @@ A server core (src/builtin/* only, now) · B server integration (after multi-com
 D Desktop (after A) · E iPhone (after B's API) · F CLI (after B).
 Risks: glibc / missing dotprod variant, SD card speed, backend heartbeat validation of `engine`, engine-specific model
 names, two managers in the Desktop, local-only wording, Pi heat, supply chain (hashes pinned), LICENSE.llama.cpp shipped.
+
+## 8. A larger model, switching, and « Prêt » (11/10/2026)
+Jimmy: « ajoute un modèle plus grand au moteur intégré », « il faudrait que je puisse switcher », « que je voie
+l'avancement … à quel moment je peux commencer à l'utiliser sans avoir un long time to first token ».
+- **The larger model**: Qwen3.6 35B-A3B (a mixture of experts: 35 B parameters, 3 B at work per token), bartowski's
+  IQ3_XXS with imatrix (15.76 GB, Apache 2.0, pinned by revision and SHA-256, its vision file too). No 4-bit file fits
+  a 24 GB Mac (Metal's share there: 17.8 GiB; ggml-org's Q4_K_M is 20.4 GB) and neither Qwen nor ggml-org publish a
+  3-bit one. `larger: true` in catalog.ts: offered beside the 4B and 9B where it fits (`minRamGb` 24; the Desktop's
+  model screen leaves it out below, unless installed), never recommended first. Set aside: Qwen3.8 27B (dense, 3 bits,
+  13.5 GB): 57 tokens read a second, 3.3 written, +4.7 GB of swap on Jimmy's Mac.
+- **Its runtime settings**: a model whose file is more than 45 % of the memory (runtimeArgs.ts `largeForMemory`)
+  gets 1 GiB of prompt cache and 8 checkpoints instead of 4 GiB and 16: 14.5 GiB in all at 32 768 tokens (14.2 of
+  weights, 0.34 of cache, 0.06 of recurrent state, 0.16 of work buffers), 15.6 GiB with its vision file, all 42
+  layers on the GPU (whose share is 17.8 GiB on a 24 GB Mac); the free memory dropped 15.1 GB (the 9B: 7.4 GiB).
+- **Switching**: the router holds one model (`--models-max 1`): choosing another (the Desktop's picker, the iPhone's
+  sheet) loads it and lets go of the one before — said under the models of this computer (« Un seul modèle en
+  mémoire à la fois … »). Both apps show the same steps:
+  1. « Chargement… 60 % » — the load, estimated from the last load of that model (modelLoads.ts, modelWarmth.ts);
+  2. « Préparation… » — once in memory, the start of the asking device's new conversation (instructions, profile,
+     tools) is read with that model into the prompt cache: `prepareConversationStart` (routes/queries.ts), from
+     `POST /providers/load` (iPhone) or `POST /queries/warm {model, fresh}` (the Desktop's main process). It also makes
+     that model the one this person's new conversations start with, and a background read
+     (`warmNewConversation` without `wake`) never asks for another model than the one last chosen on that runtime —
+     it would load it back in its place;
+  3. « Prêt » — the first question reads only itself.
+- **Measured** (b11146, Jimmy's MacBook Air M5 24 GB, the app's settings, his own start of a conversation — 4 567
+  tokens with 12 tools — and one of his messages — 1 839 tokens —, a fresh runtime for each case, two runs each, the
+  Mac's load average falling from 20 to 4, 16 GB in swap; the 27B earlier, at 43–51):
+  | Model | First word right after the load | Once « Prêt » | Same message again | Read / written per second |
+  |---|---|---|---|---|
+  | Qwen3.5 9B | 27.5–27.9 s | 8.2–8.9 s | 0.18–0.24 s | 207–238 / 10–12 |
+  | Qwen3.6 35B-A3B | 16.1–18.5 s | 5.6–5.7 s | 0.13 s | 325–436 / 18–25 |
+  | Qwen3.8 27B (set aside) | 115.6 s | 36.8 s | 3.1 s | 54–57 / 3.3 |
+  « Prêt » leaves the message itself to read: the preparation took 19–20 s (9B) and 10.5–13.6 s (35B-A3B), time the
+  person no longer waits after their first question. The 35B-A3B's load: 1.8 s from the disk cache, 11.3 s cold.
+- **Tools** (twoody-bench `regress.mjs --label`, server 931e95e, against fakes): the 35B-A3B 65/67 and 64/67 in two
+  runs, the 9B 64/67, no regression row. Said done without acting: 0 by the bench's count in both runs, but in the
+  first one « Allume la lumière de la cuisine » with Home Assistant refusing the token was answered « La lumière de la
+  cuisine s'allume. », which the bench did not count then (it does now); the same case passed 3/3 in three more runs.
+- **Not done**: installing a model from the iPhone (the Desktop owns the downloads; the server answers 409
+  `managed_by_desktop` — it would need the server to ask the Desktop, as share-call does); a real percentage while
+  loading (llama.cpp reports none: still the time against the last load).

@@ -4,14 +4,17 @@ import { readFileSync } from "node:fs";
 // (llama.cpp's server, see manager.ts). Ported from
 // twoody-desktop/src/main/modelCatalog.ts: same entries, same pins.
 //
-// Twoody's own models first (Qwen3.5 4B and 9B, recommended), then others
-// to choose from (Jimmy, 01/10/2026: « plus de choix de modèles »), in a
-// quantisation that keeps most of the quality. Never from Twoody's
-// competitors (Unsloth, LM Studio's community): the publisher's own file
-// where there is one (Google, Mistral AI, Qwen), llama.cpp's own (ggml-org),
-// else Osmove's, converted from the publisher's weights with the llama.cpp
-// release the app ships (scripts/convert-model.sh, reproducible to the
-// byte) and published under huggingface.co/twoody (scripts/publish-model.sh).
+// Twoody's own models first (Qwen3.5 4B and 9B, recommended, and a larger
+// one beside them where it fits), then others to choose from (Jimmy,
+// 01/10/2026: « plus de choix de modèles »), in a quantisation that keeps
+// most of the quality. Never from Twoody's competitors (Unsloth, LM
+// Studio's community): the publisher's own file where there is one (Google,
+// Mistral AI, Qwen), llama.cpp's own (ggml-org), else Osmove's, converted
+// from the publisher's weights with the llama.cpp release the app ships
+// (scripts/convert-model.sh, reproducible to the byte) and published under
+// huggingface.co/twoody (scripts/publish-model.sh) — or, for a size neither
+// the publisher nor llama.cpp's own puts out, a well-known independent
+// quantiser's (bartowski: imatrix quantisations, no app of its own).
 // Each entry is pinned — repository revision, size, SHA-256 — so what gets
 // installed is exactly what was tried, and a corrupted or substituted file
 // is refused.
@@ -38,6 +41,11 @@ export interface CatalogModel {
   /// Offered as the first choice (recommendedModel): Twoody's own models,
   /// with which memory, tools and documents are measured.
   recommendable?: boolean;
+  /// Measured like them, but larger: offered beside them only where it
+  /// fits (modelFits), never chosen first — its download and its memory
+  /// are the person's choice (Jimmy, 11/10/2026: « ajoute un modèle plus
+  /// grand au moteur intégré »).
+  larger?: boolean;
   /// What it is good at, for the model screen: « reasoning » for a model
   /// that thinks before it answers, « code » for one made for code.
   traits?: Array<"reasoning" | "code">;
@@ -93,6 +101,38 @@ export const CATALOG: CatalogModel[] = [
       url: `${HF}/twoody/Qwen3.5-9B-GGUF/resolve/b647a5938c8cf40d1c3553ddd9bf2892895f0110/mmproj-F16.gguf`,
       bytes: 918_165_888,
       sha256: "2f7ce3652232b91c2220fad23f5b62d110f67e84bd5ed33a7d2bea82f8ee1d26",
+    },
+  },
+  // Larger (11/10/2026): Qwen3.6 35B-A3B, a mixture of experts — 35
+  // billion parameters, 3 billion at work for each token — so it reads and
+  // writes faster than the 9B and knows more. Its 4-bit files (20 GB and
+  // more) do not fit beside the system on a 24 GB Mac, whose GPU may use
+  // some 17.8 GiB: this 3-bit one with an importance matrix does
+  // (bartowski, from Qwen's weights with llama.cpp b9222). Measured with
+  // b11146 on Jimmy's MacBook Air M5 24 GB, the app's settings
+  // (docs/builtin-runtime-design.md §8): 14.2 GiB of weights, 15.6 GiB in
+  // all with its 32 768-token window and its vision file, all 42 layers on
+  // the GPU; Jimmy's own start of a conversation (4 567 tokens, 12 tools)
+  // read at 325 to 436 tokens a second, 18 to 25 written — the 9B beside
+  // it: 207 to 238 and 10 to 12; twoody-bench regress 65/67 and 64/67 (the
+  // 9B 64/67). Qwen3.8 27B (a dense 27B, 13.5 GB at 3 bits) was tried and
+  // set aside: 57 tokens read a second, 3.3 written, swap +4.7 GB.
+  {
+    id: "Qwen3.6-35B-A3B-IQ3_XXS",
+    name: "Qwen3.6 35B-A3B",
+    file: "Qwen3.6-35B-A3B-IQ3_XXS.gguf",
+    url: `${HF}/bartowski/Qwen_Qwen3.6-35B-A3B-GGUF/resolve/5c2410d71524f4f72b023ce8daf7a80528226d5f/Qwen_Qwen3.6-35B-A3B-IQ3_XXS.gguf`,
+    bytes: 15_761_446_528,
+    sha256: "4eb30af2df0dde76fe8d0a60f0e88f285ee668dcb1b8da892ee5c13dd6b00399",
+    minRamGb: 24,
+    publisher: "Qwen (Alibaba)",
+    license: "Apache 2.0",
+    recommendable: true,
+    larger: true,
+    vision: {
+      url: `${HF}/bartowski/Qwen_Qwen3.6-35B-A3B-GGUF/resolve/5c2410d71524f4f72b023ce8daf7a80528226d5f/mmproj-Qwen_Qwen3.6-35B-A3B-f16.gguf`,
+      bytes: 899_283_296,
+      sha256: "67924785ff1885c2b34c15d0e52979e991acca64221694ba2cc3a6474a053fb4",
     },
   },
   {
@@ -234,7 +274,10 @@ export function recommendedModel(
   if (catalog.length === 0) return null;
   const ramGb = totalRamBytes / GIB;
   // The measured models first; any other only when the catalogue has none.
-  const candidates = catalog.some((model) => model.recommendable) ? catalog.filter((model) => model.recommendable) : catalog;
+  // Never a larger one: offered beside, not chosen for the person.
+  const firstChoices = catalog.filter((model) => !model.larger);
+  if (firstChoices.length === 0) return null;
+  const candidates = firstChoices.some((model) => model.recommendable) ? firstChoices.filter((model) => model.recommendable) : firstChoices;
   const sorted = [...candidates].sort((a, b) => a.minRamGb - b.minRamGb);
   const unifiedMemory = platform === "darwin" && machine.arch !== "x64";
   const largeCard = (machine.dedicatedVramBytes ?? 0) >= VRAM_FOR_9B_BYTES && ramGb + 0.5 >= 16;

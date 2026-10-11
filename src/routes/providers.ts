@@ -3,7 +3,8 @@ import { and, eq } from "drizzle-orm";
 import { db, llmEndpoints } from "../db.js";
 import { generateId, requireAuth } from "../auth.js";
 import { offeredModels, probeRuntime, type RuntimeProbe } from "../localRuntime.js";
-import { modelLoadState, noteModelReady, startModelLoad } from "../modelLoads.js";
+import { modelLoadState, noteModelReady, startModelLoad, startModelPreparation } from "../modelLoads.js";
+import { conversationStartPending, prepareConversationStart } from "./queries.js";
 import { requirePerson } from "./runtime.js";
 import { ownerRequest } from "../localAccess.js";
 import { choosesForThePerson } from "../sessionTrust.js";
@@ -236,6 +237,10 @@ export async function providerRoutes(app: FastifyInstance) {
   //     202 {load} loading, 503 runtime_unreachable {runtime}: what runs it
   //     does not answer (mlx-lm not started), 404 unknown_model.
   //   GET  /providers/load?model=  → {load}
+  // Once in memory, the start of the asking device's new conversation is
+  // read with that model (« preparing »), then it is « ready »: the first
+  // question reads only itself (prepareConversationStart, queries.ts). A
+  // runtime holds one model: loading this one lets go of the one before.
   // This computer's person only (runtime.ts requirePerson): the Desktop, a
   // paired device, its console — never another computer of the account.
   app.post<{ Body: { model?: unknown } }>("/providers/load", {
@@ -255,8 +260,12 @@ export async function providerRoutes(app: FastifyInstance) {
       if (!target.probe?.reachable) {
         return reply.code(503).send({ error: "runtime_unreachable", model, runtime: target.runtime, message: `${target.runtime ?? "The runtime"} does not answer on this computer.` });
       }
-      if (target.probe.loaded?.includes(model)) return reply.send({ load: noteModelReady(target) });
-      const load = startModelLoad(target);
+      const prepare = (fresh: boolean) => prepareConversationStart(auth, model, { fresh });
+      if (target.probe.loaded?.includes(model)) {
+        if (!(await conversationStartPending(auth, model).catch(() => false))) return reply.send({ load: noteModelReady(target) });
+        return reply.code(202).send({ load: startModelPreparation(target, prepare) });
+      }
+      const load = startModelLoad(target, undefined, prepare);
       return reply.code(load.state === "ready" ? 200 : 202).send({ load });
     },
   });

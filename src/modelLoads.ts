@@ -18,8 +18,19 @@ import { runtimeAuthHeaders } from "./runtimeAuth.js";
 // elapsed against how long this model took last time here (20 s the first
 // time) — the same estimate Twoody Desktop shows on its send button
 // (twoody-desktop/src/shared/modelWarmth.ts).
+//
+// Then « Préparation » (Jimmy, 11/10/2026: « voir à quel moment je peux
+// commencer à l'utiliser sans avoir un long time to first token »): the
+// start of the person's new conversation — instructions, profile, tools —
+// read into the runtime's prompt cache for that model
+// (prepareConversationStart, routes/queries.ts), so that the first question
+// reads only itself. « Prêt » once that is done. Measured with Jimmy's own
+// start (4 567 tokens with 12 tools) and message (1 839 tokens) on his
+// MacBook Air M5 (docs/builtin-runtime-design.md §8): Qwen3.5 9B 27.5 s to
+// the first word right after its load, 8.2 s once ready; Qwen3.6 35B-A3B
+// 16.1 s and 5.6 s.
 
-export type LoadStep = "idle" | "loading" | "ready" | "failed";
+export type LoadStep = "idle" | "loading" | "preparing" | "ready" | "failed";
 
 export interface ModelLoadState {
   model: string;
@@ -40,6 +51,11 @@ export interface LoadTarget {
 
 /// Asks the runtime to load `model`; resolves true once it answered.
 export type Warm = (baseUrl: string, model: string) => Promise<boolean>;
+
+/// Reads the start of a new conversation with the model, once it is in
+/// memory (`fresh`: just loaded). Best effort: a start that cannot be read
+/// (none known yet, the runtime busy) leaves the model ready all the same.
+export type Prepare = (fresh: boolean) => Promise<unknown>;
 
 const FIRST_LOAD_MS = 20_000;
 const WARM_TIMEOUT_MS = 180_000;
@@ -68,7 +84,8 @@ export function modelLoadState(model: string, now = Date.now()): ModelLoadState 
     return { model, runtime: entry?.runtime ?? null, state: "idle", progress: 0, elapsed_ms: 0, expected_ms: 0 };
   }
   const elapsed = (entry.endedAt ?? now) - entry.startedAt;
-  const progress = entry.state === "ready" ? 1 : entry.state === "loading" ? estimatedProgress(elapsed, entry.expectedMs) : 0;
+  // Read into memory while it prepares: the load is done.
+  const progress = entry.state === "ready" || entry.state === "preparing" ? 1 : entry.state === "loading" ? estimatedProgress(elapsed, entry.expectedMs) : 0;
   return { model, runtime: entry.runtime, state: entry.state, progress, elapsed_ms: elapsed, expected_ms: entry.expectedMs };
 }
 
@@ -79,8 +96,9 @@ export function noteModelReady(target: LoadTarget, now = Date.now()): ModelLoadS
 }
 
 /// Starts loading `model` unless a load of it is under way; answers at once
-/// with where it is.
-export function startModelLoad(target: LoadTarget, warm: Warm = warmModel): ModelLoadState {
+/// with where it is. With `prepare`, the start of a new conversation is
+/// read once it is in memory (« preparing »), then it is ready.
+export function startModelLoad(target: LoadTarget, warm: Warm = warmModel, prepare?: Prepare): ModelLoadState {
   const { model } = target;
   if (!running.has(model)) {
     const startedAt = Date.now();
@@ -92,15 +110,36 @@ export function startModelLoad(target: LoadTarget, warm: Warm = warmModel): Mode
         if (!(await localRuntimeReady(target.baseUrl, model))) return false;
         return warm(target.baseUrl, model);
       })().catch(() => false);
-      const endedAt = Date.now();
-      loads.set(model, { runtime: target.runtime, state: ok ? "ready" : "failed", startedAt, expectedMs, endedAt });
+      const loadedAt = Date.now();
       if (ok) {
         // Kept smooth: one slow load (a busy disk) does not set the next.
-        const took = endedAt - startedAt;
+        const took = loadedAt - startedAt;
         const previous = measured.get(model);
         measured.set(model, previous ? Math.round(previous * 0.5 + took * 0.5) : took);
       }
+      if (ok && prepare) {
+        loads.set(model, { runtime: target.runtime, state: "preparing", startedAt, expectedMs });
+        await prepare(true).catch(() => undefined);
+      }
+      loads.set(model, { runtime: target.runtime, state: ok ? "ready" : "failed", startedAt, expectedMs, endedAt: Date.now() });
       return ok;
+    })().finally(() => running.delete(model));
+    running.set(model, attempt);
+  }
+  return modelLoadState(model);
+}
+
+/// `model` is in memory already, but the start of a new conversation with
+/// it is still to be read: « preparing », then ready.
+export function startModelPreparation(target: LoadTarget, prepare: Prepare): ModelLoadState {
+  const { model } = target;
+  if (!running.has(model)) {
+    const startedAt = Date.now();
+    loads.set(model, { runtime: target.runtime, state: "preparing", startedAt, expectedMs: 0 });
+    const attempt = (async () => {
+      await prepare(false).catch(() => undefined);
+      loads.set(model, { runtime: target.runtime, state: "ready", startedAt, expectedMs: 0, endedAt: Date.now() });
+      return true;
     })().finally(() => running.delete(model));
     running.set(model, attempt);
   }

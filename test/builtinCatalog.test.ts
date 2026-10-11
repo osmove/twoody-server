@@ -17,15 +17,20 @@ test("every entry of the catalogue is pinned: revision, size, digest, file named
     assert.equal(model.file, `${model.id}.gguf`);
     assert.match(model.url, /^https:\/\/huggingface\.co\/[\w.-]+\/[\w.-]+\/resolve\/[0-9a-f]{40}\//, `${model.id}: not pinned to a revision`);
     // Osmove's own conversions (scripts/convert-model.sh), the publisher's
-    // or llama.cpp's own — never a competitor's (Unsloth, LM Studio, …).
-    assert.match(model.url, /^https:\/\/huggingface\.co\/(?:twoody|google|mistralai|Qwen|ggml-org)\//, `${model.id}: not Osmove's, the publisher's or llama.cpp's`);
-    if (model.recommendable) assert.match(model.url, /^https:\/\/huggingface\.co\/twoody\//, `${model.id}: a recommended model is Osmove's`);
+    // or llama.cpp's own — never a competitor's (Unsloth, LM Studio, …);
+    // a well-known independent quantiser's (bartowski) for a size none of
+    // them puts out: the larger model's 3 bits (11/10/2026).
+    const source = model.larger ? /^https:\/\/huggingface\.co\/(?:twoody|Qwen|ggml-org|bartowski)\// : /^https:\/\/huggingface\.co\/(?:twoody|google|mistralai|Qwen|ggml-org)\//;
+    assert.match(model.url, source, `${model.id}: not Osmove's, the publisher's or llama.cpp's`);
+    if (model.recommendable && !model.larger) assert.match(model.url, /^https:\/\/huggingface\.co\/twoody\//, `${model.id}: a model offered first is Osmove's`);
     if (model.vision) {
-      assert.match(model.vision.url, /^https:\/\/huggingface\.co\/(?:twoody|google|mistralai|Qwen|ggml-org)\/[\w.-]+\/resolve\/[0-9a-f]{40}\//, `${model.id}: its vision file is pinned too`);
+      assert.match(model.vision.url, new RegExp(`${source.source}[\\w.-]+\\/resolve\\/[0-9a-f]{40}\\/`), `${model.id}: its vision file is pinned too, from the same source`);
       assert.match(model.vision.sha256, /^[0-9a-f]{64}$/);
       assert.equal(visionDownload(model)!.file, `${model.id}.mmproj.gguf`);
     }
-    assert.ok(model.url.endsWith(`/${model.file}`));
+    // Saved under its id (downloads.ts); named so at its source, but for
+    // an independent quantiser's, which prefixes the publisher.
+    assert.ok(model.url.endsWith(`/${model.file}`) || (model.larger && /\/bartowski\//.test(model.url) && model.url.endsWith(`/Qwen_${model.file}`)), `${model.id}: ${model.url}`);
     assert.match(model.sha256, /^[0-9a-f]{64}$/);
     assert.ok(model.bytes > 1e9);
     assert.ok(isAllowedDownloadUrl(model.url));
@@ -140,6 +145,7 @@ test("the pinned entries are the Desktop's, byte for byte", () => {
     [
       ["Qwen3.5-4B-Q4_K_M", 2_783_446_880, "b7508d8b4a652bc020a439aafdd4ce1527d49774865ce3334a43b16dbeaa90ca"],
       ["Qwen3.5-9B-Q4_K_M", 5_780_090_688, "8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54"],
+      ["Qwen3.6-35B-A3B-IQ3_XXS", 15_761_446_528, "4eb30af2df0dde76fe8d0a60f0e88f285ee668dcb1b8da892ee5c13dd6b00399"],
       ["DeepSeek-R1-0528-Qwen3-8B-Q4_K_M", 5_027_782_816, "4422f4ed58f2a0d1b4b93067fd312207c2adc326a30f67a3bf9914f889d1d7cc"],
       ["gemma-4-12b-it-qat-q4_0", 6_975_879_296, "93567e57a8fe10b23569b9d9ec38cd005deedf71e29477c421a4b83f418a538b"],
       ["Ministral-3-14B-Instruct-2512-Q4_K_M", 8_239_593_024, "824e0f3373e69b84f2cae46fdcb9bd1ebc6ab3bfc7acc125d818b7b8178cc613"],
@@ -156,7 +162,7 @@ test("the recommendation stays a Qwen3.5 of Twoody's, however large the computer
   assert.equal(recommendedModel(64 * GIB, CATALOG, "darwin")?.id, "Qwen3.5-9B-Q4_K_M");
   assert.equal(recommendedModel(8 * GIB, CATALOG, "darwin")?.id, "Qwen3.5-4B-Q4_K_M");
   // Images: Qwen3.5, Gemma 4 and Ministral 3 read them.
-  assert.deepEqual(CATALOG.filter((model) => model.vision).map((model) => model.id), ["Qwen3.5-4B-Q4_K_M", "Qwen3.5-9B-Q4_K_M", "gemma-4-12b-it-qat-q4_0", "Ministral-3-14B-Instruct-2512-Q4_K_M", "gemma-4-26B_q4_0-it"]);
+  assert.deepEqual(CATALOG.filter((model) => model.vision).map((model) => model.id), ["Qwen3.5-4B-Q4_K_M", "Qwen3.5-9B-Q4_K_M", "Qwen3.6-35B-A3B-IQ3_XXS", "gemma-4-12b-it-qat-q4_0", "Ministral-3-14B-Instruct-2512-Q4_K_M", "gemma-4-26B_q4_0-it"]);
 });
 
 test("TWOODY_MODEL_CATALOG replaces the catalogue like the Desktop's variable", () => {
@@ -177,6 +183,7 @@ test("the catalogue view says what is installed, recommended and fits", () => {
     [
       ["Qwen3.5-4B-Q4_K_M", true, true, true],
       ["Qwen3.5-9B-Q4_K_M", false, false, true],
+      ["Qwen3.6-35B-A3B-IQ3_XXS", false, false, false],
       ["DeepSeek-R1-0528-Qwen3-8B-Q4_K_M", false, false, true],
       ["gemma-4-12b-it-qat-q4_0", false, false, true],
       ["Ministral-3-14B-Instruct-2512-Q4_K_M", false, false, false],
@@ -231,4 +238,20 @@ test("a library missing to the runtime is told apart from other failures", () =>
   assert.equal(failureOf(127, "win32").reason, "exited");
   assert.equal(failureOf(null, "darwin").reason, "no-answer");
   assert.equal(failureOf(null, "darwin", "SIGABRT").reason, "exited");
+});
+
+// A larger model (Jimmy, 11/10/2026): offered where it fits, from 24 GB,
+// never chosen first — the 9B stays the recommendation on any computer.
+test("the larger model is offered from 24 GB, never recommended", () => {
+  const larger = CATALOG.filter((model) => model.larger);
+  assert.deepEqual(larger.map((model) => model.id), ["Qwen3.6-35B-A3B-IQ3_XXS"]);
+  for (const platform of ["darwin", "win32", "linux"] as const) {
+    for (const gb of [8, 16, 23.8, 24, 32, 64, 128]) assert.notEqual(recommendedModel(gb * GIB, CATALOG, platform)?.id, "Qwen3.6-35B-A3B-IQ3_XXS");
+  }
+  assert.equal(modelFits(larger[0]!, 16 * GIB), false);
+  assert.equal(modelFits(larger[0]!, 23.6 * GIB), true, "a \"24 GB\" Mac reports a little less");
+  assert.equal(recommendedModel(24 * GIB, larger, "darwin"), null, "a catalogue of larger models only: nothing chosen for the person");
+  const view = catalogView(CATALOG, [], 24 * GIB, "darwin");
+  assert.equal(view.find((entry) => entry.recommended)!.id, "Qwen3.5-9B-Q4_K_M");
+  assert.equal(view.find((entry) => entry.larger)!.fits, true);
 });
