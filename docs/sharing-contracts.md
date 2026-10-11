@@ -2,7 +2,7 @@
 
 The interfaces between the account (twoody-backend), the owner's computer (twoody-server + Desktop) and the
 grantee's computer, fixed before the three parts are written. Design and reasons: `sharing-design.md`. v1 ships the
-`ask` right (folders, search) and `read` without originals (browse, text); `raw` is lot L5.
+`ask` right (folders, search) and `read` without originals (browse, text); `raw` is lot L5 (§6).
 
 Words: **owner** shares a Documents folder of one of their computers (the **host**); the **grantee** is a person
 (household, or active co-member of an organization) or every active member of one organization.
@@ -167,7 +167,7 @@ What the code fixed where this contract left it open; the Desktop follows it.
   (audited `wrong_grantee`). Isolated, refused or removed folder → `folder_gone` (audited `folder_isolated`,
   `folder_refused`, `folder_gone`). Rate buckets: `search` 30/min; `folders`, `browse`, `text` 120/min.
 - **Ops**: `text` ≤ 100 000 characters (`truncated`); `browse` 100 entries a page, sorted by name; an unknown field,
-  an unknown op (`raw` included until L5), a path outside the folder → `bad_request`.
+  an unknown op, a path outside the folder → `bad_request`.
 - **Replay**: request ids are remembered in memory only; after a restart a copy relayed again within its five
   minutes is served again — read-only, and sealed to keys only the guest's device holds.
 - **Bridge**: the worker declares `folder-share-provider` only when it has a `serveShare` hook; extra task args
@@ -188,3 +188,68 @@ What the code fixed where this contract left it open; the Desktop follows it.
   codes `device_not_approved` read as « … doit d'abord l'autoriser », `unknown_share`, `revoked`, `expired`, `right`,
   `folder_gone`, `documents_off`, `share_unavailable`, `unknown_key`, `key_changed` as « n'est plus accessible »,
   anything else (`host_offline`, `timeout`, `host_error`, `bad_request`…) as « n'est pas joignable ».
+
+## 6. Lot L5: « Lire les fichiers », the originals (11/10/2026)
+
+A share whose right is `read` (held on the owner's computer) also hands out its files, in sealed chunks through the
+same `share_request` relay — nothing new on the account. `ask` stays excerpts only. Design and reasons:
+`sharing-design.md` §10.
+
+**Sealed op** (owner's computer, right `read` only; same checks 1–8 as every op, then the file's own):
+
+```
+{op: "raw", path: string}            the path a browse gave (inside the shared folder)      exactly one of
+{op: "raw", document_id: string}     a cited document (twoody://share/<uuid>/<document_id>)  path / document_id
+      offset?: integer ≥ 0 (0), length?: 1..1 048 576 (1 048 576)
+→ {ok: true, file: {name, path, size, modified_at, sha256, content_type}, offset, length, data, chunk_sha256, eof}
+```
+
+- `data`: the bytes `[offset, offset + length)` in base64 (fewer at the end of the file, `""` at `offset == size`);
+  `chunk_sha256` their hash, `file.sha256` the whole file's (hex, as it is on the owner's disk now), `eof` whether
+  the chunk ends the file. `file.path` is relative to the shared folder; `content_type` is the type the owner's server
+  gives the file's extension (`peerDocuments/raw.ts contentType`), never sniffed.
+- Served only for a regular file that a browse of the share would list: inside the shared folder (its real path, no
+  symbolic link on the way, the file opened without following a link and checked to be the one asked — same device
+  and inode), no hidden or skipped segment, no isolated project's folder, folderRisk applied; a `document_id` must be
+  an index row of the share's folders and resolve the same way.
+- Errors (beside §2's): `not_found` (gone, a link, hidden, isolated, outside, not a file), `too_large` (the file is
+  over 25 MB = 26 214 400 bytes); a `length` over 1 MiB, an `offset` past the end, both or neither of `path` and
+  `document_id` → `bad_request`.
+- Rate: a bucket of its own, 30 chunks a minute per (share, device) — the account's 30 requests a minute per (share,
+  key), and one at a time, come first.
+- Audit: one row per request, as for every op; `text` and `raw` rows also carry the document's id (when indexed),
+  the file's name and, for `raw`, the bytes sent — so « Consultations » says who opened what. Never a path, never a
+  question. `GET /local_shares/audit` rows gain `document_id`, `name`, `bytes`.
+- The owner's bridge sends the sealed lines of an answer several to a delta (≤ 256 KB a PATCH), the account splitting
+  them as before: a 1 MiB chunk is ~2.8 MB once base64 and sealed (hex).
+
+**Grantee's computer — twoody-server routes** (the person's own sessions only: this computer's app, or one of the
+person's own devices — `meshRequester`, the owner's token only from this machine or its own tunnel key; never a
+household member's phone, a device paired by code, or a `peer:` session). The iPhone uses them through its computer.
+
+```
+GET /shared_folders/:uuid/browse?path=&offset=
+      → {ok: true, entries: [§2 browse entries], next_offset, share: {label, owner_name, right}}
+      | {ok: false, error, share?}                     (HTTP 200 for every answer of the owner's computer)
+GET /shared_folders/:uuid/file?path=…   or   ?document_id=…        (optional header Range: bytes=N-)
+      → 200 (206 from N) the file's bytes. Headers: Content-Length, Content-Type (the owner's type through the
+        server's list, else application/octet-stream), X-Twoody-Sha256 (whole file, hex), X-Twoody-Size,
+        X-Twoody-File-Name (encodeURIComponent of the owner's name), Content-Disposition attachment,
+        X-Content-Type-Options nosniff, Content-Security-Policy sandbox, Cache-Control private, no-store.
+      → before any byte, JSON {error, share?}: 400 bad_request, 403 right | device_not_approved, 404 not_found |
+        unknown_share | share_unavailable | revoked | expired | folder_gone | documents_off, 413 too_large,
+        429 rate_limited | busy, 502 changed | bad_answer, 503 host_offline | timeout | unreachable | no_account
+```
+
+- Assembled from 1 MiB chunks, one at a time, through the Desktop (`share-call` with `{op: "raw", …}`); each chunk's
+  hash checked; `busy`, `rate_limited`, `timeout` waited out and the same chunk asked again (≤ 90 s per chunk); the
+  file changing on the owner's disk between chunks (another `sha256`, `size` or `modified_at`) ends it (`changed`).
+- From 0, the whole file's hash is checked before its last chunk is written: a body shorter than Content-Length
+  (the connection closed) means it failed — never keep it. From N (Range), the caller checks the whole file against
+  `X-Twoody-Sha256`, which must be the one it started with (else the file changed: start again from 0).
+- Nothing is written to disk on this computer: the bytes go to the caller as they arrive.
+
+**Desktop (grantee)**: `share-call` takes `{op: "raw", …}` (`browse`, `text`, `raw` refused at once when the account
+lists the share as `ask`); its results carry `share: {label, owner_name, right}`. « Partagés avec moi » › « Parcourir »
+(right `read`), « Ouvrir » (a temporary file in the system's temporary folder, deleted when Twoody quits), « Enregistrer
+sous… » (only where the person chooses); both marked as downloaded. A cited shared document opens the same way.
