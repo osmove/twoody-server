@@ -187,7 +187,12 @@ test("the program gets what a program needs and its own environment — never th
 test("« Toujours autoriser » does not follow a changed program, arguments or environment; a new name keeps it", async () => {
   const { id } = await addProbe("Auto", { MODE: "a" });
   const auto = () => listConnectors(userId).find((one) => one.id === id)!.auto_tools ?? [];
-  const allow = () => app.inject({ method: "PATCH", url: `/connectors/${id}`, headers: mac, payload: { auto_tools: ["probe"] } });
+  // Started first: « Toujours autoriser » is taken for a tool as last listed (read-only).
+  const allow = async () => {
+    await app.inject({ method: "POST", url: `/connectors/${id}/start`, headers: mac });
+    await app.inject({ method: "PATCH", url: `/connectors/${id}`, headers: mac, payload: { auto_tools: ["probe"] } });
+    assert.deepEqual(auto(), ["probe"]);
+  };
   await allow();
   await app.inject({ method: "PATCH", url: `/connectors/${id}`, headers: mac, payload: { name: "Auto renamed" } });
   assert.deepEqual(auto(), ["probe"], "a new name alone keeps it");
@@ -199,6 +204,117 @@ test("« Toujours autoriser » does not follow a changed program, arguments or e
   await allow();
   await app.inject({ method: "PATCH", url: `/connectors/${id}`, headers: mac, payload: { command: "/usr/bin/env", args: ["node", fixture, "--other"], env: { MODE: "b" } } });
   assert.deepEqual(auto(), [], "another program: asked again");
+  await app.inject({ method: "DELETE", url: `/connectors/${id}`, headers: mac });
+});
+
+/// The chat, the model calling `tool` of the connector `name` once; the
+/// question answered over HTTP by this computer's app (`always` asked).
+async function chatCall(name: string, tool: string, answer: { allow: boolean; always?: boolean } | null) {
+  script = [{ name: chatToolName({ name }, tool), arguments: {} }];
+  let answered: { statusCode: number; body: unknown } | null = null;
+  const answering = (async () => {
+    if (!answer) return;
+    for (let i = 0; i < 300; i += 1) {
+      const [waiting] = waitingApprovals(userId);
+      if (waiting) {
+        const response = await app.inject({ method: "POST", url: "/queries/approval", headers: mac, payload: { id: waiting, ...answer } });
+        answered = { statusCode: response.statusCode, body: response.json() };
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  })();
+  const response = await app.inject({ method: "POST", url: "/queries", headers: mac, payload: { text: "Sonde", channel: "desktop", force_new_discussion: true, document_access: { mode: "off" } } });
+  await answering;
+  script = [];
+  for (const waiting of waitingApprovals(userId)) answerApproval(userId, waiting, false, false, { sessionId: null, thisComputersApp: true });
+  const event = response.body.split("\n\n").find((block) => block.startsWith("event: approval\n"));
+  return { asked: event ? (JSON.parse(event.slice(event.indexOf("data: ") + 6)) as { tool: string; may_always?: boolean }) : null, answered: answered as { statusCode: number; body: { ok?: boolean; always?: boolean } } | null };
+}
+const storedAuto = (id: string) => listConnectors(userId).find((one) => one.id === id)!.auto_tools ?? [];
+const listedTool = async (id: string, tool: string) =>
+  ((await app.inject({ url: "/connectors", headers: mac })).json().connectors as Array<{ id: string; tools: Array<{ name: string; always: boolean; may_always: boolean; read_only: boolean }> }>)
+    .find((one) => one.id === id)!.tools.find((one) => one.name === tool)!;
+
+test("« Toujours autoriser » only for a tool that only reads: one that writes, destroys or says nothing is asked at every call", async () => {
+  // `probe` says it only reads; `wipe` says nothing of itself.
+  const { id } = await addProbe("Writer");
+  assert.equal((await app.inject({ method: "PATCH", url: `/connectors/${id}`, headers: mac, payload: { auto_tools: ["probe", "wipe"] } })).statusCode, 200);
+  assert.deepEqual(storedAuto(id), ["probe"], "only the read-only tool is taken");
+  assert.deepEqual(await listedTool(id, "wipe"), { ...(await listedTool(id, "wipe")), always: false, may_always: false, read_only: false });
+  assert.deepEqual(await listedTool(id, "probe"), { ...(await listedTool(id, "probe")), always: true, may_always: true, read_only: true });
+
+  // In the chat: `wipe` asked, « Toujours autoriser » not offered; answered
+  // « always » anyway: this call only.
+  const first = await chatCall("Writer", "wipe", { allow: true, always: true });
+  assert.equal(first.asked?.tool, "wipe");
+  assert.equal(first.asked?.may_always, false);
+  assert.deepEqual(first.answered, { statusCode: 200, body: { ok: true, always: false } });
+  assert.deepEqual(storedAuto(id), ["probe"], "« always » on a tool that may change things is not kept");
+  const second = await chatCall("Writer", "wipe", { allow: false });
+  assert.equal(second.asked?.tool, "wipe", "asked again at the next call");
+
+  // `probe`: always allowed, called without asking.
+  assert.equal((await chatCall("Writer", "probe", null)).asked, null);
+  await app.inject({ method: "DELETE", url: `/connectors/${id}`, headers: mac });
+});
+
+test("a tool that says it only reads but also destroys is not « Toujours autoriser »", async () => {
+  const hints = join(scratch, "hints-both.json");
+  writeFileSync(hints, JSON.stringify({ readOnlyHint: true, destructiveHint: true }));
+  const { id } = await addProbe("Both", { PROBE_HINTS_FILE: hints });
+  await app.inject({ method: "PATCH", url: `/connectors/${id}`, headers: mac, payload: { auto_tools: ["probe"] } });
+  assert.deepEqual(storedAuto(id), []);
+  const asked = await chatCall("Both", "probe", { allow: true, always: true });
+  assert.equal(asked.asked?.may_always, false);
+  assert.equal(asked.answered?.body.always, false);
+  assert.deepEqual(storedAuto(id), []);
+  // Hints that are not booleans count for nothing.
+  writeFileSync(hints, JSON.stringify({ readOnlyHint: "true" }));
+  await app.inject({ method: "POST", url: `/connectors/${id}/start`, headers: mac });
+  assert.equal((await listedTool(id, "probe")).may_always, false);
+  await app.inject({ method: "DELETE", url: `/connectors/${id}`, headers: mac });
+});
+
+test("a server that stops saying its tool only reads: « Toujours autoriser » no longer counts, asked again", async () => {
+  const hints = join(scratch, "hints-change.json");
+  writeFileSync(hints, JSON.stringify({ readOnlyHint: true }));
+  const { id } = await addProbe("Turncoat", { PROBE_HINTS_FILE: hints });
+  await app.inject({ method: "PATCH", url: `/connectors/${id}`, headers: mac, payload: { auto_tools: ["probe"] } });
+  await app.inject({ method: "POST", url: `/connectors/${id}/start`, headers: mac });
+  assert.deepEqual(storedAuto(id), ["probe"], "read again, unchanged: still allowed");
+  writeFileSync(hints, JSON.stringify({ readOnlyHint: false }));
+  stopConnector(userId, id);
+  await app.inject({ method: "POST", url: `/connectors/${id}/start`, headers: mac });
+  assert.deepEqual(storedAuto(id), [], "its hints changed: the grant was for what it said then");
+  assert.equal((await chatCall("Turncoat", "probe", { allow: false })).asked?.tool, "probe");
+  await app.inject({ method: "DELETE", url: `/connectors/${id}`, headers: mac });
+});
+
+test("a grant given before 11/10/2026 to a tool that is not read-only stays stored, ignored; a read-only one keeps working", async () => {
+  const { id } = await addProbe("Legacy");
+  // As connectors.json held it: both tools allowed, no hints kept.
+  const file = join(process.env.TWOODY_DATA_DIR!, "connectors.json");
+  const all = JSON.parse(readFileSync(file, "utf8")) as Record<string, Array<{ id: string; auto_tools?: string[]; tools: Array<Record<string, unknown>> }>>;
+  const row = all[userId]!.find((one) => one.id === id)!;
+  row.auto_tools = ["probe", "wipe"];
+  for (const tool of row.tools) delete tool.annotations;
+  writeFileSync(file, JSON.stringify(all), { mode: 0o600 });
+  stopConnector(userId, id);
+
+  // Not read again yet: nothing is known to only read — both asked.
+  assert.equal((await chatCall("Legacy", "probe", { allow: false })).asked?.tool, "probe");
+  assert.equal((await chatCall("Legacy", "wipe", { allow: false })).asked?.tool, "wipe");
+  // Read again: `probe` says it only reads, its grant counts again; `wipe`'s
+  // stays in the file, ignored.
+  await app.inject({ method: "POST", url: `/connectors/${id}/start`, headers: mac });
+  assert.deepEqual(storedAuto(id).sort(), ["probe", "wipe"]);
+  assert.equal((await chatCall("Legacy", "probe", null)).asked, null);
+  assert.equal((await chatCall("Legacy", "wipe", { allow: false })).asked?.tool, "wipe");
+  // The person's list saved again from the screen: `wipe`'s stays stored.
+  await app.inject({ method: "PATCH", url: `/connectors/${id}`, headers: mac, payload: { auto_tools: [] } });
+  assert.deepEqual(storedAuto(id), ["wipe"]);
+  assert.equal((await listedTool(id, "wipe")).always, false);
   await app.inject({ method: "DELETE", url: `/connectors/${id}`, headers: mac });
 });
 

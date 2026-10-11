@@ -108,6 +108,8 @@ test("in the chat: off until Capacités → Connecteurs is on; then the call is 
   await app.inject({ method: "PATCH", url: "/local_capabilities/connectors", headers, payload: { enabled: true } });
   const [response] = await Promise.all([ask("Cherche Zanzibar dans mon carnet"), answerWhenAsked(true)]);
   assert.match(response.body, /event: approval\ndata: .*"connector":"Carnet","tool":"lookup","arguments":\{"word":"Zanzibar"\}/);
+  // `lookup` says it only reads: « Toujours autoriser » may be offered.
+  assert.match(response.body, /event: approval\ndata: [^\n]*"tool":"lookup"[^\n]*"may_always":true/);
   assert.match(response.body, /event: approval_done\ndata: .*"allowed":true/);
   assert.match(finalOf(response.body).message, /Bonjour: Zanzibar found on page 12/);
 });
@@ -116,6 +118,8 @@ test("refused: nothing is called, the model is told", async () => {
   call = { name: chatToolName({ name: "Carnet" }, "erase_all"), arguments: {} };
   const [response] = await Promise.all([ask("Efface tout le carnet"), answerWhenAsked(false)]);
   assert.match(finalOf(response.body).message, /did not allow this call/);
+  // `erase_all` says it destroys: asked at every call, no « Toujours autoriser ».
+  assert.match(response.body, /event: approval\ndata: [^\n]*"tool":"erase_all"[^\n]*"may_always":false/);
 });
 
 test("a tool turned off is not offered; a connector switched off neither", async () => {

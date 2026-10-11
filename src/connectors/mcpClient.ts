@@ -102,6 +102,9 @@ export interface McpToolInfo {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  /// What the server says of the tool (MCP tool annotations): hints, the
+  /// server's own word, never checked.
+  annotations?: { readOnlyHint?: unknown; destructiveHint?: unknown; [key: string]: unknown };
 }
 
 interface RpcMessage { jsonrpc?: string; id?: number | string; method?: string; result?: unknown; error?: { message?: string } }

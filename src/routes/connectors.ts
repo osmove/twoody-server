@@ -17,7 +17,8 @@ import { meshRoster } from "../vault/roster.js";
 //   POST   /connectors/:id/oauth/start → { authorization_url }: the service's sign-in page
 //   GET    /connectors/oauth/callback  where that page sends the browser back
 //   POST   /connectors/:id/oauth/sign_out
-//   POST   /queries/approval           { id, allow, always? } — a tool call asked in the chat
+//   POST   /queries/approval           { id, allow, always? } — a tool call asked in the chat;
+//                                       `always` kept for a read-only tool only (→ { ok, always })
 // Read by any of the person's devices; added, changed, started and removed
 // only from this computer's app — a connector is a command this computer
 // runs, or an address it calls with the person's token.
@@ -203,8 +204,10 @@ export async function connectorRoutes(app: FastifyInstance) {
       // Anyone else is told nothing waits, whatever the id.
       const thisComputersApp = fromThisComputersApp(req, auth);
       const person = thisComputersApp || (await meshRequester(req, auth, () => meshRoster().get())) !== null;
-      if (!person || !answerApproval(auth.userId, id, req.body?.allow === true, req.body?.always === true, { sessionId: auth.sessionId ?? null, thisComputersApp })) return reply.code(404).send({ error: "nothing_waiting" });
-      reply.send({ ok: true });
+      const answered = person ? answerApproval(auth.userId, id, req.body?.allow === true, req.body?.always === true, { sessionId: auth.sessionId ?? null, thisComputersApp }) : null;
+      if (!answered) return reply.code(404).send({ error: "nothing_waiting" });
+      // `always`: whether « Toujours autoriser » was kept (a read-only tool only).
+      reply.send({ ok: true, always: answered.always });
     },
   });
 }

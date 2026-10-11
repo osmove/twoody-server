@@ -1060,12 +1060,14 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     const runConnectorTool = async (chosen: (typeof connectorTools)[number], args: Record<string, unknown>): Promise<string> => {
       const traced: ToolCallTrace = { name: chosen.definition.function.name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0 };
       toolCallsTraced.push(traced);
-      // « Toujours autoriser »: called at once; otherwise asked in the chat.
+      // « Toujours autoriser » (a read-only tool only): called at once;
+      // otherwise asked in the chat. `may_always`: whether the question may
+      // offer « Toujours autoriser » (connectors.ts mayAlwaysAllow).
       let allowed = chosen.always;
       if (!allowed) {
         const approvalId = generateId();
         startSse();
-        reply.raw.write(`event: approval\ndata: ${JSON.stringify({ id: approvalId, connector: chosen.connectorName, tool: chosen.tool, arguments: args })}\n\n`);
+        reply.raw.write(`event: approval\ndata: ${JSON.stringify({ id: approvalId, connector: chosen.connectorName, tool: chosen.tool, arguments: args, may_always: chosen.mayAlways })}\n\n`);
         allowed = await waitForApproval(auth.userId, approvalId, upstream.signal, approvalAsker, undefined, { connectorId: chosen.connectorId, tool: chosen.tool });
         if (!upstream.signal.aborted) reply.raw.write(`event: approval_done\ndata: ${JSON.stringify({ id: approvalId, allowed })}\n\n`);
       }

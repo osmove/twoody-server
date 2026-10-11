@@ -18,7 +18,41 @@ import { authorizationUrl, discover, exchangeCode, OAuthError, pkce, refreshToke
 // values of its environment and headers (tokens) never come back to a
 // screen, only their names.
 
-export interface StoredTool { name: string; description: string; inputSchema: Record<string, unknown> }
+/// What a tool's server says of it (MCP tool annotations), as kept: the
+/// two hints « Toujours autoriser » rests on, booleans only. `{}` when it
+/// said nothing; absent on a tool listed before 11/10/2026 (not yet read
+/// again).
+export interface ToolHints { readOnlyHint?: boolean; destructiveHint?: boolean }
+
+export interface StoredTool { name: string; description: string; inputSchema: Record<string, unknown>; annotations?: ToolHints }
+
+/// The hints kept from what a server listed: `true`/`false` only.
+export function toolHints(raw: unknown): ToolHints {
+  const out: ToolHints = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  const { readOnlyHint, destructiveHint } = raw as Record<string, unknown>;
+  if (typeof readOnlyHint === "boolean") out.readOnlyHint = readOnlyHint;
+  if (typeof destructiveHint === "boolean") out.destructiveHint = destructiveHint;
+  return out;
+}
+
+/// Whether a tool may be allowed once and for all (« Toujours autoriser »,
+/// Jimmy, 11/10/2026): only one its server says only reads
+/// (`readOnlyHint: true`) and does not say destroys. Every other tool —
+/// one that writes, sends, deletes, or whose server says nothing — is
+/// asked at each call, whatever was allowed before: a prompt injection in
+/// a document, an e-mail, a web page or another tool's result can talk the
+/// model into calling it (docs/connectors-security-review.md). The hints
+/// are the server's own word: a lying server is the residual risk.
+export function mayAlwaysAllow(tool: Pick<StoredTool, "annotations"> | null | undefined): boolean {
+  return tool?.annotations?.readOnlyHint === true && tool.annotations.destructiveHint !== true;
+}
+
+/// Whether a stored « always » counts for this tool: given, and the tool
+/// may be (mayAlwaysAllow). A grant on another tool stays stored, ignored.
+function alwaysAllowed(connector: Pick<Connector, "auto_tools">, tool: StoredTool): boolean {
+  return (connector.auto_tools ?? []).includes(tool.name) && mayAlwaysAllow(tool);
+}
 
 export interface Connector {
   id: string;
@@ -33,6 +67,8 @@ export interface Connector {
   disabled_tools: string[];
   /// The tools the person allowed once and for all: called without asking
   /// (Jimmy, 03/10/2026: « Toujours autoriser », for the ones that only read).
+  /// Since 11/10/2026 only a read-only tool's counts (mayAlwaysAllow); one
+  /// given before to another tool stays here, ignored.
   auto_tools?: string[];
   /// Its tools when it last started, offered to the chat without starting it.
   tools: StoredTool[];
@@ -172,7 +208,14 @@ export function changeConnector(userId: string, id: string, body: unknown): Conn
     }
     if (typeof input.enabled === "boolean") next = { ...next, enabled: input.enabled };
     if (Array.isArray(input.disabled_tools)) next = { ...next, disabled_tools: input.disabled_tools.filter((tool): tool is string => typeof tool === "string").slice(0, 500) };
-    if (Array.isArray(input.auto_tools)) next = { ...next, auto_tools: input.auto_tools.filter((tool): tool is string => typeof tool === "string").slice(0, 500) };
+    if (Array.isArray(input.auto_tools)) {
+      // Only the tools that may be (read-only, as last listed) are taken;
+      // what was given before to another one stays stored, ignored.
+      const eligible = new Set(next.tools.filter(mayAlwaysAllow).map((tool) => tool.name));
+      const asked = input.auto_tools.filter((tool): tool is string => typeof tool === "string" && eligible.has(tool));
+      const kept = (next.auto_tools ?? []).filter((tool) => !eligible.has(tool));
+      next = { ...next, auto_tools: [...new Set([...asked, ...kept])].slice(0, 500) };
+    }
     return next;
   });
   // Which tools are offered or asked about changes nothing of the server
@@ -201,7 +244,9 @@ export function removeConnector(userId: string, id: string) {
 export function connectorView(userId: string, connector: Connector, fromDevices = true, detail = true) {
   // What the chat really gets, across all the connectors (MAX_CHAT_TOOLS).
   const offered = new Set(connectorChatTools(userId).filter((tool) => tool.connectorId === connector.id).map((tool) => tool.tool));
-  const tools = connector.tools.map((tool) => ({ name: tool.name, description: tool.description, enabled: !connector.disabled_tools.includes(tool.name), offered: offered.has(tool.name), tokens: toolTokens(tool), always: (connector.auto_tools ?? []).includes(tool.name) }));
+  // `may_always`: whether « Toujours autoriser » may be offered for it (a
+  // read-only tool); `always`: given, and counting.
+  const tools = connector.tools.map((tool) => ({ name: tool.name, description: tool.description, enabled: !connector.disabled_tools.includes(tool.name), offered: offered.has(tool.name), tokens: toolTokens(tool), always: alwaysAllowed(connector, tool), may_always: mayAlwaysAllow(tool), read_only: tool.annotations?.readOnlyHint === true }));
   return {
     id: connector.id,
     name: connector.name,
@@ -290,19 +335,23 @@ export async function startConnector(userId: string, id: string): Promise<{ clie
       name: tool.name,
       description: (tool.description ?? "").slice(0, 2_000),
       inputSchema: tool.inputSchema && typeof tool.inputSchema === "object" ? tool.inputSchema : { type: "object", properties: {} },
+      annotations: toolHints(tool.annotations),
     }));
     // Many tools, read for the first time: none offered until the person picks.
-    // A tool allowed once and for all whose description or parameters
-    // changed since (an updated package, a server that rewrites itself):
-    // asked again — « Toujours autoriser » was given to what it said then.
-    const definition = (tool: StoredTool) => JSON.stringify([tool.description, tool.inputSchema]);
+    // A tool allowed once and for all whose description, parameters or
+    // hints changed since (an updated package, a server that rewrites
+    // itself): asked again — « Toujours autoriser » was given to what it
+    // said then. The hints compared only when they were kept then (a tool
+    // listed before 11/10/2026 has none: its grant is not dropped for that).
+    const definition = (tool: StoredTool, hints: boolean) => JSON.stringify([tool.description, tool.inputSchema, ...(hints ? [tool.annotations ?? {}] : [])]);
     const updated = update(userId, id, (stored) => ({
       ...stored, tools, error: null, auth_required: false,
       ...(stored.tools.length === 0 && tools.length > PICK_ABOVE_TOOLS ? { disabled_tools: tools.map((tool) => tool.name) } : {}),
       ...(stored.auto_tools?.length ? { auto_tools: stored.auto_tools.filter((name) => {
         const before = stored.tools.find((tool) => tool.name === name);
         const now = tools.find((tool) => tool.name === name);
-        return !!before && !!now && definition(before) === definition(now);
+        const hints = before?.annotations !== undefined;
+        return !!before && !!now && definition(before, hints) === definition(now, hints);
       }) } : {}),
     }));
     return { client, connector: updated };
@@ -454,8 +503,10 @@ export interface ConnectorChatTool {
   connectorId: string;
   connectorName: string;
   tool: string;
-  /// Allowed once and for all: called without asking.
+  /// Allowed once and for all, and it may be (read-only): called without asking.
   always: boolean;
+  /// Whether « Toujours autoriser » may be offered when it is asked.
+  mayAlways: boolean;
 }
 
 /// The tools of the connectors switched on, as the chat offers them: the
@@ -479,7 +530,8 @@ export function connectorChatTools(userId: string): ConnectorChatTool[] {
         connectorId: connector.id,
         connectorName: connector.name,
         tool: tool.name,
-        always: (connector.auto_tools ?? []).includes(tool.name),
+        always: alwaysAllowed(connector, tool),
+        mayAlways: mayAlwaysAllow(tool),
       });
     }
   }
@@ -536,20 +588,28 @@ export function waitingApprovals(userId: string): string[] {
 /// from another device of the account (a household member's, one paired
 /// by code), nor from another session of the same device, whatever id it
 /// sends. « Toujours autoriser » (`always`) allows this call and, from now
-/// on, every call of that tool without asking.
-export function answerApproval(userId: string, id: string, allowed: boolean, always: boolean, answerer: ApprovalAsker): boolean {
+/// on, every call of that tool without asking — for a read-only tool only
+/// (mayAlwaysAllow): for any other, this call alone is allowed. Null when
+/// nothing waits; otherwise whether « always » was kept.
+export function answerApproval(userId: string, id: string, allowed: boolean, always: boolean, answerer: ApprovalAsker): { always: boolean } | null {
   const entry = approvals.get(id);
-  if (!entry || entry.userId !== userId) return false;
+  if (!entry || entry.userId !== userId) return null;
   const sameSession = !!entry.asker.sessionId && entry.asker.sessionId === answerer.sessionId;
-  if (!sameSession && !answerer.thisComputersApp) return false;
+  if (!sameSession && !answerer.thisComputersApp) return null;
+  let kept = false;
   if (allowed && always && entry.connectorId && entry.tool) {
     const tool = entry.tool;
     try {
-      update(userId, entry.connectorId, (connector) => ({ ...connector, auto_tools: [...new Set([...(connector.auto_tools ?? []), tool])] }));
+      update(userId, entry.connectorId, (connector) => {
+        // As listed now, not as it was when the call was asked.
+        if (!mayAlwaysAllow(connector.tools.find((one) => one.name === tool))) return connector;
+        kept = true;
+        return { ...connector, auto_tools: [...new Set([...(connector.auto_tools ?? []), tool])] };
+      });
     } catch {
       /* removed meanwhile: this call is still allowed */
     }
   }
   entry.resolve(allowed);
-  return true;
+  return { always: kept };
 }
