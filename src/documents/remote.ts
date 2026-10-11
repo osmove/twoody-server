@@ -122,7 +122,7 @@ export interface MeshPassage {
   path?: string;
   /// A passage of a folder someone else shares with the person: which share,
   /// as the Desktop names it.
-  share?: { uuid: string; label: string | null; owner_name: string | null };
+  share?: { uuid: string; label: string | null; owner_name: string | null; right?: "ask" | "read" };
 }
 
 export interface MeshFile {
@@ -391,7 +391,8 @@ function readSharedPassage(raw: unknown, uuid: string, share: ShareLabel | null)
     folder: share?.label ?? "Dossier partagé",
     // The folder holding it, from the shared folder: « Contrats/2026 ».
     ...(relPath ? { rel_path: relPath } : {}),
-    share: { uuid, label: share?.label ?? null, owner_name: share?.owner_name ?? null },
+    // « Lire les fichiers »: its file can be opened from the citation (lot L5).
+    share: { uuid, label: share?.label ?? null, owner_name: share?.owner_name ?? null, ...(share?.right ? { right: share.right } : {}) },
   };
 }
 

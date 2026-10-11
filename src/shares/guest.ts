@@ -40,6 +40,10 @@ export function setShareDeadline(ms: number | null): void {
 export interface ShareLabel {
   label: string;
   owner_name: string;
+  /// The right the account lists the share with (« Lire les fichiers »:
+  /// read). Only what the person is offered — the owner's computer holds
+  /// the right that counts, and refuses an original to an `ask` share.
+  right?: "ask" | "read";
 }
 
 export type ShareCallOutcome = { ok: true; result: unknown; share: ShareLabel | null } | { ok: false; code: string; share: ShareLabel | null };
@@ -84,7 +88,8 @@ export function readShareLabel(value: unknown): ShareLabel | null {
   if (!share || typeof share !== "object") return null;
   const label = typeof share.label === "string" ? share.label.trim().slice(0, 120) : "";
   const owner = typeof share.owner_name === "string" ? share.owner_name.trim().slice(0, 120) : "";
-  return DISPLAY.test(label) && DISPLAY.test(owner) ? { label, owner_name: owner } : null;
+  const right = (value as { right?: unknown }).right;
+  return DISPLAY.test(label) && DISPLAY.test(owner) ? { label, owner_name: owner, ...(right === "read" || right === "ask" ? { right } : {}) } : null;
 }
 
 /// « Contrats · de Jimmy »: how a shared folder's passages are named.

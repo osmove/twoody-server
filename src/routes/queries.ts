@@ -897,7 +897,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       text: passage.text,
       computer: remote && !passage.share ? passage.computer_name : null,
       folder: folderOf(passage.folder, passage.rel_path) ?? null,
-      ...(passage.share ? { sharedBy: passage.share.owner_name ?? "someone else" } : {}),
+      ...(passage.share ? { sharedBy: passage.share.owner_name ?? "someone else", ...(passage.share.right === "read" ? { openable: true } : {}) } : {}),
     });
     // The search_documents tool: its passages numbered after the ones given
     // with the message, cited the same way.

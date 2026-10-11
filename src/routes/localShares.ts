@@ -127,8 +127,10 @@ function localDevice(device: GuestDeviceRow, host: HostIdentity | null) {
   };
 }
 
-/// The owner, from this computer's app or one of their own devices.
-async function owner(req: FastifyRequest, reply: FastifyReply): Promise<{ userId: string } | null> {
+/// The owner, from this computer's app or one of their own devices. Also
+/// the guard of the grantee's routes (routes/sharedFolders.ts): the person
+/// reading what is shared with them.
+export async function owner(req: FastifyRequest, reply: FastifyReply): Promise<{ userId: string } | null> {
   const auth = await requireAuth(req, reply);
   if (!auth) return null;
   if (isThisComputersApp(auth)) return auth;

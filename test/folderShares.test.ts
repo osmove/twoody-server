@@ -271,7 +271,6 @@ test("attack 8: nothing outside the shared folder — another folder's document,
   // The body itself: only the contract's fields.
   assert.deepEqual(await ask({ op: "browse", path: "", root: "f-invoices" }), { ok: false, error: "bad_request" });
   assert.deepEqual(await ask({ op: "search", query: "loyer", folder_ids: ["f-invoices"] }), { ok: false, error: "bad_request" });
-  assert.deepEqual(await ask({ op: "raw", document_id: "bail" }), { ok: false, error: "bad_request" }, "no originals in v1");
   assert.deepEqual(await ask({ op: "search", query: "x".repeat(2_001) }), { ok: false, error: "bad_request" });
   assert.deepEqual(await ask({ op: "search", query: "loyer", limit: 9 }), { ok: false, error: "bad_request" });
 });

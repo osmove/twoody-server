@@ -90,9 +90,10 @@ async function relay(taskArgs: unknown) {
   return lines;
 }
 
-/// The grantee's device reading the lines: the answer's JSON.
+/// The grantee's device reading the lines: the answer's JSON. A delta may
+/// carry several lines, as the account splits them.
 function read(turn: Parameters<typeof openComputeResponse>[0], lines: string[]) {
-  const parsed = lines.map((line) => JSON.parse(line));
+  const parsed = lines.flatMap((delta) => delta.split("\n")).filter((line) => line.trim()).map((line) => JSON.parse(line));
   const reader = openComputeResponse(turn, parsed[0].h);
   const text = parsed.slice(1).map((line) => reader.open(line.c).text).join("");
   assert.equal(reader.done, true);

@@ -32,8 +32,8 @@ import {
 //   6. the guest's device approved by the owner for that
 //      grantee — recorded « pending » the first time       device_not_approved
 //   7. the operation allowed by the right held here        right
-//   8. within 30 searches and 120 browses a minute per
-//      (share, device)                                    rate_limited
+//   8. within 30 searches, 120 browses and 30 chunks of a
+//      file a minute per (share, device)                  rate_limited
 //
 // What the account says of a share — its right, its expiry, its grantee's
 // devices — counts for nothing here: it can only make the account stop
@@ -48,27 +48,36 @@ export type ShareError =
   | "folder_gone"
   | "documents_off"
   | "rate_limited"
-  | "bad_request";
+  | "bad_request"
+  | "not_found"
+  | "too_large";
 
-export type ShareOp = "folders" | "search" | "browse" | "text";
+export type ShareOp = "folders" | "search" | "browse" | "text" | "raw";
 
-/// What each right allows. `read` without originals in v1 (raw is lot L5).
+/// What each right allows. « Poser des questions » is excerpts only;
+/// « Lire les fichiers » also browses, reads the indexed text and the
+/// originals (raw, lot L5).
 const ALLOWED: Record<ShareRight, ReadonlySet<ShareOp>> = {
   ask: new Set(["folders", "search"]),
-  read: new Set(["folders", "search", "browse", "text"]),
+  read: new Set(["folders", "search", "browse", "text", "raw"]),
 };
 
 export const rightAllows = (right: ShareRight, op: ShareOp): boolean => ALLOWED[right]?.has(op) ?? false;
 
 export const SHARE_SEARCHES_PER_MINUTE = 30;
 export const SHARE_BROWSES_PER_MINUTE = 120;
+/// Chunks of files (1 MiB each, shares/raw.ts): the account's own bound is
+/// 30 requests a minute per share and device, of every kind.
+export const SHARE_CHUNKS_PER_MINUTE = 30;
 let searchLimiter = createRateLimiter({ limit: SHARE_SEARCHES_PER_MINUTE, windowMs: 60_000 });
 let browseLimiter = createRateLimiter({ limit: SHARE_BROWSES_PER_MINUTE, windowMs: 60_000 });
+let rawLimiter = createRateLimiter({ limit: SHARE_CHUNKS_PER_MINUTE, windowMs: 60_000 });
 
 /// Tests: fresh budgets (with a clock of their own).
 export function resetShareLimits(now?: () => number): void {
   searchLimiter = createRateLimiter({ limit: SHARE_SEARCHES_PER_MINUTE, windowMs: 60_000, now });
   browseLimiter = createRateLimiter({ limit: SHARE_BROWSES_PER_MINUTE, windowMs: 60_000, now });
+  rawLimiter = createRateLimiter({ limit: SHARE_CHUNKS_PER_MINUTE, windowMs: 60_000, now });
 }
 
 /// The guest's public keys as the bridge task carries them, checked, with
@@ -163,7 +172,7 @@ export function checkShareRequest(userId: string, request: ShareRequest, op: Sha
   if (device.state !== "approved") return refuse("device_not_approved", device.state === "refused" ? "device_refused" : "device_pending");
   if (op === null) return { ok: true, share, scope };
   if (!rightAllows(share.right, op)) return refuse("right");
-  const limiter = op === "search" ? searchLimiter : browseLimiter;
+  const limiter = op === "search" ? searchLimiter : op === "raw" ? rawLimiter : browseLimiter;
   if (!limiter.hit(`${share.id}:${request.guest.fingerprint}`).allowed) return refuse("rate_limited");
   return { ok: true, share, scope };
 }

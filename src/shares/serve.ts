@@ -5,6 +5,7 @@ import { browseGranted } from "../documents/browse.js";
 import { retrieveDocuments } from "../documents/retrieval.js";
 import { semanticStatus } from "../documents/semantic.js";
 import { checkShareRequest, isolatedInside, readShareRequest, type ShareError } from "./policy.js";
+import { RAW_CHUNK_BYTES, MAX_SHARED_FILE_BYTES, readSharedChunk, type RawAudit, type RawRef } from "./raw.js";
 import { recordShareAccess } from "./store.js";
 
 // A grantee's request on a folder shared from this computer, once its
@@ -17,7 +18,8 @@ import { recordShareAccess } from "./store.js";
 //
 // Nothing in an answer says where the folder is: every path is relative to
 // the shared folder (« Contrats/2026/bail.pdf »), and a document outside it
-// — or in an isolated project's folder inside it — is never named.
+// — or in an isolated project's folder inside it — is never named. The
+// originals (`raw`, lot L5) go out a chunk at a time (shares/raw.ts).
 
 export const MAX_PASSAGES = 8;
 export const MAX_PASSAGE_CHARS = 10_000;
@@ -33,12 +35,13 @@ export type ShareOpBody =
   | { op: "folders" }
   | { op: "search"; query: string; limit: number }
   | { op: "browse"; path: string; offset: number }
-  | { op: "text"; document_id: string };
+  | { op: "text"; document_id: string }
+  | { op: "raw"; ref: RawRef; offset: number; length: number };
 
 const DOCUMENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /// The sealed body, as the contract has it; null when it is not one of its
-/// four operations (an unknown field is refused, not dropped).
+/// operations (an unknown field is refused, not dropped).
 export function readShareOp(value: unknown): ShareOpBody | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const body = value as Record<string, unknown>;
@@ -64,6 +67,19 @@ export function readShareOp(value: unknown): ShareOpBody | null {
     }
     case "text":
       return only("document_id") && typeof body.document_id === "string" && DOCUMENT_ID.test(body.document_id) ? { op: "text", document_id: body.document_id } : null;
+    case "raw": {
+      // A path a browse gave, or a cited document's id: one, not both.
+      if (!only("path", "document_id", "offset", "length")) return null;
+      const byPath = body.path !== undefined;
+      if (byPath === (body.document_id !== undefined)) return null;
+      if (byPath && (typeof body.path !== "string" || !body.path || body.path.length > 4096)) return null;
+      if (!byPath && (typeof body.document_id !== "string" || !DOCUMENT_ID.test(body.document_id))) return null;
+      const offset = body.offset === undefined ? 0 : body.offset;
+      const length = body.length === undefined ? RAW_CHUNK_BYTES : body.length;
+      if (!Number.isSafeInteger(offset) || (offset as number) < 0 || (offset as number) > MAX_SHARED_FILE_BYTES) return null;
+      if (!Number.isSafeInteger(length) || (length as number) < 1 || (length as number) > RAW_CHUNK_BYTES) return null;
+      return { op: "raw", ref: byPath ? { path: body.path as string } : { document_id: body.document_id as string }, offset: offset as number, length: length as number };
+    }
     default:
       return null;
   }
@@ -107,8 +123,8 @@ export async function serveShareRequest(userId: string, payload: unknown, now = 
     recordShareAccess(userId, { shareId: null, guestUserId: null, guestFingerprint: null, op: "request", outcome: "bad_request", at: now });
     return { ok: false, error: "bad_request" };
   }
-  const audit = (op: string, outcome: string) =>
-    recordShareAccess(userId, { shareId: request.shareUuid, guestUserId: request.granteeUserId, guestFingerprint: request.guest.fingerprint, op, outcome, at: now });
+  const audit = (op: string, outcome: string, document?: RawAudit) =>
+    recordShareAccess(userId, { shareId: request.shareUuid, guestUserId: request.granteeUserId, guestFingerprint: request.guest.fingerprint, op, outcome, at: now, document });
 
   if (record.op === undefined || isCheck(record.op)) {
     const verdict = checkShareRequest(userId, request, null, now);
@@ -131,25 +147,35 @@ export async function serveShareRequest(userId: string, payload: unknown, now = 
     audit(body.op, verdict.outcome);
     return { ok: false, error: verdict.error };
   }
-  const answer = await run(userId, verdict.share.label, verdict.scope, body);
-  audit(body.op, answer.ok ? "ok" : answer.error);
+  const { answer, document } = await run(userId, verdict.share.label, verdict.scope, body);
+  audit(body.op, answer.ok ? "ok" : answer.error, document);
   return answer;
 }
 
 type Scope = Extract<ReturnType<typeof checkShareRequest>, { ok: true }>["scope"];
 
-async function run(userId: string, label: string, scope: Scope, body: ShareOpBody): Promise<ShareAnswer> {
+/// The answer, and for a document read (text, raw) what the audit keeps
+/// of it: which one, its name, the bytes sent — so that « Consultations »
+/// says who opened what. Never a path.
+async function run(userId: string, label: string, scope: Scope, body: ShareOpBody): Promise<{ answer: ShareAnswer; document?: RawAudit }> {
   const folderIds = scope.folders.map((folder) => folder.id);
   const documents = scope.folders.reduce((sum, folder) => sum + folder.indexed, 0);
   switch (body.op) {
     case "folders":
-      return { ok: true, folder: { label, documents } };
+      return { answer: { ok: true, folder: { label, documents } } };
     case "search":
-      return { ok: true, folder: { label, documents }, passages: await search(userId, scope, folderIds, body) };
+      return { answer: { ok: true, folder: { label, documents }, passages: await search(userId, scope, folderIds, body) } };
     case "browse":
-      return browse(userId, scope, body);
-    case "text":
-      return text(userId, scope, folderIds, body.document_id);
+      return { answer: await browse(userId, scope, body) };
+    case "text": {
+      const answer = text(userId, scope, folderIds, body.document_id);
+      const read = answer.ok ? (answer.document as { document_id: string; name: string; text: string }) : null;
+      return { answer, document: read ? { document_id: read.document_id, name: read.name, bytes: Buffer.byteLength(read.text) } : undefined };
+    }
+    case "raw": {
+      const { answer, audit } = await readSharedChunk(userId, scope, isolatedInside(userId, scope.root.path), { ref: body.ref, offset: body.offset, length: body.length });
+      return { answer, document: audit };
+    }
   }
 }
 

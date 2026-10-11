@@ -103,6 +103,10 @@ const KEY_HEX = /^[0-9a-f]{64}$/;
 /// An answer goes back in pieces of at most this many characters of its
 /// JSON: each one sealed and relayed as one line by the account.
 export const SHARE_PIECE_CHARS = 16_000;
+/// Sealed lines go to the account several at a time, up to this many
+/// characters a delta (it splits them at their newlines): a chunk of a
+/// file (lot L5, ~2.8 MB sealed) in a dozen requests, not two hundred.
+export const SHARE_DELTA_CHARS = 256 * 1024;
 
 /// The grant id a share's requests are sealed for. Compute grants are the
 /// account's integers: a request sealed for one can never be opened as the
@@ -264,7 +268,8 @@ export function createComputeHost({ path, now = Date.now }: { path: string; now?
   /// the device — `serve` with `{op: "check"}`), opened for grant id
   /// « share:<uuid> » from the device the task names, served, and answered
   /// sealed — `{"h": header}`, then `{"c": piece}`… whose texts joined are
-  /// the answer's JSON. A refusal before opening fails the task with
+  /// the answer's JSON; `send` gets one or more whole lines at a time (at
+  /// most SHARE_DELTA_CHARS, or one line). A refusal before opening fails the task with
   /// « share_refused:<reason> »: nothing can be sealed to a request that was
   /// not opened, and the account learns no more than the reason.
   ///
@@ -310,9 +315,18 @@ export function createComputeHost({ path, now = Date.now }: { path: string; now?
       const json = JSON.stringify(result && typeof result === "object" ? result : { ok: false, error: "bad_request" });
       const answer = startComputeResponse(turn);
       const line = (value: unknown) => `${JSON.stringify(value)}\n`;
-      await send(line({ h: answer.header }));
-      for (let at = 0; at < json.length; at += SHARE_PIECE_CHARS) await send(line({ c: answer.piece(json.slice(at, at + SHARE_PIECE_CHARS)) }));
-      await send(line({ c: answer.finish("") }));
+      let delta = "";
+      const push = async (next: string) => {
+        if (delta && delta.length + next.length > SHARE_DELTA_CHARS) {
+          await send(delta);
+          delta = "";
+        }
+        delta += next;
+      };
+      await push(line({ h: answer.header }));
+      for (let at = 0; at < json.length; at += SHARE_PIECE_CHARS) await push(line({ c: answer.piece(json.slice(at, at + SHARE_PIECE_CHARS)) }));
+      await push(line({ c: answer.finish("") }));
+      await send(delta);
       return { sealed: true };
     } finally {
       forgetTurn(turn);

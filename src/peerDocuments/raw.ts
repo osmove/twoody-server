@@ -79,6 +79,14 @@ export function contentType(ext: string): string {
   return "application/octet-stream";
 }
 
+/// A type another computer said a file has, as this one passes it on: one
+/// `contentType` gives, else application/octet-stream (a folder shared with
+/// the person, lot L5 — its owner's computer is not trusted to name it).
+export function servedContentType(value: unknown): string {
+  const known = new Set([...Object.values(CONTENT_TYPES), "text/plain; charset=utf-8"]);
+  return typeof value === "string" && known.has(value) ? value : "application/octet-stream";
+}
+
 function inside(parent: string, child: string): boolean {
   const rel = relative(parent, child);
   return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);

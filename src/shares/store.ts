@@ -240,19 +240,35 @@ export interface ShareAuditEntry {
   /// « ok » or the refusal (unknown_share, revoked, device_not_approved…).
   outcome: string;
   at?: number;
+  /// A document read (text, raw): its id in the index (null when it has
+  /// none), its name, the bytes sent.
+  document?: { document_id: string | null; name: string | null; bytes: number | null };
 }
 
 /// One row per request, whatever became of it. In the same table as the
 /// computers' reads (peerDocuments/audit.ts), under a computer id of its own
-/// that no computer has; never a question, never a path, never a name of a
-/// document.
+/// that no computer has; never a question, never a path. A document read
+/// whole (text) or in part (raw, lot L5) is named, as a computer's read is:
+/// « Consultations » says who opened what.
 export function recordShareAccess(userId: string, entry: ShareAuditEntry): void {
   sqlite
     .prepare(
-      `INSERT INTO peer_document_audit (user_id, computer_id, session_id, action, at, share_id, guest_user_id, guest_fingerprint, outcome)
-       VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO peer_document_audit (user_id, computer_id, session_id, action, at, share_id, guest_user_id, guest_fingerprint, outcome, document_id, name, bytes)
+       VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(userId, `share:${entry.shareId ?? "unknown"}`, entry.op, entry.at ?? Date.now(), entry.shareId, entry.guestUserId, entry.guestFingerprint, entry.outcome);
+    .run(
+      userId,
+      `share:${entry.shareId ?? "unknown"}`,
+      entry.op,
+      entry.at ?? Date.now(),
+      entry.shareId,
+      entry.guestUserId,
+      entry.guestFingerprint,
+      entry.outcome,
+      entry.document?.document_id ?? null,
+      entry.document?.name ?? null,
+      entry.document?.bytes ?? null,
+    );
 }
 
 export interface ShareAuditRow {
@@ -263,6 +279,10 @@ export interface ShareAuditRow {
   guest_fingerprint: string | null;
   op: string;
   outcome: string;
+  /// The document read (text, raw): null for every other request.
+  document_id: string | null;
+  name: string | null;
+  bytes: number | null;
 }
 
 /// Newest first; `before` is the last id of the page before.
@@ -279,7 +299,7 @@ export function shareAudit(userId: string, options: { shareId?: string; before?:
     args.push(options.before);
   }
   const rows = sqlite
-    .prepare(`SELECT id, at, share_id, guest_user_id, guest_fingerprint, action AS op, outcome FROM peer_document_audit WHERE ${where.map((w) => `(${w})`).join(" AND ")} ORDER BY id DESC LIMIT ?`)
+    .prepare(`SELECT id, at, share_id, guest_user_id, guest_fingerprint, action AS op, outcome, document_id, name, bytes FROM peer_document_audit WHERE ${where.map((w) => `(${w})`).join(" AND ")} ORDER BY id DESC LIMIT ?`)
     .all(...args, limit) as Array<Omit<ShareAuditRow, "at"> & { at: number }>;
   return rows.map((row) => ({ ...row, at: new Date(row.at).toISOString() }));
 }
