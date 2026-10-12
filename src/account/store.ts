@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "../db.js";
+import { readSecretFile, removeSecretFile, secretFileContent } from "../secretFile.js";
 import { HEX_KEY, newPairingKey } from "./keys.js";
 
 // DATA_DIR/account.json: what makes this server one of the account's
@@ -99,7 +100,7 @@ export function readAccountFile(): AccountFile | null {
   const path = accountPath();
   if (!existsSync(path)) return null;
   try {
-    return valid(JSON.parse(readFileSync(path, "utf8")));
+    return valid(JSON.parse(readSecretFile(path) ?? "null"));
   } catch {
     return null;
   }
@@ -109,7 +110,8 @@ export function readAccountFile(): AccountFile | null {
 export function writeAccountFile(file: AccountFile): void {
   const path = accountPath();
   const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+  // Sealed inside Twoody Desktop (secretFile.ts).
+  writeFileSync(temporary, secretFileContent(path, `${JSON.stringify(file, null, 2)}\n`), { mode: 0o600 });
   chmodSync(temporary, 0o600);
   renameSync(temporary, path);
   chmodSync(path, 0o600);
@@ -125,7 +127,7 @@ export function ensureAccountFile(): AccountFile {
 }
 
 export function removeAccountFile(): void {
-  rmSync(accountPath(), { force: true });
+  removeSecretFile(accountPath());
 }
 
 /// The backend this server talks to, the environment first.

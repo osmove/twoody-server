@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "../db.js";
+import { readSecretFile, secretFileContent } from "../secretFile.js";
 import { connectorFetch } from "../outbound.js";
 import { fetchConnectorIcon } from "./icons.js";
 import { McpAuthRequiredError, McpClient, type McpToolInfo, type McpTransportConfig } from "./mcpClient.js";
@@ -111,7 +112,7 @@ const DESCRIPTION_CHARS = 500;
 
 function readAll(): Record<string, Connector[]> {
   try {
-    const parsed = JSON.parse(readFileSync(FILE(), "utf8")) as unknown;
+    const parsed = JSON.parse(readSecretFile(FILE()) ?? "{}") as unknown;
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, Connector[]>) : {};
   } catch {
     return {};
@@ -119,7 +120,8 @@ function readAll(): Record<string, Connector[]> {
 }
 
 function writeAll(all: Record<string, Connector[]>) {
-  writeFileSync(FILE(), JSON.stringify(all, null, 2), { mode: 0o600 });
+  // Sealed inside Twoody Desktop (secretFile.ts).
+  writeFileSync(FILE(), secretFileContent(FILE(), JSON.stringify(all, null, 2)), { mode: 0o600 });
 }
 
 export function listConnectors(userId: string): Connector[] {

@@ -1,5 +1,5 @@
 import Database from "better-sqlite3-multiple-ciphers";
-import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, openSync, readSync, readdirSync, renameSync, rmSync, statSync, statfsSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, openSync, readSync, readdirSync, renameSync, rmSync, statSync, statfsSync, writeSync } from "node:fs";
 import { totalmem } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -134,8 +134,14 @@ export type EncryptionResult =
   | { state: "no_space"; needed: number; free: number }
   | { state: "failed"; reason: string };
 
+/// The steps of an encryption, in order, as the Desktop shows them.
+export const ENCRYPTION_PHASES = ["read", "copy", "encrypt", "check"] as const;
+export type EncryptionPhase = (typeof ENCRYPTION_PHASES)[number];
+
 export interface EncryptOptions {
   log?: (line: string) => void;
+  /// Told as each step starts (the Desktop's progress), with the bytes to encrypt.
+  onPhase?: (phase: EncryptionPhase, bytes: number) => void;
   /// Free bytes on the folder's volume (tests).
   freeBytes?: (dir: string) => number;
   now?: () => Date;
@@ -165,6 +171,19 @@ function syncFile(path: string) {
   const fd = openSync(path, "r+");
   try {
     fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/// A clear database file's header set to rollback-journal mode (no WAL to
+/// read: the caller checkpointed it).
+function rollbackHeader(path: string) {
+  const fd = openSync(path, "r+");
+  try {
+    const versions = Buffer.alloc(2);
+    readSync(fd, versions, 0, 2, 18);
+    if (versions[0] === 2 && versions[1] === 2) writeSync(fd, Buffer.from([1, 1]), 0, 2, 18);
   } finally {
     closeSync(fd);
   }
@@ -249,6 +268,14 @@ export function encryptDatabaseFile(path: string, hex: string, options: EncryptO
 
   let before: ReturnType<typeof tableCounts>;
   const phases = { read: 0, copy: 0, encrypt: 0, check: 0 };
+  const total = sizeOf(path) + sizeOf(`${path}-wal`);
+  const step = (phase: EncryptionPhase) => {
+    try {
+      options.onPhase?.(phase, total);
+    } catch {
+      // Progress is only shown.
+    }
+  };
   let mark = performance.now();
   const lap = (phase: keyof typeof phases) => {
     const now = performance.now();
@@ -258,6 +285,7 @@ export function encryptDatabaseFile(path: string, hex: string, options: EncryptO
   try {
     // Everything the WAL holds goes into the file first; closing the last
     // connection then removes the WAL.
+    step("read");
     const clear = new Database(path);
     try {
       clear.pragma("wal_checkpoint(TRUNCATE)");
@@ -268,17 +296,32 @@ export function encryptDatabaseFile(path: string, hex: string, options: EncryptO
     if (sizeOf(`${path}-wal`) > 0) return { state: "failed", reason: "the database's WAL could not be emptied: is another Twoody running?" };
     lap("read");
 
+    step("copy");
     copyFileSync(path, workPath(path));
     try {
       chmodSync(workPath(path), 0o600);
     } catch {
       // Filesystems without POSIX modes.
     }
+    // rekey cannot run in WAL mode. The copy's WAL is empty (checkpointed
+    // above), so its header is set to rollback mode in place (bytes 18 and
+    // 19, the file format's write and read versions: 2 for WAL, 1 for a
+    // rollback journal): leaving WAL through SQLite would write a journal of
+    // the clear first page.
+    rollbackHeader(workPath(path));
     lap("copy");
+    step("encrypt");
     const work = new Database(workPath(path));
     try {
-      // rekey cannot run in WAL mode.
-      work.pragma("journal_mode = DELETE");
+      // With no journal at all, rekey writes no file of the clear pages it
+      // replaces (a rollback journal would hold them, if only until the
+      // end). Cut off halfway, the copy is made again from the clear file.
+      // better-sqlite3's defensive mode refuses OFF: lifted for that pragma,
+      // on this throwaway copy only.
+      work.unsafeMode(true);
+      const mode = String(work.pragma("journal_mode = OFF", { simple: true })).toLowerCase();
+      work.unsafeMode(false);
+      if (mode !== "off") throw new Error("the copy's journal could not be turned off");
       for (const pragma of CIPHER) work.pragma(pragma);
       work.pragma(`rekey = "x'${hex}'"`);
     } finally {
@@ -286,6 +329,7 @@ export function encryptDatabaseFile(path: string, hex: string, options: EncryptO
     }
 
     lap("encrypt");
+    step("check");
     if (databaseFileState(workPath(path)) !== "encrypted") throw new Error("the copy is still in clear after rekey");
     const check = openEncryptedDatabase(workPath(path), hex);
     try {
@@ -297,8 +341,8 @@ export function encryptDatabaseFile(path: string, hex: string, options: EncryptO
         if (after.counts.get(table) !== rows) throw new Error(`${table}: ${after.counts.get(table) ?? "missing"} rows ≠ ${rows}`);
       }
       if (after.counts.size !== before.counts.size) throw new Error(`${after.counts.size} tables ≠ ${before.counts.size}`);
-      // Back to WAL, as the server runs it.
-      check.pragma("journal_mode = WAL");
+      // Left in rollback mode: the server puts it back in WAL as it opens
+      // it (db.ts), a backup needs none.
     } finally {
       check.close();
     }

@@ -162,15 +162,18 @@ encrypted by Twoody itself, whatever the disk.
 - Already sealed by the Desktop, unchanged: the encrypted history's keys and
   its outbox (`vault/<id>-history.json`, safeStorage), the tunnel key, the keys
   of sealed turns, the tokens.
-- **Not covered yet** (the person's data or secrets in clear, 0600, in
-  `server/`): `connectors.json` (the connectors' OAuth tokens),
-  `email-credentials.json` (a mailbox's password or refresh token),
-  `google-data.json` and `microsoft-graph.json` (refresh tokens),
-  `account.json` (the pairing key), `warm-seeds.json` (the person's name and
-  granted folders' paths), and the Desktop's own Twoody Code sessions
-  (`code/sessions/*.json`, conversations with the code agent). Temporary files
-  of a voice message or an image live a few seconds in the system's temporary
-  folder.
+- The secret files next to the database (12/10/2026, « Secret files » below):
+  `connectors.json` (the connectors' OAuth tokens), `email-credentials.json` (a
+  mailbox's password or refresh token), `google-data.json` and
+  `microsoft-graph.json` (refresh tokens), `account.json` (the pairing key),
+  `warm-seeds.json` (the person's name and granted folders' paths); and the
+  Desktop's own Twoody Code and Agent sessions (`code/`, `office/`,
+  `mobile-agent/` `sessions/*.json` and the text of the documents joined to
+  them).
+- **Not covered**: temporary files of a voice message or an image live a few
+  seconds in the system's temporary folder; `server.log` and the crash
+  reports hold no conversation; the models and the documents themselves are
+  the person's files, where they are.
 
 ### How
 
@@ -207,6 +210,39 @@ encrypted by Twoody itself, whatever the disk.
   Desktop after a downgrade, `twoody serve` pointed at it) stops the same way.
 - `GET /health` says `database`: `encrypted` or `clear`.
 
+### Secret files
+
+Inside Twoody Desktop, with the database key of the run (only when the
+database is encrypted), `src/secretFile.ts` seals the files above:
+
+- Key: HKDF-SHA256 (RFC 5869) of the 256-bit database key, salt « twoody
+  secret files », info « twoody/secret-file/v1:<file name> » — one key per
+  file, none of them the database's. The Desktop's sessions use the same
+  derivation with their place as the name (« code/sessions/<id>.json »,
+  `twoody-desktop/src/main/secretFile.ts`).
+- Cipher: AES-256-GCM, a 96-bit nonce drawn at each write, a 128-bit tag, the
+  same info as associated data (a sealed file put in another's place does not
+  open). Written `{"twoody":"sealed-file","v":1,"alg":"HKDF-SHA256+AES-256-GCM",
+  iv, tag, data}`, 0600, through a temporary file. Both repositories' tests
+  hold the same test vector.
+- No algorithm that was not already used and declared (the tunnel and the
+  pairing envelope use HKDF-SHA256 and AES-256-GCM); new is only their use for
+  storage.
+- A file an earlier version wrote in clear is sealed at start, before any
+  module reads it (`sealSecretFilesInPlace`, from db.ts): sealed text written
+  to `<name>.sealing`, flushed, read back and compared, then the clear file
+  moved into `secrets.unsealed-<date>/` and the sealed one renamed in its
+  place; the folder goes to the Trash through the Desktop (`db-trash`,
+  `trashableClearCopy` accepts that folder in the server's own folder only).
+  Cut off between the renames, the next start puts the checked sealed copy in
+  place, or gives the clear one back. The Desktop seals its sessions the same
+  way once the server says it is done (`db-cleanup-done`), with the key it
+  keeps sealed (`peek`: never one made for them).
+- A sealed file this run cannot open (no key) is never written over nor
+  removed (`SecretFileLockedError`); in practice the server does not start
+  then, its database being encrypted too.
+- On its own (Pi, `twoody serve`): no key, the files stay 0600 as before.
+
 ### Encrypting the database of an earlier version
 
 At the first start with a key, before the server listens (`dbCipher.ts`
@@ -217,7 +253,10 @@ At the first start with a key, before the server listens (`dbCipher.ts`
    Not enough: the database stays in clear for this run, nothing touched.
 2. The clear database checkpointed (`wal_checkpoint(TRUNCATE)`), every table's
    row count and the schema version read, closed.
-3. Copied to `local.db.encrypting`, encrypted there (`PRAGMA rekey`).
+3. Copied to `local.db.encrypting`, its header set to rollback mode (its WAL
+   is empty), encrypted there (`PRAGMA rekey`) with no journal at all
+   (`journal_mode = OFF` on that copy): no other file of clear pages is
+   written, not even for a moment. Cut off, the copy is made again.
 4. Checked: the copy is no longer in clear, opens with the key, passes
    `quick_check` (every page decrypted and its HMAC verified), holds the same
    number of rows in every table at the same schema version; then flushed and
@@ -228,7 +267,21 @@ At the first start with a key, before the server listens (`dbCipher.ts`
    (`db-trash`; only a file of that name in the server's folder or its
    `backups/`, `trashableClearCopy`). Never deleted (root AGENTS.md rule 6):
    **it stays readable in the Trash until the person empties it.** A copy the
-   Trash refused is asked again at the next start.
+   Trash refused is asked again at the next start. Twoody never empties the
+   Trash: once everything is moved (`db-cleanup-done`, after the backups),
+   the Desktop says it once, with the size, dismissable and remembered
+   (`clearCopies.ts`, « Videz la Corbeille pour effacer l'ancienne copie non
+   chiffrée » — the Recycle Bin on Windows, the platform's word everywhere).
+
+While it runs, the server encrypts in a worker thread and tells each step
+(`db-encryption` `{state: running, phase: read|copy|encrypt|check, step,
+steps, bytes}`); the Desktop shows « Chiffrement de vos données sur cet
+ordinateur… » with the steps, the size and the time, and opens when it is
+done. A database it cannot open shows « Vos données sont verrouillées »
+(keychain locked or refused, key gone or not the one): what happened, that
+nothing was changed, what to do, « Réessayer »; the refusal is kept for the
+run (no loop of starts, each asking the keychain again) until the person
+asks again.
 
 Cut off anywhere, the next start takes it up: a half-made or waiting copy next
 to a clear `local.db` is made again from it; `local.db` missing with a checked

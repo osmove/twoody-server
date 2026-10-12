@@ -5,7 +5,8 @@ import { homedir } from "os";
 import { chmodSync, existsSync, mkdirSync } from "fs";
 import { migrate } from "./migrations/index.js";
 import { createMessageFts, rebuildMessageIndex as rebuildFts } from "./migrations/fts.js";
-import { DatabaseRefusal, encryptClearBackups, openLocalDatabase, trashClearCopies, type DatabaseEncryption } from "./dbOpen.js";
+import { DatabaseRefusal, encryptClearBackups, openLocalDatabase, trashClearCopies, trashUnsealedSecrets, type DatabaseEncryption } from "./dbOpen.js";
+import { SECRET_FILES, sealSecretFilesInPlace, useSecretFileKey } from "./secretFile.js";
 import { desktopParentPort } from "./dbKeyHandOver.js";
 
 export const DATA_DIR =
@@ -53,13 +54,28 @@ const opened = await (async () => {
 const sqlite = opened.sqlite;
 /// Whether local.db is encrypted at rest (GET /health).
 export const databaseEncryption: DatabaseEncryption = opened.encryption;
+// The secret files next to it (connectors' and mailboxes' tokens, the
+// pairing key, the warm seeds) are sealed with keys derived from the same
+// key (secretFile.ts): those an earlier version wrote in clear, now, before
+// any module reads or writes them.
+useSecretFileKey(opened.key);
+if (opened.key) {
+  const sealed = sealSecretFilesInPlace(DATA_DIR, SECRET_FILES, { log: (line) => console.log(line) });
+  if (sealed.sealed.length > 0) console.log(`[secrets] sealed in place: ${sealed.sealed.join(", ")}; their clear copies go to the Trash`);
+  for (const failure of sealed.failed) console.warn(`[secrets] ${failure.name} could not be sealed (${failure.reason}): it stays as it was`);
+}
+desktopPort?.postMessage({ type: "db-state", encryption: opened.encryption });
 if (desktopPort && opened.key) {
   const key = opened.key;
   // What earlier versions left in clear: the copy put aside just now (or at
-  // a start cut off before the Trash), and the migration backups.
+  // a start cut off before the Trash), the secret files' clear copies, and
+  // the migration backups. The Desktop is told when it is all done, to say
+  // once that a clear copy is in the Trash.
   void trashClearCopies(DATA_DIR, desktopPort)
+    .then(() => trashUnsealedSecrets(DATA_DIR, desktopPort))
     .then(() => encryptClearBackups(DATA_DIR, key, desktopPort))
-    .catch((error: unknown) => console.warn(`[db] ${error instanceof Error ? error.message : String(error)}`));
+    .catch((error: unknown) => console.warn(`[db] ${error instanceof Error ? error.message : String(error)}`))
+    .finally(() => desktopPort.postMessage({ type: "db-cleanup-done" }));
 }
 
 sqlite.pragma("journal_mode = WAL");

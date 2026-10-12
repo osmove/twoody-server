@@ -1,5 +1,5 @@
 import { relative, isAbsolute, join } from "node:path";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readSecretFile, writeSecretFile } from "../secretFile.js";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -2391,7 +2391,7 @@ type WarmSeed = { input: Record<string, unknown>; tools: ChatTools["definitions"
 
 function readWarmSeeds(): Record<string, WarmSeed> {
   try {
-    const parsed = JSON.parse(readFileSync(WARM_SEEDS_FILE, "utf8")) as unknown;
+    const parsed = JSON.parse(readSecretFile(WARM_SEEDS_FILE) ?? "{}") as unknown;
     return parsed && typeof parsed === "object" ? parsed as Record<string, WarmSeed> : {};
   } catch {
     return {};
@@ -2403,7 +2403,8 @@ function saveWarmSeed(seedKey: string, input: ChatContextInput, provider: Provid
   const seeds = readWarmSeeds();
   seeds[seedKey] = { input: kept, tools, model: "model" in provider ? provider.model : null };
   try {
-    writeFileSync(WARM_SEEDS_FILE, JSON.stringify(seeds), { mode: 0o600 });
+    // Sealed inside Twoody Desktop: the person's name and folders (secretFile.ts).
+    writeSecretFile(WARM_SEEDS_FILE, JSON.stringify(seeds));
   } catch {
     // Read ahead only from the next message after a restart.
   }

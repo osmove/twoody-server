@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3-multiple-ciphers";
 import { EventEmitter } from "node:events";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
@@ -106,6 +106,18 @@ test("a clear database is encrypted in place: same rows, nothing readable on dis
   assert.deepEqual(readdirSync(at).filter((name) => name.endsWith(".encrypting") || name.endsWith(".encrypted")), []);
 });
 
+test("encrypting writes no other file of clear pages than the copy it encrypts (no rollback journal)", async () => {
+  const at = dir();
+  const path = closedClearDatabase(at, 400);
+  const seen = new Set<string>();
+  const watcher = watch(at, (_event, name) => name && seen.add(String(name)));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(encryptDatabaseFile(path, KEY, { log: quiet }).state, "encrypted");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  watcher.close();
+  assert.deepEqual([...seen].filter((name) => /journal/.test(name)), []);
+});
+
 test("rows still in the WAL of a clear database are kept", () => {
   const at = dir();
   const { path, open } = clearDatabase(at, 50);
@@ -198,7 +210,11 @@ test("inside the Desktop: the key is asked for, a clear database encrypted, the 
   const opened = await openLocalDatabase({ dbPath: path, port, env: ENV, log: quiet });
   assert.equal(opened.encryption, "encrypted");
   assert.deepEqual(posted[0], { type: "db-key-request", database: "clear" });
-  assert.deepEqual(posted.filter((m) => m.type === "db-encryption").map((m) => m.state), ["running", "encrypted"]);
+  const told = posted.filter((m) => m.type === "db-encryption");
+  assert.deepEqual(told.map((m) => m.state), ["running", "running", "running", "running", "running", "encrypted"]);
+  // Each step, in order, for the Desktop's « Chiffrement de vos données… » (in a worker thread: this one stays free to say it).
+  assert.deepEqual(told.slice(1, 5).map((m) => [m.phase, m.step, m.steps]), [["read", 1, 4], ["copy", 2, 4], ["encrypt", 3, 4], ["check", 4, 4]]);
+  assert.ok(told.slice(1, 5).every((m) => typeof m.bytes === "number" && m.bytes > 0));
   // What goes to the Desktop never carries the key.
   assert.ok(!JSON.stringify(posted).includes(KEY));
   opened.sqlite.close();

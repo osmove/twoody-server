@@ -7,11 +7,14 @@ import {
   DatabaseKeyError,
   encryptDatabaseFile,
   encryptedCacheKiB,
+  ENCRYPTION_PHASES,
   openEncryptedDatabase,
   resumeEncryption,
+  type EncryptionPhase,
   type EncryptionResult,
 } from "./dbCipher.js";
 import { databaseKeyFromDesktop, desktopKeepsDatabaseKey, trashThroughDesktop, type KeyParentPort } from "./dbKeyHandOver.js";
+import { unsealedAsides } from "./secretFile.js";
 
 // Opens local.db for db.ts: encrypted inside Twoody Desktop when it hands a
 // key over (dbKeyHandOver.ts), in clear otherwise — and never a new, empty
@@ -69,7 +72,11 @@ export async function openLocalDatabase({
   if (state === "clear") {
     port.postMessage({ type: "db-encryption", state: "running" });
     log("[db] encrypting the local database (once)…");
-    const result = encryptDatabaseFile(dbPath, hex, { log });
+    // Each step told to the Desktop, which shows it (« Chiffrement de vos
+    // données sur cet ordinateur… »).
+    const result = await encryptInWorker(dbPath, hex, (phase, bytes) => {
+      port.postMessage({ type: "db-encryption", state: "running", phase, step: ENCRYPTION_PHASES.indexOf(phase) + 1, steps: ENCRYPTION_PHASES.length, bytes });
+    }, log);
     port.postMessage({ type: "db-encryption", ...describe(result) });
     if (result.state === "no_space" || result.state === "failed") {
       log(result.state === "no_space"
@@ -87,6 +94,37 @@ export async function openLocalDatabase({
     if (error instanceof DatabaseKeyError) throw new DatabaseRefusal("key_mismatch", REFUSALS.key_mismatch);
     throw error;
   }
+}
+
+/// encryptDatabaseFile in a worker thread, so that this thread stays free to
+/// pass its steps on to the Desktop; in this thread if the worker cannot
+/// run (the encryption takes up where a stopped worker left it).
+export function encryptInWorker(path: string, hex: string, onPhase: (phase: EncryptionPhase, bytes: number) => void, log: (line: string) => void = () => undefined): Promise<EncryptionResult> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const inThread = (why: string) => {
+      if (settled) return;
+      settled = true;
+      log(`[db] the encryption worker stopped (${why}): encrypting in the server's own thread`);
+      resolve(encryptDatabaseFile(path, hex, { log, onPhase }));
+    };
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL("./dbCipherWorker.js", import.meta.url), { workerData: { paths: [path], hex } });
+    } catch (error) {
+      inThread(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    worker.on("message", (message: { type?: string; phase?: EncryptionPhase; bytes?: number; result?: EncryptionResult }) => {
+      if (message.type === "phase" && message.phase) onPhase(message.phase, message.bytes ?? 0);
+      else if (message.type === "result" && message.result && !settled) {
+        settled = true;
+        resolve(message.result);
+      }
+    });
+    worker.on("error", (error) => inThread(error.message));
+    worker.on("exit", (code) => inThread(`exit ${code}`));
+  });
 }
 
 function mb(bytes: number): string {
@@ -118,6 +156,18 @@ export async function trashClearCopies(dataDir: string, port: KeyParentPort, log
   return moved;
 }
 
+/// The folders the secret files' clear copies were put in when they were
+/// sealed (secretFile.ts sealSecretFilesInPlace), moved to the Trash by the
+/// Desktop; what it cannot move stays, asked again at the next start.
+export async function trashUnsealedSecrets(dataDir: string, port: KeyParentPort, log: (line: string) => void = (line) => console.log(line)): Promise<number> {
+  let moved = 0;
+  for (const path of unsealedAsides(dataDir)) {
+    if (await trashThroughDesktop(port, path)) moved += 1;
+    else log(`[secrets] the clear copies of sealed secret files could not be moved to the Trash; asked again at the next start`);
+  }
+  return moved;
+}
+
 /// The migration backups earlier versions wrote in clear, encrypted with the
 /// same key one by one, in a worker thread (the work is synchronous and
 /// takes seconds per file: the server keeps answering meanwhile). Their
@@ -130,7 +180,8 @@ export function encryptClearBackups(dataDir: string, hex: string, port: KeyParen
     const worker = new Worker(new URL("./dbCipherWorker.js", import.meta.url), { workerData: { paths, hex } });
     worker.unref();
     const trashing: Promise<unknown>[] = [];
-    worker.on("message", (message: { path: string; result: EncryptionResult }) => {
+    worker.on("message", (message: { type?: string; path: string; result?: EncryptionResult }) => {
+      if (message.type !== "result" || !message.result) return;
       const { result } = message;
       if (result.state === "encrypted" || result.state === "resumed") {
         for (const aside of result.aside) trashing.push(trashThroughDesktop(port, aside).then((ok) => ok || log("[db] a clear backup put aside could not be moved to the Trash; asked again at the next start")));

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "../db.js";
+import { readSecretFile, removeSecretFile, secretFileContent } from "../secretFile.js";
 import { GRAPH_ORIGIN, type GraphCapability } from "../outbound.js";
 import { forgetMicrosoftAccess } from "./token.js";
 
@@ -92,7 +93,7 @@ const FILE = () => join(DATA_DIR, "microsoft-graph.json");
 
 function readAll(): Record<string, Kept> {
   try {
-    const parsed = JSON.parse(readFileSync(FILE(), "utf8")) as unknown;
+    const parsed = JSON.parse(readSecretFile(FILE()) ?? "{}") as unknown;
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, Kept>) : {};
   } catch {
     return {};
@@ -105,11 +106,12 @@ function readAll(): Record<string, Kept> {
 function writeAll(all: Record<string, Kept>) {
   const path = FILE();
   if (Object.keys(all).length === 0) {
-    rmSync(path, { force: true });
+    removeSecretFile(path);
     return;
   }
   const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, JSON.stringify(all, null, 2), { mode: 0o600 });
+  // Sealed inside Twoody Desktop (secretFile.ts).
+  writeFileSync(temporary, secretFileContent(path, JSON.stringify(all, null, 2)), { mode: 0o600 });
   try {
     chmodSync(temporary, 0o600);
   } catch {
