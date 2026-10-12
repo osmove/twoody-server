@@ -183,7 +183,7 @@ test("on: the chat switches the light at once, says what it did, and never touch
   const traced = await app.inject({ method: "GET", url: "/diagnostics/turns?kind=chat", headers: desktop });
   assert.equal(traced.statusCode, 200, traced.body);
   // « C'est fait. » said for nothing done: replaced by the reason.
-  assert.deepEqual((traced.json().traces as Array<{ detail: { home?: unknown } }>)[0]!.detail.home, { state: "left_out", devices: 0, not_done: "left_out", answer: "corrected" });
+  assert.deepEqual((traced.json().traces as Array<{ detail: { home?: unknown } }>)[0]!.detail.home, { state: "left_out", devices: 0, not_done: "left_out", answer: "corrected", replaced: "C'est fait." });
   // A message that does not ask the home anything is told nothing of it.
   asked.length = 0;
   await app.inject({ method: "POST", url: "/queries", headers: desktop, payload: { text: "Rappelle-moi d'éteindre la lumière ce soir", channel: "desktop", force_new_discussion: true, capabilities_off: ["home"] } });
@@ -249,7 +249,7 @@ test("Home Assistant refusing the token: nothing switched, the reason said and t
   assert.match(asked[0]!.messages.at(-1)!.content, /Home Assistant refused Twoody's access token/);
   assert.ok(!asked[0]!.tools?.some((tool) => tool.function.name === "control_home"));
   const traced = await app.inject({ method: "GET", url: "/diagnostics/turns?kind=chat", headers: desktop });
-  assert.deepEqual((traced.json().traces as Array<{ detail: { home?: unknown } }>)[0]!.detail.home, { state: "unauthorized", devices: 0, not_done: "unauthorized", answer: "corrected" });
+  assert.deepEqual((traced.json().traces as Array<{ detail: { home?: unknown } }>)[0]!.detail.home, { state: "unauthorized", devices: 0, not_done: "unauthorized", answer: "corrected", replaced: "C'est fait." });
   setHomeConfig(owner, { url: haUrl, token: TOKEN });
 });
 

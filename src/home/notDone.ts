@@ -1,6 +1,6 @@
 import { languageName } from "../chatContext.js";
 import { fold } from "../intentText.js";
-import { capabilityPlace, uiLabels, type UiLabels, type UiLanguage } from "../uiLabels.js";
+import { capabilityPlace, UI_LABELS, uiLabels, type UiLabels, type UiLanguage } from "../uiLabels.js";
 import type { HomeUnused } from "./homeAssistant.js";
 
 // An answer can never tell the person a device of their home was switched
@@ -271,22 +271,31 @@ const ALREADY = /(?:^|\s)(?:deja|already|still|toujours|bereits|schon|ya|todavia
 /// states were read from Home Assistant (`stateKnown`) — « already on » are
 /// no claims.
 export function claimsHomeDone(answer: string, options: { stateKnown?: boolean } = {}): boolean {
-  const text = fold(answer).replace(/[«»"“”„]/g, " ");
+  const text = answer.normalize("NFC").replace(/[«»"“”„*]/g, " ");
   // Sentences with what ends them: a question is no claim.
   const sentences = text.match(/[^.!?。！？\n]+[.!?。！？]*/gu) ?? [];
   return sentences.some((sentence) => {
     if (/[?？]\s*$/u.test(sentence)) return false;
     const plain = sentence.replace(/[.!?。！？]+\s*$/u, "").trim();
-    if (!plain || HYPOTHETICAL.test(plain)) return false;
+    if (!plain || HYPOTHETICAL.test(fold(plain))) return false;
     const clauses = plain.split(/[,;:，；：、]+|\s(?:mais|but|aber|pero|ma|mas|maar)\s|但是|但|하지만|けど|が、/u);
     return clauses.some((clause) => {
-      const said = clause.trim().replace(/\s+/g, " ");
+      const said = fold(clause).trim().replace(/\s+/g, " ");
       if (!said || DENIED.test(said)) return false;
       if (ACTION.test(said)) return true;
+      // « Zuhause ist für diese Nachricht ausgeschaltet », « Maison est
+      // éteinte dans Outils »: the capability, not a device (Qwen3.5 9B,
+      // bench of 12/10/2026).
+      if (CAPABILITY.test(clause)) return false;
       return STATE.test(said) && !(options.stateKnown && ALREADY.test(said));
     });
   });
 }
+
+/// The app's own names for Maison, « Outils » and « Capacités » in the ten
+/// languages, as written (capitalised: « la lumière de la maison » is a
+/// house), and Home Assistant: a clause about them is about the capability.
+const CAPABILITY = new RegExp(`(?<![\\p{L}])(?:Home Assistant|${[...new Set(Object.values(UI_LABELS).flatMap((labels) => [labels.home, labels.tools, labels.capabilities]))].map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![\\p{L}])`, "u");
 
 /// What the person sees when no command for the home succeeded in the turn:
 /// the model's answer, or — when it says it is done, or says nothing — the

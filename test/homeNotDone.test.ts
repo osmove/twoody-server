@@ -64,6 +64,10 @@ test("a question, a denial, an explanation, a condition or a purpose is no claim
     "厨房的灯没有打开。",
     "无法打开厨房的灯。",
     "要我打开厨房的灯吗？",
+    // The capability, not a device (Qwen3.5 9B, bench of 12/10/2026).
+    "Zuhause ist für diese Nachricht ausgeschaltet. Aktivieren Sie es unter Werkzeuge.",
+    "Maison est éteinte dans Outils.",
+    "L'application **Maison** n'est pas activée dans Outils.",
     "주방 조명을 켜지 못했습니다.",
     "조명을 켤까요?",
   ]) assert.ok(!claimsHomeDone(answer), answer);

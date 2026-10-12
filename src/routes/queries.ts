@@ -1594,7 +1594,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       homeHold.on = false;
       const reason: HomeNotDoneReason = homeHold.failure?.reason ?? homeUnused ?? "not_called";
       const told = answerWithoutHomeClaim(homeHold.text, homeNotDoneSentence(reason, answerLanguage(), turnLocale, homeHold.failure?.detail ?? ""), { stateKnown: home !== null });
-      trace.home = { ...(trace.home as Record<string, unknown> | undefined), not_done: reason, ...(told.corrected ? { answer: homeHold.text.trim() ? "corrected" : "empty" } : {}) };
+      trace.home = { ...(trace.home as Record<string, unknown> | undefined), not_done: reason, ...(told.corrected ? { answer: homeHold.text.trim() ? "corrected" : "empty", ...(homeHold.text.trim() ? { replaced: homeHold.text.trim().slice(0, 400) } : {}) } : {}) };
       const shown = aggregated && !/\s$/.test(aggregated) ? ` ${told.text.trimStart()}` : told.text;
       aggregated += shown;
       reply.raw.write(`event: message\ndata: ${escapeData(shown)}\n\n`);
