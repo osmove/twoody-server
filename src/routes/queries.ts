@@ -73,6 +73,7 @@ import { askedBank, BANK_TOOLS, isBankTool, runBankTool } from "../bank/tools.js
 import { hasBankAccounts } from "../bank/store.js";
 import { importanceOf } from "../memory/importance.js";
 import { asksHome, asksHomeAgain, controlHome, HOME_TOOL, homeBlock, homeConfig, homeDoneSentence, homeEntities, HomeError, homeDoneNote, homeErrorSentence, homeFollowUp, homeOn, homeShortcut, homeUnusedNote, lastSwitched, rememberSwitched, type HomeDone, type HomeEntity, type HomeUnused } from "../home/homeAssistant.js";
+import { answerWithoutHomeClaim, homeNotDoneResult, homeNotDoneSentence, type HomeNotDoneReason } from "../home/notDone.js";
 import { validTimeZone } from "../usagePeriods.js";
 import { beginGeneration } from "../account/inflight.js";
 import { noteModelUsed } from "../account/statusSource.js";
@@ -1003,10 +1004,33 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       trace.home = { state: homeUnused ?? "used", devices: home?.length ?? 0 };
     }
     const switchedNow: string[] = [];
+    // No answer may tell the person a device was switched when nothing was
+    // (11/10/2026: « La lumière de la cuisine s'allume. » from Qwen3.6
+    // 35B-A3B, Home Assistant refusing the token; « C'est fait » from
+    // Qwen3.5 9B without a call). A command for the home that nothing has
+    // carried out yet: what the model writes is held (`on`) until a command
+    // succeeds — then let go as it is — or to the end of the turn, where an
+    // answer that says it is done, or nothing, is replaced by the plain
+    // sentence with the reason (home/notDone.ts). A command refused later in
+    // the turn starts the hold.
+    const homeHold: { on: boolean; text: string; failure: { reason: HomeNotDoneReason; detail: string } | null } = { on: false, text: "", failure: null };
+    const homeFailed = (err: unknown) => {
+      homeHold.failure = { reason: err instanceof HomeError ? err.code : "failed", detail: err instanceof HomeError && ["unavailable", "unknown_entity", "unsupported"].includes(err.code) ? err.detail ?? "" : "" };
+    };
     const homeActed = (done: HomeDone) => {
       actionsDone.push({ type: "home", id: `${done.entity.entity_id}:${Date.now()}`, title: done.entity.name, at: null, project: null, change: { state: done.action, brightness: done.brightness } });
       switchedNow.push(done.entity.entity_id);
       rememberSwitched(discussion.id, switchedNow, done.action);
+      // Done: what was held goes out, and nothing more is.
+      if (homeHold.on) {
+        homeHold.on = false;
+        if (homeHold.text) {
+          startSse();
+          aggregated += homeHold.text;
+          reply.raw.write(`event: message\ndata: ${escapeData(homeHold.text)}\n\n`);
+          homeHold.text = "";
+        }
+      }
     };
     // « Éteins-la » right after « allume la bibliothèque du salon ».
     const homeLast = home ? lastSwitched(discussion.id, home) : null;
@@ -1020,22 +1044,27 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
           homeActed(done);
           lines.push(homeDoneSentence(done));
         } catch (err) {
-          lines.push(`Not done: ${homeErrorSentence(err, turnLocale)}`);
+          homeFailed(err);
+          lines.push(`NOT DONE for « ${entity.name} »: ${homeErrorSentence(err, turnLocale)}`);
         }
       }
       // « Remets-la comme avant »: said « allumée » for a device just switched
       // off again (Qwen3.5 9B, 07/10/2026).
-      if ("undo" in shortcut && shortcut.undo) lines.push("This put it back as it was before Twoody switched it: say the state it is in now, given above.");
+      if ("undo" in shortcut && shortcut.undo && switchedNow.length) lines.push("This put it back as it was before Twoody switched it: say the state it is in now, given above.");
       // The language to confirm in: the message's, else (« Apágala » is too
       // short to tell) the app's.
       const spoken = messageLanguage(typedText(content), turnLocale) ?? turnLocale?.split("-")[0] ?? null;
-      homeDone = homeDoneNote(lines, spoken ? languageName(spoken) : null);
+      const failure = homeHold.failure;
+      homeDone = homeDoneNote(lines, spoken ? languageName(spoken) : null, !switchedNow.length && failure ? homeNotDoneSentence(failure.reason, spoken, turnLocale, failure.detail) : null);
     }
     if (homeUnused && asksHome(typedText(content))) homeDone = homeUnusedNote(homeUnused, turnLocale);
     const offersHome = !!home?.length && !shortcut;
     // A command for the home that the shortcut could not do alone: the
     // model must call control_home, not just say it did.
     const homeAsked = offersHome && asksHomeAgain(typedText(content), home!, homeLast);
+    // A command for the home in this message — done by the server, to be
+    // done by the model, or impossible (Maison not used): held until done.
+    homeHold.on = !switchedNow.length && (!!shortcut || homeAsked || (homeUnused !== null && asksHome(typedText(content))));
     const offersDocuments = access.mode !== "off";
     const offersActions = memoryMode === "full" && access.mode !== "only";
     // « Rappelle-moi… », « Note que je dois… »: the model must call the tool.
@@ -1274,18 +1303,27 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
           // « Baisse-la à 20 % » came as action « stop » with a brightness
           // (Qwen3.5 9B, 07/10/2026): a level is a light switched on at it.
           const action = brightness !== null && named !== "off" ? "on" as const : named;
-          if (!ids.length || !action) return "Not done: give entity_ids and an action.";
+          if (!ids.length || !action) return "NOT DONE: nothing was switched. Give entity_ids and an action.";
           const lines: string[] = [];
+          let switched = 0;
           for (const id of ids) {
             try {
               const done = await controlHome(auth.userId, id, action, { brightness });
               homeActed(done);
+              switched += 1;
               lines.push(homeDoneSentence(done));
             } catch (err) {
-              lines.push(`Not done for ${id}: ${homeErrorSentence(err, turnLocale)}`);
+              homeFailed(err);
+              lines.push(`NOT DONE for ${id}: ${homeErrorSentence(err, turnLocale)}`);
             }
           }
-          return `${lines.join("\n")}\nTell the user in one short sentence.`;
+          if (switched) return `${lines.join("\n")}\nTell the user in one short sentence${switched < ids.length ? " what was done and what was not" : ""}.`;
+          // Nothing switched by this call: said so that it cannot be read
+          // otherwise, and what the model writes next is held (homeHold).
+          if (!switchedNow.length) homeHold.on = true;
+          const failure = homeHold.failure!;
+          toolCallsTraced.push({ name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0, error: `not_done:${failure.reason}` });
+          return homeNotDoneResult(lines, homeNotDoneSentence(failure.reason, answerLanguage(), turnLocale, failure.detail), answerLanguage());
         }
         const called = Date.now();
         const traced: ToolCallTrace = { name, arguments: JSON.stringify(args).slice(0, 2000), round: toolCallsTraced.length, ms: 0, result_chars: 0 };
@@ -1463,6 +1501,11 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         afterRefusal += delta;
         return;
       }
+      // A command for the home not carried out (yet): held (homeHold).
+      if (homeHold.on) {
+        homeHold.text += delta;
+        return;
+      }
       aggregated += delta;
       // Cloud-compat shape: per-token `event: message` with the
       // raw delta as the data line. The watch/RN parser slices
@@ -1541,6 +1584,17 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       // « Je rédige le brouillon… » after it was refused is no truer.
       const told = answerAfterRefusal(afterRefusal, answerLanguage(), draftAnnounced);
       if (told.corrected) trace.email = { ...(trace.email as Record<string, unknown> | undefined), refused_answer: afterRefusal.trim() ? "corrected" : "empty" };
+      const shown = aggregated && !/\s$/.test(aggregated) ? ` ${told.text.trimStart()}` : told.text;
+      aggregated += shown;
+      reply.raw.write(`event: message\ndata: ${escapeData(shown)}\n\n`);
+    }
+    if (homeHold.on) {
+      // Nothing was switched in the home this turn: an answer that says it
+      // is done or happening — or no answer — is replaced by what is true.
+      homeHold.on = false;
+      const reason: HomeNotDoneReason = homeHold.failure?.reason ?? homeUnused ?? "not_called";
+      const told = answerWithoutHomeClaim(homeHold.text, homeNotDoneSentence(reason, answerLanguage(), turnLocale, homeHold.failure?.detail ?? ""), { stateKnown: home !== null });
+      trace.home = { ...(trace.home as Record<string, unknown> | undefined), not_done: reason, ...(told.corrected ? { answer: homeHold.text.trim() ? "corrected" : "empty" } : {}) };
       const shown = aggregated && !/\s$/.test(aggregated) ? ` ${told.text.trimStart()}` : told.text;
       aggregated += shown;
       reply.raw.write(`event: message\ndata: ${escapeData(shown)}\n\n`);
