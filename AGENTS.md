@@ -82,6 +82,7 @@ documents), also measure with a real model (root AGENTS.md §5, §7):
 | `peers/`, `peerDocuments/`, `peerSessions.ts`, `routes/peer*.ts` | the network of computers (docs/mesh-design.md) |
 | `router/` | « Automatique »: which computer of the account answers (docs/multi-computer-design.md) |
 | `tunnel/` | encrypted relay tunnel and direct transport to the person's devices; key confirmation is the first frame that opens (`channel.ts`). The permanent key (`identity.ts`): a 0600 file `DATA_DIR/tunnel-identity` on its own, sealed by the Desktop's safeStorage and handed over at start inside Twoody Desktop (`desktopKeyStore.ts`, `TWOODY_TUNNEL_KEY_STORE=desktop`; "locked": never replaced, what needs it fails) |
+| `dbCipher.ts`, `dbKeyHandOver.ts`, `dbOpen.ts`, `dbCipherWorker.ts` | local.db encrypted at rest inside Twoody Desktop (12/10/2026, docs/encrypted-storage.md « Inside Twoody Desktop »): the driver is `better-sqlite3-multiple-ciphers` (SQLite3 Multiple Ciphers, SQLCipher 4 scheme: AES-256-CBC + HMAC-SHA512 per page, raw 256-bit key), typed as better-sqlite3 (`src/types/`); the key asked of the Desktop by message before db.ts opens the file (`TWOODY_DB_KEY_STORE=desktop`: `db-key-request` → `db-key` ok/unavailable/locked/lost), never in the environment or a file; a clear database encrypted once at start (copy, rekey, quick_check and every table's rows compared, then swapped; the clear file put aside for the Desktop to Trash, `db-trash`; resumable), the migration backups earlier versions wrote in clear encrypted in a worker thread; an encrypted database without its key: exit 78, never a new one in its place. On its own (Pi, `twoody serve`): clear, as before. `GET /health` `database`; `scripts/db-encryption-bench.ts` measures the cost |
 | `dataAtRest.ts`, `dataGuard.ts` | whether DATA_DIR is on an encrypted volume (LUKS/dm-crypt, ecryptfs/gocryptfs, fscrypt, FileVault; else "unknown"): warned at start on its own, `/health` `data_at_rest`, `/peer/status` for the person's other computers (never the heartbeat); `TWOODY_DATA_ENCRYPTION=require` refuses to start elsewhere (exit 78) — `docs/encrypted-storage.md` |
 | `compute/` | sealed compute requests from shared/household devices |
 | `shares/` | folder sharing (docs/sharing-design.md, docs/sharing-contracts.md): `store.ts` (migration 8: `folder_shares`, `share_guest_devices`, the audit's share columns; the account can only restrict, `syncShares`), `policy.ts` (the checks of every request, in order; rate limits), `serve.ts` (folders, search, browse, text, paths relative to the shared folder; `serveShareInProcess` for a server running its own bridge client), `parentServe.ts` (the bridge worker asks the Desktop to serve), `guest.ts` (the grantee's side: `share:<uuid>` in a turn's folder ids, calls through the Desktop's port, 4 s); routes `routes/localShares.ts` |
@@ -241,6 +242,10 @@ runtime URL can be passed through it.
   are never kept without consent and never sent to a model that is not the
   person's own.
 - Do not log secrets, LLM keys, tokens or local paths.
+- The database key (dbKeyHandOver.ts) comes by message only: never in the
+  environment, a file, a log or a message back to the Desktop. Never make a
+  new database, nor a new key, in front of an encrypted one that does not
+  open; never delete a clear copy (the Desktop moves it to the Trash).
 
 ## 7. The Bridge (legacy contract, sealed requests only)
 

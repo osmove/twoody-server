@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type Database from "better-sqlite3-multiple-ciphers";
 import { createMessageFts } from "./fts.js";
 
 // The schema as it stood before versioned migrations (03/10/2026): every

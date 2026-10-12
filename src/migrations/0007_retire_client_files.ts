@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type Database from "better-sqlite3-multiple-ciphers";
 
 // Migration 7 — client files retired (Jimmy, 10/10/2026: « je ne comprends
 // pas pourquoi on a créé Twoody Pro, et cette histoire de Dossiers… il

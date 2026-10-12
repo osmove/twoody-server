@@ -38,7 +38,7 @@ log() { echo "[install] $*"; }
 
 log "Installing system packages…"
 apt-get update -y -qq
-# No compiler: the one native module (better-sqlite3) ships a prebuilt
+# No compiler: the one native module (better-sqlite3-multiple-ciphers) ships a prebuilt
 # binary for linux-arm64 and linux-x64 and loads that. It also ships a
 # binding.gyp, which npm would compile on sight — several minutes on a
 # Pi, for a file the module never opens — so install scripts are skipped

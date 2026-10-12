@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type Database from "better-sqlite3-multiple-ciphers";
 
 // Migration 8 — folder sharing, the owner's side (docs/sharing-design.md §2,
 // docs/sharing-contracts.md §3, 10/10/2026): a Documents folder of this

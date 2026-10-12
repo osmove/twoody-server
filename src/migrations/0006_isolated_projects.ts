@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type Database from "better-sqlite3-multiple-ciphers";
 
 // Migration 6 — isolated projects (Jimmy, 04/10/2026, Twoody Pro:
 // « dossiers clients cloisonnés », built on Project): a project whose

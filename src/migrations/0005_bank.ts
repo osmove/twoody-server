@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type Database from "better-sqlite3-multiple-ciphers";
 
 // Migration 5 — « Banque » (Jimmy, 04/10/2026: « import de relevés pour la
 // banque »): the statements the person imports, kept on this computer

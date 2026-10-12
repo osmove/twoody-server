@@ -445,7 +445,7 @@ twoody-server --data-dir /home/pi/.twoody/data models add Qwen3.5-4B-Q4_K_M
 For a headless install from a checkout of this repository (Raspberry Pi
 4/5, generic amd64/arm64 box), use the bundled bootstrap script. It installs Node 22, ripgrep, ffmpeg,
 poppler-utils, avahi-daemon, copies the repo to `/opt/twoody-server`,
-installs the production dependencies (`better-sqlite3`'s prebuilt
+installs the production dependencies (`better-sqlite3-multiple-ciphers`'s prebuilt
 binary, nothing compiled), links the `twoody-server` command, installs the
 built-in engine (`twoody-server runtime install`) and registers a systemd
 unit. Then `twoody-server models add Qwen3.5-4B-Q4_K_M`.

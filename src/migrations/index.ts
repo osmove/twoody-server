@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type Database from "better-sqlite3-multiple-ciphers";
 import { chmodSync, mkdirSync } from "fs";
 import { join } from "path";
 import { legacyBaseline } from "./baseline.js";

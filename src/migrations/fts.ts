@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type Database from "better-sqlite3-multiple-ciphers";
 
 // L5a: the full-text index of the conversations (src/memory/search.ts),
 // on this computer only. A message is indexed when its conversation's

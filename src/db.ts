@@ -1,4 +1,3 @@
-import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
 import { join } from "path";
@@ -6,13 +5,14 @@ import { homedir } from "os";
 import { chmodSync, existsSync, mkdirSync } from "fs";
 import { migrate } from "./migrations/index.js";
 import { createMessageFts, rebuildMessageIndex as rebuildFts } from "./migrations/fts.js";
+import { DatabaseRefusal, encryptClearBackups, openLocalDatabase, trashClearCopies, type DatabaseEncryption } from "./dbOpen.js";
+import { desktopParentPort } from "./dbKeyHandOver.js";
 
 export const DATA_DIR =
   process.env.TWOODY_DATA_DIR ?? join(homedir(), ".twoody", "data");
 mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 
 const DB_PATH = join(DATA_DIR, "local.db");
-const sqlite = new Database(DB_PATH);
 
 // Conversations, memories and voice samples live in this file, so keep
 // it to the account that runs the server. The directory and the
@@ -31,6 +31,35 @@ for (const [path, mode] of [
   } catch {
     // Leave the server usable on filesystems that refuse chmod.
   }
+}
+
+// Inside Twoody Desktop the database is encrypted with a key the Desktop
+// keeps sealed (dbKeyHandOver.ts, dbCipher.ts): asked for now, before the
+// file is opened; a clear database of an earlier version is encrypted here,
+// once. On its own, the server opens it in clear.
+const desktopPort = desktopParentPort();
+const opened = await (async () => {
+  try {
+    return await openLocalDatabase({ dbPath: DB_PATH, port: desktopPort });
+  } catch (error) {
+    if (!(error instanceof DatabaseRefusal)) throw error;
+    console.error(`Twoody Server did not start: ${error.message}.`);
+    desktopPort?.postMessage({ type: "db-refused", reason: error.reason });
+    // The message reaches the Desktop before the process ends.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    process.exit(78);
+  }
+})();
+const sqlite = opened.sqlite;
+/// Whether local.db is encrypted at rest (GET /health).
+export const databaseEncryption: DatabaseEncryption = opened.encryption;
+if (desktopPort && opened.key) {
+  const key = opened.key;
+  // What earlier versions left in clear: the copy put aside just now (or at
+  // a start cut off before the Trash), and the migration backups.
+  void trashClearCopies(DATA_DIR, desktopPort)
+    .then(() => encryptClearBackups(DATA_DIR, key, desktopPort))
+    .catch((error: unknown) => console.warn(`[db] ${error instanceof Error ? error.message : String(error)}`));
 }
 
 sqlite.pragma("journal_mode = WAL");

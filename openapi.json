@@ -43,6 +43,12 @@
                     },
                     "uptime": {
                       "type": "number"
+                    },
+                    "data_at_rest": {
+                      "type": "string"
+                    },
+                    "database": {
+                      "type": "string"
                     }
                   },
                   "required": [
@@ -492,7 +498,7 @@
     },
     "/queries/warm": {
       "post": {
-        "summary": "Read ahead the start of a new conversation, while the person speaks or types",
+        "summary": "Read ahead the start of a new conversation, while the person speaks or types, or for a model just loaded ({model, fresh}: answered once read)",
         "tags": [
           "queries"
         ],
@@ -6556,7 +6562,7 @@
         }
       },
       "post": {
-        "summary": "Share a Documents folder with a household member, an organization co-member or a whole organization (the owner only)",
+        "summary": "Share a Documents folder with a household member, an organization co-member or a whole organization (this computer's app only)",
         "tags": [
           "documents"
         ],
@@ -6569,7 +6575,7 @@
     },
     "/local_shares/{id}": {
       "patch": {
-        "summary": "Change a share's right, expiry or label, or mark it published to the account (the owner only)",
+        "summary": "Change a share's right, expiry or label, or mark it published to the account (this computer's app only)",
         "tags": [
           "documents"
         ],
@@ -6626,7 +6632,7 @@
     },
     "/local_shares/devices/approve": {
       "post": {
-        "summary": "Approve a grantee's device for every share of this computer to that person (the owner only)",
+        "summary": "Approve a grantee's device for every share of this computer to that person (this computer's app only)",
         "tags": [
           "documents"
         ],
@@ -6652,7 +6658,7 @@
     },
     "/local_shares/devices/verify": {
       "post": {
-        "summary": "Verify a grantee's device for every share of this computer to that person (the owner only)",
+        "summary": "Verify a grantee's device for every share of this computer to that person (this computer's app only)",
         "tags": [
           "documents"
         ],
@@ -6681,6 +6687,75 @@
         "summary": "Serve a grantee's request on a shared folder, opened by this computer's bridge worker (this computer's app only)",
         "tags": [
           "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/shared_folders/{uuid}/browse": {
+      "get": {
+        "summary": "Browse a folder someone shares with the person with « Lire les fichiers », through its owner's computer (the person's own sessions)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "uuid",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/shared_folders/{uuid}/status": {
+      "get": {
+        "summary": "Whether this computer may ask a folder someone shares with the person — or waits for its owner's « Autoriser » — read nothing, no consultation (the person's own sessions)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "uuid",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/shared_folders/{uuid}/file": {
+      "get": {
+        "summary": "A file of a folder someone shares with the person with « Lire les fichiers », fetched sealed in chunks from its owner's computer and checked against its hash (the person's own sessions)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "uuid",
+            "required": true
+          }
         ],
         "responses": {
           "200": {
@@ -7775,7 +7850,7 @@
     },
     "/api/v1/queries/warm": {
       "post": {
-        "summary": "Read ahead the start of a new conversation, while the person speaks or types",
+        "summary": "Read ahead the start of a new conversation, while the person speaks or types, or for a model just loaded ({model, fresh}: answered once read)",
         "tags": [
           "queries"
         ],
@@ -13839,7 +13914,7 @@
         }
       },
       "post": {
-        "summary": "Share a Documents folder with a household member, an organization co-member or a whole organization (the owner only)",
+        "summary": "Share a Documents folder with a household member, an organization co-member or a whole organization (this computer's app only)",
         "tags": [
           "documents"
         ],
@@ -13852,7 +13927,7 @@
     },
     "/api/v1/local_shares/{id}": {
       "patch": {
-        "summary": "Change a share's right, expiry or label, or mark it published to the account (the owner only)",
+        "summary": "Change a share's right, expiry or label, or mark it published to the account (this computer's app only)",
         "tags": [
           "documents"
         ],
@@ -13909,7 +13984,7 @@
     },
     "/api/v1/local_shares/devices/approve": {
       "post": {
-        "summary": "Approve a grantee's device for every share of this computer to that person (the owner only)",
+        "summary": "Approve a grantee's device for every share of this computer to that person (this computer's app only)",
         "tags": [
           "documents"
         ],
@@ -13935,7 +14010,7 @@
     },
     "/api/v1/local_shares/devices/verify": {
       "post": {
-        "summary": "Verify a grantee's device for every share of this computer to that person (the owner only)",
+        "summary": "Verify a grantee's device for every share of this computer to that person (this computer's app only)",
         "tags": [
           "documents"
         ],
@@ -13964,6 +14039,75 @@
         "summary": "Serve a grantee's request on a shared folder, opened by this computer's bridge worker (this computer's app only)",
         "tags": [
           "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/shared_folders/{uuid}/browse": {
+      "get": {
+        "summary": "Browse a folder someone shares with the person with « Lire les fichiers », through its owner's computer (the person's own sessions)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "uuid",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/shared_folders/{uuid}/status": {
+      "get": {
+        "summary": "Whether this computer may ask a folder someone shares with the person — or waits for its owner's « Autoriser » — read nothing, no consultation (the person's own sessions)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "uuid",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/shared_folders/{uuid}/file": {
+      "get": {
+        "summary": "A file of a folder someone shares with the person with « Lire les fichiers », fetched sealed in chunks from its owner's computer and checked against its hash (the person's own sessions)",
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "uuid",
+            "required": true
+          }
         ],
         "responses": {
           "200": {

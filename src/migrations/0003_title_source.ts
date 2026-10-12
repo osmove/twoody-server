@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type Database from "better-sqlite3-multiple-ciphers";
 
 // Migration 3 — where a conversation's title comes from (04/10/2026: titles
 // written by the model, as ChatGPT and Claude do, src/discussionTitles.ts):

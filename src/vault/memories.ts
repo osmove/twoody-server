@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type Database from "better-sqlite3-multiple-ciphers";
 import { randomUUID } from "node:crypto";
 import { sqlite as localSqlite } from "../db.js";
 import {

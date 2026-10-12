@@ -5,7 +5,7 @@
 # Idempotent: rebuilds the TS sources if needed, rsyncs `dist/`, runs
 # `npm ci --omit=dev --ignore-scripts` if `package.json` changed, and
 # nudges systemd. Safe to re-run after every commit. Nothing is compiled
-# on the target: better-sqlite3 ships a prebuilt binary per platform.
+# on the target: better-sqlite3-multiple-ciphers ships a prebuilt binary per platform.
 #
 # Usage (from a twoody-server checkout on your laptop):
 #   scripts/upgrade-linux.sh                       # uses defaults

@@ -3,7 +3,7 @@
 // so a renaming on one side breaks a test instead of the convergence.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import Database from "better-sqlite3";
+import Database from "better-sqlite3-multiple-ciphers";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

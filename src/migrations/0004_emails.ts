@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type Database from "better-sqlite3-multiple-ciphers";
 
 // Migration 4 — « E-mails » (Capacités, Jimmy, 04/10/2026: « IMAP d'abord »):
 // a copy of the person's mailbox on this computer, read over IMAP

@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type Database from "better-sqlite3-multiple-ciphers";
 import { indexGrams } from "../documents/cjk.js";
 
 // Migration 9 — Japanese, Chinese and Korean in the documents' keyword

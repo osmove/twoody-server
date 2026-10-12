@@ -1,7 +1,9 @@
 # Twoody Server's data on an encrypted volume
 
 11 October 2026. For Twoody Server running on its own (a Raspberry Pi, a NAS, a
-Linux box): no Twoody Desktop, nobody at the screen.
+Linux box): no Twoody Desktop, nobody at the screen. Inside Twoody Desktop, the
+database itself is encrypted since 12 October 2026: see « Inside Twoody
+Desktop » at the end.
 
 ## Why
 
@@ -141,3 +143,144 @@ someone who takes the card has both. It would add nothing over the 0600 files
 against that, and Twoody does not use it. On a machine with a TPM2, a LUKS
 volume bound to it (`systemd-cryptenroll --tpm2-device=auto`) is the better
 place to start.
+
+## Inside Twoody Desktop: the database encrypted (12 October 2026)
+
+Inside Twoody Desktop there is a person to unlock a keyring, so the database is
+encrypted by Twoody itself, whatever the disk.
+
+### What is encrypted
+
+- `server/local.db` and its `-wal`: conversations, memories, the document index
+  and its vectors, e-mails, contacts and events, bank statements, traces with
+  their prompts. Every page, in the file and in the WAL (`-shm` holds only the
+  WAL's index of page numbers).
+- The migration backups (`server/backups/*.db`, `migrations/index.ts`): a new
+  one is written with `VACUUM INTO`, which keeps the cipher and the key; those
+  earlier versions wrote in clear are encrypted at the first start with a key,
+  in a worker thread (`dbCipherWorker.ts`), each checked like the database.
+- Already sealed by the Desktop, unchanged: the encrypted history's keys and
+  its outbox (`vault/<id>-history.json`, safeStorage), the tunnel key, the keys
+  of sealed turns, the tokens.
+- **Not covered yet** (the person's data or secrets in clear, 0600, in
+  `server/`): `connectors.json` (the connectors' OAuth tokens),
+  `email-credentials.json` (a mailbox's password or refresh token),
+  `google-data.json` and `microsoft-graph.json` (refresh tokens),
+  `account.json` (the pairing key), `warm-seeds.json` (the person's name and
+  granted folders' paths), and the Desktop's own Twoody Code sessions
+  (`code/sessions/*.json`, conversations with the code agent). Temporary files
+  of a voice message or an image live a few seconds in the system's temporary
+  folder.
+
+### How
+
+- Driver: `better-sqlite3-multiple-ciphers` 13.0.3 (MIT), better-sqlite3 built
+  with SQLite3 Multiple Ciphers 2.4.0 (SQLite 3.53.4), the same API and the
+  same N-API prebuilds (darwin arm64/x64, win32 x64/arm64, linux x64/arm64,
+  glibc and musl) as better-sqlite3 13: one native module for Node and every
+  Electron, nothing compiled. Twoody Server on its own uses it too, without a
+  key: a plain SQLite.
+- Scheme: SQLCipher 4 (`cipher = 'sqlcipher'`, `legacy = 4`): AES-256-CBC per
+  4096-byte page with a random IV at each write, HMAC-SHA512 per page (a page
+  changed on disk does not open), a random 16-byte salt per file. The key is
+  raw: 256 random bits (`x'…'`), so no PBKDF2 (SQLCipher skips it for raw
+  keys); the HMAC key is derived from it and the salt, as SQLCipher does. A
+  file opens in SQLCipher 4 itself with `PRAGMA key = "x'<hex>'"`.
+- The key: made by the Desktop (`src/main/databaseKey.ts`,
+  `crypto.randomBytes`), sealed by safeStorage (Keychain, DPAPI, libsecret) in
+  `server/database-key.sealed`, read back before it is handed over, and given to
+  the server by message before db.ts opens the file (`dbKeyHandOver.ts`,
+  `TWOODY_DB_KEY_STORE=desktop`). Never in the environment, a file in clear, a
+  log or a message back.
+- Without protected storage (Linux without an unlocked keyring, safeStorage's
+  `basic_text`) the database stays in clear, as the tunnel key stays in its
+  0600 file (Desktop 9705b2a): a key kept next to the database would protect
+  nothing, and refusing to start would leave the person without Twoody on many
+  Linux desktops. `data_at_rest` still says whether the volume is encrypted;
+  the database is encrypted at the first start with a keyring.
+- An encrypted database the server cannot open — the keyring locked or gone,
+  the key lost or not the one — is never replaced: the server says why and
+  stops (exit 78, `db-refused`), the Desktop shows « Twoody's database is
+  encrypted, and its key is in a keyring that cannot be opened now… » or
+  « …no longer has the key that opens it. Nothing was changed or deleted. ». A
+  server started over the Desktop's folder without its key store (an older
+  Desktop after a downgrade, `twoody serve` pointed at it) stops the same way.
+- `GET /health` says `database`: `encrypted` or `clear`.
+
+### Encrypting the database of an earlier version
+
+At the first start with a key, before the server listens (`dbCipher.ts`
+`encryptDatabaseFile`; the Desktop waits up to an hour for it, told by
+`db-encryption` messages):
+
+1. Free space checked: the size of the file and its WAL, plus 5 % and 16 MB.
+   Not enough: the database stays in clear for this run, nothing touched.
+2. The clear database checkpointed (`wal_checkpoint(TRUNCATE)`), every table's
+   row count and the schema version read, closed.
+3. Copied to `local.db.encrypting`, encrypted there (`PRAGMA rekey`).
+4. Checked: the copy is no longer in clear, opens with the key, passes
+   `quick_check` (every page decrypted and its HMAC verified), holds the same
+   number of rows in every table at the same schema version; then flushed and
+   renamed `local.db.encrypted` (checked, waiting).
+5. Swapped: `local.db` renamed `local.unencrypted-<date>.db` (its `-wal` and
+   `-shm` with it), then `local.db.encrypted` renamed `local.db`.
+6. The clear copy sent to the Desktop, which moves it to the Trash
+   (`db-trash`; only a file of that name in the server's folder or its
+   `backups/`, `trashableClearCopy`). Never deleted (root AGENTS.md rule 6):
+   **it stays readable in the Trash until the person empties it.** A copy the
+   Trash refused is asked again at the next start.
+
+Cut off anywhere, the next start takes it up: a half-made or waiting copy next
+to a clear `local.db` is made again from it; `local.db` missing with a checked
+copy waiting, the copy is put in place; `local.db` missing with only the clear
+file put aside, it goes back in its place (never a new, empty database in front
+of the person's data). Any failure leaves the clear database as it was.
+
+Measured on Jimmy's database (copy, 600 MB, 74 tables, 624,000 rows; Mac17,4,
+24 GB, other work running): 29 to 56 s, mostly the check (copy 0.4 s, rekey 7
+to 16 s, check 17 to 39 s). Each of his six migration backups (~580 MB) takes
+about as long, in the background, the server answering meanwhile.
+
+### What it costs
+
+`scripts/db-encryption-bench.ts` on a copy of Jimmy's database, three rounds
+of fresh processes, clear (SQLite's default 16 MB page cache) against
+encrypted (the server's setting), milliseconds, medians:
+
+| | clear | encrypted |
+|---|---|---|
+| opening the database (import of db.ts) | 185 | 160 |
+| history of the conversation (40 messages) | 0.02 | 0.02 |
+| memory search (lexical) | 9.9 | 8.8 |
+| conversations' index | 1.1 | 1.0 |
+| document search (BM25), first | 430 | 408 |
+| document search, then (median / p95) | 453 / 1,433 | 229 / 1,930 |
+| every vector of the documents (semantic search), first | 378 | 930 |
+| the same, then | 349 | 95 |
+| writing a turn (two messages and their index) | 0.27 | 0.59 |
+
+The server's start inside Electron (fork to listening, real utility process):
+0.6 to 1.0 s in clear, 1.1 to 1.6 s encrypted.
+
+A page read from the file is decrypted and its HMAC checked in software (this
+build's AES has no hardware path: `SQLITE3MC_OMIT_AES_HARDWARE_SUPPORT`), a
+page in SQLite's cache is not. With SQLite's default 16 MB cache, the same
+document searches took up to ten times as long encrypted (p95 12 s) and the
+vector scan thirteen times; with a cache that holds what they read, they are
+as fast as in clear or faster once read. So the encrypted database gets a
+cache of 1/32 of the memory, 1 GB at most (`encryptedCacheKiB`): it only grows
+with the pages read and never beyond the database — Jimmy's 600 MB fit in it
+(24 GB: 768 MB). The first search of a run, and any whose pages fall out of the
+cache, still pays the decryption (the cold rows). ChaCha20 (SQLite3 Multiple
+Ciphers' own default) was measured too: no faster here.
+
+### Debugging
+
+`sqlite3 -readonly … ".backup"` copies ciphertext now. On a Mac,
+`node twoody-desktop/scripts/readable-db-copy.mjs <scratch>` makes a readable
+copy (root AGENTS.md §7): macOS asks the person to let it read Twoody's
+safeStorage secret, the key is never printed nor written, the live database is
+only read, the copy is in clear in `<scratch>` (0600) and goes to the Trash once
+done. The bench tools (`twoody-bench`) make their own databases in clear
+folders and are unchanged.
+

@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type Database from "better-sqlite3-multiple-ciphers";
 import { createMessageFts } from "./fts.js";
 
 // Migration 2 — the convergence with the account's Postgres (Jimmy,

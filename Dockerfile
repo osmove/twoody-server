@@ -15,7 +15,9 @@
 # `twoody-server models add`. The build fails when llama-server or one of the
 # CPU variants it loads at run time misses a system library.
 #
-# The only native module, better-sqlite3, ships a prebuilt binary for
+# The only native module, better-sqlite3-multiple-ciphers (better-sqlite3
+# built with SQLite3 Multiple Ciphers; this server keeps its database in
+# clear on its own, docs/encrypted-storage.md), ships a prebuilt binary for
 # linux-x64 and linux-arm64 inside its npm tarball and loads the right one at
 # run time: nothing is compiled, so the build needs no toolchain and stays
 # short even under emulation (QEMU in the GitHub workflow) or on a Pi. The
@@ -36,7 +38,7 @@ ARG NODE_IMAGE=node:22-trixie-slim
 FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-# better-sqlite3 also ships a binding.gyp; skipping install scripts keeps
+# The SQLite module also ships a binding.gyp; skipping install scripts keeps
 # npm from compiling a binary the module never opens (no toolchain, no
 # minutes spent on a Pi). In this tree only esbuild and fsevents declare
 # one, and neither is needed to run `tsc`.
@@ -45,14 +47,14 @@ COPY tsconfig.json ./
 COPY src ./src
 COPY bin ./bin
 COPY scripts/write-openapi.mjs ./scripts/write-openapi.mjs
-# After the build: only production dependencies, and of better-sqlite3 only
+# After the build: only production dependencies, and of the SQLite module only
 # the binary this architecture loads (the others and the SQLite sources are
 # 24 MB the image would carry for nothing).
 RUN npm run build \
  && TWOODY_DATA_DIR=/tmp/openapi-data node scripts/write-openapi.mjs \
  && npm prune --omit=dev --ignore-scripts \
  && npm cache clean --force \
- && cd node_modules/better-sqlite3 \
+ && cd node_modules/better-sqlite3-multiple-ciphers \
  && find prebuilds -type f ! -name "linux-$(node -p process.arch).node" -delete \
  && rm -rf deps src binding.gyp \
  && mkdir -p /skel/data/home

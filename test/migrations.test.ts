@@ -4,7 +4,7 @@
 // a copy saved first; a fresh one comes out the same; a newer one is refused.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import Database from "better-sqlite3";
+import Database from "better-sqlite3-multiple-ciphers";
 import { existsSync, mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
