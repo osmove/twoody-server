@@ -28,6 +28,7 @@ import {
 import { databaseKeyFromDesktop, trashThroughDesktop } from "../src/dbKeyHandOver.ts";
 import { DatabaseRefusal, encryptClearBackups, openLocalDatabase, trashClearCopies } from "../src/dbOpen.ts";
 import { backupBefore } from "../src/migrations/index.ts";
+import { heldOpen } from "./helpers/heldOpen.ts";
 
 const KEY = "7e".repeat(32);
 const OTHER = "c4".repeat(32);
@@ -311,7 +312,8 @@ test("migration backups: a new one is encrypted with the database; the clear one
     trashed.push(message.path as string);
     return { type: "db-trash-result", id: message.id, ok: true };
   });
-  await encryptClearBackups(at, KEY, port, quiet);
+  // The backups are encrypted by an unref'd worker (it never holds the server's exit).
+  await heldOpen(encryptClearBackups(at, KEY, port, quiet));
   assert.deepEqual(clearBackups(at), []);
   for (const name of ["local-v6-2026-10-10T09-50-59-924Z.db", "local-v8-2026-10-11T06-11-04-286Z.db"]) {
     const backup = openEncryptedDatabase(join(at, "backups", name), KEY);

@@ -32,6 +32,7 @@ const { peerRoutable } = await import("../src/router/index.js");
 const { setLocalCapability } = await import("../src/localCapabilities.js");
 const { folderRisk } = await import("../src/documents/folderRisk.js");
 const { meshVault } = await import("./helpers/meshVault.js");
+const { heldOpen } = await import("./helpers/heldOpen.js");
 const { eq } = await import("drizzle-orm");
 
 const MAC = "3c9e1f27-6a4b-4d8c-9e2f-7b1a5c3d9e40";
@@ -136,7 +137,9 @@ test("the mesh's links and keys: the Desktop on this machine and the console sti
     assert.equal(response.statusCode, 409, `${ask.method} ${ask.url} → ${response.body}`);
     assert.equal(response.json().error, "not_linked");
   }
-  assert.equal((await app.inject({ method: "DELETE", url: `/api/v1/peers/${OTHER}`, headers: mac })).statusCode, 204);
+  // Forgetting a linked peer tells it first, through a link nobody answers here: an
+  // unref'd 5 s timeout (it never holds the server's exit) ends the wait.
+  assert.equal((await heldOpen(app.inject({ method: "DELETE", url: `/api/v1/peers/${OTHER}`, headers: mac }))).statusCode, 204);
 });
 
 // ── naming this computer's vault anchor (routes/peerVault.ts mayPin) ───────

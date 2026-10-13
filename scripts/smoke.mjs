@@ -435,9 +435,15 @@ try {
     throw new Error("Smoke test failed: authenticated update_check missing server_version");
   }
 
-  await jsonFetch("/devices/llm_keys", {
+  // The server's provider keys go to this computer's app only, never to a
+  // paired device (docs/connectors-security-review.md, « Other routes »).
+  const deviceKeys = await jsonFetch("/devices/llm_keys", {
     headers: authHeaders(pairedDevice.user_token),
+    expectedStatus: 403,
   });
+  if (deviceKeys.error !== "desktop_app_only") {
+    throw new Error("Smoke test failed: /devices/llm_keys was not refused to a paired device");
+  }
 
   const createdMember = await jsonFetch("/members", {
     method: "POST",
@@ -531,8 +537,8 @@ try {
 
   // The standalone worker (what the desktop app runs for a cloud
   // account): pointed at this server as its backend and at a fake
-  // runtime, it must pick up an llm_infer task, stream it, and report
-  // the completion in the envelope the Rails backend reads.
+  // runtime, it must register, pick up an llm_infer task sent in clear,
+  // and refuse it without asking the model.
   await smokeBridgeWorker(token);
 
   // The MCP proxy acts with the user's token upstream: never open.
@@ -897,19 +903,18 @@ async function smokeBridgeWorker(token) {
       finished = await jsonFetch(`/bridge/tasks/${task.id}`, { headers: authHeaders(token) });
     } while (finished.status !== "done" && finished.status !== "error" && Date.now() < deadline);
 
-    if (finished.status !== "done") {
-      throw new Error(`Smoke test failed: llm_infer through the worker ended as ${finished.status} (${finished.error_message}).\n${workerLogs}`);
+    // Since 11/10/2026 the worker runs sealed requests only: a task in clear
+    // from the account (taken as possibly malicious) is refused before it
+    // runs, and the model is never asked (test/bridgePlaintext.test.ts;
+    // the sealed path: test/bridgeInference.test.ts).
+    if (finished.status !== "error" || !String(finished.error_message).startsWith("bridge_plaintext_refused:llm_infer")) {
+      throw new Error(`Smoke test failed: llm_infer in clear through the worker ended as ${finished.status} (${finished.error_message}), not refused.\n${workerLogs}`);
     }
-    const completion = JSON.parse(finished.result.response_json);
-    const answer = completion.choices[0].message.content;
-    if (answer !== "Hello from the fake model" || finished.delta !== answer) {
-      throw new Error(`Smoke test failed: worker completion ${JSON.stringify(answer)} / streamed ${JSON.stringify(finished.delta)}`);
+    if (finished.error_message.includes("Hi") || finished.delta) {
+      throw new Error(`Smoke test failed: the refusal of a task in clear said something of it (${JSON.stringify(finished)})`);
     }
-    if (runtime.authorizations.length === 0 || runtime.authorizations.some((value) => value !== "Bearer smoke-key")) {
-      throw new Error(`Smoke test failed: the worker did not present the runtime's key on every call (${JSON.stringify(runtime.authorizations)})`);
-    }
-    if (finished.result.model_used !== "tiny-local-model" || runtime.requests.at(-1).model !== "tiny-local-model") {
-      throw new Error("Smoke test failed: the placeholder model was not replaced by the worker's default");
+    if (runtime.requests.length !== 0) {
+      throw new Error(`Smoke test failed: the model was asked for a task in clear (${JSON.stringify(runtime.requests)})`);
     }
   } finally {
     stop(worker);

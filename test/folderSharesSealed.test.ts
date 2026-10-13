@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { app, cleanUp, noAbsolutePath, ownerHeaders, root, share, user } from "./helpers/shareFixtures.js";
+import { heldOpen } from "./helpers/heldOpen.js";
 
 // A folder share end to end, sealed for real (compute/computeSeal.ts): the
 // grantee's device seals a request for grant id « share:<uuid> », the
@@ -360,7 +361,8 @@ test("the worker asks its parent to serve, and takes only the answer to its own 
   assert.equal(channel.received({ type: "account-call-result", id: posted[0]!.id }), false);
   channel.received({ type: "share-serve-result", id: posted[0]!.id, result: { ok: true } });
   assert.deepEqual(await answer, { ok: true });
-  await assert.rejects(channel.serve({}), /share_serve_timeout/);
+  // Its timer is unref'd (a question left unanswered never holds the exit).
+  await assert.rejects(heldOpen(channel.serve({})), /share_serve_timeout/);
   assert.equal(channel.pending(), 0);
 });
 
@@ -380,7 +382,8 @@ test("share-call through the Desktop's port: the answer, the Desktop's label, it
     const refused = call(contrats.id, { op: "folders" }, 1_000);
     for (const listener of listeners) listener({ data: { type: "share-call-result", id: posted[1]!.id, error: { code: "host_offline" }, share: { label: "Contrats", owner_name: "Jimmy" } } });
     assert.deepEqual(await refused, { ok: false, code: "host_offline", share: { label: "Contrats", owner_name: "Jimmy" } });
-    assert.deepEqual(await call(contrats.id, { op: "folders" }, 30), { ok: false, code: "timeout", share: null });
+    // The Desktop's silence: an unref'd timer (it never holds the exit) ends the call.
+    assert.deepEqual(await heldOpen(call(contrats.id, { op: "folders" }, 30)), { ok: false, code: "timeout", share: null });
   } finally {
     undo();
   }
