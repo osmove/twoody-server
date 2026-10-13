@@ -214,7 +214,10 @@ test("the radicals some Chinese PDFs give for characters are read as the charact
   try {
     assert.equal((await extractSections(file))[0]!.text, "解除通知期为三个月。每月服务费");
   } finally {
-    renameSync(file, join(homedir(), ".Trash", `${basename(file)}-${Date.now()}`));
+    // A fresh Linux home (CI) has no Trash yet.
+    const trash = join(homedir(), ".Trash");
+    mkdirSync(trash, { recursive: true });
+    renameSync(file, join(trash, `${basename(file)}-${Date.now()}`));
   }
   assert.equal(indexGrams("三个⽉"), indexGrams("三个月"));
 });

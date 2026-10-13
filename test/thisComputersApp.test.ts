@@ -39,9 +39,11 @@ const attackers: Array<[string, { headers: Record<string, string>; remoteAddress
 const folder = mkdtempSync(join(homedir(), ".twoody-this-app-test-"));
 // Put in the Trash afterwards, not deleted (AGENTS.md rule 6).
 test.after(async () => {
-  const { renameSync } = await import("node:fs");
+  const { mkdirSync, renameSync } = await import("node:fs");
   const { basename } = await import("node:path");
-  renameSync(folder, join(homedir(), ".Trash", basename(folder)));
+  const trash = join(homedir(), ".Trash");
+  mkdirSync(trash, { recursive: true });
+  renameSync(folder, join(trash, basename(folder)));
 });
 
 const sensitive = [

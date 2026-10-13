@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build dependencies
         run: |
@@ -44,7 +44,7 @@ jobs:
 
       - name: Cache Clang
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /opt/llvm
           key: llvm-${{ env.LLVM_VERSION }}-linux-arm64-${{ env.LLVM_SHA256 }}
@@ -78,7 +78,7 @@ jobs:
           tar -tzvf "$RUNNER_TEMP"/out/*.tar.gz
           cat "$RUNNER_TEMP/out/SHA256SUMS" | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: llama-${{ inputs.tag }}-bin-ubuntu-arm64-clang-${{ inputs.variant }}
           path: |
