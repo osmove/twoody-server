@@ -912,10 +912,177 @@ const SAVED_CLAIM = new RegExp([
 ].join("|"), "iu");
 const DENIED = /(?<![\p{L}])(?:not|nothing|no|never|neither|nor|nicht|nichts|kein\p{L}*|weder|noch|pas|rien|aucun\p{L}*|ni|jamais|nada|ningún|ninguno|ninguna|nunca|non|nulla|nessun\p{L}*|né|mai|não|nenhum\p{L}*|nem|nunca|niet|niets|geen|noch|nooit)(?![\p{L}])|n['’]t(?![\p{L}])|ませ|ない|なかった|せず|没|未|不|않|안\s|못/iu;
 
-/// The answer says the draft was saved or sent (after it was refused).
+/// The answer says the draft was saved or sent (after it was refused) — or
+/// made at all (claimsDraftMade: « 下書きを作成しました », « 保存されています »).
 export function claimsDraftSaved(answer: string): boolean {
   const clauses = answer.split(/[.!?。！？\n,;:，；：、]+|\s(?:mais|but|aber|pero|ma|mas|maar)\s|但是|但|하지만|けど/u);
-  return clauses.some((clause) => SAVED_CLAIM.test(clause) && !DENIED.test(clause));
+  return clauses.some((clause) => SAVED_CLAIM.test(clause) && !DENIED.test(clause)) || claimsDraftMade(answer);
+}
+
+// ─── A draft said made when none was ───────────────────────────────────────
+
+// « Dis à maman que je serai en retard », « はい »: no draft_email call, and
+// Qwen3.5 9B answered « ママへのメールの下書きを作成しました … メールはあなたの
+// メールアプリの「下書き」フォルダに保存されています » (non-regression bench on
+// 80cc8ca, 12/10/2026). As for Maison (home/notDone.ts): while a draft is
+// asked for and none was saved, the answer is held (routes/queries.ts), and
+// one that says a draft was made, saved, sent or is in the Drafts folder is
+// replaced by what is true, in the person's language.
+
+/// Why no draft was saved: draft_email not called (or called before the
+/// person said how to pass it on), an address missing, or the mailbox not
+/// taking it (or another « Not done » of the tool).
+export type DraftNotMadeReason = "not_called" | "needs_address" | "not_saved";
+
+/// The sentence said instead. Each says nothing was saved or sent; the first
+/// offers the draft in words a « yes » is taken for (email/intent.ts
+/// agreedToDraft). None reads as a claim (claimsDraftMade), nor as one to
+/// the bench (twoody-bench/regress/run.mts DRAFT_CLAIM, CLAIMS_DONE: no
+/// « しました », « done », « hecho »).
+export const NOT_DRAFTED: Record<string, Record<DraftNotMadeReason, string>> = {
+  fr: {
+    not_called: "Je n'ai pas encore créé de brouillon : rien n'a été enregistré dans votre boîte mail ni envoyé. Voulez-vous que je prépare le brouillon de l'e-mail maintenant ?",
+    needs_address: "Je n'ai pas créé de brouillon : rien n'a été enregistré ni envoyé, il me manque l'adresse e-mail du destinataire. Pouvez-vous me la donner ?",
+    not_saved: "Je n'ai pas pu enregistrer le brouillon dans votre boîte mail : rien n'a été enregistré ni envoyé.",
+  },
+  en: {
+    not_called: "I haven't created a draft yet: nothing was saved in your mailbox or sent. Would you like me to prepare the draft of the e-mail now?",
+    needs_address: "I haven't created a draft: nothing was saved or sent, as I don't have the recipient's e-mail address. Could you give it to me?",
+    not_saved: "I couldn't save the draft in your mailbox: nothing was saved or sent.",
+  },
+  de: {
+    not_called: "Ich habe noch keinen Entwurf erstellt: In Ihrem Postfach wurde nichts gespeichert oder gesendet. Soll ich den E-Mail-Entwurf jetzt vorbereiten?",
+    needs_address: "Ich habe keinen Entwurf erstellt: Es wurde nichts gespeichert oder gesendet, weil mir die E-Mail-Adresse des Empfängers fehlt. Können Sie sie mir geben?",
+    not_saved: "Ich konnte den Entwurf nicht in Ihrem Postfach speichern: Es wurde nichts gespeichert oder gesendet.",
+  },
+  es: {
+    not_called: "Todavía no he creado ningún borrador: no se ha guardado nada en tu buzón ni se ha enviado nada. ¿Quieres que prepare ahora el borrador del correo?",
+    needs_address: "No he creado ningún borrador: no se ha guardado ni enviado nada, porque me falta la dirección de correo del destinatario. ¿Me la puedes dar?",
+    not_saved: "No he podido guardar el borrador en tu buzón: no se ha guardado ni enviado nada.",
+  },
+  it: {
+    not_called: "Non ho ancora creato nessuna bozza: non è stato salvato né inviato nulla nella tua casella di posta. Vuoi che prepari ora la bozza dell'e-mail?",
+    needs_address: "Non ho creato nessuna bozza: non è stato salvato né inviato nulla, perché mi manca l'indirizzo e-mail del destinatario. Me lo puoi dare?",
+    not_saved: "Non sono riuscito a salvare la bozza nella tua casella di posta: non è stato salvato né inviato nulla.",
+  },
+  pt: {
+    not_called: "Ainda não criei nenhum rascunho: nada foi salvo na sua caixa de e-mail nem enviado. Quer que eu prepare agora o rascunho do e-mail?",
+    needs_address: "Não criei nenhum rascunho: nada foi salvo nem enviado, porque não tenho o endereço de e-mail do destinatário. Pode me passar?",
+    not_saved: "Não consegui salvar o rascunho na sua caixa de e-mail: nada foi salvo nem enviado.",
+  },
+  nl: {
+    not_called: "Ik heb nog geen concept gemaakt: er is niets in uw mailbox opgeslagen of verstuurd. Wilt u dat ik het concept van de e-mail nu opstel?",
+    needs_address: "Ik heb geen concept gemaakt: er is niets opgeslagen of verstuurd, omdat ik het e-mailadres van de ontvanger niet heb. Kunt u het mij geven?",
+    not_saved: "Het is me niet gelukt het concept in uw mailbox op te slaan: er is niets opgeslagen of verstuurd.",
+  },
+  ja: {
+    not_called: "下書きはまだ作成していません。メールボックスには何も保存・送信されていません。今すぐメールの下書きを作成しましょうか？",
+    needs_address: "下書きは作成していません。宛先のメールアドレスがわからないため、何も保存・送信されていません。アドレスを教えていただけますか？",
+    not_saved: "メールボックスに下書きを保存できませんでした。何も保存・送信されていません。",
+  },
+  zh: {
+    not_called: "我还没有创建草稿，你的邮箱里没有保存任何内容，也没有发送任何内容。要我现在起草这封邮件吗？",
+    needs_address: "我没有创建草稿，没有保存也没有发送任何内容，因为我还不知道收件人的邮箱地址。你可以告诉我吗？",
+    not_saved: "我没能把草稿保存到你的邮箱，没有保存也没有发送任何内容。",
+  },
+  ko: {
+    not_called: "아직 초안을 만들지 않았습니다. 메일함에는 아무것도 저장되거나 보내지지 않았습니다. 지금 이메일 초안을 작성해 드릴까요?",
+    needs_address: "초안을 만들지 않았습니다. 받는 사람의 이메일 주소를 몰라서 아무것도 저장되거나 보내지지 않았습니다. 주소를 알려 주시겠어요?",
+    not_saved: "메일함에 초안을 저장하지 못했습니다. 아무것도 저장되거나 보내지지 않았습니다.",
+  },
+};
+
+/// French when the language is not told, as the other sentences of the chat.
+export function notDraftedSentence(reason: DraftNotMadeReason, language: string | null | undefined): string {
+  const code = (language ?? "fr").split(/[-_]/)[0]!.toLowerCase();
+  return (NOT_DRAFTED[code] ?? NOT_DRAFTED.en!)[reason];
+}
+
+/// Why, from the errors of the draft_email calls of the turn (none: not
+/// called; « ask_first »: made before the person said how, the offer again).
+export function draftNotMadeReason(errors: string[]): DraftNotMadeReason {
+  const real = errors.filter((error) => error !== "ask_first");
+  if (!real.length) return "not_called";
+  return ["unknown_address", "invalid_address", "no_recipient", "which_address"].includes(real.at(-1)!) ? "needs_address" : "not_saved";
+}
+
+/// A draft, an e-mail, a mailbox's Drafts in the ten languages: what makes
+/// « C'est enregistré » about a draft.
+const DRAFT_NOUN = /brouillon|courriel|e-?mails?|(?<![\p{L}])mails?(?![\p{L}])|drafts?|entw[üu]rf|nachricht|borrador|correo|bozz[ae]|rascunho|concept|下書き|メール|草稿|邮件|郵件|电邮|초안|이메일|메일|임시\s?보관함/iu;
+/// Said saved, sent, or in the Drafts folder: a claim whenever the answer
+/// is about a draft. Participles with their accents (« enregistré », not
+/// « Twoody enregistre les brouillons… »).
+const SAID_SAVED = new RegExp([
+  String.raw`(?<![\p{L}])(?:enregistr|sauvegard|envoy|plac|rang|d[ée]pos)(?:é|ée|és|ées)(?![\p{L}])|dans (?:vos|votre|tes|ton|le|la) (?:dossier |boîte )?(?:des |de |« )?brouillons`,
+  String.raw`(?<![\p{L}])(?:saved|stored|sent|filed)(?![\p{L}])|in(?:to)? (?:your|the) drafts?(?: folder)?(?![\p{L}])|drafts folder`,
+  String.raw`gespeichert|abgelegt|hinterlegt|gesendet|verschickt|versendet|in (?:ihren|deinen|den|ihrem|deinem|dem) (?:ordner )?[„"]?\s*entw[üu]rfen?|entwurfsordner|ordner\s*[„"«]?\s*entw[üu]rfe`,
+  String.raw`(?<![\p{L}])(?:guardad[oa]s?|guard[ée]|enviad[oa]s?|envi[ée])(?![\p{L}])|en (?:tus|sus|la carpeta de|tu carpeta de) borradores`,
+  String.raw`(?<![\p{L}])(?:salvat[oaie]|inviat[oaie]|archiviat[oaie])(?![\p{L}])|nelle (?:tue |sue )?bozze|nella (?:tua |sua )?cartella (?:delle )?bozze`,
+  String.raw`(?<![\p{L}])(?:salvei|salvou|enviei|enviou|salv[oa]s?|enviad[oa]s?)(?![\p{L}])|nos (?:seus |teus )?rascunhos|na (?:sua |tua )?pasta (?:de )?rascunhos`,
+  String.raw`opgeslagen|bewaard|verstuurd|verzonden|in (?:je|uw|de) (?:map )?concepten|conceptenmap`,
+  "保存(?:しました|されました|されています|されてい|済み|完了|して(?:あります|おきました))|送信(?:しました|されました|済み)|送りました|下書き」?フォルダ」?(?:に|へ|の中)|下書きに(?:保存|入れ)",
+  "已保存|保存了|保存好|存好了|已存入|存到了|已发送|已發送|发送了|發送了|(?:放|存)(?:在|到|进|進)了?(?:你的|您的)?草稿箱|在(?:你的|您的)?草稿箱",
+  "저장했|저장되었|저장됐|저장되어\\s?있|저장해\\s?(?:두었|뒀|놓았)|보냈|전송했|전송되었|임시\\s?보관함에",
+].join("|"), "iu");
+/// Said made: created, prepared, ready. A claim unless the answer asks
+/// something (« J'ai préparé ce brouillon : … Voulez-vous que je
+/// l'enregistre ? » is a text shown, not a draft said saved).
+const SAID_MADE = new RegExp([
+  String.raw`(?<![\p{L}])(?:créée?s?|préparée?s?)(?![\p{L}])|brouillon (?:est |est maintenant |est bien )?pr[eê]t`,
+  String.raw`(?<![\p{L}])(?:created|prepared)(?![\p{L}])|(?:draft|e-?mail) is (?:now )?ready`,
+  String.raw`(?<![\p{L}])(?:erstellt|angelegt|vorbereitet)(?![\p{L}])|entwurf (?:ist )?(?:jetzt )?fertig`,
+  String.raw`(?<![\p{L}])(?:cread[oa]s?|preparad[oa]s?|creé|preparé)(?![\p{L}])|borrador (?:est[áa] )?listo`,
+  String.raw`(?<![\p{L}])(?:creat[oaie]|preparat[oaie])(?![\p{L}])|bozza (?:è )?pronta`,
+  String.raw`(?<![\p{L}])(?:criad[oa]s?|criei|preparei)(?![\p{L}])|rascunho (?:est[áa] )?pronto`,
+  String.raw`(?<![\p{L}])(?:aangemaakt|voorbereid|klaargezet|gemaakt)(?![\p{L}])|concept (?:staat |is )?klaar`,
+  "(?:作成|用意|準備)(?:しました|されました|しておきました|してあります|済み|完了)|作りました|作っておきました",
+  "(?:已经?|已为你|已为您|为你|为您)(?:创建|建立|生成|起草|拟好|写好|准备好)|(?:创建|生成|起草|拟好|写好|准备好)了|草稿已(?:经)?(?:创建|生成|准备好|写好)",
+  "(?:작성|생성|준비)(?:했|하였|되었|됐)|만들었|만들어\\s?(?:두었|뒀|놓았)",
+].join("|"), "iu");
+/// « C'est fait. », « Done! », « 完了しました。 »: a whole clause.
+const SAID_DONE = /^(?:c'est fait|voil[àa]|(?:all )?done|it'?s done|erledigt|fertig|listo|hecho|ya est[áa]|fatto|ecco fatto|feito|pronto|klaar|gedaan|完了(?:しました|です)?|できました|好了|完成了|已完成|완료(?:했습니다|되었습니다|입니다)?)$/iu;
+/// A clause that says it was not done (the e-mails' DENIED, and « 없 »).
+const NOT_MADE = /(?<![\p{L}])(?:not|nothing|no|never|neither|nor|unable|cannot|failed|nicht|nichts|kein\p{L}*|weder|pas|rien|aucun\p{L}*|ni|jamais|impossible|nada|ningún|ninguno|ninguna|nunca|non|nulla|nessun\p{L}*|né|mai|não|nenhum\p{L}*|nem|niet|niets|geen|nooit)(?![\p{L}])|n['’]t(?![\p{L}])|ませ|ない|なかった|せず|できず|没|未|不|无法|無法|않|안\s|못|없/iu;
+/// A condition, an offer or an announcement — no report of a draft made:
+/// « Si vous voulez, je l'enregistre dans vos brouillons », « I can save it
+/// to your Drafts », « 下書きを作成しましょうか », « 저장해 드릴 수 있습니다 ».
+const NOT_A_REPORT = /^(?:si|als)\s|^se\s(?!(?:ha|han|he|hanno|foi|fue)\s|guard|cre|envi|prepar|salv)|(?:^|\s)(?:if|when|once|so that|quand|lorsque|une fois que|d[èe]s que|pour que|afin que|wenn|falls|sobald|damit|cuando|una vez que|para que|quando|una volta che|affinch[ée]|assim que|zodra|wanneer|zodat)\s|(?:^|\s)(?:je (?:peux|pourrais|vais|pourrai)|puis-je|i (?:can|could|will|would|shall)|i'll|shall i|ich (?:kann|könnte|werde)|soll ich|puedo|podr[ií]a|voy a|posso|potrei|sto per|vado a|poderia|vou|ik (?:kan|zal|ga)|zal ik)(?![\p{L}])|できます|できる|しましょう|しますか|ましょう|もし|たら|れば|我可以|可以帮|要我|我会|我將|我将|如果|一旦|수\s?있|하겠습니다|겠습니다|할까요|드릴까요|만약|(?:하|되|으|이)면\s/iu;
+/// What Twoody does in general (« Twoody enregistre les brouillons dans
+/// votre dossier Brouillons, jamais envoyés », « Drafts are saved in your
+/// Drafts folder »): the capability, not this draft.
+const CAPABILITY_TALK = /twoody|les brouillons (?:sont|seront|restent)|(?<![\p{L}])drafts (?:are|stay|will be)|entw[üu]rfe (?:werden|bleiben)|los borradores (?:se|son|quedan)|le bozze (?:vengono|sono|restano)|os rascunhos (?:s[ãa]o|ficam)|concepten (?:worden|blijven)|下書きは(?:常に|いつも)|草稿(?:会|总是)|초안은\s?(?:항상|늘)/iu;
+
+/// The answer says a draft was made, saved, sent or put in the Drafts
+/// folder — in the app's ten languages. A question, a clause that denies
+/// it, a condition, an offer, an announcement, and a sentence about what
+/// Twoody does in general are no claims; « created, prepared » is none in
+/// an answer that asks something (a text shown, the person to say).
+export function claimsDraftMade(answer: string): boolean {
+  const text = answer.normalize("NFC").replace(/[«»"“”*]/g, " ").replace(/[’‘]/g, "'");
+  const sentences = text.match(/[^.!?。！？\n]+[.!?。！？]*/gu) ?? [];
+  const asks = sentences.some((sentence) => /[?？]\s*$/u.test(sentence));
+  const aboutDraft = DRAFT_NOUN.test(text);
+  return sentences.some((sentence) => {
+    if (/[?？]\s*$/u.test(sentence)) return false;
+    const plain = sentence.replace(/[.!?。！？]+\s*$/u, "").trim().toLowerCase();
+    if (!plain || NOT_A_REPORT.test(plain) || CAPABILITY_TALK.test(plain)) return false;
+    const clauses = plain.split(/[,;:，；：、]+|\s(?:mais|but|aber|pero|ma|mas|maar)\s|但是|但|하지만|けど|が、/u);
+    return clauses.some((clause) => {
+      const said = clause.trim().replace(/\s+/g, " ").replace(/^[-–•\s]+/u, "").replace(/[!！]+$/u, "");
+      if (!said || NOT_MADE.test(said)) return false;
+      if (SAID_DONE.test(said)) return true;
+      if (!aboutDraft) return false;
+      return SAID_SAVED.test(said) || (!asks && SAID_MADE.test(said));
+    });
+  });
+}
+
+/// What the person sees when a draft was asked for and none was saved: the
+/// model's answer, or — when it says one was made, or says nothing — the
+/// plain sentence in their language.
+export function answerWithoutDraftClaim(answer: string, sentence: string): { text: string; corrected: boolean } {
+  if (answer.trim() && !claimsDraftMade(answer)) return { text: answer, corrected: false };
+  return { text: sentence, corrected: true };
 }
 
 /// What the person sees after refusing a draft: the model's answer, or —

@@ -65,7 +65,7 @@ import { callConnectorTool, connectorChatTools, waitForApproval } from "../conne
 import { GOOGLE_DATA_CONNECTOR_ID, googleDataChatTools, isGoogleDataTool, runGoogleDataTool } from "../google/dataTools.js";
 import { googleDataForMessage } from "../google/dataIntent.js";
 import { googleDataLink } from "../google/dataLink.js";
-import { answerAfterRefusal, EMAIL_TOOLS, emailsAgreedTo, emailsForMessage, emailToolsAvailable, isEmailTool, passOnFirst, PRONOUN_RECIPIENT, refusedDraft, runEmailTool, type DraftRecipient } from "../email/chat.js";
+import { answerAfterRefusal, answerWithoutDraftClaim, draftNotMadeReason, EMAIL_TOOLS, emailsAgreedTo, emailsForMessage, emailToolsAvailable, isEmailTool, passOnFirst, NOT_DRAFTED, notDraftedSentence, PRONOUN_RECIPIENT, refusedDraft, runEmailTool, type DraftRecipient } from "../email/chat.js";
 import { addressesIn, recipientFor } from "../email/recipient.js";
 import { addressInMailbox } from "../email/store.js";
 import { aboutEmails, agreedToDraft, asksForADraft, passOnWithoutHow } from "../email/intent.js";
@@ -1155,7 +1155,12 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // « Rappelle-moi de dire à Paul… »): that is the reminder's.
     const passOn = offersEmail && !emailAsked && !askedAction(typedText(content)) ? passOnWithoutHow(typedText(content)) : null;
     const lastAnswer = [...history].reverse().find((row) => row.role === "assistant");
-    const askedBefore = lastAnswer ? [...history.slice(0, history.lastIndexOf(lastAnswer))].reverse().find((row) => row.role === "user")?.content ?? null : null;
+    // Asked before the last answer: the person's message — or, when that
+    // answer was the draft offered again after none was made (NOT_DRAFTED),
+    // the request their first « oui » agreed to.
+    const usersBefore = lastAnswer ? history.slice(0, history.lastIndexOf(lastAnswer)).filter((row) => row.role === "user").reverse() : [];
+    const offeredAgain = !!lastAnswer && Object.values(NOT_DRAFTED).some((said) => lastAnswer.content.trim().endsWith(said.not_called));
+    const askedBefore = (offeredAgain && usersBefore.length > 1 ? usersBefore[1] : usersBefore[0])?.content ?? null;
     const agreedRequest = offersEmail && !emailAsked && !passOn && lastAnswer && askedBefore !== null && agreedToDraft(lastAnswer.content, typedText(content), passOnWithoutHow(askedBefore) !== null)
       ? askedBefore
       : null;
@@ -1212,6 +1217,15 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // NOT_SAVED): Qwen3.5 9B said so after 3 of 14 refusals (bench of
     // 10/10/2026), « dans votre dossier Brouillons », « im Ordner Entwürfe ».
     let draftRefused = false;
+    // A draft asked for — or something to pass on, asked first — and none
+    // saved yet: what the model writes is held (`on`) until draft_email
+    // saves one — then let go as it is — or to the end of the turn, where an
+    // answer that says a draft was made, saved or is in the Drafts, or no
+    // answer, is replaced by what is true (email/chat.ts claimsDraftMade;
+    // « ママへのメールの下書きを作成しました … 「下書き」フォルダに保存されています »
+    // without a call, Qwen3.5 9B, bench of 12/10/2026). Refused, the text
+    // held goes with what follows (draftRefused).
+    const draftHold: { on: boolean; text: string; errors: string[] } = { on: draftAsked || passOn !== null, text: "", errors: [] };
     // « oui » says little: the request before it, else the app's.
     const answerLanguage = () => messageLanguage(typedText(content), turnLocale) ?? (agreedRequest ? messageLanguage(agreedRequest, turnLocale) : null) ?? turnLocale?.split("-")[0] ?? null;
     const runEmail = async (name: string, args: Record<string, unknown>): Promise<string> => {
@@ -1258,6 +1272,18 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       traced.result_chars = done.text.length;
       if (done.error) traced.error = done.error;
       if (done.error === "refused") draftRefused = true;
+      if (name === "draft_email") {
+        if (done.drafted && draftHold.on) {
+          // Saved: what was held goes out, and nothing more is.
+          draftHold.on = false;
+          if (draftHold.text) {
+            startSse();
+            aggregated += draftHold.text;
+            reply.raw.write(`event: message\ndata: ${escapeData(draftHold.text)}\n\n`);
+            draftHold.text = "";
+          }
+        } else if (done.error && done.error !== "refused") draftHold.errors.push(done.error);
+      }
       return done.text;
     };
     // Banque (Capacités, src/bank/): the statements the person imported,
@@ -1506,6 +1532,11 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         homeHold.text += delta;
         return;
       }
+      // A draft asked for and none saved (yet): held (draftHold).
+      if (draftHold.on) {
+        draftHold.text += delta;
+        return;
+      }
       aggregated += delta;
       // Cloud-compat shape: per-token `event: message` with the
       // raw delta as the data line. The watch/RN parser slices
@@ -1582,8 +1613,11 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     thinkFilter.flush();
     if (draftRefused) {
       // « Je rédige le brouillon… » after it was refused is no truer.
-      const told = answerAfterRefusal(afterRefusal, answerLanguage(), draftAnnounced);
-      if (told.corrected) trace.email = { ...(trace.email as Record<string, unknown> | undefined), refused_answer: afterRefusal.trim() ? "corrected" : "empty" };
+      // What was held before the refusal is judged with what came after.
+      const said = draftHold.on ? `${draftHold.text}${afterRefusal}` : afterRefusal;
+      draftHold.on = false;
+      const told = answerAfterRefusal(said, answerLanguage(), draftAnnounced);
+      if (told.corrected) trace.email = { ...(trace.email as Record<string, unknown> | undefined), refused_answer: said.trim() ? "corrected" : "empty", ...(said.trim() ? { replaced: said.trim().slice(0, 400) } : {}) };
       const shown = aggregated && !/\s$/.test(aggregated) ? ` ${told.text.trimStart()}` : told.text;
       aggregated += shown;
       reply.raw.write(`event: message\ndata: ${escapeData(shown)}\n\n`);
@@ -1595,6 +1629,18 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       const reason: HomeNotDoneReason = homeHold.failure?.reason ?? homeUnused ?? "not_called";
       const told = answerWithoutHomeClaim(homeHold.text, homeNotDoneSentence(reason, answerLanguage(), turnLocale, homeHold.failure?.detail ?? ""), { stateKnown: home !== null });
       trace.home = { ...(trace.home as Record<string, unknown> | undefined), not_done: reason, ...(told.corrected ? { answer: homeHold.text.trim() ? "corrected" : "empty", ...(homeHold.text.trim() ? { replaced: homeHold.text.trim().slice(0, 400) } : {}) } : {}) };
+      const shown = aggregated && !/\s$/.test(aggregated) ? ` ${told.text.trimStart()}` : told.text;
+      aggregated += shown;
+      reply.raw.write(`event: message\ndata: ${escapeData(shown)}\n\n`);
+    }
+    if (draftHold.on) {
+      // A draft asked for, none saved this turn: an answer that says one was
+      // made, saved or is in the Drafts — or no answer — is replaced by what
+      // is true; the answer replaced stays in the local trace.
+      draftHold.on = false;
+      const reason = draftNotMadeReason(draftHold.errors);
+      const told = answerWithoutDraftClaim(draftHold.text, notDraftedSentence(reason, answerLanguage()));
+      if (told.corrected) trace.email = { ...(trace.email as Record<string, unknown> | undefined), not_drafted: reason, answer: draftHold.text.trim() ? "corrected" : "empty", ...(draftHold.text.trim() ? { replaced: draftHold.text.trim().slice(0, 400) } : {}) };
       const shown = aggregated && !/\s$/.test(aggregated) ? ` ${told.text.trimStart()}` : told.text;
       aggregated += shown;
       reply.raw.write(`event: message\ndata: ${escapeData(shown)}\n\n`);

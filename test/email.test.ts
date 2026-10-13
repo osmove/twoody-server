@@ -441,6 +441,43 @@ test("a draft with no recipient, or to something that is no address, is not aske
   assert.match(eventOf(response.body, "final").message, /Not done: not e-mail addresses: René\. Ask the user for the address\./);
 });
 
+test("« oui », and the answer says the draft was made though draft_email was never called: the person reads that nothing was saved, the offer again; « oui » again: the request first agreed to", async () => {
+  const { NOT_DRAFTED } = await import("../src/email/chat.js");
+  answer = "Voulez-vous que je rédige un e-mail à René pour lui dire que je serai en retard ?";
+  const first = await ask("Dis à René que je serai en retard");
+  const discussion = { discussion_id: eventOf(first.body, "final").discussion_id as string, force_new_discussion: false };
+  // Qwen3.5 9B on the bench: « 下書きを作成しました … 「下書き」フォルダに保存されています ».
+  answer = "J'ai créé le brouillon pour René. Il est enregistré dans votre dossier Brouillons.";
+  const agreed = await ask("oui", discussion);
+  assert.equal(eventOf(agreed.body, "approval"), null, "no draft was made");
+  assert.equal(eventOf(agreed.body, "final").message, NOT_DRAFTED.fr!.not_called);
+  assert.doesNotMatch(agreed.body, /J'ai créé le brouillon|Il est enregistré/, "the claim never reached the person");
+  const traced = (await app.inject({ url: "/diagnostics/turns?kind=chat&limit=1", headers })).json().traces as Array<{ detail: { email?: Record<string, unknown> } }>;
+  assert.equal(traced[0]!.detail.email!.not_drafted, "not_called");
+  assert.equal(traced[0]!.detail.email!.answer, "corrected");
+  assert.equal(traced[0]!.detail.email!.replaced, "J'ai créé le brouillon pour René. Il est enregistré dans votre dossier Brouillons.", "kept in the local trace");
+  // « oui » to the offer said again: the request the first « oui » agreed to.
+  answer = "Voulez-vous que je l'écrive autrement ?";
+  const again = await ask("oui", discussion);
+  assert.match(lastUserMessage(), /\[The user said yes to the e-mail you offered to draft for their request « Dis à René que je serai en retard »\. Call draft_email now/);
+  assert.equal(eventOf(again.body, "final").message, "Voulez-vous que je l'écrive autrement ?", "a question is kept");
+  answer = null;
+});
+
+test("a draft saved: the answer that says so is the model's, as it wrote it; nothing replaced", async () => {
+  const [reunion] = searchEmails(userId, { from: "rene", query: "reunion" });
+  script = [() => ({ name: "draft_email", arguments: { in_reply_to: reunion!.id, body: "Bonjour René,\n\nC'est noté pour lundi.\n\nJimmy" }, say: ["Je prépare la réponse. "] })];
+  answer = "C'est fait : le brouillon est enregistré dans vos brouillons.";
+  const [response] = await Promise.all([ask("Réponds à René que c'est d'accord pour lundi"), answerWhenAsked(true)]);
+  script = [];
+  answer = null;
+  assert.equal(eventOf(response.body, "approval_done").allowed, true);
+  assert.equal(eventOf(response.body, "final").message, "C'est fait : le brouillon est enregistré dans vos brouillons.");
+  const traced = (await app.inject({ url: "/diagnostics/turns?kind=chat&limit=1", headers })).json().traces as Array<{ detail: { email?: Record<string, unknown> } }>;
+  assert.equal(traced[0]!.detail.email?.not_drafted, undefined);
+  assert.equal(traced[0]!.detail.email?.replaced, undefined);
+});
+
 test("the timer: due every 10 minutes, never again after a refused password until it is given again", () => {
   const source = activeSource(userId)!;
   assert.equal(syncDue({ ...source, last_synced_at: now - 11 * 60_000, last_error: null }, now), true);
