@@ -44,6 +44,14 @@ export function connectorEnvironment(own: Record<string, string> | undefined, fr
     // Found as in a terminal: npx, uvx or docker from Homebrew, after the person's own PATH.
     out.PATH = [out.PATH, "/opt/homebrew/bin", "/usr/local/bin"].filter(Boolean).join(delimiter);
   }
+  // Windows reads a name whatever its case (Path and PATH are one): the
+  // connector's own value replaces the inherited one of any case. Both
+  // kept, the program would get one (Node keeps the first in sort order)
+  // while launchFor looked the command up on the other.
+  if (windows && own) {
+    const mine = new Set(Object.keys(own).map((key) => key.toUpperCase()));
+    for (const key of Object.keys(out)) if (mine.has(key.toUpperCase())) delete out[key];
+  }
   return { ...out, ...(own ?? {}) };
 }
 

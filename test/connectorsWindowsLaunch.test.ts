@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { launchFor } from "../src/connectors/mcpClient.js";
+import { connectorEnvironment, launchFor } from "../src/connectors/mcpClient.js";
 import { windowsLaunch } from "../src/connectors/windowsLaunch.js";
 
 // How a connector's command starts on Windows without a shell
@@ -87,4 +87,29 @@ test("npx without Node: said as such", () => {
 test("on macOS and Linux the command is started as written (no shell either)", () => {
   assert.deepEqual(launchFor("npx", ["-y", "pkg"], { PATH: "/usr/bin" }, "darwin"), { command: "npx", args: ["-y", "pkg"] });
   assert.deepEqual(launchFor("npx", ["-y", "pkg"], { PATH: "/usr/bin" }, "linux"), { command: "npx", args: ["-y", "pkg"] });
+});
+
+test("a connector's own variable replaces the inherited one whatever its case on Windows: one Path, the command looked up on it", () => {
+  const inherited = { Path: `C:\\Windows\\system32;${NODEJS}`, PATHEXT: ".COM;.EXE;.BAT;.CMD", USERPROFILE: HOME, SystemRoot: "C:\\Windows", Temp: "C:\\Temp" };
+  const own = { path: "C:\\Tools\\uv", TEMP: "D:\\Scratch" };
+  const env = connectorEnvironment(own, inherited, "win32");
+  const named = (name: string) => Object.keys(env).filter((key) => key.toUpperCase() === name);
+  assert.deepEqual(named("PATH"), ["path"]);
+  assert.equal(env.path, "C:\\Tools\\uv");
+  assert.deepEqual(named("TEMP"), ["TEMP"]);
+  assert.equal(env.TEMP, "D:\\Scratch");
+  // What the connector does not set is inherited as Windows wrote it.
+  assert.equal(env.USERPROFILE, HOME);
+  assert.equal(env.SystemRoot, "C:\\Windows");
+  // The command is found on the connector's PATH, never on the inherited one.
+  const onBoth = disk("C:\\Tools\\uv\\uvx.exe", `${NODEJS}\\uvx.exe`);
+  assert.deepEqual(launchFor("uvx", ["mcp-server-time"], env, "win32", onBoth), { command: "C:\\Tools\\uv\\uvx.exe", args: ["mcp-server-time"] });
+  // Nothing set by the connector: the inherited Path as it is.
+  assert.deepEqual(Object.keys(connectorEnvironment(undefined, inherited, "win32")).filter((key) => key.toUpperCase() === "PATH"), ["Path"]);
+});
+
+test("on macOS and Linux, names keep their case: a connector's « path » is another variable than PATH", () => {
+  const env = connectorEnvironment({ path: "/somewhere" }, { PATH: "/usr/bin", HOME: "/home/jimmy" }, "linux");
+  assert.equal(env.path, "/somewhere");
+  assert.ok(env.PATH!.startsWith("/usr/bin"));
 });
