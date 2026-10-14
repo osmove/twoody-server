@@ -1,24 +1,36 @@
 import type { FastifyRequest } from "fastify";
 import { sqlite } from "../db.js";
 import { isThisComputersApp } from "../routes/usage.js";
+import { meshRequester } from "../sessionTrust.js";
+import { meshRoster } from "../vault/roster.js";
 
 // Who reaches a walled-off project (an isolated one, src/projects/isolation.ts:
 // its documents, conversations, notes, tasks and reminders), and what is
 // hidden from everyone else. One place, so that every route asks the same
-// question:
+// question (docs/walled-projects-phone-review.md):
 //
-//   this computer's own app (routes/usage.ts isThisComputersApp: the
-//   owner's session, from this machine, not through a tunnel or a proxy).
+//   - this computer's own app (routes/usage.ts isThisComputersApp: the
+//     owner's session, from this machine, not through a tunnel or a proxy);
+//   - the person's own device (14/10/2026, their iPhone): exactly whom
+//     sessionTrust.ts meshRequester names — a device session holding a
+//     device-access/v2 signed by a person device of the verified roster, not
+//     expired, asking through the tunnel from its own key; or the owner's
+//     session where ownerHere holds. Never a household member's device, a
+//     device paired by code that is no member of the history, another
+//     computer's peer session, a firmware device's token, the account.
 //
-// To anyone else — a phone, another computer of the network, a household
-// member's device, a browser on the local network, the account — a walled-off
-// project does not exist: not listed, « not found » when named.
+// To anyone else a walled-off project does not exist: not listed, « not
+// found » when named. What only this computer's app may do with one —
+// make one, its folder, its export, rename, archive or delete it, switch on
+// for a message what reaches outside it — asks isThisComputersApp itself.
 
 type Auth = { userId: string; sessionId?: string; deviceId?: string; thisMachine?: boolean };
 
 /// Whether this request may see and use the person's walled-off projects.
-export async function reachesWalledProjects(_req: FastifyRequest, auth: Auth): Promise<boolean> {
-  return isThisComputersApp(auth);
+export async function reachesWalledProjects(req: FastifyRequest, auth: Auth): Promise<boolean> {
+  if (isThisComputersApp(auth)) return true;
+  if (auth.deviceId || !auth.sessionId) return false;
+  return (await meshRequester(req, auth, () => meshRoster().get())) !== null;
 }
 
 /// The person's walled-off projects, by id.

@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { requireAuth } from "../auth.js";
 import { requirePerson } from "./memories.js";
 import { isThisComputersApp } from "./usage.js";
+import { reachesWalledProjects } from "../projects/walledAccess.js";
 import { EntityError } from "../memory/entities.js";
 import { FolderRejected } from "../documents/library.js";
 import { createProject, deleteProject, linkToProject, listProjects, projectDetail, ProjectError, projectIsolated, readProjectInput, updateProject } from "../projects/projects.js";
@@ -13,9 +14,14 @@ import {
 // towards and what hangs off it. The person's own, like the memories
 // (requirePerson). Wire shape: an array on index, `{project: …}` in and out.
 //
-// An isolated project (a client file, src/projects/isolation.ts) is this
-// computer's app's only, reading as writing: to anyone else it does not
-// exist (the phone: later). Its own routes:
+// A walled-off project (an isolated one, src/projects/isolation.ts) is
+// reached by this computer's app and by the person's own devices only
+// (projects/walledAccess.ts, docs/walled-projects-phone-review.md): to
+// anyone else it does not exist. A device reads it, its notes and
+// conversations, and adds a note; making one, renaming, archiving or
+// deleting it, its folder and its export are this computer's app's
+// (desktop_app_only), and a device never sees the computer's paths. Its
+// own routes:
 //   POST   /projects/:id/folders             { path } → the folder of its documents
 //   DELETE /projects/:id/folders/:folder_id  → no longer its (the files stay)
 //   GET    /projects/:id/export              → everything of it, for the app to write where the person says
@@ -40,11 +46,26 @@ type Auth = NonNullable<Awaited<ReturnType<typeof requireAuth>>>;
 async function reach(req: FastifyRequest, reply: FastifyReply, id: string | null = null): Promise<Auth | null> {
   const auth = await requireAuth(req, reply);
   if (!auth || !(await requirePerson(req, reply, auth))) return null;
-  if (id !== null && projectIsolated(auth.userId, id) === true && !isThisComputersApp(auth)) {
+  if (id !== null && projectIsolated(auth.userId, id) === true && !(await reachesWalledProjects(req, auth))) {
     reply.code(404).send({ error: "not_found" });
     return null;
   }
   return auth;
+}
+
+/// A walled-off project changed — renamed, archived, deleted, a
+/// conversation tied or untied: this computer's app only.
+async function changesWalled(req: FastifyRequest, reply: FastifyReply, auth: Auth, id: string): Promise<boolean> {
+  if (projectIsolated(auth.userId, id) !== true || isThisComputersApp(auth)) return true;
+  reply.code(403).send({ error: "desktop_app_only" });
+  return false;
+}
+
+/// What a device is told of a project: never the computer's paths (the
+/// folder of a walled-off project's documents keeps its name and counts).
+function forRequest<T extends { folders?: Array<{ path?: string }> }>(project: T, auth: Auth): T {
+  if (isThisComputersApp(auth) || !project.folders?.length) return project;
+  return { ...project, folders: project.folders.map(({ path: _path, ...folder }) => folder) };
 }
 
 /// An isolated project's own routes: this computer's app only.
@@ -68,11 +89,11 @@ export async function projectRoutes(app: FastifyInstance) {
       const auth = await reach(req, reply);
       if (!auth) return;
       const wanted = req.query.isolated === "1" ? true : req.query.isolated === "0" ? false : null;
-      if (!isThisComputersApp(auth)) {
+      if (!(await reachesWalledProjects(req, auth))) {
         reply.send(wanted === true ? [] : listProjects(auth.userId, false));
         return;
       }
-      reply.send(listProjects(auth.userId, wanted));
+      reply.send(listProjects(auth.userId, wanted).map((project) => forRequest(project, auth)));
     },
   });
 
@@ -81,7 +102,7 @@ export async function projectRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await reach(req, reply, req.params.id);
       if (!auth) return;
-      try { reply.send({ project: projectDetail(auth.userId, req.params.id) }); } catch (err) { fail(reply, err); }
+      try { reply.send({ project: forRequest(projectDetail(auth.userId, req.params.id), auth) }); } catch (err) { fail(reply, err); }
     },
   });
 
@@ -114,7 +135,7 @@ export async function projectRoutes(app: FastifyInstance) {
     schema: { tags: ["projects"], summary: "Change a project: title, kind, size, status, brief, due date, budget, names, reference", security },
     handler: async (req, reply) => {
       const auth = await reach(req, reply, req.params.id);
-      if (!auth) return;
+      if (!auth || !(await changesWalled(req, reply, auth, req.params.id))) return;
       try {
         updateProject(auth.userId, req.params.id, readProjectInput(req.body, false));
         reply.send({ project: projectDetail(auth.userId, req.params.id) });
@@ -126,7 +147,7 @@ export async function projectRoutes(app: FastifyInstance) {
     schema: { tags: ["projects"], summary: "Remove a project; what hung off it stays, unlinked (an isolated one only while empty)", security },
     handler: async (req, reply) => {
       const auth = await reach(req, reply, req.params.id);
-      if (!auth) return;
+      if (!auth || !(await changesWalled(req, reply, auth, req.params.id))) return;
       try { deleteProject(auth.userId, req.params.id); reply.code(204).send(); } catch (err) { fail(reply, err); }
     },
   });
@@ -136,7 +157,7 @@ export async function projectRoutes(app: FastifyInstance) {
       schema: { tags: ["projects"], summary: unlink ? "Untie a task, reminder, event, conversation or document from the project" : "Tie a task, reminder, event, conversation or document to the project", security },
       handler: async (req, reply) => {
         const auth = await reach(req, reply, req.params.id);
-        if (!auth) return;
+        if (!auth || !(await changesWalled(req, reply, auth, req.params.id))) return;
         try {
           linkToProject(auth.userId, req.params.id, req.body ?? {}, unlink);
           reply.send({ project: projectDetail(auth.userId, req.params.id) });

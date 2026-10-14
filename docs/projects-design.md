@@ -90,13 +90,17 @@ walled one would bring the memory already learned from them along, so it would n
   traces (`traces.ts WALLED`: its conversations', and its start read ahead, marked `isolated`), and the read-ahead
   seeds kept on disk (`warm-seeds.json`) never hold it, not even its id (`saveWarmSeed`).
 
-**Who reaches it**: this computer's app only (`walledAccess.ts reachesWalledProjects`, today `isThisComputersApp`).
-To anyone else — the phone, another computer, a household member's device, a browser on the network, the account — a
-walled-off project does not exist: not listed, « not found » when named. The phone comes in a second phase, through
-its own security review.
+**Who reaches it** (`walledAccess.ts reachesWalledProjects`): this computer's app, and since phase 2 (same day,
+docs/walled-projects-phone-review.md) the person's own devices — exactly whom `meshRequester` names: a device-access
+signed by a person device of the verified roster, not expired, through the tunnel of the session's own key. Their
+iPhone lists, opens and continues them (its own screens, sealed to this computer only, nothing kept on the phone);
+making one, its folder, export, renaming, archiving, deleting, and switching on what reaches outside it stay with
+this computer's app. To anyone else — another computer, a household member's device, a device paired by code that is
+no member of the history, a browser on the network, the account — a walled-off project does not exist.
 
 **Tests**: `test/isolatedProjects.test.ts` (the conversation's own walls), `test/walledProjects.test.ts` (attack
 tests: the general chat and its `list_files`, another walled-off project, the phone, the websocket, a trusted peer,
-the diagnostics shared, the seeds, a shared folder), Desktop `test/walledProjects.test.mjs`. **Bench**:
+the diagnostics shared, the seeds, a shared folder), `test/walledProjectsPhone.test.ts` (the person's iPhone, and
+every attack of the phone's security review), Desktop `test/walledProjects.test.mjs`. **Bench**:
 `twoody-bench/scripts/walled-projects-bench.mts` (the fictive client file « Tessane », real model; figures in the root
 AGENTS.md §5).

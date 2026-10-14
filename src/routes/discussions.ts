@@ -80,12 +80,12 @@ export async function discussionRoutes(app: FastifyInstance) {
         .where(eq(discussions.userId, auth.userId))
         .all();
       if (rows.some((row) => row.vaultId) && !(await mayReachHistory(req, auth))) rows = rows.filter((row) => !row.vaultId);
-      // An isolated project's conversations are this computer's app's only
-      // (src/projects/isolation.ts); it asks for the ones outside them, or
-      // one project's.
+      // A walled-off project's conversations: this computer's app's and the
+      // person's own devices' only (projects/walledAccess.ts); the app asks
+      // for the ones outside them, or one project's.
       const walled = new Set((sqlite.prepare("SELECT id FROM projects WHERE user_id = ? AND isolated = 1").all(auth.userId) as Array<{ id: string }>).map((row) => row.id));
       const isolatedRow = (row: { projectId: string | null }) => !!row.projectId && walled.has(row.projectId);
-      if (!isThisComputersApp(auth) || req.query.outside_isolated === "1") rows = rows.filter((row) => !isolatedRow(row));
+      if (req.query.outside_isolated === "1" || (walled.size && !(await reachesWalledProjects(req, auth)))) rows = rows.filter((row) => !isolatedRow(row));
       if (req.query.project) rows = rows.filter((row) => row.projectId === req.query.project);
 
       if (queryStr) {
@@ -201,7 +201,7 @@ export async function discussionRoutes(app: FastifyInstance) {
         .limit(1)
         .all();
       const isolated = discussion ? isolatedProjectOf(discussion.id, auth.userId) : null;
-      if (!discussion || (discussion.vaultId && !(await mayReachHistory(req, auth))) || (isolated && !isThisComputersApp(auth))) {
+      if (!discussion || (discussion.vaultId && !(await mayReachHistory(req, auth))) || (isolated && !(await reachesWalledProjects(req, auth)))) {
         return reply.code(404).send({ error: "not_found" });
       }
 
@@ -242,7 +242,9 @@ export async function discussionRoutes(app: FastifyInstance) {
           content:    row.content,
           provider:   row.provider,
           model:      row.model,
-          sources:    parseSources(row.sourcesJson),
+          // A device never gets this computer's paths (a walled-off
+          // project's sources kept with an answer asked from the app).
+          sources:    isolated && !isThisComputersApp(auth) ? withoutPaths(parseSources(row.sourcesJson)) : parseSources(row.sourcesJson),
           reasoning:  row.reasoning ?? null,
           reasoning_ms: row.reasoningMs ?? null,
           prompt_tokens: row.promptTokens ?? null,
@@ -323,6 +325,15 @@ async function deleteDiscussion(app: FastifyInstance) {
       publishEvent({ kind: "discussion.touched", userId: auth.userId, discussionId: req.params.id, lastActivityAt: new Date().toISOString() });
       reply.code(204).send();
     },
+  });
+}
+
+/// Sources without the absolute path this computer's own app may see.
+function withoutPaths(sources: unknown[]): unknown[] {
+  return sources.map((source) => {
+    if (!source || typeof source !== "object") return source;
+    const { path: _path, ...kept } = source as Record<string, unknown>;
+    return kept;
   });
 }
 

@@ -90,6 +90,7 @@ import { pathlessSource } from "../vault/sync.js";
 import { noteMemoryUse, profileHints, retrieveMemories } from "../memory/retrieve.js";
 import { titleAfterFirstAnswer, type TitleCall } from "../discussionTitles.js";
 import { isolatedProjectContext, isolatedProjectOf, projectForConversation, rememberInProject, type IsolatedProjectRef } from "../projects/isolation.js";
+import { reachesWalledProjects, walledConversation } from "../projects/walledAccess.js";
 import { ProjectError } from "../projects/projects.js";
 import { inProjectScope } from "../documents/retrieval.js";
 
@@ -344,7 +345,9 @@ async function handleCompact(req: FastifyRequest<{ Params: { id: string }; Body:
     .where(and(eq(discussions.id, req.params.id), eq(discussions.userId, auth.userId)))
     .limit(1)
     .all();
-  if (!discussion) return reply.code(404).send({ error: "not_found" });
+  // A walled-off project's conversation: compacted (its summary returned)
+  // for those who reach it only.
+  if (!discussion || (walledConversation(discussion.id) && !(await reachesWalledProjects(req, auth)))) return reply.code(404).send({ error: "not_found" });
 
   const compacted = discussionSummary(discussion.id);
   const history = loadHistory(discussion.id, compacted.summaryThrough);
@@ -523,7 +526,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     }
   }
   const isolatedRequest = !!askedProject?.isolated || (!!parsed.discussion_id && isolatedProjectOf(parsed.discussion_id, auth.userId) !== null);
-  if (isolatedRequest && !isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
+  // This computer's app, or the person's own device through its own tunnel
+  // (projects/walledAccess.ts, docs/walled-projects-phone-review.md).
+  const walledReach = isolatedRequest && (await reachesWalledProjects(req, auth));
+  if (isolatedRequest && !walledReach) return reply.code(403).send({ error: "desktop_app_only" });
   const vaultMember = requester !== null && !isolatedRequest;
   const vaultConversationId = vaultMember ? askedVaultConversationId : null;
   const priorTurns = vaultMember ? askedPriorTurns : null;
@@ -633,10 +639,12 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // The isolated project the conversation is in, if any: its documents, its
   // notes, and nothing that reaches outside it unless the message asks.
   const isolated = isolatedProjectOf(discussion.id, auth.userId);
-  if (isolated && !isThisComputersApp(auth)) return refuse(403, { error: "desktop_app_only" });
+  if (isolated && !(walledReach || (await reachesWalledProjects(req, auth)))) return refuse(403, { error: "desktop_app_only" });
   if (isolated?.closed) return refuse(409, { error: "project_closed" });
   if (isolated) {
-    const asked = capabilitiesOff(parsed.capabilities_on);
+    // What reaches outside it is switched on for a message from this
+    // computer's app only: a device's `capabilities_on` is not taken.
+    const asked = isThisComputersApp(auth) ? capabilitiesOff(parsed.capabilities_on) : new Set<string>();
     for (const id of OUTSIDE_AN_ISOLATED_PROJECT) if (!asked.has(id)) left.add(id);
   }
 
@@ -2260,7 +2268,9 @@ const RUNTIME_SLEEPS_AFTER_MS = 29 * 60_000;
 /// An isolated project's conversation (this computer's app only) starts with
 /// its own: their id + « |project:<id> ».
 function warmKey(auth: { userId: string } & Parameters<typeof isThisComputersApp>[0], isolatedId: string | null = null): string {
-  if (!isThisComputersApp(auth)) return `${auth.userId}|remote`;
+  // A walled-off project's start keeps its own key, from a device too:
+  // never kept on disk, never read ahead in the background (projectOfKey).
+  if (!isThisComputersApp(auth)) return isolatedId ? `${auth.userId}|remote|project:${isolatedId}` : `${auth.userId}|remote`;
   return isolatedId ? `${auth.userId}|project:${isolatedId}` : auth.userId;
 }
 

@@ -29,7 +29,8 @@ import { ProjectError } from "./projects.js";
 //
 // Its title has no entity in the memory graph, and the profile, the cards,
 // the learner and the chat's actions leave it out (projects.ts, actions.ts).
-// This computer's app only (routes/projects.ts, walledAccess.ts): the phone later.
+// This computer's app and the person's own devices only (walledAccess.ts,
+// docs/walled-projects-phone-review.md).
 
 export const NOTE_SOURCES = ["manual", "conversation"] as const;
 export type NoteSource = (typeof NOTE_SOURCES)[number];
