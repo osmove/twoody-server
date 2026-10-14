@@ -310,6 +310,15 @@ export interface GrantedRoot {
   id: string;
   name: string;
   path: string;
+  /// The folders inside it that belong to a walled-off project other than
+  /// its own (library.ts listFolders, src/projects/isolation.ts): nothing
+  /// under them is walked, listed, browsed or read from this folder.
+  walled?: readonly string[];
+}
+
+/// Whether `path` lies in a walled-off project's folder inside `root`.
+export function walledAt(root: Pick<GrantedRoot, "walled"> | null | undefined, path: string): boolean {
+  return !!root?.walled?.some((wall) => inside(wall, path));
 }
 
 const MAX_SCAN = 20_000;
@@ -352,6 +361,7 @@ async function walkFiles(start: string, root: GrantedRoot, into: Found[], seen: 
   const pending: Array<{ dir: string; depth: number }> = [{ dir: start, depth: 0 }];
   while (pending.length && budget.left > 0) {
     const { dir, depth } = pending.shift()!;
+    if (walledAt(root, dir)) continue;
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -364,7 +374,7 @@ async function walkFiles(start: string, root: GrantedRoot, into: Found[], seen: 
       // Symbolic links are not followed: a link must not widen the grant.
       const kind = await entryKind(entry, path);
       if (kind === "dir") {
-        if (recursive && depth < MAX_DEPTH && !skipDirectory(entry.name)) pending.push({ dir: path, depth: depth + 1 });
+        if (recursive && depth < MAX_DEPTH && !skipDirectory(entry.name) && !walledAt(root, path)) pending.push({ dir: path, depth: depth + 1 });
       } else if (kind === "file" && !skipFile(entry.name) && matchesKinds(entry.name, kinds) && !seen.has(path)) {
         files.push(path);
       }
@@ -387,7 +397,7 @@ async function walkFiles(start: string, root: GrantedRoot, into: Found[], seen: 
 
 async function statInto(paths: string[], root: GrantedRoot, into: Found[], seen: Set<string>, budget: { left: number }): Promise<void> {
   for (let i = 0; i < paths.length && budget.left > 0; i += 256) {
-    const batch = paths.slice(i, i + 256).filter((path) => !seen.has(path));
+    const batch = paths.slice(i, i + 256).filter((path) => !seen.has(path) && !walledAt(root, path));
     for (const path of batch) seen.add(path);
     budget.left -= batch.length;
     await Promise.all(
@@ -445,7 +455,7 @@ export async function findFolders(roots: GrantedRoot[], name: string, max = 6): 
       }
       for (const entry of entries) {
         const path = join(dir, entry.name);
-        if ((await entryKind(entry, path)) !== "dir" || skipDirectory(entry.name)) continue;
+        if ((await entryKind(entry, path)) !== "dir" || skipDirectory(entry.name) || walledAt(root, path)) continue;
         if (plain(entry.name) === wanted && !found.some((f) => f.path === path)) found.push({ path, root });
         if (depth < 4) pending.push({ dir: path, depth: depth + 1 });
       }
@@ -514,7 +524,7 @@ export async function listGrantedFiles(args: {
     const coverage = (pool: GrantedRoot[], among: string[]) =>
       among.flatMap((place) => {
         // The folder itself, from the nearest granted folder holding it…
-        const holders = pool.filter((root) => inside(root.path, place) && reachable(root.path, place)).sort((a, b) => b.path.length - a.path.length);
+        const holders = pool.filter((root) => inside(root.path, place) && reachable(root.path, place) && !walledAt(root, place)).sort((a, b) => b.path.length - a.path.length);
         if (holders.length) return [{ start: place, root: holders[0]! }];
         // …or the granted folders inside it (the home folder, say).
         return pool.filter((root) => inside(place, root.path) && root.path !== place).map((root) => ({ start: root.path, root }));
@@ -575,6 +585,8 @@ async function filesIn(starts: Array<{ start: string; root: GrantedRoot }>, kind
       await walkFiles(start, root, found, seen, budget, kinds, true);
     }
   }
+  // Nothing of a walled-off project's folder, whatever found it.
+  for (let i = found.length - 1; i >= 0; i -= 1) if (walledAt(found[i]!.root, found[i]!.path)) found.splice(i, 1);
   // By date: when each file arrived counts as much as when it was last
   // changed (a download keeps the date its server gave it, sometimes).
   if (sort === "recent" || sort === "oldest") {

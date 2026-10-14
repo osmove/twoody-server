@@ -98,9 +98,15 @@ function rowOf(row: Record<string, unknown>): TraceRow {
   };
 }
 
-export function listTraces(userId: string, options: { limit?: number; before?: number | null; kind?: string | null; discussionId?: string | null } = {}): TraceRow[] {
+/// A trace of a walled-off project (src/projects/isolation.ts): one of its
+/// conversations' answers, or the read-ahead of its start (`isolated` in
+/// the trace). Never shared with the account, whatever is ticked, and
+/// shown to this computer's app only.
+const WALLED = `(COALESCE(discussion_id, '') IN (SELECT d.id FROM discussions d JOIN projects p ON p.id = d.project_id WHERE p.isolated = 1) OR COALESCE(json_extract(trace, '$.isolated'), 0) = 1)`;
+
+export function listTraces(userId: string, options: { limit?: number; before?: number | null; kind?: string | null; discussionId?: string | null; hideWalled?: boolean } = {}): TraceRow[] {
   const limit = Math.min(200, Math.max(1, options.limit ?? 50));
-  const rows = sqlite.prepare(`SELECT * FROM message_traces WHERE user_id = ? AND occurred_at < ? AND (? IS NULL OR kind = ?) AND (? IS NULL OR discussion_id = ?)
+  const rows = sqlite.prepare(`SELECT * FROM message_traces WHERE user_id = ? AND occurred_at < ? AND (? IS NULL OR kind = ?) AND (? IS NULL OR discussion_id = ?)${options.hideWalled ? ` AND NOT ${WALLED}` : ""}
     ORDER BY occurred_at DESC LIMIT ?`).all(userId, options.before ?? Number.MAX_SAFE_INTEGER, options.kind ?? null, options.kind ?? null, options.discussionId ?? null, options.discussionId ?? null, limit) as Array<Record<string, unknown>>;
   return rows.map(rowOf);
 }
@@ -115,8 +121,8 @@ export function promptOfTrace(userId: string, traceId: string): TurnPrompt | nul
   }
 }
 
-export function traceOfMessage(userId: string, messageId: string): TraceRow | null {
-  const row = sqlite.prepare("SELECT * FROM message_traces WHERE user_id = ? AND message_id = ? ORDER BY occurred_at DESC LIMIT 1").get(userId, messageId) as Record<string, unknown> | undefined;
+export function traceOfMessage(userId: string, messageId: string, hideWalled = false): TraceRow | null {
+  const row = sqlite.prepare(`SELECT * FROM message_traces WHERE user_id = ? AND message_id = ?${hideWalled ? ` AND NOT ${WALLED}` : ""} ORDER BY occurred_at DESC LIMIT 1`).get(userId, messageId) as Record<string, unknown> | undefined;
   return row ? rowOf(row) : null;
 }
 
@@ -176,7 +182,7 @@ export function telemetryOf(row: TraceRow): Record<string, string | number | boo
 /// off unless ticked): each trace whole — the person's words included — and
 /// the prompt its model was given, after a point, oldest first.
 export function fullTracesSince(userId: string, after: number, limit = 20) {
-  const rows = sqlite.prepare("SELECT * FROM message_traces WHERE user_id = ? AND occurred_at > ? ORDER BY occurred_at ASC LIMIT ?").all(userId, after, Math.min(Math.max(limit, 1), 50)) as Array<Record<string, unknown>>;
+  const rows = sqlite.prepare(`SELECT * FROM message_traces WHERE user_id = ? AND occurred_at > ? AND NOT ${WALLED} ORDER BY occurred_at ASC LIMIT ?`).all(userId, after, Math.min(Math.max(limit, 1), 50)) as Array<Record<string, unknown>>;
   const traces = rows.map((row) => {
     const trace = rowOf(row);
     return { event_uuid: trace.id, occurred_at: trace.at, kind: trace.kind, discussion_id: trace.discussion_id, message_id: trace.message_id, client: trace.client, model: trace.model, outcome: trace.outcome, error: trace.error, total_ms: trace.total_ms, trace: trace.detail, prompt: promptOfTrace(userId, trace.id) };
@@ -188,7 +194,7 @@ export function fullTracesSince(userId: string, after: number, limit = 20) {
 /// them (events of « assistant_turn », « assistant_learning »,
 /// « assistant_warmup »).
 export function telemetrySince(userId: string, after: number, limit = 50) {
-  const rows = (sqlite.prepare("SELECT * FROM message_traces WHERE user_id = ? AND occurred_at > ? ORDER BY occurred_at LIMIT ?").all(userId, after, Math.min(50, Math.max(1, limit))) as Array<Record<string, unknown>>).map(rowOf);
+  const rows = (sqlite.prepare(`SELECT * FROM message_traces WHERE user_id = ? AND occurred_at > ? AND NOT ${WALLED} ORDER BY occurred_at LIMIT ?`).all(userId, after, Math.min(50, Math.max(1, limit))) as Array<Record<string, unknown>>).map(rowOf);
   const names: Record<string, string> = { chat: "assistant_turn", learn: "assistant_learning", warm: "assistant_warmup" };
   return {
     events: rows.map((row) => ({ event_uuid: row.id, name: names[row.kind] ?? `assistant_${row.kind}`, occurred_at: row.at, metadata: telemetryOf(row) })),

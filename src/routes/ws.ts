@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { authenticate } from "../auth.js";
 import { subscribe } from "../events.js";
+import { reachesWalledProjects, walledConversation } from "../projects/walledAccess.js";
 
 // `/ws` — single WebSocket endpoint that fans out per-user server
 // events to connected clients. Mirrors what /cable does on the
@@ -41,8 +42,12 @@ export async function wsRoutes(app: FastifyInstance) {
     // (different `userId`) are filtered server-side so a stray
     // subscriber can't snoop the bus. The unsubscribe is fired
     // when the socket closes — `socket.on("close", …)` below.
+    // A walled-off project's conversations (src/projects/isolation.ts) are
+    // this computer's app's only: their titles and activity reach no other
+    // socket — a phone, another computer, a browser on the network.
+    const thisApp = await reachesWalledProjects(req, auth);
     const unsubscribe = subscribe((event) => {
-      if (event.userId !== auth.userId) return;
+      if (!eventReaches(event, auth.userId, thisApp)) return;
       const payload = serializeEvent(event);
       try {
         socket.send(JSON.stringify(payload));
@@ -96,6 +101,14 @@ type SerializedEvent =
       role: "user" | "assistant";
     };
 
+/// Whether a server event goes to a socket of this person: another
+/// person's never; a walled-off project's conversation only to a socket
+/// that reaches the walled-off projects (this computer's app).
+export function eventReaches(event: Parameters<Parameters<typeof subscribe>[0]>[0], userId: string, reachesWalled: boolean): boolean {
+  if (event.userId !== userId) return false;
+  return reachesWalled || !walledConversation(event.discussionId);
+}
+
 function serializeEvent(event: Parameters<Parameters<typeof subscribe>[0]>[0]): SerializedEvent {
   switch (event.kind) {
     case "discussion.created":
@@ -118,14 +131,19 @@ function serializeEvent(event: Parameters<Parameters<typeof subscribe>[0]>[0]): 
 async function authenticateFromToken(
   req: FastifyRequest,
   token: string | undefined,
-): Promise<{ userId: string } | null> {
+): Promise<{ userId: string; sessionId?: string; deviceId?: string; thisMachine?: boolean } | null> {
   if (!token) return null;
+  // The upgrade's own address and headers (but its credentials): whether
+  // it comes from this machine is told as for any route (auth.ts
+  // fromThisMachine — a tunnel or a proxy is not this machine).
   const synthetic = {
     url: req.url,
+    ip: req.ip,
     headers: {
+      ...req.headers,
       authorization: `Bearer ${token}`,
     },
   } as unknown as FastifyRequest;
   const auth = await authenticate(synthetic);
-  return auth ? { userId: auth.userId } : null;
+  return auth ? { userId: auth.userId, sessionId: auth.sessionId, deviceId: auth.deviceId, thisMachine: auth.thisMachine } : null;
 }

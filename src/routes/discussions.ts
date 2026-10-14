@@ -12,6 +12,7 @@ import { discussionContext } from "./queries.js";
 import { readMemoryMode } from "../chatContext.js";
 import { discussionTitle } from "../documentBlocks.js";
 import { isolatedProjectOf } from "../projects/isolation.js";
+import { reachesWalledProjects, walledConversation } from "../projects/walledAccess.js";
 import { isThisComputersApp } from "./usage.js";
 
 // `/discussions` mirrors the cloud's chat-history surface. The RN app
@@ -170,7 +171,7 @@ export async function discussionRoutes(app: FastifyInstance) {
       if (!auth) return;
       const [discussion] = db.select().from(discussions)
         .where(and(eq(discussions.id, req.params.id), eq(discussions.userId, auth.userId))).limit(1).all();
-      if (!discussion || !(await mayReachHistory(req, auth))) return reply.code(404).send({ error: "not_found" });
+      if (!discussion || !(await mayReachHistory(req, auth)) || (walledConversation(discussion.id) && !(await reachesWalledProjects(req, auth)))) return reply.code(404).send({ error: "not_found" });
       reply.send({ notices: noticesOf(auth.userId, discussion.id), learning: isLearning(discussion.id) });
     },
   });
@@ -281,7 +282,7 @@ async function patchDiscussion(app: FastifyInstance) {
         .where(and(eq(discussions.id, req.params.id), eq(discussions.userId, auth.userId)))
         .limit(1)
         .all();
-      if (!owned || (owned.vaultId && !(await mayReachHistory(req, auth)))) return reply.code(404).send({ error: "not_found" });
+      if (!owned || (owned.vaultId && !(await mayReachHistory(req, auth))) || (walledConversation(owned.id) && !(await reachesWalledProjects(req, auth)))) return reply.code(404).send({ error: "not_found" });
       const body = req.body ?? {};
       let memoryMode = readMemoryMode(owned.memoryMode);
       if ("memory_mode" in body) {
@@ -313,7 +314,8 @@ async function deleteDiscussion(app: FastifyInstance) {
         .where(and(eq(discussions.id, req.params.id), eq(discussions.userId, auth.userId)))
         .limit(1)
         .all();
-      if (owned.length === 0 || (owned[0]!.vaultId && !(await mayReachHistory(req, auth)))) return reply.code(404).send({ error: "not_found" });
+      // A walled-off project's conversation: deleted from this computer's app only.
+      if (owned.length === 0 || (owned[0]!.vaultId && !(await mayReachHistory(req, auth))) || (walledConversation(owned[0]!.id) && !(await reachesWalledProjects(req, auth)))) return reply.code(404).send({ error: "not_found" });
       db.transaction((tx) => {
         tx.delete(messages).where(eq(messages.discussionId, req.params.id)).run();
         tx.delete(discussions).where(eq(discussions.id, req.params.id)).run();

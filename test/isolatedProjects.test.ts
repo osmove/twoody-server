@@ -185,7 +185,7 @@ test("memory: the project's notes in its conversations only; of the person's mem
   const prompt = system(inDupont.sent);
   assert.match(prompt, /Maître Claire Martin/);
   assert.doesNotMatch(prompt, /Lefèvre/, "learned in another conversation: maybe another client's");
-  assert.match(prompt, /client file « Dupont c\/ SCI Les Lilas » \(ref\. 2026-014\)/);
+  assert.match(prompt, /walled-off project « Dupont c\/ SCI Les Lilas » \(ref\. 2026-014\)/);
   assert.match(prompt, /Bail d'habitation, impayés depuis mars\./);
   assert.match(prompt, /- Le bailleur refuse toute transaction avant l'audience\./);
   assert.ok(prompt.trimEnd().endsWith("- Le bailleur refuse toute transaction avant l'audience."), "the file's block is the end of the system prompt");
@@ -200,7 +200,7 @@ test("« Retiens que… » in an isolated project: a note of the project, never 
   const before = (sqlite.prepare("SELECT COUNT(*) AS n FROM memories").get() as { n: number }).n;
   const asked = await ask({ text: "Retiens que le juge rapporteur est Mme Roussel.", force_new_discussion: true, project_id: dupont.id, document_access: { mode: "off" } });
   assert.equal(asked.response.statusCode, 200, asked.response.body);
-  assert.match(lastUser(asked.sent), /Just saved in this client file's notes/);
+  assert.match(lastUser(asked.sent), /Just saved in this walled-off project's notes/);
   assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM memories").get() as { n: number }).n, before);
   const notes = (await app.inject({ method: "GET", url: `/api/v1/projects/${dupont.id}`, headers: desktop })).json().project.notes as Array<{ content: string; source: string }>;
   assert.ok(notes.some((note) => /Mme Roussel/.test(note.content) && note.source === "conversation"));
@@ -276,14 +276,14 @@ test("done (« Archiver »), an isolated project takes no new message; reopened,
 test("read ahead: an isolated project's start is its own, with its summary and notes; the person's other conversations start without them", async () => {
   await ask({ text: "Bonjour", force_new_discussion: true, project_id: dupont.id, document_access: { mode: "off" } });
   const filed = newConversationSystem(`${owner}|project:${dupont.id}`);
-  assert.match(filed?.system ?? "", /client file « Dupont c\/ SCI Les Lilas »/);
+  assert.match(filed?.system ?? "", /walled-off project « Dupont c\/ SCI Les Lilas »/);
   await ask({ text: "Bonjour", force_new_discussion: true, document_access: { mode: "off" } });
   assert.doesNotMatch(newConversationSystem(owner)?.system ?? "", /Dupont/);
   // One asked for the first time starts as another one's did.
   const third = (await app.inject({ method: "POST", url: "/api/v1/projects", headers: desktop, payload: { title: "Bernard", isolated: true } })).json().project as { id: string };
   assert.equal((await app.inject({ method: "POST", url: "/queries/warm", headers: desktop, payload: { project_id: third.id } })).statusCode, 202);
-  assert.match(newConversationSystem(`${owner}|project:${third.id}`)?.system ?? "", /client file « Bernard »/);
-  assert.ok(isolatedProjectContext(owner, third.id)?.startsWith("This conversation is in the user's client file « Bernard »."));
+  assert.match(newConversationSystem(`${owner}|project:${third.id}`)?.system ?? "", /walled-off project « Bernard »/);
+  assert.ok(isolatedProjectContext(owner, third.id)?.startsWith("This conversation is in the user's walled-off project « Bernard »."));
 });
 
 test("nothing of an isolated project spreads: no profile line, never shown to the learner, never named by the chat's actions", () => {

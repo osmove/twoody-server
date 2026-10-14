@@ -18,6 +18,7 @@ import {
   type GrantedRoot,
   type ListedFile,
   type ListingSort,
+  walledAt,
 } from "./fileListing.js";
 import { entryKind, skipDirectory, skipFile } from "./walk.js";
 
@@ -220,7 +221,7 @@ async function realDirectory(path: string): Promise<string | null> {
 /// The granted folder that holds `real`, the nearest one, along the walk.
 function holderOf(real: string, pool: GrantedRoot[], home: string, platform: NodeJS.Platform): GrantedRoot | null {
   if (folderRisk(real, home, platform, real === home) === "sensitive") return null;
-  return pool.filter((root) => inside(root.path, real) && reachable(root.path, real)).sort((a, b) => b.path.length - a.path.length)[0] ?? null;
+  return pool.filter((root) => inside(root.path, real) && reachable(root.path, real) && !walledAt(root, real)).sort((a, b) => b.path.length - a.path.length)[0] ?? null;
 }
 
 /// `rest` followed down from `base`, each name as the folder has it or as
@@ -451,6 +452,8 @@ export async function listFolder(args: { request: FolderRequest; roots: GrantedR
   } catch {
     return { ...base, status: "missing", roots: roots.map((r) => r.name) };
   }
+  // A walled-off project's folder inside it is not there, from here.
+  listed = { ...listed, entries: listed.entries.filter((entry) => !walledAt(root, join(real, entry.name))) };
   const dirs = sortEntries(listed.entries.filter((entry) => entry.kind === "dir"), request.sort === "largest" || request.sort === "smallest" ? "name" : request.sort);
   const folders = await Promise.all(
     dirs.slice(0, MAX_SUBFOLDERS).map(async (dir) => ({ name: dir.name.normalize("NFC"), modified_at: new Date(dir.mtime).toISOString(), items: await itemsIn(join(real, dir.name)) })),

@@ -403,7 +403,10 @@ export async function localDocumentRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
-      reply.send({ known: isIndexedPath(auth.userId, req.query.path ?? "") });
+      const path = req.query.path ?? "";
+      // A walled-off project's document is known to this computer's app only.
+      const walled = !isThisComputersApp(auth) && !!(sqlite.prepare("SELECT folder_id FROM documents WHERE user_id = ? AND path = ?").all(auth.userId, path) as Array<{ folder_id: string }>).some((row) => !folderShown(auth, row.folder_id));
+      reply.send({ known: !walled && isIndexedPath(auth.userId, path) });
     },
   });
 }

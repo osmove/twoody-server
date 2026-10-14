@@ -2,7 +2,7 @@ import { statSync } from "node:fs";
 import { basename, isAbsolute, relative, sep } from "node:path";
 import { sqlite } from "../db.js";
 import { isSupported, maxBytesFor } from "./extract.js";
-import { safeRoots, type GrantedRoot } from "./fileListing.js";
+import { safeRoots, walledAt, type GrantedRoot } from "./fileListing.js";
 import { indexOnDemand } from "./library.js";
 import { spotlightEnabled, spotlightSearch } from "./spotlight.js";
 import { skipDirectory, skipFile } from "./walk.js";
@@ -31,7 +31,7 @@ export interface SpotlightCandidates {
 
 /// The granted folder a file is read under, as the indexer would: the
 /// deepest one holding it along the walk (no hidden or skipped folder).
-function owner(path: string, roots: GrantedRoot[]): GrantedRoot | null {
+export function spotlightOwner(path: string, roots: GrantedRoot[]): GrantedRoot | null {
   const holders = roots
     .filter((root) => {
       const rel = relative(root.path, path);
@@ -41,7 +41,9 @@ function owner(path: string, roots: GrantedRoot[]): GrantedRoot | null {
       return segments.every((segment) => !skipDirectory(segment));
     })
     .sort((a, b) => b.path.length - a.path.length);
-  return holders[0] ?? null;
+  // Inside a walled-off project's folder that is not among them: no owner
+  // here — never read, nor moved, under a folder holding it.
+  return holders[0] && !walledAt(holders[0], path) ? holders[0] : null;
 }
 
 export async function spotlightCandidates(userId: string, terms: string[], folders: GrantedRoot[], timeoutMs = 1_500): Promise<SpotlightCandidates | null> {
@@ -52,7 +54,7 @@ export async function spotlightCandidates(userId: string, terms: string[], folde
   const found = await spotlightSearch(roots.map((root) => root.path), terms, timeoutMs);
   if (!found) return null;
   const candidates = found
-    .map((path) => ({ path, root: owner(path, roots) }))
+    .map((path) => ({ path, root: spotlightOwner(path, roots) }))
     .filter((c): c is { path: string; root: GrantedRoot } => !!c.root && !skipFile(basename(c.path)) && isSupported(c.path))
     .slice(0, MAX_CANDIDATES);
   if (!candidates.length) return { documentIds: [], found: 0, readNow: 0 };

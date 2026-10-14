@@ -86,6 +86,7 @@ export function listFolders(userId: string) {
     .sort((a, b) => a.path.localeCompare(b.path));
   const projectOf = folderProjects(rows);
   return rows.map((folder) => {
+    const project = projectOf.get(folder.id) ?? null;
     const count = byFolder.get(folder.id);
     return {
       id: folder.id,
@@ -98,7 +99,12 @@ export function listFolders(userId: string) {
       ignored: ignoredByFolder.get(folder.id) ?? 0,
       // The isolated project it belongs to (src/projects/isolation.ts):
       // searched in that project's conversations only, never elsewhere.
-      project_id: projectOf.get(folder.id) ?? null,
+      project_id: project,
+      // The folders of another isolated project lying inside it: never
+      // walked, listed, browsed nor read from it (fileListing.ts walledAt) —
+      // a walled-off project's documents are reached through its own folder,
+      // in its own conversations only.
+      walled: rows.filter((other) => other.id !== folder.id && other.path !== folder.path && (projectOf.get(other.id) ?? null) !== null && (projectOf.get(other.id) ?? null) !== project && within(folder.path, other.path)).map((other) => other.path),
     };
   });
 }

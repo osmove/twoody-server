@@ -2372,7 +2372,8 @@ export async function warmNewConversation(key: string, { wake = false }: { wake?
     await streamLocal(next.provider.baseUrl, [{ role: "system", content: next.system }, { role: "user", content: "" }], next.provider.model, 0, () => undefined, AbortSignal.timeout(120_000), { purpose: "chat", maxTokens: 1, ...(next.tools ? { tools: { definitions: next.tools, run: async () => "" } } : {}) });
     systemsSent.set(sentKey, digest_);
     runtimeHolds.set(systemKey(next.provider), digest_);
-    recordTrace(userOfKey(key), { kind: "warm", model: next.provider.model, outcome: "answered", totalMs: Date.now() - warmStarted, detail: { system_chars: next.system.length, tools: next.tools?.map((tool) => tool.function.name) ?? [] } });
+    // A walled-off project's start: marked, never shared (traces.ts WALLED).
+    recordTrace(userOfKey(key), { kind: "warm", model: next.provider.model, outcome: "answered", totalMs: Date.now() - warmStarted, detail: { system_chars: next.system.length, tools: next.tools?.map((tool) => tool.function.name) ?? [], ...(projectOfKey(key) ? { isolated: true } : {}) } });
     return "warmed";
   } catch {
     return "none";
@@ -2445,8 +2446,13 @@ function readWarmSeeds(): Record<string, WarmSeed> {
 }
 
 function saveWarmSeed(seedKey: string, input: ChatContextInput, provider: Provider, tools: ChatTools["definitions"] | null) {
+  // Nothing of a walled-off project on disk, not even its id: its start is
+  // read again from the person's own after a restart (restoreWarmSeed).
+  if (projectOfKey(seedKey)) return;
   const kept = Object.fromEntries(Object.entries(input).filter(([key]) => !SEED_LEFT_OUT.includes(key)));
   const seeds = readWarmSeeds();
+  // A walled-off project's start an earlier version kept (04–10/10/2026): no longer.
+  for (const other of Object.keys(seeds)) if (projectOfKey(other)) delete seeds[other];
   seeds[seedKey] = { input: kept, tools, model: "model" in provider ? provider.model : null };
   try {
     // Sealed inside Twoody Desktop: the person's name and folders (secretFile.ts).
@@ -2469,8 +2475,10 @@ export async function restoreWarmSeed(key: string): Promise<boolean> {
     }
   }
   const seeds = readWarmSeeds();
-  const sibling = projectOfKey(key) ? Object.keys(seeds).reverse().find((other) => userOfKey(other) === userOfKey(key) && projectOfKey(other)) : undefined;
-  const seed = seeds[key] ?? (sibling ? seeds[sibling] : undefined);
+  // A walled-off project's start is never kept on disk (saveWarmSeed): after
+  // a restart it starts as the person's own new conversation was built —
+  // their name, language and model; its summary and notes are its own.
+  const seed = projectOfKey(key) ? seeds[userOfKey(key)] : seeds[key];
   if (!seed?.input) return false;
   const provider = await resolveProvider(userOfKey(key), seed.model ?? undefined).catch(() => null);
   if (!provider || provider.kind !== "local_openai" || lastTurnInputs.has(key)) return lastTurnInputs.has(key);

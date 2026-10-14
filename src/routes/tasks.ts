@@ -2,11 +2,16 @@ import type { FastifyInstance } from "fastify";
 import { and, asc, eq } from "drizzle-orm";
 import { db, tasks } from "../db.js";
 import { requireAuth, generateId } from "../auth.js";
+import { hiddenWalledProjects } from "../projects/walledAccess.js";
 
 // Cloud-shape /tasks CRUD against the local SQLite store. Wire shape
 // mirrors `app/views/tasks/_task.json.jbuilder` on Rails (id, title,
 // notes, due_at, done_at, priority + derived done/overdue/priority_label).
 // One TasksScreen / Tasks tab on the client, two backends behind.
+//
+// A walled-off project's tasks (asked in one of its conversations,
+// src/projects/actions.ts) are this computer's app's only
+// (projects/walledAccess.ts): to anyone else they do not exist.
 
 interface TaskRow {
   id:              string;
@@ -106,7 +111,8 @@ export async function taskRoutes(app: FastifyInstance) {
         .where(eq(tasks.userId, auth.userId))
         .orderBy(asc(tasks.doneAt), asc(tasks.dueAt))
         .all();
-      const sorted = rows.sort((a, b) => {
+      const hidden = await hiddenWalledProjects(req, auth);
+      const sorted = rows.filter((row) => !(row.projectId && hidden.has(row.projectId))).sort((a, b) => {
         const aDone = a.doneAt ? 1 : 0;
         const bDone = b.doneAt ? 1 : 0;
         if (aDone !== bDone) return aDone - bDone;
@@ -133,7 +139,7 @@ export async function taskRoutes(app: FastifyInstance) {
         .where(and(eq(tasks.id, req.params.id), eq(tasks.userId, auth.userId)))
         .limit(1)
         .all();
-      if (!row) return reply.code(404).send({ error: "not_found" });
+      if (!row || (row.projectId && (await hiddenWalledProjects(req, auth)).has(row.projectId))) return reply.code(404).send({ error: "not_found" });
       reply.send(serialize(row));
     },
   });
@@ -194,7 +200,7 @@ export async function taskRoutes(app: FastifyInstance) {
         .where(and(eq(tasks.id, req.params.id), eq(tasks.userId, auth.userId)))
         .limit(1)
         .all();
-      if (!existing) return reply.code(404).send({ error: "not_found" });
+      if (!existing || (existing.projectId && (await hiddenWalledProjects(req, auth)).has(existing.projectId))) return reply.code(404).send({ error: "not_found" });
 
       const body = readBody(req.body);
       const next = {
@@ -220,6 +226,8 @@ export async function taskRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
+      const [held] = db.select({ projectId: tasks.projectId }).from(tasks).where(and(eq(tasks.id, req.params.id), eq(tasks.userId, auth.userId))).limit(1).all();
+      if (held?.projectId && (await hiddenWalledProjects(req, auth)).has(held.projectId)) return reply.code(404).send({ error: "not_found" });
       const result = db
         .delete(tasks)
         .where(and(eq(tasks.id, req.params.id), eq(tasks.userId, auth.userId)))

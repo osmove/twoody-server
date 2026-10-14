@@ -6,10 +6,11 @@ import { addFolder, canonicalFolder, listFolders, reindex, removeFolder } from "
 import { normaliseMemoryContent } from "../vault/contracts.js";
 import { ProjectError } from "./projects.js";
 
-// Isolated projects (Jimmy, 04/10/2026, Twoody Pro: « dossiers clients
-// cloisonnés », the note « Pour qui est Twoody ? »): a client file is a
-// project whose documents, conversations and memory reach nothing outside
-// it — `projects.isolated` (migration 6).
+// Isolated projects — « walled-off » in the app (Jimmy, 04/10/2026, client
+// files; retired 10/10/2026; brought back on 14/10/2026 as « Cloisonner ce
+// projet », an option of Projects chosen when one is made,
+// docs/projects-design.md §8): a project whose documents, conversations and
+// memory reach nothing outside it — `projects.isolated` (migration 6).
 //
 //   documents      the folder of its documents (document_folders.project_id,
 //                  a folder granted inside it too: library.ts folderProjects)
@@ -28,7 +29,7 @@ import { ProjectError } from "./projects.js";
 //
 // Its title has no entity in the memory graph, and the profile, the cards,
 // the learner and the chat's actions leave it out (projects.ts, actions.ts).
-// This computer's app only (routes/projects.ts): the phone later.
+// This computer's app only (routes/projects.ts, walledAccess.ts): the phone later.
 
 export const NOTE_SOURCES = ["manual", "conversation"] as const;
 export type NoteSource = (typeof NOTE_SOURCES)[number];
@@ -245,16 +246,16 @@ export function isolatedProjectContext(userId: string, projectId: string, scale 
   if (!row || row.isolated !== 1) return null;
   const named = `« ${row.title} »${row.reference ? ` (ref. ${row.reference})` : ""}`;
   const sections = [
-    `This conversation is in the user's client file ${named}. ` +
-      "Everything in it stays in this file: answer from this file's documents and notes and from what the user says here; " +
-      "you know nothing of the user's other client files nor of their conversations outside this one, so never bring anything in from them. " +
-      "The user's e-mails, calendar, contacts, the web and their connected services are not used in a client file unless the user switches them on for a message with their icons under the message box: " +
+    `This conversation is in the user's walled-off project ${named}. ` +
+      "Everything in it stays in this project: answer from this project's documents and notes and from what the user says here; " +
+      "you know nothing of the user's other projects nor of their conversations outside this one, so never bring anything in from them. " +
+      "The user's e-mails, calendar, contacts, the web and their connected services are not used in a walled-off project unless the user switches them on for a message under the message box: " +
       "if a message needs one of them, say so in one sentence.",
   ];
   const brief = row.brief?.trim();
   if (brief) {
     const budget = Math.round(BRIEF_CHARS * scale);
-    sections.push(`The file's summary, written by the user:\n${brief.length > budget ? `${brief.slice(0, budget - 1).trimEnd()}…` : brief}`);
+    sections.push(`The project's summary, written by the user:\n${brief.length > budget ? `${brief.slice(0, budget - 1).trimEnd()}…` : brief}`);
   }
   const notes = sqlite.prepare("SELECT content FROM project_notes WHERE project_id = ? AND user_id = ? ORDER BY pinned DESC, created_at DESC, rowid DESC").all(projectId, userId) as Array<{ content: string }>;
   if (notes.length) {
@@ -268,7 +269,7 @@ export function isolatedProjectContext(userId: string, projectId: string, scale 
       used += line.length + 1;
     }
     const left = notes.length - lines.length;
-    sections.push(`What the user keeps in this file's notes (newest first${left ? `; ${left} older notes are on the file's page` : ""}):\n${lines.join("\n")}`);
+    sections.push(`What the user keeps in this project's notes (newest first${left ? `; ${left} older notes are on the project's page` : ""}):\n${lines.join("\n")}`);
   }
   return sections.join("\n\n");
 }

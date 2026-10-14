@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { and, asc, desc, eq, like, lt, or } from "drizzle-orm";
 import { db, reminders } from "../db.js";
 import { requireAuth, generateId } from "../auth.js";
+import { hiddenWalledProjects, walledProjectIds } from "../projects/walledAccess.js";
 
 // Cloud-shape /reminders CRUD against the local SQLite store. The local
 // server does not schedule push notifications yet; it preserves the
@@ -127,7 +128,9 @@ export async function reminderRoutes(app: FastifyInstance) {
         .limit(200)
         .all();
 
-      reply.send(rows.map(serialize));
+      // A walled-off project's reminders: this computer's app's only.
+      const hidden = await hiddenWalledProjects(req, auth);
+      reply.send(rows.filter((row) => !(row.projectId && hidden.has(row.projectId))).map(serialize));
     },
   });
 
@@ -146,7 +149,7 @@ export async function reminderRoutes(app: FastifyInstance) {
         .where(and(eq(reminders.id, req.params.id), eq(reminders.userId, auth.userId)))
         .limit(1)
         .all();
-      if (!row) return reply.code(404).send({ error: "not_found" });
+      if (!row || (row.projectId && (await hiddenWalledProjects(req, auth)).has(row.projectId))) return reply.code(404).send({ error: "not_found" });
       reply.send(serialize(row));
     },
   });
@@ -167,6 +170,8 @@ export async function reminderRoutes(app: FastifyInstance) {
       const body = readBody(req.body);
       const text = (body.text ?? body.title ?? "").trim();
       if (!text) return reply.code(422).send({ errors: ["text can't be blank"] });
+      // Into a walled-off project, from this computer's app only.
+      if (body.project_id && (await hiddenWalledProjects(req, auth)).has(body.project_id)) return reply.code(404).send({ error: "project_not_found" });
 
       const now = new Date();
       const id = generateId();
@@ -211,7 +216,15 @@ export async function reminderRoutes(app: FastifyInstance) {
         .where(and(eq(reminders.id, req.params.id), eq(reminders.userId, auth.userId)))
         .limit(1)
         .all();
-      if (!existing || existing.status === "deleted") return reply.code(404).send({ error: "not_found" });
+      const hidden = await hiddenWalledProjects(req, auth);
+      if (!existing || existing.status === "deleted" || (existing.projectId && hidden.has(existing.projectId))) return reply.code(404).send({ error: "not_found" });
+      // A walled-off project's reminder stays in it, another one never
+      // enters it (src/projects/isolation.ts).
+      const askedProject = (readBody(req.body) as { project_id?: string | null }).project_id;
+      if (askedProject !== undefined && askedProject !== existing.projectId) {
+        const walled = walledProjectIds(auth.userId);
+        if ((existing.projectId && walled.has(existing.projectId)) || (askedProject && walled.has(askedProject))) return reply.code(409).send({ error: "isolated_reminder" });
+      }
 
       const body = readBody(req.body);
       const next = {
@@ -247,7 +260,7 @@ export async function reminderRoutes(app: FastifyInstance) {
         .where(and(eq(reminders.id, req.params.id), eq(reminders.userId, auth.userId)))
         .limit(1)
         .all();
-      if (!existing) return reply.code(404).send({ error: "not_found" });
+      if (!existing || (existing.projectId && (await hiddenWalledProjects(req, auth)).has(existing.projectId))) return reply.code(404).send({ error: "not_found" });
       db.update(reminders)
         .set({ status: "deleted", updatedAt: new Date() })
         .where(eq(reminders.id, existing.id))

@@ -41,7 +41,7 @@ type Retrieved<P, F> = { passages: P[]; files: F[]; total: number; semantic?: Se
  * unless `project` names it (its conversations), or `withIsolated` is set
  * (this computer's own app, browsing or opening a document it cited).
  */
-export function scopedFolders(userId: string, scope: Pick<DocumentAccess, "mode" | "folderIds">, options: FolderScopeOptions = {}): Array<{ id: string; name: string; path: string; documents: number; indexed: number }> {
+export function scopedFolders(userId: string, scope: Pick<DocumentAccess, "mode" | "folderIds">, options: FolderScopeOptions = {}): Array<{ id: string; name: string; path: string; documents: number; indexed: number; walled: string[] }> {
   // Documents switched off in Capabilities: no folder is searched, for
   // anyone (localCapabilities.ts).
   if (scope.mode === "off" || !capabilityOn(userId, "documents")) return [];
@@ -54,7 +54,7 @@ export function scopedFolders(userId: string, scope: Pick<DocumentAccess, "mode"
   let home: string;
   try { home = realpathSync(homedir()); } catch { home = homedir(); }
   return within.filter(folder => folderRisk(folder.path, home, process.platform, folder.path === home) === null)
-    .map(folder => ({ id: folder.id, name: folder.name, path: folder.path, documents: folder.documents, indexed: folder.indexed }));
+    .map(folder => ({ id: folder.id, name: folder.name, path: folder.path, documents: folder.documents, indexed: folder.indexed, walled: folder.walled }));
 }
 
 export interface FolderScopeOptions {

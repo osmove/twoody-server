@@ -5,7 +5,7 @@ import { extname, isAbsolute, join, relative } from "node:path";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { sqlite } from "../db.js";
 import { serveRawFile } from "../peerDocuments/raw.js";
-import { fileKind, type GrantedRoot } from "./fileListing.js";
+import { fileKind, walledAt, type GrantedRoot } from "./fileListing.js";
 import { plain } from "./folderAliases.js";
 import { folderRisk } from "./folderRisk.js";
 import { entryKind, skipDirectory, skipFile } from "./walk.js";
@@ -169,6 +169,8 @@ async function resolveInside(root: GrantedRoot, segments: string[]): Promise<{ r
   // A link anywhere on the way makes the real path another one.
   if (!same(real, asked) || !inside(realRoot, real)) return null;
   if (folderRisk(real, home, process.platform) === "sensitive") return null;
+  // A walled-off project's folder inside it: reached through its own only.
+  if (walledAt(root, real)) return null;
   return { real, realRoot };
 }
 
@@ -282,7 +284,7 @@ export async function browseGranted(userId: string, roots: GrantedRoot[], reques
   } catch {
     return { error: "not_found" };
   }
-  const sorted = sortEntries(listed.found, request.sort, request.order);
+  const sorted = sortEntries(listed.found.filter((entry) => !walledAt(root, entry.abs)), request.sort, request.order);
   const page = sorted.slice(request.offset, request.offset + request.limit);
   const known = indexedAt(userId, roots.map((r) => r.id), page.filter((e) => e.kind === "file").map((e) => e.abs));
   const path = segments.join("/");

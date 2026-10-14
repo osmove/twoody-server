@@ -198,7 +198,7 @@ export interface ChatContextInput {
   /// The tools of Google Analytics and Search Console it is given, by name
   /// (Connecteurs › Google, src/google/dataTools.ts).
   googleDataTools?: string[] | null;
-  /// The isolated project (client file) the conversation is in
+  /// The walled-off project (an isolated one) the conversation is in
   /// (src/projects/isolation.ts isolatedProjectContext): what it is, that
   /// nothing else is reachable, its summary and notes — the end of the
   /// system prompt.
@@ -640,8 +640,8 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   // confirms it rather than saying it cannot remember.
   const remembered = input.remembered
     ? input.isolatedProject
-      ? `[Just saved in this client file's notes, as their message asks: « ${input.remembered} ». ` +
-        "Confirm it briefly in their language. You do remember it in this file's conversations.]"
+      ? `[Just saved in this walled-off project's notes, as their message asks: « ${input.remembered} ». ` +
+        "Confirm it briefly in their language. You do remember it in this project's conversations.]"
       : `[Just saved in the user's Memories on this computer, as their message asks: « ${input.remembered} ». ` +
         "Confirm it briefly in their language. You do remember things they ask you to, across conversations.]"
     : null;
