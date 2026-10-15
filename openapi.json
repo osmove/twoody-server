@@ -785,6 +785,27 @@
         }
       }
     },
+    "/providers/vision": {
+      "get": {
+        "summary": "Whether the model that would answer reads images, and which one would read them instead",
+        "tags": [
+          "providers"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/providers/load": {
       "post": {
         "summary": "Load a model of this computer's runtimes into memory",
@@ -8119,6 +8140,27 @@
     "/api/v1/providers": {
       "get": {
         "summary": "List configured LLM providers",
+        "tags": [
+          "providers"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/providers/vision": {
+      "get": {
+        "summary": "Whether the model that would answer reads images, and which one would read them instead",
         "tags": [
           "providers"
         ],

@@ -98,11 +98,26 @@ test("an image goes to the same model's GGUF on llama.cpp, and the answer says s
   assert.ok(sent[0]!.messages.some((message) => Array.isArray(message.content)), "the image went to llama.cpp");
 });
 
+test("asked first (GET /providers/vision): the MLX model reads no image, and the model that would read it is named", async () => {
+  const { forgetRuntimeProbes } = await import("../src/localRuntime.js");
+  forgetRuntimeProbes();
+  const said = (await app.inject({ url: "/providers/vision", headers })).json();
+  assert.deepEqual(said, { model: "Qwen3.5-9B-MLX", name: "Qwen3.5 9B", reads_images: false, stand_in: { model: "Qwen3.5-9B-Q4_K_M", name: "Qwen3.5 9B" } });
+  // A GGUF model picked: nothing to ask.
+  const gguf = (await app.inject({ url: "/providers/vision?model=Qwen3.5-4B-Q4_K_M", headers })).json();
+  assert.equal(gguf.reads_images, null);
+  assert.equal(gguf.stand_in, null);
+  assert.equal((await app.inject({ url: "/providers/vision" })).statusCode, 401);
+});
+
 test("without a model that reads images, the refusal stays « vision_unavailable »", async () => {
   const { forgetRuntimeProbes } = await import("../src/localRuntime.js");
   const { configureRuntimeKeys } = await import("../src/runtimeAuth.js");
   configureRuntimeKeys({ [mlxUrl]: "k".repeat(64) });
   forgetRuntimeProbes();
+  const none = (await app.inject({ url: "/providers/vision", headers })).json();
+  assert.equal(none.reads_images, false);
+  assert.equal(none.stand_in, null, "no model of this computer reads images: the apps say so before sending");
   const response = await ask({ text: "Et celle-ci ?", images: [PNG] });
   const error = response.body.split("\n\n").find((block) => block.startsWith("event: error"));
   const said = error ? JSON.parse(error.slice(error.indexOf("data: ") + 6)) : response.json();

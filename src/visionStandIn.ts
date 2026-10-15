@@ -23,6 +23,19 @@ export interface StandIn {
   model: string;
 }
 
+/// Whether a model of this computer reads images, as far as Twoody knows:
+/// false for the MLX engine's models (mlx-lm's server reads text only),
+/// null otherwise (a GGUF reads them when its vision file is there; the
+/// runtime says so when it does not).
+export function readsImages(model: string): false | null {
+  return CATALOG.some((entry) => entry.mlx?.id === model) ? false : null;
+}
+
+/// The catalogue's name of a model, for what the apps say.
+export function modelDisplayName(model: string): string {
+  return CATALOG.find((entry) => entry.id === model || entry.mlx?.id === model)?.name ?? model;
+}
+
 /// The catalogue's models that read images, by id, and the GGUF id of each
 /// MLX folder's model.
 function readers(): { ids: Set<string>; ggufOf: Map<string, string>; preferred: Set<string> } {

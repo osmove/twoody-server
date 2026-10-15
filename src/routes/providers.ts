@@ -12,6 +12,7 @@ import { meshRoster } from "../vault/roster.js";
 import { listComputers, type ComputerEntry } from "../router/index.js";
 import { accountCredentials } from "../account/service.js";
 import { activeEngine, engine, engineDefaultModel, engineName, engineRoute } from "../engine.js";
+import { modelDisplayName, readsImages, visionStandIn } from "../visionStandIn.js";
 
 type ProviderPatchBody = {
   name?: string;
@@ -227,6 +228,48 @@ export async function providerRoutes(app: FastifyInstance) {
       const fromEngine = await engineAsked;
       const listed = fromEngine ? (fromEngine.is_default ? [fromEngine, ...serialized] : [...serialized, fromEngine]) : serialized;
       reply.send({ providers: listed, ...(computers ? { auto: true, computers } : {}) });
+    },
+  });
+
+  // Before a message with an image is sent (Jimmy, 15/10/2026: « demander
+  // d'abord »): whether the model that would answer reads images, and if
+  // not, which model of this computer would read it instead — the very
+  // choice /queries makes (visionStandIn.ts), so that the apps name it.
+  //   GET /providers/vision?model=  (the model picked; the default provider's otherwise)
+  //   → {model, name, reads_images: false | null, stand_in: {model, name} | null}
+  app.get<{ Querystring: { model?: string } }>("/providers/vision", {
+    schema: {
+      tags: ["providers"],
+      summary: "Whether the model that would answer reads images, and which one would read them instead",
+      security: [{ bearerAuth: [] }, { userTokenAuth: [] }],
+    },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      const asked = typeof req.query.model === "string" && req.query.model.length <= 300 ? req.query.model.trim() : "";
+      const local = db
+        .select()
+        .from(llmEndpoints)
+        .where(eq(llmEndpoints.userId, auth.userId))
+        .all()
+        .filter((p): p is typeof p & { baseUrl: string; model: string } => p.enabled && p.kind === "local_openai" && Boolean(p.baseUrl) && Boolean(p.model));
+      let target: { baseUrl: string; model: string } | null = null;
+      if (asked && asked !== "local" && asked !== "auto") {
+        const holding = await runtimeHolding(auth.userId, asked).catch(() => null);
+        target = holding ? { baseUrl: holding.baseUrl, model: asked } : null;
+      } else {
+        const chosen = local.find((p) => p.isDefault) ?? null;
+        target = chosen ? { baseUrl: chosen.baseUrl, model: chosen.model } : null;
+      }
+      if (!target) return reply.send({ model: asked || null, name: null, reads_images: null, stand_in: null });
+      const reads = readsImages(target.model);
+      const standIn = reads === false ? await visionStandIn(auth.userId, target).catch(() => null) : null;
+      reply.send({
+        model: target.model,
+        name: modelDisplayName(target.model),
+        reads_images: reads,
+        stand_in: standIn ? { model: standIn.model, name: modelDisplayName(standIn.model) } : null,
+      });
     },
   });
 
