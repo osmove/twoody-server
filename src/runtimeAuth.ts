@@ -54,6 +54,13 @@ export function runtimeAuthHeaders(baseUrl: string): Record<string, string> {
   return key ? { Authorization: `Bearer ${key}` } : {};
 }
 
+/// The runtimes this process holds a key for: the Desktop's own engines
+/// (llama.cpp, and MLX on a Mac), whichever provider is chosen — where a
+/// turn the chosen model cannot read may go (visionStandIn.ts).
+export function keyedRuntimes(): string[] {
+  return [...new Set([...own.keys(), ...keys.keys()])];
+}
+
 // TWOODY_RUNTIME_KEYS: {"http://127.0.0.1:47831/v1": "<key>"}
 try {
   if (process.env.TWOODY_RUNTIME_KEYS) configureRuntimeKeys(JSON.parse(process.env.TWOODY_RUNTIME_KEYS));

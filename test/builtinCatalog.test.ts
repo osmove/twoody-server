@@ -4,37 +4,64 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CATALOG, catalogView, isAllowedDownloadUrl, loadCatalog, modelFits, recommendedModel, visionDownload } from "../src/builtin/catalog.js";
+import { CATALOG, CATALOG_VERIFIED_AT, catalogView, isAllowedDownloadUrl, loadCatalog, modelFits, recommendedModel, visionDownload } from "../src/builtin/catalog.js";
 import { accelerationArgs, countGpuDevices, dedicatedGpuMemory, selectRuntimeEngine } from "../src/builtin/acceleration.js";
 import { failureOf } from "../src/builtin/failure.js";
 import { mkdir } from "node:fs/promises";
 
 const GIB = 1024 ** 3;
 
-test("every entry of the catalogue is pinned: revision, size, digest, file named after its id", () => {
-  assert.ok(CATALOG.length >= 2);
+test("every entry of the catalogue is pinned: revision, size, digest, saved under its id", () => {
+  assert.ok(CATALOG.length >= 50);
   for (const model of CATALOG) {
     assert.equal(model.file, `${model.id}.gguf`);
-    assert.match(model.url, /^https:\/\/huggingface\.co\/[\w.-]+\/[\w.-]+\/resolve\/[0-9a-f]{40}\//, `${model.id}: not pinned to a revision`);
-    // Osmove's own conversions (scripts/convert-model.sh), the publisher's
-    // or llama.cpp's own — never a competitor's (Unsloth, LM Studio, …);
-    // a well-known independent quantiser's (bartowski) for a size none of
-    // them puts out: the larger model's 3 bits (11/10/2026).
-    const source = model.larger ? /^https:\/\/huggingface\.co\/(?:twoody|Qwen|ggml-org|bartowski)\// : /^https:\/\/huggingface\.co\/(?:twoody|google|mistralai|Qwen|ggml-org)\//;
-    assert.match(model.url, source, `${model.id}: not Osmove's, the publisher's or llama.cpp's`);
+    assert.match(model.url, /^https:\/\/huggingface\.co\/[\w.-]+\/[\w.-]+\/resolve\/[0-9a-f]{40}\/[\w.+-]+\.gguf$/, `${model.id}: not pinned to a revision`);
+    // The publisher's own file, llama.cpp's (ggml-org), Osmove's
+    // conversions, or a well-known independent quantiser's (bartowski);
+    // unsloth only for the one model none of these publish in 4 bits.
+    const source = /^https:\/\/huggingface\.co\/(?:twoody|Qwen|google|mistralai|nvidia|ggml-org|bartowski|unsloth)\//;
+    assert.match(model.url, source, `${model.id}: not from an accepted quantiser`);
+    if (/\/unsloth\//.test(model.url)) assert.equal(model.key, "qwen3-coder-30b-a3b");
     if (model.recommendable && !model.larger) assert.match(model.url, /^https:\/\/huggingface\.co\/twoody\//, `${model.id}: a model offered first is Osmove's`);
     if (model.vision) {
-      assert.match(model.vision.url, new RegExp(`${source.source}[\\w.-]+\\/resolve\\/[0-9a-f]{40}\\/`), `${model.id}: its vision file is pinned too, from the same source`);
+      assert.match(model.vision.url, /^https:\/\/huggingface\.co\/[\w.-]+\/[\w.-]+\/resolve\/[0-9a-f]{40}\//, `${model.id}: its vision file is pinned too`);
+      assert.equal(model.vision.url.split("/").slice(3, 5).join("/"), model.url.split("/").slice(3, 5).join("/"), `${model.id}: its vision file comes from the same repository`);
       assert.match(model.vision.sha256, /^[0-9a-f]{64}$/);
       assert.equal(visionDownload(model)!.file, `${model.id}.mmproj.gguf`);
     }
-    // Saved under its id (downloads.ts); named so at its source, but for
-    // an independent quantiser's, which prefixes the publisher.
-    assert.ok(model.url.endsWith(`/${model.file}`) || (model.larger && /\/bartowski\//.test(model.url) && model.url.endsWith(`/Qwen_${model.file}`)), `${model.id}: ${model.url}`);
     assert.match(model.sha256, /^[0-9a-f]{64}$/);
-    assert.ok(model.bytes > 1e9);
+    assert.ok(model.bytes > 4e8);
     assert.ok(isAllowedDownloadUrl(model.url));
   }
+});
+
+test("the verified data hold together: keys, licences, figures, MLX folders", () => {
+  assert.match(CATALOG_VERIFIED_AT, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(new Set(CATALOG.map((model) => model.id)).size, CATALOG.length);
+  assert.equal(new Set(CATALOG.map((model) => model.key)).size, CATALOG.length);
+  const families = new Set(CATALOG.map((model) => model.family));
+  for (const family of ["qwen", "glm", "deepseek", "gemma", "mistral", "llama", "phi", "gpt-oss"]) assert.ok(families.has(family as never), `no ${family}`);
+  for (const model of CATALOG) {
+    assert.ok(model.licenseKind === "open" || model.licenseKind === "restricted", `${model.id}: licence kind`);
+    assert.doesNotMatch(model.license, /non-?commercial|research|\bnc\b/i, `${model.id}: a licence that forbids Twoody's use`);
+    assert.ok(model.memory && model.memory.kvBytesPerToken > 0, `${model.id}: no memory figures`);
+    assert.ok(model.uses && model.uses.length > 0, `${model.id}: no use`);
+    assert.equal(model.capabilities?.vision, !!model.vision, `${model.id}: reads images exactly when it has a vision file`);
+    assert.ok(model.minRamGb >= 4 && model.minRamGb <= 256, `${model.id}: minRamGb ${model.minRamGb}`);
+    if (!model.mlx) continue;
+    assert.match(model.mlx.id, /^[\w.-]+-MLX$/);
+    assert.match(model.mlx.revision, /^[0-9a-f]{40}$/);
+    assert.ok(model.mlx.files.some((file) => file.path === "config.json"));
+    assert.ok(model.mlx.files.some((file) => file.path.endsWith(".safetensors")));
+    assert.equal(model.mlx.bytes, model.mlx.files.reduce((sum, file) => sum + file.bytes, 0));
+    for (const file of model.mlx.files) {
+      assert.match(file.path, /^[\w.+-]+$/, `${model.id}: ${file.path}`);
+      assert.doesNotMatch(file.path, /\.py$/, `${model.id}: no code is ever downloaded`);
+      assert.ok(file.sha256 ? /^[0-9a-f]{64}$/.test(file.sha256) : /^[0-9a-f]{40}$/.test(file.gitSha1 ?? ""), `${model.id}: ${file.path} has no digest`);
+      if (file.path.endsWith(".safetensors")) assert.ok(file.sha256, `${model.id}: weights are checked by SHA-256`);
+    }
+  }
+  assert.equal(new Set(CATALOG.filter((model) => model.mlx).map((model) => model.mlx!.id)).size, CATALOG.filter((model) => model.mlx).length);
 });
 
 test("the recommendation is the largest model the computer runs comfortably", () => {
@@ -139,10 +166,12 @@ test("a graphics card's own memory is read from Vulkan's device list; an integra
   assert.equal(dedicatedGpuMemory(""), null);
 });
 
-test("the pinned entries are the Desktop's, byte for byte", () => {
+test("the models offered before the verified catalogue keep their files, byte for byte", () => {
+  const legacy = new Set(["Qwen3.5-4B-Q4_K_M", "Qwen3.5-9B-Q4_K_M", "Qwen3.6-35B-A3B-IQ3_XXS", "DeepSeek-R1-0528-Qwen3-8B-Q4_K_M", "gemma-4-12b-it-qat-q4_0", "Ministral-3-14B-Instruct-2512-Q4_K_M", "Qwen3-14B-Q4_K_M", "gpt-oss-20b-MXFP4", "gemma-4-26B_q4_0-it"]);
+  const sorted = (rows: Array<[string, number, string]>) => [...rows].sort((a, b) => a[0].localeCompare(b[0]));
   assert.deepEqual(
-    CATALOG.map((model) => [model.id, model.bytes, model.sha256]),
-    [
+    sorted(CATALOG.filter((model) => legacy.has(model.id)).map((model) => [model.id, model.bytes, model.sha256])),
+    sorted([
       ["Qwen3.5-4B-Q4_K_M", 2_783_446_880, "b7508d8b4a652bc020a439aafdd4ce1527d49774865ce3334a43b16dbeaa90ca"],
       ["Qwen3.5-9B-Q4_K_M", 5_780_090_688, "8c4cc24f54473f3d4e080d4ec7fd2a40d0bbec0f94f3c807cd62694905357d54"],
       ["Qwen3.6-35B-A3B-IQ3_XXS", 15_761_446_528, "4eb30af2df0dde76fe8d0a60f0e88f285ee668dcb1b8da892ee5c13dd6b00399"],
@@ -152,7 +181,7 @@ test("the pinned entries are the Desktop's, byte for byte", () => {
       ["Qwen3-14B-Q4_K_M", 9_001_752_960, "500a8806e85ee9c83f3ae08420295592451379b4f8cf2d0f41c15dffeb6b81f0"],
       ["gpt-oss-20b-MXFP4", 12_109_566_624, "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"],
       ["gemma-4-26B_q4_0-it", 14_439_363_584, "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d"],
-    ],
+    ] as Array<[string, number, string]>),
   );
 });
 
@@ -161,8 +190,9 @@ test("the pinned entries are the Desktop's, byte for byte", () => {
 test("the recommendation stays a Qwen3.5 of Twoody's, however large the computer", () => {
   assert.equal(recommendedModel(64 * GIB, CATALOG, "darwin")?.id, "Qwen3.5-9B-Q4_K_M");
   assert.equal(recommendedModel(8 * GIB, CATALOG, "darwin")?.id, "Qwen3.5-4B-Q4_K_M");
-  // Images: Qwen3.5, Gemma 4 and Ministral 3 read them.
-  assert.deepEqual(CATALOG.filter((model) => model.vision).map((model) => model.id), ["Qwen3.5-4B-Q4_K_M", "Qwen3.5-9B-Q4_K_M", "Qwen3.6-35B-A3B-IQ3_XXS", "gemma-4-12b-it-qat-q4_0", "Ministral-3-14B-Instruct-2512-Q4_K_M", "gemma-4-26B_q4_0-it"]);
+  // Images: Qwen3.5, Gemma 4 and Ministral 3 read them, among others.
+  const readers = CATALOG.filter((model) => model.vision).map((model) => model.id);
+  for (const id of ["Qwen3.5-4B-Q4_K_M", "Qwen3.5-9B-Q4_K_M", "Qwen3.6-35B-A3B-IQ3_XXS", "gemma-4-12b-it-qat-q4_0", "Ministral-3-14B-Instruct-2512-Q4_K_M", "gemma-4-26B_q4_0-it"]) assert.ok(readers.includes(id), id);
 });
 
 test("TWOODY_MODEL_CATALOG replaces the catalogue like the Desktop's variable", () => {
@@ -178,21 +208,25 @@ test("TWOODY_MODEL_CATALOG replaces the catalogue like the Desktop's variable", 
 
 test("the catalogue view says what is installed, recommended and fits", () => {
   const view = catalogView(CATALOG, ["Qwen3.5-4B-Q4_K_M"], 16 * GIB, "linux");
-  assert.deepEqual(
-    view.map((entry) => [entry.id, entry.installed, entry.recommended, entry.fits]),
-    [
-      ["Qwen3.5-4B-Q4_K_M", true, true, true],
-      ["Qwen3.5-9B-Q4_K_M", false, false, true],
-      ["Qwen3.6-35B-A3B-IQ3_XXS", false, false, false],
-      ["DeepSeek-R1-0528-Qwen3-8B-Q4_K_M", false, false, true],
-      ["gemma-4-12b-it-qat-q4_0", false, false, true],
-      ["Ministral-3-14B-Instruct-2512-Q4_K_M", false, false, false],
-      ["Qwen3-14B-Q4_K_M", false, false, false],
-      ["gpt-oss-20b-MXFP4", false, false, false],
-      ["gemma-4-26B_q4_0-it", false, false, false],
-    ],
-  );
-  assert.equal(modelFits(CATALOG[1], 8 * GIB), false);
+  const row = (id: string) => {
+    const entry = view.find((candidate) => candidate.id === id)!;
+    return [entry.installed, entry.recommended, entry.fits];
+  };
+  // The models offered before 15/10/2026 keep their thresholds.
+  assert.deepEqual(row("Qwen3.5-4B-Q4_K_M"), [true, true, true]);
+  assert.deepEqual(row("Qwen3.5-9B-Q4_K_M"), [false, false, true]);
+  assert.deepEqual(row("Qwen3.6-35B-A3B-IQ3_XXS"), [false, false, false]);
+  assert.deepEqual(row("DeepSeek-R1-0528-Qwen3-8B-Q4_K_M"), [false, false, true]);
+  assert.deepEqual(row("gemma-4-12b-it-qat-q4_0"), [false, false, true]);
+  assert.deepEqual(row("Ministral-3-14B-Instruct-2512-Q4_K_M"), [false, false, false]);
+  assert.deepEqual(row("Qwen3-14B-Q4_K_M"), [false, false, false]);
+  assert.deepEqual(row("gpt-oss-20b-MXFP4"), [false, false, false]);
+  assert.deepEqual(row("gemma-4-26B_q4_0-it"), [false, false, false]);
+  // The others by what memory.ts says they need: a 70B never on 16 GB, a 1B always.
+  assert.deepEqual(row("Llama-3.3-70B-Instruct-Q4_K_M"), [false, false, false]);
+  assert.deepEqual(row("Llama-3.2-1B-Instruct-Q4_K_M"), [false, false, true]);
+  assert.equal(view.filter((entry) => entry.recommended).length, 1);
+  assert.equal(modelFits(CATALOG.find((model) => model.id === "Qwen3.5-9B-Q4_K_M")!, 8 * GIB), false);
 });
 
 // Ported from twoody-desktop/test/runtimeAcceleration.test.mjs.

@@ -129,3 +129,47 @@ l'avancement … à quel moment je peux commencer à l'utiliser sans avoir un lo
 - **Not done**: installing a model from the iPhone (the Desktop owns the downloads; the server answers 409
   `managed_by_desktop` — it would need the server to ask the Desktop, as share-call does); a real percentage while
   loading (llama.cpp reports none: still the time against the last load).
+
+## 9. A verified catalogue of some fifty models, what each needs in memory, and MLX (15/10/2026)
+Jimmy: « un catalogue d'environ 50 modèles, plusieurs versions de chaque famille », « un écran Modèles bien
+meilleur », « je veux pouvoir utiliser MLX ».
+- **The catalogue is data** (`src/builtin/catalogData.ts`, 57 entries, types in `catalogTypes.ts`), written by
+  `scripts/model-catalog.mjs` from the Hugging Face API — never by hand: the repository, the exact file at a pinned
+  revision, its size and SHA-256, the vision file, the matching MLX folder (every file with its size and SHA-256, or
+  git's object id for the small text files), the publisher's licence, the context length and the architecture
+  figures of its `config.json`. The script's `SOURCES` are the only choices (which model, which repository, which
+  quantisation); `--check` re-fetches every entry and exits 1 when anything moved, `--table` prints the table. The
+  nine models offered before keep their ids, files and digests (unchanged, checked by test); `catalog.ts` turns the
+  entries into `CATALOG`; the Desktop copies the four files (`sync-builtin.mjs`).
+- **Families**: Qwen (3.5 0.8B–35B-A3B, 3.6 27B and 35B-A3B in 3 and 4 bits, 3.8 27B, Qwen3 4B/8B/14B/32B, 30B-A3B
+  Instruct and Thinking, Qwen3-Coder 30B-A3B), GLM (4 9B/32B, Z1 9B, 4.6V Flash, 4.7 Flash), DeepSeek (R1-0528 8B,
+  R1 Distill Qwen 7B/14B/32B and Llama 8B, Coder-V2 Lite), Gemma 4 (E2B, E4B, 12B, 26B-A4B, 31B — Google's QAT
+  files), Mistral (Ministral 3 3B/8B/14B and 14B Reasoning, Mistral Small 3.2, Magistral Small 1.2, Devstral Small
+  2), Llama (3.2 1B/3B, 3.1 8B, 3.3 70B), Phi-4 (mini, mini reasoning, 14B, reasoning plus), gpt-oss 20B, Nemotron 3
+  Nano 4B and 30B-A3B, SmolLM3 3B, Granite 4.1 8B, Olmo 3 7B, LFM2.5 2.6B, MiniCPM5 2B. Quantisers in this order:
+  the publisher's own, ggml-org, Osmove's (twoody), bartowski; unsloth only for Qwen3-Coder 30B-A3B (bartowski's
+  repository answers 401). Left out: models whose 4-bit file is split (gpt-oss 120B, GLM-4.5-Air, Qwen3.5 122B:
+  the downloader takes one file), the flagship MoEs of 180B and more, and any licence that forbids a person's or a
+  company's use (non-commercial, research only: refused by the script). Licences with conditions (Llama, NVIDIA,
+  LFM, DeepSeek) are « licence avec conditions » on the screen, with the licence's link.
+- **What a model needs in memory** (`src/builtin/memory.ts`, one formula for the app, the server and the site's
+  calculator, twoody-backend `Marketing::LocalLlm::Estimator`):
+  need = weights + kvBytesPerToken × context × cache factor + sliding layers × min(context, window + 512) × factor
+  + recurrent state + 0.3 GiB of work buffers (+ the vision file + 0.3 GiB on llama.cpp). Context: Twoody's own
+  (`twoodyContext`, which runtimeArgs.ts `builtinContextFor` now calls). Cache factor: q8_0 (34/64) for a hybrid
+  model on llama.cpp, f16 otherwise and on MLX. kvBytesPerToken counts the layers that keep the whole conversation
+  (full attention; MLA's latent + rope; Gemma 4's global heads and shared layers; `attention_k_eq_v`); recurrent
+  state from Gated DeltaNet or Mamba dimensions. Checked: Qwen3.5 9B with vision at 32 768 tokens 7.4 GiB measured,
+  7.4 computed; 4B at 8 192 2.9 measured, 3.1; Qwen3.6 35B-A3B IQ3_XXS 14.5 measured, 15.4 (safe side). The site's
+  `kv_kib` are the same f16 figures (Qwen3.5 9B 32, Qwen3 14B 160, gpt-oss 24, Gemma 4 31B 40, GLM-4.7 Flash 53);
+  its overhead was 0.5 GiB + 5 % of the file, now 0.3 GiB like the app (Qwen3 8B at 16k: 7.23 GiB on both).
+  `minRamGb` of a new entry: the smallest memory size where the need fits the GPU's share (two thirds up to 32
+  GB, three quarters to 128 GB: `gpuShare`, the site's `mac_share`); the nine entries measured by hand keep theirs.
+- **`GET /runtime/catalog`** adds `memoryNeed` (this computer, llama.cpp) and `mlx {id, bytes, memoryNeed}` (the file
+  list stays in the catalogue). The iPhone's computer screen shows a Mac's installed models only (its « Modèles »
+  holds the catalogue) and the memory each needs.
+- **MLX**: an engine of the Desktop on Apple silicon only, installed and run by the app (twoody-desktop
+  `docs/mlx-engine.md`). For the server it is one more keyed loopback runtime (`TWOODY_RUNTIME_KEYS`); what it adds
+  here is `src/visionStandIn.ts`: a turn with an image that the chosen local model refuses (`vision_unavailable`,
+  which the MLX launcher answers) goes to a model of this computer's llama.cpp that reads images — the same model's
+  GGUF first — and the final event says `vision_stand_in {from, to}` (test/visionStandIn.test.ts).

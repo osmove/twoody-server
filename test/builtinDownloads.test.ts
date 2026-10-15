@@ -126,6 +126,24 @@ test("a file that is not the catalogue's is discarded, never installed", () =>
     assert.ok(!existsSync(join(dir, "Tiny-Q8_0.gguf.part")));
   }));
 
+// The small text files of an MLX folder are named by git's object id
+// (catalogTypes.ts MlxFile): checked so, resumed too.
+test("a file named by its git object id is checked by it, resumed or not, and refused when it differs", () =>
+  withMirror(async (server, dir) => {
+    const gitSha1 = createHash("sha1").update(`blob ${content.length}\0`).update(content).digest("hex");
+    const file = { id: "config", file: "config.json", url: `${server.base}/config.json`, bytes: content.length, sha256: "", gitSha1 };
+    server.dropNextAfter(500_000);
+    await assert.rejects(downloadModel(file, dir, { signal: new AbortController().signal, allowLoopback: true }));
+    const path = await downloadModel(file, dir, { signal: new AbortController().signal, allowLoopback: true });
+    assert.ok(readFileSync(path).equals(content));
+    const wrong = { ...file, file: "other.json", gitSha1: "0".repeat(40) };
+    await assert.rejects(
+      downloadModel(wrong, dir, { signal: new AbortController().signal, allowLoopback: true }),
+      (err) => err instanceof DownloadError && err.code === "checksum_mismatch" && /git object id/.test(err.message),
+    );
+    assert.ok(!existsSync(join(dir, "other.json")));
+  }));
+
 test("a redirect to anywhere else is refused before a byte is asked for there", () =>
   withMirror(async (server, dir) => {
     await assert.rejects(

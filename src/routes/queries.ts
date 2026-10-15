@@ -1,4 +1,5 @@
 import { relative, isAbsolute, join } from "node:path";
+import { visionStandIn } from "../visionStandIn.js";
 import { readSecretFile, writeSecretFile } from "../secretFile.js";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -1577,30 +1578,47 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
           throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
         }
         if (provider.kind === "local_openai") noteModelUsed(provider.model);
-        reported = await streamFromProvider(
-          provider,
-          messagesFor(provider),
-          readTemperature(userContext.prefs),
-          (delta) => {
-            timing.first ||= Date.now();
-            thinkFilter.push(delta);
-          },
-          upstream.signal,
-          {
-            effort: readEffort(parsed.effort),
-            onReasoning: (delta) => {
+        const ask = (target: Provider) =>
+          streamFromProvider(
+            target,
+            messagesFor(target),
+            readTemperature(userContext.prefs),
+            (delta) => {
               timing.first ||= Date.now();
-              onReasoning(delta);
+              thinkFilter.push(delta);
             },
-            answerNow: answerNowSignal,
-            purpose: "chat",
-            tools: toolsFor(provider),
-            images,
-            // « Tu peux me la décrire ? »: the image shown a moment ago,
-            // shown again in its place (Jimmy, 02/10/2026).
-            earlierImages: images.length ? [] : recentImages(discussion.id),
-          },
-        );
+            upstream.signal,
+            {
+              effort: readEffort(parsed.effort),
+              onReasoning: (delta) => {
+                timing.first ||= Date.now();
+                onReasoning(delta);
+              },
+              answerNow: answerNowSignal,
+              purpose: "chat",
+              tools: toolsFor(target),
+              images,
+              // « Tu peux me la décrire ? »: the image shown a moment ago,
+              // shown again in its place (Jimmy, 02/10/2026).
+              earlierImages: images.length ? [] : recentImages(discussion.id),
+            },
+          );
+        try {
+          reported = await ask(provider);
+        } catch (err) {
+          // A model that reads no image (Twoody's MLX engine): the turn
+          // goes to a model of this computer's llama.cpp that does
+          // (visionStandIn.ts), and the answer says which one answered.
+          const standIn = err instanceof VisionUnavailableError && images.length > 0 && provider.kind === "local_openai" && !timing.first && !upstream.signal.aborted
+            ? await visionStandIn(auth.userId, provider).catch(() => null)
+            : null;
+          if (!standIn) throw err;
+          trace.vision_stand_in = { from: provider.model, to: standIn.model };
+          provider = { kind: "local_openai", model: standIn.model, baseUrl: standIn.baseUrl };
+          answeredBy = { kind: provider.kind, model: provider.model };
+          noteModelUsed(provider.model);
+          reported = await ask(provider);
+        }
         break;
       } catch (err) {
         // A computer that failed before its first word, for the trace.
@@ -1744,6 +1762,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       usage,
       reasoning_ms: reasoningMs,
       answered_by:  answeredByComputer,
+      // An image read by another model of this computer than the one
+      // chosen (an MLX model reads none, visionStandIn.ts): the app says so.
+      ...(trace.vision_stand_in ? { vision_stand_in: trace.vision_stand_in } : {}),
       // What it was given of the memories: the footer « mémoire : 420 tokens ».
       memory:       memoryShown,
       ...(remembered ? { remembered: { content: remembered, added: rememberedAdded } } : {}),

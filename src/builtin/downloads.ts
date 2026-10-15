@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 
-import { isAllowedDownloadUrl, type CatalogModel } from "./catalog.js";
+import { isAllowedDownloadUrl } from "./catalog.js";
 
 // Downloads one model of the catalogue into the models folder.
 //
@@ -20,8 +20,26 @@ import { isAllowedDownloadUrl, type CatalogModel } from "./catalog.js";
 // kept, and the next attempt asks for the rest (Range). What is already on
 // disk is hashed again first, so the final digest still covers every byte.
 //
+// A file is checked by its SHA-256 — every model file, every large file of
+// an MLX folder (Git LFS) — or, for the small text files of an MLX folder
+// (config.json, the tokenizer's), by git's own object id as Hugging Face
+// lists it at the pinned revision: the SHA-1 of "blob <size>\0" and the
+// content (catalogTypes.ts MlxFile).
+//
 // Ported from twoody-desktop/src/main/modelDownloads.ts. No Electron import: `test/builtinDownloads.test.ts` runs under Node
 // against a local server.
+
+/// What a download needs: a catalogue model, its vision file, or one file
+/// of an MLX folder.
+export interface DownloadTarget {
+  id: string;
+  file: string;
+  url: string;
+  bytes: number;
+  sha256: string;
+  /// Instead of the SHA-256: git's object id (40 hex digits).
+  gitSha1?: string;
+}
 
 export type DownloadState = "downloading" | "verifying" | "done";
 
@@ -52,11 +70,18 @@ const PROGRESS_EVERY_MS = 200;
 /// it resumes where it stopped.
 const IDLE_TIMEOUT_MS = 60_000;
 
-export function modelPath(dir: string, model: CatalogModel): string {
+/// The digest that checks a file: SHA-256, or git's blob SHA-1 (its
+/// header first, so that the digest of a resumed file covers it once).
+function newHash(model: DownloadTarget) {
+  if (!model.gitSha1) return createHash("sha256");
+  return createHash("sha1").update(`blob ${model.bytes}\0`);
+}
+
+export function modelPath(dir: string, model: DownloadTarget): string {
   return join(dir, model.file);
 }
 
-export async function isInstalled(dir: string, model: CatalogModel): Promise<boolean> {
+export async function isInstalled(dir: string, model: DownloadTarget): Promise<boolean> {
   try {
     return (await fs.stat(modelPath(dir, model))).size === model.bytes;
   } catch {
@@ -89,7 +114,7 @@ export async function freeDiskBytes(dir: string): Promise<number | null> {
 /// less what is there already (installed, or a partial file that resumes),
 /// and the margin once — a model and its vision file are one install, and
 /// running out of room between the two would leave gigabytes for nothing.
-export async function spaceToInstall(files: Array<{ dir: string; model: CatalogModel }>): Promise<number> {
+export async function spaceToInstall(files: Array<{ dir: string; model: DownloadTarget }>): Promise<number> {
   let needed = 0;
   for (const { dir, model } of files) {
     if (await isInstalled(dir, model)) continue;
@@ -137,7 +162,7 @@ async function openChecked(url: string, headers: Record<string, string>, signal:
 }
 
 export async function downloadModel(
-  model: CatalogModel,
+  model: DownloadTarget,
   dir: string,
   options: { signal: AbortSignal; onProgress?: (progress: DownloadProgress) => void; allowLoopback?: boolean },
 ): Promise<string> {
@@ -162,7 +187,7 @@ export async function downloadModel(
   const report = (state: DownloadState, bytesPerSecond = 0) =>
     onProgress?.({ id: model.id, state, received, total: model.bytes, bytesPerSecond });
 
-  const hash = createHash("sha256");
+  const hash = newHash(model);
   try {
     if (received > 0 && received < model.bytes) {
       const response = await openChecked(model.url, { Range: `bytes=${received}-` }, signal, allowLoopback);
@@ -201,10 +226,10 @@ export async function downloadModel(
   if (received !== model.bytes) {
     throw new DownloadError("incomplete", `${received} bytes of ${model.bytes}`);
   }
-  if (hash.digest("hex") !== model.sha256) {
+  if (hash.digest("hex") !== (model.gitSha1 ?? model.sha256)) {
     // Not the file the catalogue describes: nothing of it is worth keeping.
     await fs.rm(partial, { force: true });
-    throw new DownloadError("checksum_mismatch", `${model.file} does not match its SHA-256`);
+    throw new DownloadError("checksum_mismatch", `${model.file} does not match its ${model.gitSha1 ? "git object id" : "SHA-256"}`);
   }
   await fs.chmod(partial, 0o600).catch(() => undefined);
   await fs.rename(partial, target);
@@ -245,7 +270,7 @@ export async function downloadModel(
   }
 }
 
-export async function removeModel(dir: string, model: CatalogModel): Promise<void> {
+export async function removeModel(dir: string, model: DownloadTarget): Promise<void> {
   await fs.rm(modelPath(dir, model), { force: true });
   await fs.rm(`${modelPath(dir, model)}.part`, { force: true });
 }

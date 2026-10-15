@@ -3,6 +3,7 @@
 export * from "./runtimeManifest.js";
 export * from "./fetchRuntime.js";
 export * from "./catalog.js";
+export * from "./memory.js";
 export * from "./downloads.js";
 export * from "./acceleration.js";
 export * from "./failure.js";
