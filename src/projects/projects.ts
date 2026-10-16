@@ -22,9 +22,14 @@ export const PROJECT_KINDS = ["purchase", "event", "home", "travel", "work", "he
 /// conversation, a critical one first.
 export const PROJECT_SIZES = ["small", "medium", "large", "critical"] as const;
 export const PROJECT_STATUSES = ["idea", "active", "paused", "done", "dropped"] as const;
+/// Who made a project: the person, the learner, or the account it was taken
+/// over from (schema/contract.json `projects.source`; the account's words
+/// differ for now: an open item of docs/schema-convergence.md).
+export const PROJECT_SOURCES = ["manual", "learned", "account"] as const;
 export type ProjectKind = (typeof PROJECT_KINDS)[number];
 export type ProjectSize = (typeof PROJECT_SIZES)[number];
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+export type ProjectSource = (typeof PROJECT_SOURCES)[number];
 
 const MAX_TITLE = 200;
 const MAX_BRIEF = 4000;
@@ -115,7 +120,7 @@ function byId(userId: string, id: string): Row | undefined {
   return sqlite.prepare("SELECT * FROM projects WHERE id = ? AND user_id = ?").get(id, userId) as Row | undefined;
 }
 
-export function createProject(userId: string, input: ProjectInput, source: "manual" | "learned" | "account" = "manual", now = Date.now()): string {
+export function createProject(userId: string, input: ProjectInput, source: ProjectSource = "manual", now = Date.now()): string {
   const title = input.title!;
   // An isolated project: no entity, so that its name reaches no memory,
   // graph line or card; never merged with another of the same name.

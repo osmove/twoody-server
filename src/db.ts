@@ -265,6 +265,9 @@ export const discussions = sqliteTable("discussions", {
 // branching on backend. `model` and `provider` capture which LLM
 // answered each turn — useful when the user hops between gpt-5.5
 // and Twoody Private mid-discussion.
+/// The roles a message may have (schema/contract.json `messages.role`, the
+/// same on the account).
+export const MESSAGE_ROLES = ["user", "assistant", "tool", "system"] as const;
 export const messages = sqliteTable("messages", {
   id: text("id").primaryKey(),
   discussionId: text("discussion_id").notNull().references(() => discussions.id),

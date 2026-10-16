@@ -411,3 +411,82 @@ banque n'allant au compte, et les tables du compte n'ayant pas la même forme
 (montants flottants, `bank_authorization_id` obligatoire, dates en `date`).
 Le contrat étant copié tel quel dans twoody-backend, y ajouter ces tables
 demandera la même modification côté Rails.
+
+## Contrat v2 et renommages de l'audit (17 octobre 2026)
+
+Audit du jour : `docs/schema-audit-2026-10-17.md` (13 écarts). Feu vert de Jimmy le même jour (« applique l'audit »).
+
+### Le contrat v2 (`schema/contract.json`, recopié dans `twoody-backend/config/schema_contract.json`)
+- **Tout est classé.** Chaque table des deux bases est dans `tables` (partagée), `local_only`, `account_only` ou
+  `same_name` (le même nom pour deux choses : local seulement ici, compte seulement là-bas), avec sa raison ; chaque
+  colonne d'une table partagée est dans le contrat ou dans `local_columns` / `account_columns`, avec sa raison. Les
+  raisons communes sont dans `reasons` (`@local_user`, `@legacy`…). 12 tables partagées (`folder_shares` en plus),
+  36 locales seulement, 110 du compte seulement, 12 `same_name`.
+- **Valeurs vérifiées des deux côtés.** Le Mac compare `values` aux constantes du code (`MESSAGE_ROLES`, `TRACE_KINDS`,
+  `MEMORY_KINDS`, `PROJECT_SIZES`, `PROJECT_STATUSES`, `PROJECT_SOURCES`, `CONTACT_RELATION_TYPES`, `SHARE_KINDS`,
+  `SHARE_RIGHTS`, `REVOKED_REASONS`), le compte à la validation `inclusion` du modèle, à l'égalité. Un écart connu
+  s'écrit `local_values` / `rails_values` + `gap` ; le test échoue quand l'écart se referme, pour que la note parte.
+- **Références.** Type `ref` (`{"type": "ref", "to": "projects"}`) : TEXT sur le Mac ; `uuid` sur le compte, la table
+  visée ayant son UUID. `rails_bigint` (une raison) tant que le compte pointe encore par son id bigint : le test du
+  compte vérifie qu'il est toujours bigint, la note part quand c'est corrigé.
+- **Projets cloisonnés** (`never_leave.walled_projects`) : un projet `isolated = 1` et chaque ligne qui lui appartient
+  (conversations, messages, traces, propositions de mémoire, tâches, rappels, événements, partages de son dossier) ne
+  quittent jamais l'ordinateur ; une conversation d'un projet cloisonné n'est jamais `cloud_models`. Le crochet de la
+  future synchronisation : `src/sync/walls.ts` (`leavingWhere(table)` à ajouter à sa lecture, `mayLeave(db, table,
+  id)`, seulement les tables partagées) ; son test appelle `test/helpers/walls.ts` `assertWallsHold` avec ce qu'elle
+  enverrait (aucune ligne cloisonnée, toutes les autres). Le test du contrat vérifie que la règle du code est celle du
+  contrat et que toute table partagée qui peut tenir une ligne d'un projet est nommée (ou dite `not_concerned`) ; celui
+  du compte qu'il n'y a ni `projects.isolated` ni `project_notes`.
+- **Tests** : `test/schemaContract.test.ts` (Mac) et `test/schema_contract_test.rb` (compte) échouent sur ce qui n'est
+  pas classé, ce qui est listé et n'existe plus, un type, une valeur ou une référence qui dérive.
+
+### Les renommages (migrations 13 à 15 du Mac, `20261017100000` du compte)
+- **Migration 13** (`0013_folder_share_names.ts`) : `folder_shares."right"` → `access_right`, `label` →
+  `folder_label`, `revoked_by` → `revoked_reason` (les mots du compte, `host` compris : il était rangé en `owner`,
+  il est gardé tel quel). L'API `/local_shares` garde `label`, `right` et `revoked_by`, que les apps lisent.
+- **Compte, `20261017100000`** : `folder_shares.share_uuid` → `uuid` (et son index unique). Le JSON disait déjà
+  `uuid` ; la clé `share_uuid` du `principal` des tâches du relais et des événements d'audit des organisations ne
+  change pas (contrat de fil, lu par les ordinateurs). L'id bigint reste (`bridge_tasks.folder_share_id`).
+- **Migration 14** (`0014_people_rows.ts`) : `entities.removed_at` → `archived_at` (caché mais rétablissable, le mot
+  du compte) ; l'API de `/people` dit `archived_at`, et `removed_at` aussi pendant une version (aucune app ne le lit) ;
+  `entity_relations` reconstruite avec `id` (UUID), `created_at`, `updated_at` (unicité de la paire et du libellé
+  gardée, ordre des lignes gardé, une relation d'avant datée du plus tard des deux personnes) ; une relation récrite
+  telle quelle garde son id et ses dates (`putRelation`) ; `entity_contacts.updated_at` (= `created_at` au départ).
+- **Migration 15** (`0015_peer_document_audit.ts`) : `peer_document_audit.at` → `occurred_at` ; la table n'est plus
+  créée ni complétée par `src/peerDocuments/audit.ts` (la migration 8 fait tout). L'API garde `at`.
+- Chaque migration regarde avant d'agir : rejouée, elle ne change rien. Essais : base de version 12 fabriquée avec des
+  lignes dans chaque table touchée (`test/migrations.test.ts`) ; copie lue seule de la base du Pi (version 12, 79
+  tables, 1 646 lignes d'audit, aucun partage ni proche) : migrée en 22 ms, aucun nombre de lignes changé,
+  `integrity_check` ok, `foreign_key_check` vide, rejouée sans effet ; copie mise à la Corbeille. Côté compte : sur
+  la base de test, deux partages insérés, `up`, `up` encore, `down`, `down` encore, `up` : lignes et valeurs gardées,
+  index renommé, le tout annulé ensuite. La base chiffrée du Mac de Jimmy n'a pas été copiée (il faut son accord au
+  trousseau).
+
+### Ordre de publication
+1. **Compte** (indépendant des versions des apps : l'API ne change pas) : `maintenance:on`, push, `db:migrate`,
+   `ps:restart`, `maintenance:off` — le code qui lit `uuid` et la migration partent ensemble (entre les deux, les
+   routes des dossiers partagés échoueraient). Aucune version du Desktop, de l'iPhone ou du Pi n'en dépend.
+2. **Desktop** (0.13.104, avec ce serveur) : la base de chacun passe de la version 12 à 15 au premier lancement, après
+   la copie de sauvegarde habituelle. Une version d'avant (0.13.103) refuse ensuite cette base (« newer than this
+   server »), comme à chaque migration.
+3. **iPhone** : rien à publier (aucun appel changé ; il lit `removed`, pas `removed_at`).
+4. **Pi** : le même serveur, après le Desktop.
+5. Une version plus tard : retirer `removed_at` de l'API de `/people`.
+
+### Points ouverts (à faire plus tard)
+- **Références par UUID côté compte** : `discussions.project_id`, `messages.discussion_id`, `memories.superseded_by_id`,
+  `tasks.project_id`, `reminders.project_id` sont des bigint vers `id` (`rails_bigint` dans le contrat) ; les passer en
+  UUID (colonnes `*_id` uuid vers `uuid`, ou tables nouvelles en `id: :uuid`), et les ids de personnes du Mac
+  (`folder_shares.grantee_user_id`) par `users.uuid`.
+- **`organizations.uuid`** : à ajouter avant qu'une organisation soit synchronisée (`folder_shares.organization_id`
+  est l'id du compte en texte sur le Mac).
+- **Étape 5, alignements restants** : `events` (`location` contre `address1…zipcode`/`address_id` ; `source`,
+  `external_id`, `calendar` sur le compte ; `project_id` sur le compte), `memory_candidates` (les colonnes du Mac
+  contre celles de l'ancien `memory_imports`), `discussions` (`updated_at` / `last_activity_at`, `memory_mode`,
+  `summary`), `projects` (`slug`, `archived_at` sur le Mac ; `source` : les mots du compte user, proactive, flow,
+  import contre manual, learned, account ; `status` « blocked » absent du Mac), `reminders.origin` sur le Mac,
+  `memories.entity_id` (polymorphe des deux côtés, pas la même chose), `hlc`, `deleted_at`, `origin_device_id`.
+- **Le graphe** (étape 4) : `entity_relations.kind` (41 sortes), `source` et `how` entrent dans le contrat le jour où
+  le compte crée `entities`.
+- **Noms de l'API locale** : `/local_shares` dit encore `label`, `right`, `revoked_by` (les colonnes ont les noms du
+  compte) ; l'API du compte dit `folder_label` et `right`. À rapprocher avec une version des apps qui lit les deux.

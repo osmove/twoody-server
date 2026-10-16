@@ -1,7 +1,10 @@
 # Audit du schéma : base locale et base du compte, depuis le 3 octobre 2026
 
 Audit du 17/10/2026, demandé par Jimmy (« garder la base SQLite locale et le Postgres du compte aussi proches que
-possible, au cas où des offres cloud viendraient »). **Audit seulement : rien n'est appliqué.** Il compare tout ce
+possible, au cas où des offres cloud viendraient »). **Appliqué le 17/10/2026** (feu vert de Jimmy) : contrat v2,
+renommages des n° 2, 4, 5 et 9, valeurs de `projects.source` (n° 13), règle 14 de l'AGENTS.md racine — voir
+`docs/schema-convergence.md` « Contrat v2 et renommages de l'audit » ; n° 4 a pris `archived_at`. Restent ouverts
+les n° 7 (références UUID, `organizations.uuid`) et 13 (étape 5). Le texte ci-dessous est celui de l'audit. Il compare tout ce
 qui a été ajouté depuis la convergence du 03/10/2026 (`docs/schema-convergence.md`) aux règles de cette
 convergence.
 

@@ -34,8 +34,11 @@ export interface TurnPrompt {
 
 const MAX_PROMPT_JSON = 2 * 1024 * 1024;
 
+/// message_traces.kind (schema/contract.json, the same on the account).
+export const TRACE_KINDS = ["chat", "learn", "warm"] as const;
+
 export interface TurnTrace {
-  kind: "chat" | "learn" | "warm";
+  kind: (typeof TRACE_KINDS)[number];
   discussionId?: string | null;
   messageId?: string | null;
   client?: string | null;

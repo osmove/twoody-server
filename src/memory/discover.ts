@@ -21,7 +21,10 @@ const BATCH = 40;
 const FACT_CHARS = 400;
 const KINDS = new Set(["purchase", "event", "home", "travel", "work", "health", "learning", "admin", "other"]);
 const STATUSES = new Set(["idea", "active", "paused", "done", "dropped"]);
-const RELATIONS = new Set(["family", "partner", "friend", "colleague", "client", "other"]);
+/// The kinds of a contact card's relation (contacts.relation_type, the same
+/// on the account: schema/contract.json).
+export const CONTACT_RELATION_TYPES = ["family", "partner", "friend", "colleague", "client", "other"] as const;
+const RELATIONS = new Set<string>(CONTACT_RELATION_TYPES);
 
 export function discoveryPrompt(facts: Array<{ ref: string; text: string }>, known: { projects: string[]; contacts: string[] }): LearnMessages {
   return [
