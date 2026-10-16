@@ -147,7 +147,7 @@ export async function serveShareRequest(userId: string, payload: unknown, now = 
     audit(body.op, verdict.outcome);
     return { ok: false, error: verdict.error };
   }
-  const { answer, document } = await run(userId, verdict.share.label, verdict.scope, body);
+  const { answer, document } = await run(userId, verdict.share.folder_label, verdict.scope, body);
   audit(body.op, answer.ok ? "ok" : answer.error, document);
   return answer;
 }

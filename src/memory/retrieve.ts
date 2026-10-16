@@ -66,7 +66,7 @@ const BELONGS = new Set([
 
 function linksOf(userId: string, texts?: Map<string, string>): Map<string, Link[]> {
   const rows = sqlite.prepare(
-    "SELECT me.memory_id, me.entity_id, me.how, e.norm FROM memory_entities me JOIN entities e ON e.id = me.entity_id WHERE e.user_id = ? AND e.merged_into IS NULL AND e.removed_at IS NULL",
+    "SELECT me.memory_id, me.entity_id, me.how, e.norm FROM memory_entities me JOIN entities e ON e.id = me.entity_id WHERE e.user_id = ? AND e.merged_into IS NULL AND e.archived_at IS NULL",
   ).all(userId) as Array<{ memory_id: string; entity_id: string; how: string; norm: string }>;
   const proper = new Map<string, string[]>();
   const properOf = (entityId: string, norm: string) => {

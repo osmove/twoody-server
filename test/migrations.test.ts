@@ -114,7 +114,7 @@ test("migration 9 indexes the Japanese, Chinese and Korean passages already ther
   assert.deepEqual(found('"해지" AND "예고" AND "기간"'), ["ko"]);
 });
 
-test("migration 11 makes file_actions, and keeps the one a computer made on first use with its rows; migration 12 adds entities.removed_at", () => {
+test("migration 11 makes file_actions, and keeps the one a computer made on first use with its rows; migration 12 adds entities.removed_at (archived_at since 14)", () => {
   const made = (db: Database.Database) => db.exec(`CREATE TABLE IF NOT EXISTS file_actions (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, discussion_id TEXT NOT NULL, message_id TEXT, kind TEXT NOT NULL, status TEXT NOT NULL,
       plan TEXT NOT NULL, result TEXT, asker_session TEXT, asker_app INTEGER NOT NULL DEFAULT 0, model TEXT, language TEXT NOT NULL,
@@ -124,9 +124,7 @@ test("migration 11 makes file_actions, and keeps the one a computer made on firs
   const atVersion10 = (withTable: boolean) => {
     const dir = mkdtempSync(join(tmpdir(), "twoody-migrations-"));
     const db = new Database(join(dir, "local.db"));
-    migrate(db, { dataDir: dir, log: quiet });
-    db.exec("DROP TABLE file_actions; ALTER TABLE entities DROP COLUMN removed_at");
-    db.pragma("user_version = 10");
+    migrate(db, { dataDir: dir, log: quiet, upTo: 10 });
     db.prepare("INSERT INTO users (id, email, created_at) VALUES ('u1', 'u@example.com', ?)").run(Date.now());
     db.prepare("INSERT INTO entities (id, user_id, kind, name, norm, source, created_at, updated_at) VALUES ('e1', 'u1', 'person', 'Nadine', 'nadine', 'manual', 1, 1)").run();
     if (withTable) {
@@ -141,9 +139,95 @@ test("migration 11 makes file_actions, and keeps the one a computer made on firs
     assert.equal(schemaVersion(db), SCHEMA_VERSION);
     assert.deepEqual(columns(db, "file_actions"), ["id", "user_id", "discussion_id", "message_id", "kind", "status", "plan", "result", "asker_session", "asker_app", "model", "language", "created_at", "decided_at", "done_at"]);
     assert.deepEqual((db.prepare("SELECT id FROM file_actions").all() as Array<{ id: string }>).map((row) => row.id), withTable ? ["a1"] : [], "the rows made before are kept");
-    assert.deepEqual(db.prepare("SELECT name, removed_at FROM entities").all(), [{ name: "Nadine", removed_at: null }], "nobody removed by the migration");
+    assert.deepEqual(db.prepare("SELECT name, archived_at FROM entities").all(), [{ name: "Nadine", archived_at: null }], "nobody removed by the migration");
     // The store's old first-use statement on a migrated database: nothing changes.
     made(db);
     assert.equal((db.prepare("SELECT count(*) AS n FROM file_actions").get() as { n: number }).n, withTable ? 1 : 0);
   }
+});
+
+/// A database as Twoody 0.13.103 and the Pi (a9d161a) leave it — version 12 —
+/// with a row in each table migrations 13 to 15 touch.
+function atVersion12() {
+  const dir = mkdtempSync(join(tmpdir(), "twoody-migrations-"));
+  const db = new Database(join(dir, "local.db"));
+  migrate(db, { dataDir: dir, log: quiet, upTo: 12 });
+  assert.equal(schemaVersion(db), 12);
+  db.prepare("INSERT INTO users (id, email, created_at) VALUES ('u1', 'u@example.com', 1)").run();
+  const share = (id: string, label: string, right: string, revokedBy: string | null) =>
+    db.prepare(`INSERT INTO folder_shares (id, user_id, folder_id, kind, grantee_user_id, label, "right", expires_at, created_at, updated_at, revision, revoked_at, revoked_by)
+      VALUES (?, 'u1', 'f1', 'person', '42', ?, ?, NULL, 10, 20, 2, ?, ?)`).run(id, label, right, revokedBy ? 30 : null, revokedBy);
+  share("8f0c3a52-1d2e-4c1b-9b7a-0f6c1c2d3e4f", "Contrats", "read", null);
+  share("1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9", "Bail", "ask", "grantee");
+  const entity = (id: string, name: string, created: number, removed: number | null) =>
+    db.prepare("INSERT INTO entities (id, user_id, kind, name, norm, source, created_at, updated_at, removed_at) VALUES (?, 'u1', ?, ?, ?, 'manual', ?, ?, ?)")
+      .run(id, id === "self" ? "self" : "person", name, name.toLowerCase(), created, created, removed);
+  entity("self", "Moi", 100, null);
+  entity("nadine", "Nadine", 200, null);
+  entity("paul", "Paul", 300, 400);
+  const relation = db.prepare("INSERT INTO entity_relations (from_id, to_id, label, kind, source) VALUES (?, ?, ?, ?, ?)");
+  relation.run("self", "nadine", "mère", "mother", "manual");
+  relation.run("self", "paul", "frère", "brother", "learned");
+  relation.run("nadine", "paul", "fils", "son", "manual");
+  db.prepare("INSERT INTO entity_contacts (entity_id, contact_id, how, created_at) VALUES ('nadine', 'c1', 'confirmed', 500)").run();
+  db.prepare("INSERT INTO peer_document_audit (user_id, computer_id, action, document_id, name, bytes, at, share_id, outcome) VALUES ('u1', 'share:x', 'search', 'd1', 'bail.pdf', 12, 600, 'x', 'ok')").run();
+  return { dir, db };
+}
+
+test("migrations 13 to 15 on a version 12 database: the account's names, ids and dates for the people's links, occurred_at; every row kept", () => {
+  const { dir, db } = atVersion12();
+  migrate(db, { dataDir: dir, log: quiet });
+  assert.equal(schemaVersion(db), SCHEMA_VERSION);
+  assert.equal(readdirSync(join(dir, "backups")).length, 1, "a copy of the version 12 database first");
+
+  // 13: folder_shares under the account's names, values as they were.
+  assert.deepEqual(columns(db, "folder_shares"), ["id", "user_id", "folder_id", "kind", "grantee_user_id", "grantee_name", "organization_id", "organization_name", "folder_label", "access_right", "expires_at", "created_at", "updated_at", "revision", "revoked_at", "revoked_reason", "published_at"]);
+  assert.deepEqual(db.prepare("SELECT id, folder_label, access_right, revoked_at, revoked_reason, revision FROM folder_shares ORDER BY created_at, folder_label").all(), [
+    { id: "1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9", folder_label: "Bail", access_right: "ask", revoked_at: 30, revoked_reason: "grantee", revision: 2 },
+    { id: "8f0c3a52-1d2e-4c1b-9b7a-0f6c1c2d3e4f", folder_label: "Contrats", access_right: "read", revoked_at: null, revoked_reason: null, revision: 2 },
+  ]);
+
+  // 14: archived_at, relations with an id and dates, in their order; contacts' updated_at.
+  assert.ok(!columns(db, "entities").includes("removed_at"));
+  assert.deepEqual(db.prepare("SELECT id, archived_at FROM entities ORDER BY created_at").all(), [{ id: "self", archived_at: null }, { id: "nadine", archived_at: null }, { id: "paul", archived_at: 400 }]);
+  assert.deepEqual(columns(db, "entity_relations"), ["id", "from_id", "to_id", "label", "kind", "source", "hlc", "created_at", "updated_at"]);
+  const relations = db.prepare("SELECT id, from_id, to_id, label, kind, source, created_at, updated_at FROM entity_relations ORDER BY rowid").all() as Array<{ id: string; from_id: string; to_id: string; label: string; kind: string; source: string; created_at: number; updated_at: number }>;
+  assert.deepEqual(relations.map((r) => [r.from_id, r.to_id, r.label, r.kind, r.source, r.created_at, r.updated_at]), [
+    ["self", "nadine", "mère", "mother", "manual", 200, 200],
+    ["self", "paul", "frère", "brother", "learned", 300, 300],
+    ["nadine", "paul", "fils", "son", "manual", 300, 300],
+  ], "the later of the two people's dates");
+  assert.equal(new Set(relations.map((r) => r.id)).size, 3);
+  for (const r of relations) assert.match(r.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.throws(() => db.prepare("INSERT INTO entity_relations (id, from_id, to_id, label, created_at, updated_at) VALUES ('x', 'self', 'nadine', 'mère', 1, 1)").run(), /UNIQUE/, "the pair and label stay unique");
+  assert.deepEqual(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'entity_relations' AND name = 'idx_entity_relations_to'").all(), [{ name: "idx_entity_relations_to" }]);
+  assert.deepEqual(db.prepare("SELECT entity_id, contact_id, how, created_at, updated_at FROM entity_contacts").all(), [{ entity_id: "nadine", contact_id: "c1", how: "confirmed", created_at: 500, updated_at: 500 }]);
+  // Deleting a person still takes their links (ON DELETE CASCADE kept).
+  db.pragma("foreign_keys = ON");
+  assert.deepEqual(db.pragma("foreign_key_check"), []);
+
+  // 15: occurred_at.
+  assert.ok(!columns(db, "peer_document_audit").includes("at"));
+  assert.deepEqual(db.prepare("SELECT action, name, bytes, occurred_at, share_id, outcome FROM peer_document_audit").all(), [{ action: "search", name: "bail.pdf", bytes: 12, occurred_at: 600, share_id: "x", outcome: "ok" }]);
+});
+
+test("migrations 13 to 15 run again change nothing (idempotent), and a fresh database comes out the same as a migrated one", async () => {
+  const { folderShareNames } = await import("../src/migrations/0013_folder_share_names.ts");
+  const { peopleRows } = await import("../src/migrations/0014_people_rows.ts");
+  const { peerDocumentAudit } = await import("../src/migrations/0015_peer_document_audit.ts");
+  const { dir, db } = atVersion12();
+  migrate(db, { dataDir: dir, log: quiet });
+  const snapshot = () => JSON.stringify(["folder_shares", "entities", "entity_relations", "entity_contacts", "peer_document_audit"].map((table) => [columns(db, table), db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+  const before = snapshot();
+  folderShareNames(db);
+  peopleRows(db);
+  peerDocumentAudit(db);
+  assert.equal(snapshot(), before);
+
+  const freshDir = mkdtempSync(join(tmpdir(), "twoody-migrations-"));
+  const fresh = new Database(join(freshDir, "local.db"));
+  migrate(fresh, { dataDir: freshDir, log: quiet });
+  const ddl = (d: Database.Database) => (d.prepare("SELECT name, sql FROM sqlite_master WHERE tbl_name IN ('folder_shares', 'entity_relations', 'entity_contacts', 'peer_document_audit') ORDER BY name").all() as Array<{ name: string }>).map((row) => row.name);
+  assert.deepEqual(ddl(fresh), ddl(db));
+  for (const table of ["folder_shares", "entities", "entity_relations", "entity_contacts", "peer_document_audit"]) assert.deepEqual(columns(fresh, table), columns(db, table), table);
 });

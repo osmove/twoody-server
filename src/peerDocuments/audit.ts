@@ -11,24 +11,9 @@ import { sqlite } from "../db.js";
 // which one, as it says (`requester`: « owner » or « person:<vault device
 // id> », and its name).
 
-sqlite.exec(`
-  CREATE TABLE IF NOT EXISTS peer_document_audit (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL,
-    computer_id TEXT NOT NULL,
-    session_id TEXT,
-    action TEXT NOT NULL,
-    document_id TEXT,
-    name TEXT,
-    bytes INTEGER,
-    at INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS peer_document_audit_computer ON peer_document_audit (user_id, computer_id, id);
-`);
-const auditColumns = sqlite.prepare("PRAGMA table_info(peer_document_audit)").all() as Array<{ name: string }>;
-for (const name of ["requester", "requester_name"]) {
-  if (!auditColumns.some((column) => column.name === name)) sqlite.exec(`ALTER TABLE peer_document_audit ADD COLUMN ${name} TEXT`);
-}
+// The table (`peer_document_audit`) is made by migration 8 and its time
+// column named `occurred_at` by migration 15: never here (schema/contract.json
+// classes it local only). The API keeps calling the time `at`.
 
 export type AuditAction = "search" | "folders" | "list" | "browse" | "read" | "raw";
 
@@ -46,7 +31,7 @@ export interface AuditEntry {
 }
 
 const insert = sqlite.prepare(
-  "INSERT INTO peer_document_audit (user_id, computer_id, session_id, action, document_id, name, bytes, at, requester, requester_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "INSERT INTO peer_document_audit (user_id, computer_id, session_id, action, document_id, name, bytes, occurred_at, requester, requester_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 );
 
 export function recordAccess(entry: AuditEntry): void {
@@ -75,7 +60,7 @@ export function auditOf(userId: string, computerId: string, options: { before?: 
   const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
   const rows = sqlite
     .prepare(
-      `SELECT id, action, document_id, name, bytes, at, requester, requester_name FROM peer_document_audit
+      `SELECT id, action, document_id, name, bytes, occurred_at AS at, requester, requester_name FROM peer_document_audit
         WHERE user_id = ? AND computer_id = ? ${options.before ? "AND id < ?" : ""}
         ORDER BY id DESC LIMIT ?`,
     )

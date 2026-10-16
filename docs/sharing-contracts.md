@@ -9,7 +9,7 @@ Words: **owner** shares a Documents folder of one of their computers (the **host
 
 ## 1. Account (Rails), JSON, the person's session (`authenticate_user_from_token_or_devise!`)
 
-Model `FolderShare`: `share_uuid` (uuid made by the host, unique), `host_device` (Device, client_kind
+Model `FolderShare`: `uuid` (uuid made by the host, unique; the column was `share_uuid` until migration `20261017100000`, the JSON always said `uuid`), `host_device` (Device, client_kind
 `mac_bridge`, the owner's), `owner`, `kind` (`person` | `organization`), `grantee` (User, person only),
 `organization` (person shares through an organization keep it, nil for household; organization shares require it),
 `folder_label` (≤ 120), `right` (`ask` | `read`), `expires_at`, `status` (`active` | `revoked`), `revoked_at`,
@@ -87,8 +87,9 @@ forming one JSON value:
 ## 3. Owner's computer — twoody-server
 
 Migration 8 (`0008_folder_shares.ts`): `folder_shares` (id uuid, user_id, folder_id → document_folders.id, kind,
-grantee_user_id, grantee_name, organization_id, organization_name, label, right, expires_at, created_at, updated_at,
-revision, revoked_at, revoked_by, published_at), `share_guest_devices` (grantee_user_id, fingerprint, enc_public,
+grantee_user_id, grantee_name, organization_id, organization_name, folder_label, access_right, expires_at, created_at,
+updated_at, revision, revoked_at, revoked_reason, published_at — `label`, `"right"` and `revoked_by` until migration 13,
+17/10/2026, the account's names since; the JSON below keeps `label`, `right` and `revoked_by`), `share_guest_devices` (grantee_user_id, fingerprint, enc_public,
 sign_public, state pending|approved|refused, first_seen_at, last_seen_at, approved_at, verified_at; unique
 (grantee_user_id, fingerprint)), `peer_document_audit` + share_id, guest_user_id, guest_fingerprint, outcome.
 
@@ -112,7 +113,8 @@ POST   /local_shares/serve                   this computer's app only: {share_uu
                                                {enc_public, sign_public}, op} → the answer JSON of §2
 ```
 
-Sync: a share revoked on the account → revoked here (`revoked_by` from its reason); one published here but absent
+Sync: a share revoked on the account → revoked here (`revoked_reason` = its reason, `host` included since migration 13;
+an unknown one is `eligibility`); one published here but absent
 there → in `republish`; one there unknown here → ignored. Nothing the account says ever extends a share.
 
 `serve` checks, in order, and audits every outcome: share exists and not revoked; not expired (this clock); folder

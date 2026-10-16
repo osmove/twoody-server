@@ -171,7 +171,7 @@ export function checkShareRequest(userId: string, request: ShareRequest, op: Sha
   const device = sawGuestDevice(userId, request.granteeUserId, request.guest, now);
   if (device.state !== "approved") return refuse("device_not_approved", device.state === "refused" ? "device_refused" : "device_pending");
   if (op === null) return { ok: true, share, scope };
-  if (!rightAllows(share.right, op)) return refuse("right");
+  if (!rightAllows(share.access_right, op)) return refuse("right");
   const limiter = op === "search" ? searchLimiter : op === "raw" ? rawLimiter : browseLimiter;
   if (!limiter.hit(`${share.id}:${request.guest.fingerprint}`).allowed) return refuse("rate_limited");
   return { ok: true, share, scope };

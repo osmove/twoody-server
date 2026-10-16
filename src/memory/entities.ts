@@ -155,9 +155,10 @@ export function kinshipIn(text: string): Array<{ phrase: string; labels: Readonl
 export type EntityRow = {
   id: string; user_id: string; kind: string; name: string; norm: string; note: string | null; source: string;
   merged_into: string | null; hlc: string | null; vault_event_id: string | null; created_at: number; updated_at: number;
-  /// « Retirer de vos proches » (migration 12): kept, hidden from the live
-  /// graph until restored. findEntity still finds it (its page, « Rétablir »).
-  removed_at?: number | null;
+  /// « Retirer de vos proches » (migration 12, named `archived_at` by
+  /// migration 14: hidden but restorable): kept, hidden from the live graph
+  /// until restored. findEntity still finds it (its page, « Rétablir »).
+  archived_at?: number | null;
 };
 
 const byId = (id: string) => sqlite.prepare("SELECT * FROM entities WHERE id = ?").get(id) as EntityRow | undefined;
@@ -171,7 +172,7 @@ export function findEntity(userId: string, id: string): EntityRow | null {
 
 /// This person's entities, merged and removed ones left out unless asked for.
 export function listEntities(userId: string, includeMerged = false): EntityRow[] {
-  return sqlite.prepare(`SELECT * FROM entities WHERE user_id = ? ${includeMerged ? "" : "AND merged_into IS NULL AND removed_at IS NULL"} ORDER BY kind = 'self' DESC, name COLLATE NOCASE, id`).all(userId) as EntityRow[];
+  return sqlite.prepare(`SELECT * FROM entities WHERE user_id = ? ${includeMerged ? "" : "AND merged_into IS NULL AND archived_at IS NULL"} ORDER BY kind = 'self' DESC, name COLLATE NOCASE, id`).all(userId) as EntityRow[];
 }
 
 function liveByNorm(userId: string, norm: string): EntityRow | undefined {
@@ -188,13 +189,13 @@ export function aliasesOf(entityId: string): string[] {
 
 export function relationsOf(entityId: string): Array<{ to: string; to_name: string; label: string; kind: string | null }> {
   return sqlite.prepare(
-    "SELECT r.to_id AS \"to\", e.name AS to_name, r.label, r.kind FROM entity_relations r JOIN entities e ON e.id = r.to_id WHERE r.from_id = ? AND e.removed_at IS NULL ORDER BY r.rowid",
+    "SELECT r.to_id AS \"to\", e.name AS to_name, r.label, r.kind FROM entity_relations r JOIN entities e ON e.id = r.to_id WHERE r.from_id = ? AND e.archived_at IS NULL ORDER BY r.rowid",
   ).all(entityId) as Array<{ to: string; to_name: string; label: string; kind: string | null }>;
 }
 
 export function relatedFrom(entityId: string): Array<{ from: string; from_name: string; label: string; kind: string | null }> {
   return sqlite.prepare(
-    "SELECT r.from_id AS \"from\", e.name AS from_name, r.label, r.kind FROM entity_relations r JOIN entities e ON e.id = r.from_id WHERE r.to_id = ? AND e.removed_at IS NULL ORDER BY r.rowid",
+    "SELECT r.from_id AS \"from\", e.name AS from_name, r.label, r.kind FROM entity_relations r JOIN entities e ON e.id = r.from_id WHERE r.to_id = ? AND e.archived_at IS NULL ORDER BY r.rowid",
   ).all(entityId) as Array<{ from: string; from_name: string; label: string; kind: string | null }>;
 }
 
@@ -295,15 +296,34 @@ function relationTarget(userId: string, to: string, now: number): EntityRow {
   return insertEntity(userId, { kind: "other", name: to.slice(0, MAX_NAME), note: null, source: "stub" }, now);
 }
 
+/// A relation as it was before being written again: its id and dates are
+/// kept (migration 14), its source too unless said otherwise.
+export interface RelationBefore { id: string; kind: string | null; source: string | null; created_at: number; updated_at: number }
+
+export function relationsBefore(where: string, ...args: unknown[]): Map<string, RelationBefore> {
+  const rows = sqlite.prepare(`SELECT id, from_id, to_id, label, kind, source, created_at, updated_at FROM entity_relations WHERE ${where}`).all(...args) as Array<RelationBefore & { from_id: string; to_id: string; label: string }>;
+  return new Map(rows.map((row) => [`${row.from_id}\n${row.to_id}\n${row.label}`, row]));
+}
+
+/// One relation written (`INSERT OR IGNORE`: the pair and label are unique).
+/// Written again as it was, it keeps its id and dates; changed, its
+/// `updated_at` is now; new, it gets an id of its own.
+export function putRelation(from: string, to: string, label: string, kind: string | null, source: string, now: number, before?: RelationBefore | null) {
+  const same = !!before && before.kind === kind && before.source === source;
+  sqlite
+    .prepare("INSERT OR IGNORE INTO entity_relations (id, from_id, to_id, label, kind, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(before?.id ?? randomUUID(), from, to, label, kind, source, before?.created_at ?? now, same ? before!.updated_at : now);
+}
+
 function setRelations(entity: EntityRow, relations: Array<{ to: string; label: string; kind?: RelationKind | null }>, now: number) {
   // The source of a relation kept as it was is kept (learned, from a card).
-  const before = new Map((sqlite.prepare("SELECT to_id, label, source FROM entity_relations WHERE from_id = ?").all(entity.id) as Array<{ to_id: string; label: string; source: string | null }>)
-    .map((row) => [`${row.to_id}\n${row.label}`, row.source] as const));
+  const before = relationsBefore("from_id = ?", entity.id);
   sqlite.prepare("DELETE FROM entity_relations WHERE from_id = ?").run(entity.id);
-  const put = sqlite.prepare("INSERT OR IGNORE INTO entity_relations (from_id, to_id, label, kind, source) VALUES (?, ?, ?, ?, ?)");
   for (const relation of relations) {
     const target = relationTarget(entity.user_id, relation.to, now);
-    if (target.id !== entity.id) put.run(entity.id, target.id, relation.label, relationKind(relation.kind, relation.label), before.get(`${target.id}\n${relation.label}`) ?? "manual");
+    if (target.id === entity.id) continue;
+    const kept = before.get(`${entity.id}\n${target.id}\n${relation.label}`) ?? null;
+    putRelation(entity.id, target.id, relation.label, relationKind(relation.kind, relation.label), kept?.source ?? "manual", now, kept);
   }
 }
 
@@ -384,7 +404,7 @@ export function mergeEntities(userId: string, fromId: string, intoId: string, no
     addAliases(into, [from.name, ...aliasesOf(from.id)]);
     sqlite.prepare("DELETE FROM entity_aliases WHERE entity_id = ?").run(from.id);
     for (const column of ["from_id", "to_id"] as const) {
-      sqlite.prepare(`UPDATE OR IGNORE entity_relations SET ${column} = ? WHERE ${column} = ?`).run(into.id, from.id);
+      sqlite.prepare(`UPDATE OR IGNORE entity_relations SET ${column} = ?, updated_at = ? WHERE ${column} = ?`).run(into.id, now, from.id);
       sqlite.prepare(`DELETE FROM entity_relations WHERE ${column} = ?`).run(from.id);
     }
     sqlite.prepare("DELETE FROM entity_relations WHERE from_id = ? AND to_id = ?").run(into.id, into.id);
@@ -416,13 +436,13 @@ function matcherFor(userId: string): Matcher {
     if (entity.norm.length >= 2) phrases.push({ norm: entity.norm, entityId: entity.id, how: "name" });
   }
   const aliases = sqlite.prepare(
-    "SELECT a.entity_id, a.norm FROM entity_aliases a JOIN entities e ON e.id = a.entity_id WHERE e.user_id = ? AND e.merged_into IS NULL AND e.removed_at IS NULL",
+    "SELECT a.entity_id, a.norm FROM entity_aliases a JOIN entities e ON e.id = a.entity_id WHERE e.user_id = ? AND e.merged_into IS NULL AND e.archived_at IS NULL",
   ).all(userId) as Array<{ entity_id: string; norm: string }>;
   for (const alias of aliases) if (alias.norm.length >= 2) phrases.push({ norm: alias.norm, entityId: alias.entity_id, how: "alias" });
   const kin = new Map<string, string[]>();
   const self = selfOf(userId);
   if (self) {
-    for (const relation of sqlite.prepare("SELECT r.to_id, r.label, r.kind FROM entity_relations r JOIN entities e ON e.id = r.to_id WHERE r.from_id = ? AND e.removed_at IS NULL").all(self.id) as Array<{ to_id: string; label: string; kind: string | null }>) {
+    for (const relation of sqlite.prepare("SELECT r.to_id, r.label, r.kind FROM entity_relations r JOIN entities e ON e.id = r.to_id WHERE r.from_id = ? AND e.archived_at IS NULL").all(self.id) as Array<{ to_id: string; label: string; kind: string | null }>) {
       // Its label, and its kind's words in the ten languages: « ma mère »
       // and « meine Mutter » reach a relation labelled « maman ».
       const kind = relationKind(relation.kind, relation.label);

@@ -70,7 +70,7 @@ process.on("message", (message: { type: string; ids?: string[]; input?: unknown;
     for (const id of message.ids ?? []) trusted.add(id);
     process.send!({ type: "trusted" });
   } else if (message.type === "searches") {
-    const row = sqlite.prepare("SELECT count(DISTINCT at) AS n FROM peer_document_audit WHERE action = 'search'").get() as { n: number };
+    const row = sqlite.prepare("SELECT count(DISTINCT occurred_at) AS n FROM peer_document_audit WHERE action = 'search'").get() as { n: number };
     process.send!({ type: "searches", count: row.n });
   }
 });

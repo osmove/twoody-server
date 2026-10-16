@@ -3,7 +3,7 @@ import { sqlite } from "../db.js";
 import { storedValues } from "../contactFields.js";
 import {
   aliasesOf, EntityError, findEntity, kindWords, listEntities, markLinksStale, MAX_ALIAS, MAX_ALIASES, MAX_LABEL, MAX_NAME, MAX_NOTE,
-  memoryIdsOf, mergeEntities, normaliseName, relationKind, selfOf, type EntityRow,
+  memoryIdsOf, mergeEntities, normaliseName, putRelation, relationKind, relationsBefore, selfOf, type EntityRow,
 } from "../memory/entities.js";
 import { isRelationKind, KIND_GROUP, kindsOfWord, kindWord, type KindGroup, type RelationKind } from "./kinship.js";
 
@@ -93,7 +93,7 @@ export function linksOf(entityIds: string[], withRefused = false): PersonLink[] 
 /// Whose each card is (a live person's, not refused): for Contacts.
 export function peopleOfContacts(userId: string): Map<string, { id: string; name: string }> {
   const rows = sqlite.prepare(`SELECT c.contact_id, e.id, e.name FROM entity_contacts c JOIN entities e ON e.id = c.entity_id
-    WHERE e.user_id = ? AND e.merged_into IS NULL AND e.removed_at IS NULL AND c.how != 'refused' ORDER BY c.created_at`).all(userId) as Array<{ contact_id: string; id: string; name: string }>;
+    WHERE e.user_id = ? AND e.merged_into IS NULL AND e.archived_at IS NULL AND c.how != 'refused' ORDER BY c.created_at`).all(userId) as Array<{ contact_id: string; id: string; name: string }>;
   const out = new Map<string, { id: string; name: string }>();
   for (const row of rows) if (!out.has(row.contact_id)) out.set(row.contact_id, { id: row.id, name: row.name });
   return out;
@@ -141,7 +141,7 @@ function linksBetween(entityId: string, selfId: string | null): Link[] {
   const rows = sqlite.prepare(`
     SELECT r.from_id, r.to_id, r.label, r.kind, f.name AS from_name, t.name AS to_name
     FROM entity_relations r JOIN entities f ON f.id = r.from_id JOIN entities t ON t.id = r.to_id
-    WHERE (r.from_id = ? OR r.to_id = ?) AND f.merged_into IS NULL AND t.merged_into IS NULL AND f.removed_at IS NULL AND t.removed_at IS NULL ORDER BY r.rowid`).all(entityId, entityId) as Array<{ from_id: string; to_id: string; label: string; kind: string | null; from_name: string; to_name: string }>;
+    WHERE (r.from_id = ? OR r.to_id = ?) AND f.merged_into IS NULL AND t.merged_into IS NULL AND f.archived_at IS NULL AND t.archived_at IS NULL ORDER BY r.rowid`).all(entityId, entityId) as Array<{ from_id: string; to_id: string; label: string; kind: string | null; from_name: string; to_name: string }>;
   return rows
     .filter((row) => row.from_id !== selfId && row.to_id !== selfId && row.from_id !== row.to_id)
     .map((row) => row.from_id === entityId
@@ -176,7 +176,10 @@ export interface Person {
   birthday: string | null;
   next_birthday: { date: string; age: number | null } | null;
   updated_at: string;
-  /// « Retirer de vos proches »: when, or null (migration 12).
+  /// « Retirer de vos proches »: when, or null (migration 12; `archived_at`
+  /// since migration 14). `removed_at` says the same for the apps of before
+  /// (one release, 0.13.104; none reads it).
+  archived_at: string | null;
   removed_at: string | null;
 }
 
@@ -209,17 +212,22 @@ function personOf(entity: EntityRow, selfId: string | null, links: PersonLink[],
     birthday,
     next_birthday: nextBirthday(birthday, now),
     updated_at: new Date(entity.updated_at).toISOString(),
-    removed_at: entity.removed_at ? new Date(entity.removed_at).toISOString() : null,
+    archived_at: entity.archived_at ? new Date(entity.archived_at).toISOString() : null,
+    removed_at: entity.archived_at ? new Date(entity.archived_at).toISOString() : null,
   };
 }
 
-export interface RemovedPerson { id: string; name: string; relation: Relation | null; removed_at: string }
+/// `removed_at`: the same date, for the apps of before (one release).
+export interface RemovedPerson { id: string; name: string; relation: Relation | null; archived_at: string; removed_at: string }
 
 /// « Proches retirés »: the people removed, kept, the latest first.
 export function removedPeople(userId: string): RemovedPerson[] {
   const self = selfOf(userId) ?? null;
-  const rows = sqlite.prepare("SELECT * FROM entities WHERE user_id = ? AND merged_into IS NULL AND removed_at IS NOT NULL ORDER BY removed_at DESC").all(userId) as EntityRow[];
-  return rows.map((entity) => ({ id: entity.id, name: entity.name, relation: relationToSelf(self?.id ?? null, entity.id), removed_at: new Date(entity.removed_at!).toISOString() }));
+  const rows = sqlite.prepare("SELECT * FROM entities WHERE user_id = ? AND merged_into IS NULL AND archived_at IS NOT NULL ORDER BY archived_at DESC").all(userId) as EntityRow[];
+  return rows.map((entity) => {
+    const at = new Date(entity.archived_at!).toISOString();
+    return { id: entity.id, name: entity.name, relation: relationToSelf(self?.id ?? null, entity.id), archived_at: at, removed_at: at };
+  });
 }
 
 /// The person's people, those with a relation first (the removed ones apart:
@@ -306,9 +314,11 @@ export function setRelationToSelf(userId: string, entityId: string, input: Relat
   if (entity.kind === "self") throw new PeopleError(422, "self");
   sqlite.transaction(() => {
     const self = ensureSelf(userId, now);
+    const before = relationsBefore("from_id = ? AND to_id = ?", self.id, entity.id);
     sqlite.prepare("DELETE FROM entity_relations WHERE from_id = ? AND to_id = ?").run(self.id, entity.id);
     if (input) {
-      sqlite.prepare("INSERT OR IGNORE INTO entity_relations (from_id, to_id, label, kind, source) VALUES (?, ?, ?, ?, ?)").run(self.id, entity.id, labelFor(input, locale), input.kind, source);
+      const label = labelFor(input, locale);
+      putRelation(self.id, entity.id, label, input.kind, source, now, before.get(`${self.id}\n${entity.id}\n${label}`));
       // A name a relation made (« stub ») is a person now.
       if (entity.kind === "other") sqlite.prepare("UPDATE entities SET kind = 'person', source = CASE WHEN source = 'stub' THEN 'manual' ELSE source END, updated_at = ? WHERE id = ?").run(now, entity.id);
     }
@@ -343,7 +353,7 @@ export function personNamed(userId: string, nameOrId: string, source = "manual",
   if (named) {
     if (named.kind === "other") sqlite.prepare("UPDATE entities SET kind = 'person', source = CASE WHEN source = 'stub' THEN ? ELSE source END, updated_at = ? WHERE id = ?").run(source, now, named.id);
     // Named again by the person (a link typed by hand): back among their people.
-    if (named.removed_at) restorePerson(userId, named.id, now);
+    if (named.archived_at) restorePerson(userId, named.id, now);
     return findEntity(userId, named.id)!;
   }
   const id = randomUUID();
@@ -359,16 +369,15 @@ export function setLinks(userId: string, entityId: string, links: LinkInput[], l
   if (!entity) throw new PeopleError(404, "not_found");
   const self = selfOf(userId);
   sqlite.transaction(() => {
-    const keep = new Map((sqlite.prepare("SELECT from_id, to_id, label, source FROM entity_relations WHERE from_id = ? OR to_id = ?").all(entity.id, entity.id) as Array<{ from_id: string; to_id: string; label: string; source: string | null }>)
-      .map((row) => [`${row.from_id}\n${row.to_id}\n${row.label}`, row.source] as const));
+    const keep = relationsBefore("from_id = ? OR to_id = ?", entity.id, entity.id);
     sqlite.prepare(`DELETE FROM entity_relations WHERE (from_id = ? AND to_id != ?) OR (to_id = ? AND from_id != ?)`).run(entity.id, self?.id ?? "", entity.id, self?.id ?? "");
-    const put = sqlite.prepare("INSERT OR IGNORE INTO entity_relations (from_id, to_id, label, kind, source) VALUES (?, ?, ?, ?, ?)");
     for (const link of links) {
       const other = personNamed(userId, link.person, "manual", now);
       if (other.id === entity.id || other.id === self?.id) continue;
       const [from, to] = link.side === "of" ? [other.id, entity.id] : [entity.id, other.id];
       const label = link.label ?? kindWord(link.kind, locale);
-      put.run(from, to, label, link.kind, keep.get(`${from}\n${to}\n${label}`) ?? "manual");
+      const kept = keep.get(`${from}\n${to}\n${label}`) ?? null;
+      putRelation(from, to, label, link.kind, kept?.source ?? "manual", now, kept);
     }
     sqlite.prepare("UPDATE entities SET updated_at = ? WHERE id = ?").run(now, entity.id);
   })();
@@ -454,11 +463,11 @@ export function createPerson(userId: string, input: PersonInput, locale: string 
   const existing = sqlite.prepare("SELECT * FROM entities WHERE user_id = ? AND norm = ? AND merged_into IS NULL LIMIT 1").get(userId, norm) as EntityRow | undefined;
   // Added again under the same name: the person removed comes back, with
   // what was known of them.
-  if (existing && existing.source !== "stub" && existing.kind !== "other" && !existing.removed_at) throw new EntityError(409, "name_taken", existing.id);
+  if (existing && existing.source !== "stub" && existing.kind !== "other" && !existing.archived_at) throw new EntityError(409, "name_taken", existing.id);
   const entity = sqlite.transaction(() => {
     let row: EntityRow;
     if (existing) {
-      sqlite.prepare("UPDATE entities SET kind = 'person', name = ?, note = COALESCE(?, note), source = 'manual', removed_at = NULL, updated_at = ? WHERE id = ?").run(name, input.note ?? null, now, existing.id);
+      sqlite.prepare("UPDATE entities SET kind = 'person', name = ?, note = COALESCE(?, note), source = 'manual', archived_at = NULL, updated_at = ? WHERE id = ?").run(name, input.note ?? null, now, existing.id);
       row = findEntity(userId, existing.id)!;
     } else {
       const id = randomUUID();
@@ -468,7 +477,7 @@ export function createPerson(userId: string, input: PersonInput, locale: string 
     if (input.aliases) setAliases(row, input.aliases);
     if (contact) {
       sqlite.prepare("DELETE FROM entity_contacts WHERE contact_id = ? AND how = 'auto'").run(contact.id);
-      sqlite.prepare("INSERT OR REPLACE INTO entity_contacts (entity_id, contact_id, how, created_at) VALUES (?, ?, 'manual', ?)").run(row.id, contact.id, now);
+      sqlite.prepare("INSERT OR REPLACE INTO entity_contacts (entity_id, contact_id, how, created_at, updated_at) VALUES (?, ?, 'manual', ?, ?)").run(row.id, contact.id, now, now);
     }
     return row;
   })();
@@ -509,7 +518,7 @@ export function linkContact(userId: string, entityId: string, contactId: string,
   if (!contactRow(userId, contactId)) throw new PeopleError(404, "contact_not_found");
   sqlite.transaction(() => {
     sqlite.prepare("DELETE FROM entity_contacts WHERE contact_id = ? AND how = 'auto' AND entity_id != ?").run(contactId, entity.id);
-    sqlite.prepare("INSERT OR REPLACE INTO entity_contacts (entity_id, contact_id, how, created_at) VALUES (?, ?, ?, ?)").run(entity.id, contactId, how, now);
+    sqlite.prepare("INSERT OR REPLACE INTO entity_contacts (entity_id, contact_id, how, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(entity.id, contactId, how, now, now);
   })();
   markPeopleStale(userId);
 }
@@ -518,7 +527,7 @@ export function linkContact(userId: string, entityId: string, contactId: string,
 export function unlinkContact(userId: string, entityId: string, contactId: string, now = Date.now()) {
   const entity = findEntity(userId, entityId);
   if (!entity) throw new PeopleError(404, "not_found");
-  sqlite.prepare("INSERT OR REPLACE INTO entity_contacts (entity_id, contact_id, how, created_at) VALUES (?, ?, 'refused', ?)").run(entity.id, contactId, now);
+  sqlite.prepare("INSERT OR REPLACE INTO entity_contacts (entity_id, contact_id, how, created_at, updated_at) VALUES (?, ?, 'refused', ?, ?)").run(entity.id, contactId, now, now);
   markPeopleStale(userId);
 }
 
@@ -530,7 +539,7 @@ export function removePerson(userId: string, id: string, now = Date.now()): bool
   const entity = findEntity(userId, id);
   if (!entity) return false;
   if (entity.kind === "self") throw new PeopleError(422, "self");
-  if (!entity.removed_at) sqlite.prepare("UPDATE entities SET removed_at = ?, updated_at = ? WHERE id = ?").run(now, now, entity.id);
+  if (!entity.archived_at) sqlite.prepare("UPDATE entities SET archived_at = ?, updated_at = ? WHERE id = ?").run(now, now, entity.id);
   markLinksStale(userId);
   markPeopleStale(userId);
   return true;
@@ -540,7 +549,7 @@ export function removePerson(userId: string, id: string, now = Date.now()): bool
 export function restorePerson(userId: string, id: string, now = Date.now()): EntityRow {
   const entity = findEntity(userId, id);
   if (!entity) throw new PeopleError(404, "not_found");
-  if (entity.removed_at) sqlite.prepare("UPDATE entities SET removed_at = NULL, updated_at = ? WHERE id = ?").run(now, entity.id);
+  if (entity.archived_at) sqlite.prepare("UPDATE entities SET archived_at = NULL, updated_at = ? WHERE id = ?").run(now, entity.id);
   markLinksStale(userId);
   markPeopleStale(userId);
   return findEntity(userId, entity.id)!;
@@ -551,8 +560,8 @@ export function restorePerson(userId: string, id: string, now = Date.now()): Ent
 export function removedNamed(userId: string, name: string): boolean {
   const norm = normaliseName(name);
   if (!norm || namedEntity(userId, name)) return false;
-  return !!(sqlite.prepare("SELECT 1 FROM entities WHERE user_id = ? AND norm = ? AND merged_into IS NULL AND removed_at IS NOT NULL LIMIT 1").get(userId, norm)
-    ?? sqlite.prepare("SELECT 1 FROM entity_aliases a JOIN entities e ON e.id = a.entity_id WHERE e.user_id = ? AND a.norm = ? AND e.merged_into IS NULL AND e.removed_at IS NOT NULL LIMIT 1").get(userId, norm));
+  return !!(sqlite.prepare("SELECT 1 FROM entities WHERE user_id = ? AND norm = ? AND merged_into IS NULL AND archived_at IS NOT NULL LIMIT 1").get(userId, norm)
+    ?? sqlite.prepare("SELECT 1 FROM entity_aliases a JOIN entities e ON e.id = a.entity_id WHERE e.user_id = ? AND a.norm = ? AND e.merged_into IS NULL AND e.archived_at IS NOT NULL LIMIT 1").get(userId, norm));
 }
 
 /// Two people who are one: the first into the second (its names become
@@ -564,7 +573,7 @@ export function mergePeople(userId: string, fromId: string, intoId: string, now 
   const merged = sqlite.transaction(() => {
     const row = mergeEntities(userId, from.id, into.id, now);
     for (const link of sqlite.prepare("SELECT contact_id, how, created_at FROM entity_contacts WHERE entity_id = ?").all(from.id) as Array<{ contact_id: string; how: string; created_at: number }>) {
-      sqlite.prepare("INSERT OR IGNORE INTO entity_contacts (entity_id, contact_id, how, created_at) VALUES (?, ?, ?, ?)").run(into.id, link.contact_id, link.how, link.created_at);
+      sqlite.prepare("INSERT OR IGNORE INTO entity_contacts (entity_id, contact_id, how, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(into.id, link.contact_id, link.how, link.created_at, now);
     }
     sqlite.prepare("DELETE FROM entity_contacts WHERE entity_id = ?").run(from.id);
     // A person merged into a project stays a person: kind of the target kept.
@@ -601,7 +610,7 @@ export function splitPerson(userId: string, id: string, what: { alias?: string; 
       const link = sqlite.prepare("SELECT how FROM entity_contacts WHERE entity_id = ? AND contact_id = ? AND how != 'refused'").get(entity.id, what.contact_id) as { how: string } | undefined;
       const contact = contactRow(userId, what.contact_id);
       if (!link || !contact?.name) throw new PeopleError(404, "contact_not_found");
-      sqlite.prepare("UPDATE entity_contacts SET how = 'refused', created_at = ? WHERE entity_id = ? AND contact_id = ?").run(now, entity.id, what.contact_id);
+      sqlite.prepare("UPDATE entity_contacts SET how = 'refused', created_at = ?, updated_at = ? WHERE entity_id = ? AND contact_id = ?").run(now, now, entity.id, what.contact_id);
       const norm = normaliseName(contact.name);
       const named = sqlite.prepare("SELECT * FROM entities WHERE user_id = ? AND norm = ? AND merged_into IS NULL AND id != ? LIMIT 1").get(userId, norm, entity.id) as EntityRow | undefined;
       const target = named ?? (() => {
@@ -609,7 +618,7 @@ export function splitPerson(userId: string, id: string, what: { alias?: string; 
         sqlite.prepare("INSERT INTO entities (id, user_id, kind, name, norm, note, source, created_at, updated_at) VALUES (?, ?, 'person', ?, ?, NULL, 'manual', ?, ?)").run(newId, userId, contact.name, norm === entity.norm ? `${norm} 2` : norm, now, now);
         return findEntity(userId, newId)!;
       })();
-      sqlite.prepare("INSERT OR REPLACE INTO entity_contacts (entity_id, contact_id, how, created_at) VALUES (?, ?, 'manual', ?)").run(target.id, what.contact_id, now);
+      sqlite.prepare("INSERT OR REPLACE INTO entity_contacts (entity_id, contact_id, how, created_at, updated_at) VALUES (?, ?, 'manual', ?, ?)").run(target.id, what.contact_id, now, now);
       return target;
     }
     throw new PeopleError(422, "split_what");
@@ -696,7 +705,7 @@ export function refreshPeople(userId: string, now = Date.now()): { linked: numbe
   const addressOwners = new Map<string, string[]>();
   for (const [entityId, addresses] of addressesOf) for (const address of addresses) addressOwners.set(address, [...(addressOwners.get(address) ?? []), entityId]);
   const refused = refusedKeys(userId);
-  const put = sqlite.prepare("INSERT OR IGNORE INTO entity_contacts (entity_id, contact_id, how, created_at) VALUES (?, ?, 'auto', ?)");
+  const put = sqlite.prepare("INSERT OR IGNORE INTO entity_contacts (entity_id, contact_id, how, created_at, updated_at) VALUES (?, ?, 'auto', ?, ?)");
   // People with a relation to the person, or already known by a card: the
   // others (a project's stub) are not proposed cards.
   const related = new Set(self ? (sqlite.prepare("SELECT to_id FROM entity_relations WHERE from_id = ?").all(self.id) as Array<{ to_id: string }>).map((row) => row.to_id) : []);
@@ -716,7 +725,7 @@ export function refreshPeople(userId: string, now = Date.now()): { linked: numbe
       }
       for (const contactId of sure) {
         if (mine.has(contactId) || takenCards.has(contactId)) continue;
-        if (put.run(entity.id, contactId, now).changes) {
+        if (put.run(entity.id, contactId, now, now).changes) {
           result.linked += 1;
           takenCards.add(contactId);
           mine.set(contactId, "auto");
@@ -784,12 +793,12 @@ export function candidateLive(userId: string, type: string, payload: Record<stri
   if (!payload) return false;
   if (type === "person_link") {
     const entity = typeof payload.entity_id === "string" ? findEntity(userId, payload.entity_id) : null;
-    return !!entity && entity.id === payload.entity_id && !entity.removed_at;
+    return !!entity && entity.id === payload.entity_id && !entity.archived_at;
   }
   if (type === "person_duplicate") {
     const a = typeof payload.a === "string" ? findEntity(userId, payload.a) : null;
     const b = typeof payload.b === "string" ? findEntity(userId, payload.b) : null;
-    return !!a && !!b && a.id !== b.id && !a.removed_at && !b.removed_at;
+    return !!a && !!b && a.id !== b.id && !a.archived_at && !b.archived_at;
   }
   // A relation about someone removed waits, unseen, until they are restored.
   if (type === "relation") {
@@ -826,8 +835,8 @@ export function relationKnown(userId: string, proposal: RelationProposal): boole
 export function namedEntity(userId: string, name: string): EntityRow | null {
   const norm = normaliseName(name);
   if (!norm) return null;
-  return (sqlite.prepare("SELECT * FROM entities WHERE user_id = ? AND norm = ? AND merged_into IS NULL AND removed_at IS NULL ORDER BY kind = 'person' DESC, created_at LIMIT 1").get(userId, norm) as EntityRow | undefined)
-    ?? (sqlite.prepare("SELECT e.* FROM entity_aliases a JOIN entities e ON e.id = a.entity_id WHERE e.user_id = ? AND a.norm = ? AND e.merged_into IS NULL AND e.removed_at IS NULL ORDER BY e.created_at LIMIT 1").get(userId, norm) as EntityRow | undefined)
+  return (sqlite.prepare("SELECT * FROM entities WHERE user_id = ? AND norm = ? AND merged_into IS NULL AND archived_at IS NULL ORDER BY kind = 'person' DESC, created_at LIMIT 1").get(userId, norm) as EntityRow | undefined)
+    ?? (sqlite.prepare("SELECT e.* FROM entity_aliases a JOIN entities e ON e.id = a.entity_id WHERE e.user_id = ? AND a.norm = ? AND e.merged_into IS NULL AND e.archived_at IS NULL ORDER BY e.created_at LIMIT 1").get(userId, norm) as EntityRow | undefined)
     ?? null;
 }
 
@@ -844,7 +853,7 @@ export function acceptPeopleCandidate(userId: string, type: string, payload: Rec
       const from = fromName ? personNamed(userId, fromName, "learned", now) : ensureSelf(userId, now);
       const to = personNamed(userId, toName, "learned", now);
       if (from.id === to.id) throw new PeopleError(409, "invalid_proposal");
-      sqlite.prepare("INSERT OR IGNORE INTO entity_relations (from_id, to_id, label, kind, source) VALUES (?, ?, ?, ?, 'learned')").run(from.id, to.id, label, kind);
+      putRelation(from.id, to.id, label, kind, "learned", now);
       sqlite.prepare("UPDATE entities SET updated_at = ? WHERE id IN (?, ?)").run(now, from.id, to.id);
       markLinksStale(userId);
       markPeopleStale(userId);

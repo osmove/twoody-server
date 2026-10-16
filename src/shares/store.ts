@@ -8,9 +8,16 @@ import { sqlite } from "../db.js";
 // requests, and what it says can only restrict them (`syncShares`): it never
 // creates, extends or retargets one, and never approves a device.
 
-export type ShareKind = "person" | "organization";
-export type ShareRight = "ask" | "read";
-export type RevokedBy = "owner" | "grantee" | "organization" | "eligibility";
+export const SHARE_KINDS = ["person", "organization"] as const;
+export const SHARE_RIGHTS = ["ask", "read"] as const;
+/// Why a share ended, with the account's words (FolderShare::REVOKED_REASONS):
+/// its owner, the person it was shared with giving it up, an organization
+/// admin, the loss of eligibility, or the owner's computer (`host`, as the
+/// account says it).
+export const REVOKED_REASONS = ["owner", "grantee", "organization", "eligibility", "host"] as const;
+export type ShareKind = (typeof SHARE_KINDS)[number];
+export type ShareRight = (typeof SHARE_RIGHTS)[number];
+export type RevokedReason = (typeof REVOKED_REASONS)[number];
 export type DeviceState = "pending" | "approved" | "refused";
 
 export const SHARE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -30,14 +37,14 @@ export interface ShareRow {
   grantee_name: string | null;
   organization_id: string | null;
   organization_name: string | null;
-  label: string;
-  right: ShareRight;
+  folder_label: string;
+  access_right: ShareRight;
   expires_at: number | null;
   created_at: number;
   updated_at: number;
   revision: number;
   revoked_at: number | null;
-  revoked_by: RevokedBy | null;
+  revoked_reason: RevokedReason | null;
   published_at: number | null;
 }
 
@@ -69,8 +76,11 @@ export function cleanText(value: unknown, max = NAME_MAX): string | null {
   return text || null;
 }
 
-const SELECT = `SELECT id, user_id, folder_id, kind, grantee_user_id, grantee_name, organization_id, organization_name, label, "right" AS right,
-  expires_at, created_at, updated_at, revision, revoked_at, revoked_by, published_at FROM folder_shares`;
+// Columns named as the account names them since migration 13 (folder_label,
+// access_right, revoked_reason); the API of routes/localShares.ts keeps
+// `label`, `right` and `revoked_by`, which the apps read.
+const SELECT = `SELECT id, user_id, folder_id, kind, grantee_user_id, grantee_name, organization_id, organization_name, folder_label, access_right,
+  expires_at, created_at, updated_at, revision, revoked_at, revoked_reason, published_at FROM folder_shares`;
 
 export function shareById(userId: string, id: string): ShareRow | null {
   return (sqlite.prepare(`${SELECT} WHERE user_id = ? AND id = ?`).get(userId, id) as ShareRow | undefined) ?? null;
@@ -98,7 +108,7 @@ export function insertShare(userId: string, share: NewShare, now = Date.now()): 
   const id = randomUUID();
   sqlite
     .prepare(
-      `INSERT INTO folder_shares (id, user_id, folder_id, kind, grantee_user_id, grantee_name, organization_id, organization_name, label, "right",
+      `INSERT INTO folder_shares (id, user_id, folder_id, kind, grantee_user_id, grantee_name, organization_id, organization_name, folder_label, access_right,
          expires_at, created_at, updated_at, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     )
     .run(id, userId, share.folderId, share.kind, share.granteeUserId, share.granteeName, share.organizationId, share.organizationName, share.label, share.right, share.expiresAt, now, now);
@@ -115,31 +125,31 @@ export function updateShare(
 ): ShareRow | null {
   const share = shareById(userId, id);
   if (!share) return null;
-  const right = patch.right ?? share.right;
+  const right = patch.right ?? share.access_right;
   const expiresAt = patch.expiresAt !== undefined ? patch.expiresAt : share.expires_at;
-  const label = patch.label ?? share.label;
-  const changed = right !== share.right || expiresAt !== share.expires_at || label !== share.label;
+  const label = patch.label ?? share.folder_label;
+  const changed = right !== share.access_right || expiresAt !== share.expires_at || label !== share.folder_label;
   sqlite
-    .prepare(`UPDATE folder_shares SET "right" = ?, expires_at = ?, label = ?, revision = revision + ?, updated_at = ?, published_at = ? WHERE user_id = ? AND id = ?`)
+    .prepare(`UPDATE folder_shares SET access_right = ?, expires_at = ?, folder_label = ?, revision = revision + ?, updated_at = ?, published_at = ? WHERE user_id = ? AND id = ?`)
     .run(right, expiresAt, label, changed ? 1 : 0, changed || patch.published ? now : share.updated_at, patch.published ? now : share.published_at, userId, id);
   return shareById(userId, id);
 }
 
-/// Revoked, never deleted: the row says who stopped it and when. A share
+/// Revoked, never deleted: the row says why it stopped and when. A share
 /// already revoked keeps its first revocation.
-export function revokeShare(userId: string, id: string, by: RevokedBy, now = Date.now()): ShareRow | null {
+export function revokeShare(userId: string, id: string, reason: RevokedReason, now = Date.now()): ShareRow | null {
   sqlite
-    .prepare("UPDATE folder_shares SET revoked_at = ?, revoked_by = ?, revision = revision + 1, updated_at = ? WHERE user_id = ? AND id = ? AND revoked_at IS NULL")
-    .run(now, by, now, userId, id);
+    .prepare("UPDATE folder_shares SET revoked_at = ?, revoked_reason = ?, revision = revision + 1, updated_at = ? WHERE user_id = ? AND id = ? AND revoked_at IS NULL")
+    .run(now, reason, now, userId, id);
   return shareById(userId, id);
 }
 
 // ── sync with the account ───────────────────────────────────────────────────
 
-/// How the account says a share was revoked, as this computer records it.
-/// « host » is this computer's own doing; anything unknown is taken as a loss
+/// How the account says a share was revoked, recorded with its own word
+/// (`host` included, since migration 13); anything unknown is taken as a loss
 /// of eligibility — still a revocation, which is all the account may cause.
-const REVOKED_BY: Record<string, RevokedBy> = { owner: "owner", host: "owner", grantee: "grantee", organization: "organization", eligibility: "eligibility" };
+const revokedReason = (reason: string | null): RevokedReason => (REVOKED_REASONS as readonly string[]).includes(reason ?? "") ? (reason as RevokedReason) : "eligibility";
 
 export interface AccountShare {
   uuid: string;
@@ -180,7 +190,7 @@ export function syncShares(userId: string, account: AccountShare[], now = Date.n
     if (share.revoked_at !== null) continue;
     const listed = there.get(share.id);
     if (listed?.status === "revoked") {
-      revokeShare(userId, share.id, REVOKED_BY[listed.revoked_reason ?? ""] ?? "eligibility", now);
+      revokeShare(userId, share.id, revokedReason(listed.revoked_reason), now);
       revoked.push(share.id);
     } else if (!listed && (share.expires_at === null || share.expires_at > now)) {
       republish.push(share);
@@ -253,7 +263,7 @@ export interface ShareAuditEntry {
 export function recordShareAccess(userId: string, entry: ShareAuditEntry): void {
   sqlite
     .prepare(
-      `INSERT INTO peer_document_audit (user_id, computer_id, session_id, action, at, share_id, guest_user_id, guest_fingerprint, outcome, document_id, name, bytes)
+      `INSERT INTO peer_document_audit (user_id, computer_id, session_id, action, occurred_at, share_id, guest_user_id, guest_fingerprint, outcome, document_id, name, bytes)
        VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
@@ -299,7 +309,7 @@ export function shareAudit(userId: string, options: { shareId?: string; before?:
     args.push(options.before);
   }
   const rows = sqlite
-    .prepare(`SELECT id, at, share_id, guest_user_id, guest_fingerprint, action AS op, outcome, document_id, name, bytes FROM peer_document_audit WHERE ${where.map((w) => `(${w})`).join(" AND ")} ORDER BY id DESC LIMIT ?`)
+    .prepare(`SELECT id, occurred_at AS at, share_id, guest_user_id, guest_fingerprint, action AS op, outcome, document_id, name, bytes FROM peer_document_audit WHERE ${where.map((w) => `(${w})`).join(" AND ")} ORDER BY id DESC LIMIT ?`)
     .all(...args, limit) as Array<Omit<ShareAuditRow, "at"> & { at: number }>;
   return rows.map((row) => ({ ...row, at: new Date(row.at).toISOString() }));
 }

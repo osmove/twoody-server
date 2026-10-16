@@ -67,9 +67,10 @@ is per (owner computer, grantee, fingerprint) and covers every share from that c
 ## 2. Where each truth lives
 
 **The owner's computer is authoritative** (migration 8):
-- `folder_shares`: id (uuid made there), user_id, folder_id, kind, grantee_user_id, organization_id, label, right,
-  expires_at, created_at, updated_at, revision, revoked_at, revoked_by (owner|grantee|organization|eligibility),
-  published_at;
+- `folder_shares`: id (uuid made there), user_id, folder_id, kind, grantee_user_id, organization_id, folder_label,
+  access_right, expires_at, created_at, updated_at, revision, revoked_at, revoked_reason
+  (owner|grantee|organization|eligibility|host), published_at (the account's column names since migration 13,
+  17/10/2026: `label`, `"right"`, `revoked_by` before);
 - `share_guest_devices`: grantee_user_id, fingerprint, enc_public, sign_public, state (pending|approved|refused),
   approved_at, verified_at, first_seen_at, last_seen_at, name_hint (untrusted);
 - `peer_document_audit` gains share_id, guest_user_id, guest_fingerprint, outcome — never a question or a path.
@@ -79,7 +80,7 @@ clock; the folder still granted, not isolated, passing `folderRisk`; Documents o
 the grantee; the operation allowed by the local right; the request opened by `computeSeal` with grant id
 `share:<uuid>`, a valid guest signature, skew ≤ 5 min, unseen request id.
 
-**The account (Rails) routes and displays**: `FolderShare` (share_uuid, host_device_id, owner_id, kind, grantee_id,
+**The account (Rails) routes and displays**: `FolderShare` (uuid — `share_uuid` until 17/10/2026 —, host_device_id, owner_id, kind, grantee_id,
 organization_id, folder_label, right, expires_at, status, revoked_at, revoked_by_id, revoked_reason, revision);
 `FolderShare#unusable_reason` mirrors ComputeGrant's plus the organization's policy, checked at creation and at each
 request.

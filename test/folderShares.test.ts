@@ -300,15 +300,20 @@ test("sync: revoked there is revoked here, absent there is published again, unkn
   const dropped = await share({ folder_id: "f-contracts", kind: "person", grantee_user_id: "51", right: "ask" });
   const missing = await share({ folder_id: "f-contracts", kind: "person", grantee_user_id: "52", right: "ask" });
   const ownRevoked = await share({ folder_id: "f-contracts", kind: "person", grantee_user_id: "53", right: "ask" });
+  const byHost = await share({ folder_id: "f-contracts", kind: "person", grantee_user_id: "54", right: "ask" });
+  const oddReason = await share({ folder_id: "f-contracts", kind: "person", grantee_user_id: "55", right: "ask" });
   await app.inject({ method: "DELETE", url: `/local_shares/${ownRevoked.id}`, headers: ownerHeaders });
   const everything = (await app.inject({ method: "GET", url: "/local_shares", headers: ownerHeaders })).json().shares as Array<{ id: string }>;
-  const others = everything.filter((s) => ![kept.id, dropped.id, missing.id, ownRevoked.id].includes(s.id)).map((s) => ({ uuid: s.id, status: "active" }));
+  const others = everything.filter((s) => ![kept.id, dropped.id, missing.id, ownRevoked.id, byHost.id, oddReason.id].includes(s.id)).map((s) => ({ uuid: s.id, status: "active" }));
   const stranger = randomUUID();
   const account = [
     ...others,
     // The account widens and extends this one, and adds a grantee: ignored.
     { uuid: kept.id, status: "active", right: "read", expires_at: null, grantee: { id: 99 }, revision: 9 },
     { uuid: dropped.id, status: "revoked", revoked_reason: "organization" },
+    // The account's own words, « host » included (migration 13: revoked_reason); an unknown one is a loss of eligibility.
+    { uuid: byHost.id, status: "revoked", revoked_reason: "host" },
+    { uuid: oddReason.id, status: "revoked", revoked_reason: "because" },
     // The owner's revoked share listed active again: never brought back.
     { uuid: ownRevoked.id, status: "active" },
     // A share this computer never made.
@@ -317,11 +322,14 @@ test("sync: revoked there is revoked here, absent there is published again, unkn
   const response = await app.inject({ method: "POST", url: "/local_shares/sync", headers: ownerHeaders, payload: { account } });
   assert.equal(response.statusCode, 200, response.body);
   const { republish, revoked } = response.json();
-  assert.deepEqual(revoked, [dropped.id]);
+  assert.deepEqual(revoked, [dropped.id, byHost.id, oddReason.id]);
   assert.deepEqual(republish.map((s: { id: string }) => s.id), [missing.id]);
   const after = (await app.inject({ method: "GET", url: "/local_shares", headers: ownerHeaders })).json().shares as Array<{ id: string; status: string; right: string; expires_at: string | null; revoked_by: string | null; grantee_user_id: string | null }>;
   const byId = new Map(after.map((s) => [s.id, s]));
   assert.equal(byId.get(dropped.id)!.revoked_by, "organization");
+  assert.equal(byId.get(byHost.id)!.revoked_by, "host");
+  assert.equal(byId.get(oddReason.id)!.revoked_by, "eligibility");
+  assert.deepEqual(sqlite.prepare("SELECT revoked_reason FROM folder_shares WHERE id = ?").get(byHost.id), { revoked_reason: "host" }, "stored under the account's name");
   assert.equal(byId.get(kept.id)!.right, "ask");
   assert.equal(byId.get(kept.id)!.expires_at, kept.expires_at);
   assert.equal(byId.get(kept.id)!.grantee_user_id, "50");

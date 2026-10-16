@@ -284,7 +284,9 @@ test("« Retirer de vos proches » keeps the person: hidden from Proches, cards,
   assert.ok(!list.people.some((person) => person.id === nadine.id), "not among the people");
   assert.deepEqual(list.removed.map((one) => [one.id, one.name, one.relation?.kind]), [[nadine.id, "Nadine", "mother"]], "« Proches retirés », with her relation kept");
   const page = (await api("GET", `/people/${nadine.id}`)).body.person;
-  assert.ok(page.removed_at, "her page still opens, saying she was removed");
+  assert.ok(page.archived_at, "her page still opens, saying she was removed");
+  assert.equal(page.removed_at, page.archived_at, "the name of before, for one release");
+  assert.ok(sqlite.prepare("SELECT archived_at FROM entities WHERE id = ?").get(nadine.id)!.archived_at, "archived (hidden, restorable), not deleted");
   assert.equal(sqlite.prepare("SELECT count(*) AS n FROM entity_contacts WHERE entity_id = ? AND how != 'refused'").get(nadine.id)!.n, 1, "her card is still linked to her");
   assert.deepEqual(personCards(userId, "C'est quand l'anniversaire de ma mère ?", { contacts: true }), [], "no card in the chat");
   assert.deepEqual(entitiesInText(userId, "Nadine vient dimanche").map((link) => link.entity_id), [], "the graph the memory follows leaves her out");
@@ -298,6 +300,7 @@ test("« Retirer de vos proches » keeps the person: hidden from Proches, cards,
   // « Rétablir »: back as she was.
   const back = await api("POST", `/people/${nadine.id}/restore`, {});
   assert.equal(back.status, 200);
+  assert.equal(back.body.person.archived_at, null);
   assert.equal(back.body.person.removed_at, null);
   assert.equal((await named("Nadine"))!.relation?.kind, "mother");
   assert.deepEqual((await api("GET", "/people")).body.removed, []);

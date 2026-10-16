@@ -13,6 +13,9 @@ import { documentGrams } from "./0009_document_grams.js";
 import { people } from "./0010_people.js";
 import { fileActions } from "./0011_file_actions.js";
 import { peopleRemoved } from "./0012_people_removed.js";
+import { folderShareNames } from "./0013_folder_share_names.js";
+import { peopleRows } from "./0014_people_rows.js";
+import { peerDocumentAudit } from "./0015_peer_document_audit.js";
 
 // Versioned migrations (03/10/2026, docs/schema-convergence.md): the
 // database's version is SQLite's `user_version`. A database at 0 — fresh,
@@ -43,6 +46,9 @@ export const MIGRATIONS: Migration[] = [
   { version: 10, name: "people", up: people },
   { version: 11, name: "file_actions", up: fileActions },
   { version: 12, name: "people_removed", up: peopleRemoved },
+  { version: 13, name: "folder_share_names", up: folderShareNames },
+  { version: 14, name: "people_rows", up: (sqlite) => peopleRows(sqlite) },
+  { version: 15, name: "peer_document_audit", up: peerDocumentAudit },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;
@@ -71,11 +77,15 @@ export function backupBefore(sqlite: Database.Database, dataDir: string, version
   return path;
 }
 
-export function migrate(sqlite: Database.Database, { dataDir, log = (line: string) => console.log(line) }: { dataDir: string; dbPath?: string; log?: (line: string) => void }) {
+/// `upTo` stops at that version (tests: a database as an earlier Twoody left it).
+export function migrate(
+  sqlite: Database.Database,
+  { dataDir, log = (line: string) => console.log(line), upTo = SCHEMA_VERSION }: { dataDir: string; dbPath?: string; log?: (line: string) => void; upTo?: number },
+) {
   let version = schemaVersion(sqlite);
   // A database a newer Twoody migrated: this one would read it wrong.
   if (version > SCHEMA_VERSION) throw new Error(`database at version ${version}, newer than this server (${SCHEMA_VERSION}): update Twoody`);
-  const pending = MIGRATIONS.filter((migration) => migration.version > version);
+  const pending = MIGRATIONS.filter((migration) => migration.version > version && migration.version <= upTo);
   if (pending.length === 0) return;
   if (holdsData(sqlite)) {
     log(`[db] saving the database before migrating it from version ${version}: ${backupBefore(sqlite, dataDir, version)}`);

@@ -19,6 +19,8 @@ import {
   LABEL_MAX,
   readAccountShares,
   revokeShare,
+  SHARE_KINDS,
+  SHARE_RIGHTS,
   SHARE_UUID,
   shareAudit,
   shareById,
@@ -66,7 +68,11 @@ import { isThisComputersApp } from "./usage.js";
 // updated_at, revision, revoked_at, revoked_by, published_at, status:
 // active | revoked | expired | stopped, stopped_reason: null | folder_gone |
 // folder_isolated | folder_refused | documents_off}; times in ISO 8601. No
-// path: the person's phone shows it too.
+// path: the person's phone shows it too. `label`, `right` and `revoked_by`
+// are the API's names, which the apps read: the columns are folder_label,
+// access_right and revoked_reason since migration 13 (the account's names);
+// `revoked_by` is that reason (owner, grantee, organization, eligibility,
+// host).
 
 const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
 
@@ -84,14 +90,14 @@ function localShare(userId: string, share: ShareRow, folders: ReturnType<typeof 
     grantee_name: share.grantee_name,
     organization_id: share.organization_id,
     organization_name: share.organization_name,
-    label: share.label,
-    right: share.right,
+    label: share.folder_label,
+    right: share.access_right,
     expires_at: iso(share.expires_at),
     created_at: iso(share.created_at),
     updated_at: iso(share.updated_at),
     revision: share.revision,
     revoked_at: iso(share.revoked_at),
-    revoked_by: share.revoked_by,
+    revoked_by: share.revoked_reason,
     published_at: iso(share.published_at),
     status,
     stopped_reason: status === "stopped" ? stopped : null,
@@ -153,8 +159,8 @@ async function desktopApp(req: FastifyRequest, reply: FastifyReply): Promise<{ u
   return null;
 }
 
-const RIGHTS: readonly ShareRight[] = ["ask", "read"];
-const KINDS: readonly ShareKind[] = ["person", "organization"];
+const RIGHTS: readonly ShareRight[] = SHARE_RIGHTS;
+const KINDS: readonly ShareKind[] = SHARE_KINDS;
 
 /// An expiry the owner chose: null (never) or a moment to come, as ISO 8601
 /// or milliseconds. Undefined when it is not one.

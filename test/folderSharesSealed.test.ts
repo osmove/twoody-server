@@ -147,7 +147,7 @@ test("attack 1, 2: an unknown share or an unapproved device is refused before an
   served.length = 0;
   await assert.rejects(relay(args(request, { uuid })), /share_refused:unknown_share/);
   assert.deepEqual(served, [{ op: { op: "check" } }]);
-  sqlite.prepare(`INSERT INTO folder_shares (id, user_id, folder_id, kind, grantee_user_id, label, "right", created_at, updated_at) VALUES (?, ?, 'f-contracts', 'person', '42', 'Contrats', 'ask', ?, ?)`).run(uuid, user.id, Date.now(), Date.now());
+  sqlite.prepare(`INSERT INTO folder_shares (id, user_id, folder_id, kind, grantee_user_id, folder_label, access_right, created_at, updated_at) VALUES (?, ?, 'f-contracts', 'person', '42', 'Contrats', 'ask', ?, ?)`).run(uuid, user.id, Date.now(), Date.now());
   assert.equal(read(turn, await relay(args(request, { uuid }))).ok, true, "not burned by the refusal");
 
   // A device the account added for Claire: pending, refused, not opened.
