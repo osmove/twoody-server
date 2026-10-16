@@ -31,7 +31,9 @@ const llm = createServer((req: IncomingMessage, res: ServerResponse) => {
   req.on("end", () => {
     bodies.push(JSON.parse(raw) as Body);
     res.writeHead(200, { "content-type": "text/event-stream" });
-    res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "Réponse." } }] })}\n\n`);
+    // Two pieces: the phone's walled-off chat shows them as they come (16/10/2026).
+    res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "La clôture est fixée au 31 mars." } }] })}\n\n`);
+    res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: " Le bilan suit en avril." } }] })}\n\n`);
     res.end("data: [DONE]\n\n");
   });
 });
@@ -148,6 +150,23 @@ test("the person's iPhone continues one and starts one: its documents and notes,
   assert.equal(row.project_id, tessane.id);
   assert.equal(row.vault_id, null);
   assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM messages WHERE vault_ref = 'phone-ref-1'").get() as { n: number }).n, 0, "nothing kept for the encrypted history");
+});
+
+test("the person's iPhone gets the answer word by word: message events before the final one, in its own sealed reply", async () => {
+  const streamed = await ask(phone.headers, { content: "Et la clôture ?", discussion_id: macConversation, document_access: { mode: "all" }, stream: true });
+  assert.equal(streamed.response.statusCode, 200, streamed.response.body);
+  assert.match(String(streamed.response.headers["content-type"]), /text\/event-stream/);
+  const events = [...streamed.response.body.matchAll(/^event: (\w+)\ndata: (.*)$/gm)].map((match) => ({ type: match[1]!, data: match[2]! }));
+  const pieces = events.filter((event) => event.type === "message");
+  assert.ok(pieces.length >= 2, "the answer comes in pieces, as the model writes it");
+  assert.equal(pieces.map((event) => event.data).join(""), "La clôture est fixée au 31 mars. Le bilan suit en avril.");
+  const finalAt = events.findIndex((event) => event.type === "final");
+  assert.ok(finalAt > events.indexOf(pieces.at(-1)!), "the words come before the final event");
+  assert.equal(JSON.parse(events[finalAt]!.data).discussion_id, macConversation);
+  // The same turn, asked without the tunnel of the phone's own key: nothing streams.
+  const inClear = await app.inject({ method: "POST", url: "/queries", headers: phone.bare, payload: { channel: "keyboard", content: "Et la clôture ?", discussion_id: macConversation, stream: true } });
+  assert.doesNotMatch(inClear.body, /event: message/);
+  assert.doesNotMatch(inClear.body, /clôture est fixée/);
 });
 
 test("the phone cannot widen the walls: what reaches outside, the web, a vault conversation", async () => {

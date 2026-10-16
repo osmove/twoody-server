@@ -45,6 +45,15 @@ another computer, never the account. Its own chat screen, apart from the main ch
 ways (encrypted history, mesh coordinator, Apple Intelligence, cloud models, a computer someone shares, the drawer's
 cache) can carry it; nothing written to the phone's storage.
 
+**Word by word** (16/10/2026). The phone's walled-off chat now shows the answer as the computer writes it. Nothing
+changes in the route or the trust: the reply to `POST /queries` was already a stream of server-sent events, carried
+by the tunnel in sealed chunks (`tunnel/host.ts`); the phone read it whole, it now reads each chunk as it is opened
+(twoody-app `utils/walledProjects.js readWalledReply`, with the main chat's SSE reader `utils/postSse.js readSseBody`).
+The request is the same `walledFetch(…, {requireSealed: true})`: never in clear, never through the account in clear,
+never another computer; the words live in the screen's memory only, then the conversation is read again from the
+computer. Leaving the screen aborts the request (the computer keeps what it had written). Test: « the person's iPhone
+gets the answer word by word » (message events before the final one, and none for the same turn without the tunnel).
+
 ## 2. Threats and answers
 
 | # | Threat | Answer | Attack test (test/walledProjectsPhone.test.ts) |
