@@ -178,6 +178,11 @@ test("which messages plainly ask about e-mails, in every language — and which 
   assert.equal(asksForADraft("Antworte Paul, dass es passt"), true);
   assert.equal(asksForADraft("Responde a Paul que sí"), true);
   assert.equal(asksForADraft("Hat Paul mir geschrieben?"), false);
+  // Whether someone else wrote is no request to write (bench of 16/10/2026:
+  // « Did Paul write to me this week? » held, and its answer replaced by
+  // « I haven't created a draft yet… »).
+  for (const message of ["Did Paul write to me this week?", "Did Paul reply to my e-mail?", "Has Claire Dubois already replied to my mail?", "Has Paul sent me the invoice by mail?", "Paul这周给我写信了吗？", "我收到Paul的回复了吗？"]) assert.equal(asksForADraft(message), false, message);
+  for (const message of ["Did Paul write to me? Reply to him that I agree.", "Did you write the draft for Paul's e-mail?", "Write an e-mail to Paul to thank him", "给Paul写一封邮件说我同意", "回复Paul的邮件说可以"]) assert.equal(asksForADraft(message), true, message);
 });
 
 test("« tell Mum I'll be late » in every language: whom, and no draft yet; not a question, another way, or Twoody itself", () => {

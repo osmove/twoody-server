@@ -279,6 +279,17 @@ export function agreedToDraft(previousAnswer: string | null | undefined, message
 /// announced and not made (« Je rédige un brouillon… ») is asked again.
 const WRITING = /(?<![\p{L}\p{N}])(?:r[ée]ponds|r[ée]pondez|r[ée]pondre|[ée]cris|[ée]crivez|[ée]crire|r[ée]dige|r[ée]digez|r[ée]diger|envoie|envoyez|envoyer|pr[ée]pare|pr[ée]parez|pr[ée]parer|fais|faites|reply|respond|answer|write|draft|send|antworte|antworten|schreib|schreibe|schreiben|entwirf|entwerfen|schick|schicke|responde|contesta|resp[oó]ndele|cont[eé]stale|escribe|escr[ií]bele|redacta|env[ií]a|manda|rispondi|scrivi|prepara|invia|manda|responda|escreva|escreve|envie|antwoord|schrijf|stuur|beantwoord)(?![\p{L}\p{N}])|brouillon|entwurf|borrador|bozza|rascunho|concept|返信|書いて|下書き|作成して|送って|回复|回覆|写|寫|起草|답장|작성|써\s?줘|보내\s?줘|초안/iu;
 
+/// Whether someone else wrote, asked — no request to write: « Did Paul
+/// write to me this week? », « Has Claire replied? », « Paul这周给我写信了吗？ »
+/// read « write », « replied », « 写 » as one, which held the answer to the
+/// end of the turn and put « I haven't created a draft yet… » in place of
+/// « He sent you the new kitchen quote » (`claimsDraftMade` read « sent »;
+/// bench of 16/10/2026). « Did you… » is about the draft itself: kept.
+const ASKS_IF_WRITTEN = new RegExp([
+  String.raw`(?<![\p{L}])(?:did|has|have|had|does|do)\s+(?!you(?![\p{L}])|u(?![\p{L}]))(?:[\p{L}\p{N}'’.@-]+\s+){1,4}?(?:(?:ever|already|yet|not|never|just)\s+)?(?:write|written|wrote|reply|replied|answer|answered|respond|responded|send|sent)(?![\p{L}])`,
+  String.raw`(?:写|寫|回复|回覆|回)(?:了|过|過)?(?:信|邮件|郵件|电邮|電郵|email|e-mail)?了?(?:吗|嗎|没有|沒有|没|沒)`,
+].join("|"), "giu");
+
 export function asksForADraft(message: string): boolean {
-  return aboutEmails(message) && WRITING.test(message);
+  return aboutEmails(message) && WRITING.test(message.replace(ASKS_IF_WRITTEN, " "));
 }
