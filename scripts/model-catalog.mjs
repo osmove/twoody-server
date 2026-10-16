@@ -18,7 +18,10 @@
 // silently: --check says so, and a refresh pins it.
 //
 // Then, in twoody-desktop: `node scripts/sync-builtin.mjs` (the Desktop keeps
-// a byte-for-byte copy of src/builtin/).
+// a byte-for-byte copy of src/builtin/); and here, `node --import tsx
+// scripts/site-calculator.ts` (twoody.com's calculator copies the catalogue
+// and what memory.ts makes of it; that script reuses the helpers exported
+// below).
 //
 // Quantisers, in this order (catalog.ts): the publisher's own GGUF, llama.cpp's
 // (ggml-org), Osmove's conversions (huggingface.co/twoody), then bartowski
@@ -45,7 +48,7 @@ const HF = "https://huggingface.co";
 // pinned for those already offered; a new entry takes the revision of the
 // day. `uses`: general, code, reasoning, vision, small.
 
-const SOURCES = [
+export const SOURCES = [
   // Qwen (Alibaba)
   { key: "qwen3.5-0.8b", id: "Qwen3.5-0.8B-Q4_K_M", name: "Qwen3.5 0.8B", family: "qwen", publisher: "Qwen (Alibaba)", base: "Qwen/Qwen3.5-0.8B",
     gguf: { repo: "bartowski/Qwen_Qwen3.5-0.8B-GGUF", file: /Q4_K_M\.gguf$/, mmproj: /mmproj.*-f16\.gguf$/i }, mlx: { repo: "mlx-community/Qwen3.5-0.8B-MLX-4bit" }, uses: ["general", "small"] },
@@ -218,7 +221,7 @@ const LICENSE_NAMES = {
 
 // ── Hugging Face ────────────────────────────────────────────────────────
 
-async function getJson(url, attempt = 0) {
+export async function getJson(url, attempt = 0) {
   const res = await fetch(url, { headers: { "User-Agent": "twoody-model-catalog" }, redirect: "follow" });
   if (res.status === 429 && attempt < 5) {
     await new Promise((resolve) => setTimeout(resolve, 2000 * (attempt + 1)));
@@ -230,7 +233,7 @@ async function getJson(url, attempt = 0) {
 
 const infoCache = new Map();
 /// A repository at a revision (or its main branch): its sha, licence and files.
-async function repoInfo(repo, revision) {
+export async function repoInfo(repo, revision) {
   const key = `${repo}@${revision ?? "main"}`;
   if (!infoCache.has(key)) {
     const path = revision ? `${HF}/api/models/${repo}/revision/${revision}?blobs=true` : `${HF}/api/models/${repo}?blobs=true&expand[]=gguf&expand[]=sha&expand[]=cardData&expand[]=siblings&expand[]=gated&expand[]=safetensors`;
@@ -239,7 +242,7 @@ async function repoInfo(repo, revision) {
   return infoCache.get(key);
 }
 
-async function repoConfig(repo, revision) {
+export async function repoConfig(repo, revision) {
   try {
     return await getJson(`${HF}/${repo}/resolve/${revision}/config.json`);
   } catch {
@@ -323,14 +326,14 @@ export function architectureFigures(config) {
   return { layers, kvBytesPerToken, swa, stateBytes, hybrid: recurrent > 0, context };
 }
 
-function capabilities(template, source, hasVision) {
+export function capabilities(template, source, hasVision) {
   const text = typeof template === "string" ? template : "";
   const tools = /\btools\b/.test(text) && /tool_call|tool_calls|\[TOOL_CALLS\]|<tool_call>|function/.test(text);
   const reasoning = source.uses.includes("reasoning") || /<think>|enable_thinking|reasoning_effort|\[THINK\]/.test(text);
   return { tools, vision: hasVision, reasoning };
 }
 
-function licenseOf(info, what) {
+export function licenseOf(info, what) {
   const card = info.cardData ?? {};
   const id = String(card.license ?? "unknown");
   const name = card.license_name ? String(card.license_name) : null;

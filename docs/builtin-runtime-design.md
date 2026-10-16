@@ -153,18 +153,43 @@ meilleur », « je veux pouvoir utiliser MLX ».
   company's use (non-commercial, research only: refused by the script). Licences with conditions (Llama, NVIDIA,
   LFM, DeepSeek) are « licence avec conditions » on the screen, with the licence's link.
 - **What a model needs in memory** (`src/builtin/memory.ts`, one formula for the app, the server and the site's
-  calculator, twoody-backend `Marketing::LocalLlm::Estimator`):
+  calculator, twoody-backend `Marketing::LocalLlm::Memory` — below):
   need = weights + kvBytesPerToken × context × cache factor + sliding layers × min(context, window + 512) × factor
   + recurrent state + 0.3 GiB of work buffers (+ the vision file + 0.3 GiB on llama.cpp). Context: Twoody's own
   (`twoodyContext`, which runtimeArgs.ts `builtinContextFor` now calls). Cache factor: q8_0 (34/64) for a hybrid
   model on llama.cpp, f16 otherwise and on MLX. kvBytesPerToken counts the layers that keep the whole conversation
   (full attention; MLA's latent + rope; Gemma 4's global heads and shared layers; `attention_k_eq_v`); recurrent
   state from Gated DeltaNet or Mamba dimensions. Checked: Qwen3.5 9B with vision at 32 768 tokens 7.4 GiB measured,
-  7.4 computed; 4B at 8 192 2.9 measured, 3.1; Qwen3.6 35B-A3B IQ3_XXS 14.5 measured, 15.4 (safe side). The site's
-  `kv_kib` are the same f16 figures (Qwen3.5 9B 32, Qwen3 14B 160, gpt-oss 24, Gemma 4 31B 40, GLM-4.7 Flash 53);
-  its overhead was 0.5 GiB + 5 % of the file, now 0.3 GiB like the app (Qwen3 8B at 16k: 7.23 GiB on both).
+  7.4 computed; 4B at 8 192 2.9 measured, 3.1; Qwen3.6 35B-A3B IQ3_XXS 14.5 measured, 15.4 (safe side).
   `minRamGb` of a new entry: the smallest memory size where the need fits the GPU's share (two thirds up to 32
-  GB, three quarters to 128 GB: `gpuShare`, the site's `mac_share`); the nine entries measured by hand keep theirs.
+  GB, three quarters to 128 GB: `gpuShare`); the nine entries measured by hand keep theirs.
+- **The site's calculator says the same** (16/10/2026, Jimmy: « les chiffres de mémoire du calculateur doivent être
+  ceux de l'app », before journalists are contacted). Until then twoody.com had its own table of 36 models and its
+  own sum (no vision file, no recurrent state, no q8_0 cache, a 16k window; 11 file sizes off, 25 catalogue models
+  missing: Qwen3.5 9B on a 16 GB Mac 6.2 GB there, 7.4 here). Now `scripts/site-calculator.ts` writes, from
+  `catalogData.ts`, `catalog.ts` and this file — never by hand:
+  - `site/twoody-models.json`: every catalogue entry as the app runs it (file, vision file, MLX weights, the figures
+    above, `minRamGb`, uses, capabilities), the constants of memory.ts, and the larger models the calculator shows
+    that the app does not offer (`SITE_ONLY`: Qwen3-Next 80B-A3B, Qwen3.5 122B-A10B, Qwen3 235B-A22B Instruct 2507,
+    gpt-oss 120B, Mistral Small 4 119B — Q4_K_M or MXFP4, the publisher's, ggml-org's or bartowski's, split files
+    summed — verified like the catalogue and sized with the same functions; « Pas dans le catalogue de Twoody »);
+  - `site/memory-parity.json`: what `catalogMemoryNeed`, `twoodyContext`, `minRamFor`, `gpuShare` and
+    `recommendedModel()` answer for each of them over a grid of computers (memory around every threshold; Mac with
+    Apple silicon, Intel Mac, Windows with no card, an 8, 9.4, 9.5, 10 or 24 GiB card, Linux);
+  - `site/site-models.json` (`--refresh`, from the Hugging Face API): what the site needs beyond the catalogue — each
+    entry's layer and expert counts, from the config.json its figures were read from (they must give the same
+    figures), the languages its card declares, and `SITE_ONLY` at pinned revisions.
+
+  It copies the first two into twoody-backend (`config/twoody_models.json`,
+  `test/fixtures/files/twoody_memory_parity.json`), whose `Marketing::LocalLlm::Memory` ports this file and
+  `recommendedModel()`; its `memory_parity_test.rb` wants the same bytes on the whole grid, its
+  `twoody_figures_copy_test.rb` the app's thresholds, memory and download sizes in every sentence of the site (ten
+  languages). Here, `test/siteCalculator.test.ts` fails when `site/` is not what the script writes now — after
+  `model-catalog.mjs`, a change to this file or to `recommendedModel()`: run
+  `node --import tsx scripts/site-calculator.ts` (`--check` only compares), commit `site/` here and the copies in
+  twoody-backend, and port a change of the formula to the Ruby side. On a Mac with Apple silicon the calculator's
+  verdict follows `minRamGb` (« offered from »); its speeds stay its own estimates, from llama.cpp's public
+  benchmarks.
 - **`GET /runtime/catalog`** adds `memoryNeed` (this computer, llama.cpp) and `mlx {id, bytes, memoryNeed}` (the file
   list stays in the catalogue). The iPhone's computer screen shows a Mac's installed models only (its « Modèles »
   holds the catalogue) and the memory each needs.

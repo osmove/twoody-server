@@ -2,14 +2,15 @@
 [extend]
 useDefault = true
 
-# The model catalogue (scripts/model-catalog.mjs writes src/builtin/catalogData.ts)
+# The model catalogue (scripts/model-catalog.mjs writes src/builtin/catalogData.ts,
+# scripts/site-calculator.ts copies it into site/ for twoody.com's calculator)
 # names each model with a `key` field such as "qwen3.5-9b-instruct": a slug,
 # not a secret, that the generic-api-key rule reads as one. Only lowercase hyphenated
-# slugs in these two files are let through, so a real key pasted there is
+# slugs in these files are let through, so a real key pasted there is
 # still caught.
 [[allowlists]]
 description = "Model catalogue slugs"
 condition = "AND"
-paths = ['''^src/builtin/catalogData\.ts$''', '''^scripts/model-catalog\.mjs$''']
+paths = ['''^src/builtin/catalogData\.ts$''', '''^scripts/model-catalog\.mjs$''', '''^scripts/site-calculator\.ts$''', '''^site/[a-z-]+\.json$''']
 regexTarget = "secret"
 regexes = ['''^[a-z][a-z0-9.]*(-[a-z0-9.]+)+$''']
