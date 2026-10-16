@@ -170,6 +170,10 @@ test("a list of web « Sources » goes whole; one of the person's documents stay
   assert.equal(guarded("首都はキャンベラです。\n\n出典：\n[1] https://ja.wikipedia.org/wiki/キャンベラ").out, "首都はキャンベラです。\n\n");
   const documents = "Le préavis est de trois mois [1].\n\n**Sources**\n1. contrat.pdf, page 3\n";
   assert.equal(guarded(documents, 1).out, documents);
+  // On one line: named as consulted, with no document behind it.
+  assert.equal(guarded("Canberra est la capitale.\nSources : Wikipédia, site de la NASA.\n").out, "Canberra est la capitale.\n");
+  assert.equal(guarded("首都はキャンベラです。\n出典：ウィキペディア").out, "首都はキャンベラです。\n");
+  assert.equal(guarded("Le préavis est de trois mois [1].\nSource : contrat.pdf, page 3\n", 1).out, "Le préavis est de trois mois [1].\nSource : contrat.pdf, page 3\n");
   // A heading that only starts like one: kept.
   assert.equal(guarded("Sources d'énergie renouvelable : le solaire et l'éolien.\n").out, "Sources d'énergie renouvelable : le solaire et l'éolien.\n");
 });

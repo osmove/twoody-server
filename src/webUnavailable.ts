@@ -392,6 +392,8 @@ function withoutCitations(text: string, sources: number, removed: WebClaimRemova
 /// « Sources : », « **References** », « Quellen », « 出典 », « 출처 » alone on
 /// their line.
 const SOURCES_HEADER = /^\s*(?:#{1,6}\s*)?[*_]{0,3}\s*(?:sources?|references?|quellen(?:angaben)?|fuentes|referencias|fonti|riferimenti|fontes|bronnen|referenties|出典|参考(?:文献|資料|情報|资料|来源|链接)?|情報源|来源|資料來源|출처|참고\s?(?:자료|문헌)?)\s*[*_]{0,3}\s*[:：]?\s*[*_]{0,3}\s*$/iu;
+/// « Sources : Wikipédia, NASA » on one line: web sources named as consulted.
+const SOURCES_INLINE = /^\s*(?:#{1,6}\s*)?[*_]{0,3}\s*(?:sources?|references?|quellen(?:angaben)?|fuentes|referencias|fonti|riferimenti|fontes|bronnen|referenties|出典|参考(?:文献|資料|情報|资料|来源|链接)?|情報源|来源|資料來源|출처|참고\s?(?:자료|문헌)?)\s*[*_]{0,3}\s*[:：]/iu;
 const LIST_ITEM = /^\s*(?:[-*•]|\d{1,3}[.)])\s+/u;
 const LINK = /https?:\/\/|www\.[\p{L}\p{N}-]+\./u;
 /// A line that starts with a citation's number: « [3] Le Monde – https://… ».
@@ -485,7 +487,9 @@ export function createWebClaimGuard(options: { sources?: () => number } = {}): W
       return "";
     }
     const reference = REFERENCE.exec(plain);
-    const listsWeb = reference && !(reference[1] && Number(reference[1]) <= sources());
+    const listsWeb = (reference && !(reference[1] && Number(reference[1]) <= sources()))
+      // « Sources : Wikipédia, NASA »: with no document of the person's to name, or a link.
+      || (SOURCES_INLINE.test(plain) && (sources() === 0 || LINK.test(plain)));
     if (listsWeb || ((held.length || sourcesBlock) && sourceLine(plain))) {
       for (const one of held) if (one.trim()) removed.push({ kind: "sources", text: one.trim() });
       held = [];
@@ -499,11 +503,11 @@ export function createWebClaimGuard(options: { sources?: () => number } = {}): W
   /// Whether the line that starts `text` must be judged whole: a fence, a
   /// header, a citation's number or a link at its start, or any line of a
   /// block of sources. Undecided (null) while too little of it came.
-  const wholeLine = (text: string): boolean | null => {
+  const wholeLine = (text: string, complete: boolean): boolean | null => {
     if (fence || held.length || sourcesBlock) return true;
     const newline = text.indexOf("\n");
     const start = (newline >= 0 ? text.slice(0, newline) : text).trimStart();
-    if (newline < 0 && start.length < 16) return null;
+    if (newline < 0 && start.length < 16 && !complete) return null;
     if (/^(?:```|~~~)/u.test(start) || REFERENCE.test(start) || /^(?:(?:[-*•]|\d{1,3}[.)])\s+)?(?:<?https?:\/\/|\[[^\]]*\]\(https?:\/\/)/u.test(start)) return true;
     return /^(?:#{1,6}\s*)?[*_]{0,3}\s*(?:sources?|references?|quellen|fuentes|referencias|fonti|riferimenti|fontes|bronnen|referenties|出典|参考|情報源|来源|資料來源|출처|참고)/iu.test(start);
   };
@@ -527,7 +531,7 @@ export function createWebClaimGuard(options: { sources?: () => number } = {}): W
     let out = "";
     while (pending) {
       if (lineStart) {
-        const whole = wholeLine(pending);
+        const whole = wholeLine(pending, final);
         if (whole === null && !final) break;
         if (whole) {
           const newline = pending.indexOf("\n");
