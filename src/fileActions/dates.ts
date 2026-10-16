@@ -64,7 +64,8 @@ function datesIn(folded: string, now: Date, monthFirst: boolean): Hit[] {
   const iso = /(?<!\d)((?:19|20)\d{2})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)/g;
   while ((match = iso.exec(folded))) push(match.index, valid(Number(match[1]), Number(match[2]), Number(match[3]), now));
   // 12/09/2026, 12.09.2026, 12-09-26 (day first, unless the language puts the month first and the day says so)
-  const numeric = /(?<![\d/.-])(\d{1,2})[/.-](\d{1,2})[/.-]((?:19|20)?\d{2})(?![\d/.-])/g;
+  // A full stop after it ends the sentence (« Ordonnance du 30/04/2026. »).
+  const numeric = /(?<![\d/.-])(\d{1,2})[/.-](\d{1,2})[/.-]((?:19|20)?\d{2})(?![\d/-]|\.\d)/g;
   while ((match = numeric.exec(folded))) {
     const a = Number(match[1]);
     const b = Number(match[2]);

@@ -1,10 +1,10 @@
 import { eq } from "drizzle-orm";
 import { generateId } from "../auth.js";
-import { messageLanguage } from "../chatContext.js";
+import { messageLanguage, type MessageLanguage } from "../chatContext.js";
 import { db, discussions, messages } from "../db.js";
 import { publish as publishEvent } from "../events.js";
 import { capabilityOn } from "../localCapabilities.js";
-import { fileActionIntent, saysNo, saysYes } from "./intent.js";
+import { fileActionIntent, requestLanguage, saysNo, saysYes } from "./intent.js";
 import { buildPlan, findFolder, PlanError, type FileActionPlan } from "./plan.js";
 import { runFileAction } from "./run.js";
 import { createFileAction, fileAction, lastActionFolder, transition, waitingProposal, type FileActionResult, type FileActionRow } from "./store.js";
@@ -127,7 +127,10 @@ export function refuse(row: FileActionRow, viewer: Viewer): FileActionRow | null
 export async function fileActionTurn(context: FileTurnContext): Promise<FileTurn | null> {
   const text = context.text.trim();
   if (!text) return null;
-  const language = languageOf(messageLanguage(text, context.locale), context.locale);
+  // The words of the request tell its language first (« Rinomina le
+  // scansioni… » read as French by the chat's word counts); then the chat's
+  // reading of it; then the app's.
+  const language = languageOf((requestLanguage(text) as MessageLanguage | null) ?? messageLanguage(text, context.locale), context.locale);
 
   // « oui » / « non » right after a proposal, from whoever may answer it.
   if (saysYes(text) || saysNo(text)) {

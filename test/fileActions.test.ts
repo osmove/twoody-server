@@ -26,7 +26,7 @@ const { createAuthSession, ensureSetupToken } = await import("../src/auth.js");
 const { sqlite } = await import("../src/db.js");
 const { indexStatus, reindex } = await import("../src/documents/library.js");
 const { setSpotlightEnabled } = await import("../src/documents/spotlight.js");
-const { fileActionIntent, saysNo, saysYes } = await import("../src/fileActions/intent.js");
+const { fileActionIntent, requestLanguage, saysNo, saysYes } = await import("../src/fileActions/intent.js");
 const { documentDate } = await import("../src/fileActions/dates.js");
 const { excerptFor, markdownTables } = await import("../src/fileActions/run.js");
 setSpotlightEnabled(false);
@@ -143,6 +143,11 @@ test("requests to act on files are read without the model, in the ten languages;
   for (const text of ["comment ranger mes factures ?", "How should I organize my invoices?", "j'ai rangé mes factures par mois", "What's the price range of my invoices?", "qu'est-ce qu'il y a dans Documents/Factures ?", "supprime ce rappel", "Quel est le délai de préavis du contrat Tessane ?", "fais un tableau des délais de préavis", "Résume mes contrats"]) {
     assert.equal(kinds(text), null, text);
   }
+  // The request's own words tell its language (« le », « la » are French words too).
+  assert.equal(requestLanguage("Rinomina le scansioni con la loro data"), "it");
+  assert.equal(requestLanguage("Organize minhas faturas por mês"), "pt");
+  assert.equal(requestLanguage("Sort my invoices by month"), "en");
+  assert.equal(requestLanguage("請求書を月ごとに整理して"), null);
   assert.ok(saysYes("oui") && saysYes("Oui, vas-y") && saysYes("はい") && saysYes("yes please") && !saysYes("oui mais pas les PDF"));
   assert.ok(saysNo("non") && saysNo("nein danke") && !saysNo("oui"));
 });
@@ -154,6 +159,8 @@ test("a document's own date: the labelled one first, the language deciding 03/04
   assert.deepEqual(documentDate("Rechnungsdatum: 7. Oktober 2026"), { year: 2026, month: 10, day: 7 });
   assert.deepEqual(documentDate("請求日：2026年9月12日"), { year: 2026, month: 9, day: 12 });
   assert.equal(documentDate("Pas de date ici."), null);
+  // A full stop after the date ends the sentence (bench of 16/10/2026: a scan dated by its file instead).
+  assert.deepEqual(documentDate("Ordonnance du Dr Weber, 30/04/2026."), { year: 2026, month: 4, day: 30 });
 });
 
 test("what the model is given of a long document: its start and its passages about the request", () => {

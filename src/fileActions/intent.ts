@@ -247,3 +247,23 @@ export function saysNo(message: string): boolean {
   const text = message.trim();
   return text.length <= 60 && NO.test(fold(text));
 }
+
+/// The language a request is written in, from its words of order and of
+/// place (« rinomina … le scansioni … loro data » is Italian, though « le »
+/// and « la » are French words too): null when it does not tell.
+const REQUEST_WORDS: Array<[string, RegExp]> = [
+  ["fr", latin(String.raw`range|ranger|trie|trier|classe|renomme|renommer|fais|faire|redige|supprime|efface|mes|ces|par mois|par annee|avec leur|dossier|factures|contrats|tableau`)],
+  ["en", latin(String.raw`sort|organi[sz]e|rename|make|write|create|delete|remove|my|these|the|by month|by year|with their|folder|invoices|contracts|spreadsheet|table`)],
+  ["de", latin(String.raw`sortiere|sortieren|ordne|benenne|umbenennen|erstelle|schreib|losche|loschen|meine|meiner|diese|nach monat|nach jahr|mit ihrem|ordner|rechnungen|vertrage`)],
+  ["es", latin(String.raw`ordena|organiza|renombra|haz|hazme|crea|borra|elimina|mis|estos|estas|por mes|por ano|con su|carpeta|facturas|contratos|tabla`)],
+  ["it", latin(String.raw`ordina|riordina|organizza|rinomina|fammi|crea|cancella|elimina|i miei|le mie|questi|queste|per mese|per anno|con la loro|cartella|fatture|contratti|scansioni|tabella`)],
+  ["pt", latin(String.raw`organize|ordene|renomeie|faca|crie|apague|exclua|meus|minhas|estes|estas|por mes|com a data|pasta|faturas|contratos|planilha`)],
+  ["nl", latin(String.raw`sorteer|orden|hernoem|maak|schrijf|verwijder|mijn|deze|per maand|per jaar|met hun|map|facturen|contracten|tabel`)],
+];
+
+export function requestLanguage(message: string): string | null {
+  const text = fold(message);
+  if (CJK.test(text)) return null;
+  const scores = REQUEST_WORDS.map(([language, pattern]) => [language, (text.match(new RegExp(pattern.source, "gu")) ?? []).length] as const).sort((a, b) => b[1] - a[1]);
+  return scores[0]![1] > 0 && scores[0]![1] > scores[1]![1] ? scores[0]![0] : null;
+}
