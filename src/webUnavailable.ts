@@ -130,7 +130,7 @@ const WHY: Record<WebFailure, string> = {
 /// What the model is told, on the last message only.
 export function webUnavailableNote(reason: WebFailure): string {
   return `[No web search for this message: the user turned « Recherche Internet » on, but ${WHY[reason]}, so there are no web results. ` +
-    "Answer from the conversation and what you already know; if the answer may have changed recently (news, prices, schedules, weather, scores), say in a few words that it may not be up to date. " +
+    "Answer from the conversation and what you already know: give what you know, even if it may be dated, rather than nothing. Only when the question is about something that changes (news, prices, schedules, weather, scores), add in a few words that your knowledge may be out of date: it stops at your training, not at today's date. " +
     "Never say or suggest that you searched the web, looked anything up online or read web pages, and give no web source or link as found now: there is none. " +
     "The app already tells the user that the search could not be done.]";
 }
