@@ -580,7 +580,10 @@ export function emailsForMessage(message: string, context: Pick<EmailToolContext
   // e-mail only, the two before it given too (bench of 04/10/2026).
   // « Réponds à Paul… » was answered « Je rédige maintenant un brouillon »
   // and no call, 3 times in 6 (bench of 05/10/2026).
-  const end = "[End of e-mails] Answer from them when they hold the answer — from every e-mail above that bears on the question, not only the latest — citing the sender and the date; read_email gives one whole, with its conversation; search_emails looks further; draft_email answers one (its id as in_reply_to). Asked to write or answer an e-mail, call draft_email in this turn — never only say you will — unless you must first ask which e-mail or which mailbox.";
+  // « Paul m'a-t-il écrit cette semaine ? » was answered « Oui, le mardi
+  // 13 octobre [1]. » and nothing of what he wrote, about 1 time in 8 (the
+  // sender and the date were all this asked for; regress, 11–16/10/2026).
+  const end = "[End of e-mails] Answer from them when they hold the answer — from every e-mail above that bears on the question, not only the latest — citing the sender and the date and saying in a few words what each one is about, never its id; read_email gives one whole, with its conversation; search_emails looks further; draft_email answers one (its id as in_reply_to). Asked to write or answer an e-mail, call draft_email in this turn — never only say you will — unless you must first ask which e-mail or which mailbox.";
   if (AWAITING.test(fold(message))) {
     const hits = unansweredEmails(context.userId, { after: bounds?.after ?? now - 90 * 86_400_000, limit: 10 });
     if (!hits.length) return { block: `[No e-mail the user received${searched ? ` (${searched})` : " in the last 90 days"} asks them something and still waits for their answer, ${where}. Say so.]`, mode: "unanswered", count: 0 };

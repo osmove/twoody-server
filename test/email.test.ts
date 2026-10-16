@@ -239,6 +239,8 @@ test("a message plainly about e-mails comes with the e-mails found — newest co
   assert.match(given, /Conversation « Réunion de lundi », 2 e-mails, oldest first:/);
   assert.ok(given.indexOf("From: René Dupont <rene@example.com>") < given.indexOf("sent by the user"), "the conversation in its order");
   assert.match(given, /· (?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday) \d{4}-\d{2}-\d{2} \d{2}:\d{2} ·/, "the weekday given");
+  // « Paul m'a-t-il écrit ? »: not only who and when, what about too.
+  assert.match(given, /\[End of e-mails\] Answer from them [^\n]*citing the sender and the date and saying in a few words what each one is about, never its id;/);
   await ask("Combien font 17 × 23 ?");
   assert.doesNotMatch(lastUserMessage(), /e-mails/);
 });
