@@ -94,3 +94,7 @@ Profile shrink could regress the age question (bench gate, keep memoryRecall tes
 (offer tools only where the bench shows a gain) · model change (vectors keyed by model) · confidence calibration
 (evidence check, sensitive gate) · phase-1 candidates only on the coordinator · alias edit races · privacy: « Aucune »
 never indexed, sensitive never to cloud, untrusted peers nothing.
+
+## 10. People (16/10/2026)
+The graph's people, their contact cards, relations of a fixed kind in ten languages, the learner's relation
+proposals and the person card in the chat: docs/people-design.md.

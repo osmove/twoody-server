@@ -12,6 +12,7 @@ import { learnAfterAnswer, learnSoon, setLearningModel, type LearnMessages } fro
 import { onMemoriesChanged } from "../memory/changes.js";
 import { recordTrace, type ToolCallTrace, type TurnPrompt, type TurnTrace } from "../diagnostics/traces.js";
 import { projectCards } from "../projects/projects.js";
+import { personCards } from "../people/cards.js";
 import { ACTION_TOOLS, askedAction, runAction, type ChatAction } from "../projects/actions.js";
 import { createHash } from "node:crypto";
 import { idleForMs, inflight } from "../account/inflight.js";
@@ -1405,6 +1406,13 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     });
     const cards = memoryMode === "full" && access.mode !== "only" && !isolated ? projectCards(auth.userId, typedText(content), relevant.items.map((item) => item.id)) : [];
     trace.projects = cards.map((card) => card.title);
+    // The people it is about (docs/people-design.md §6): never in a walled-off
+    // project's conversation; their cards' details only with Contacts on.
+    const personalNow = fullFor && onThisComputer(fullFor) && access.mode !== "only" ? withoutLeftOut(loadPersonalData(auth.userId), left) : null;
+    const people = memoryMode === "full" && access.mode !== "only" && !isolated
+      ? (() => { try { return personCards(auth.userId, typedText(content), { contacts: !!personalNow?.contacts.length }); } catch { return []; } })()
+      : [];
+    trace.people = people.length;
     const turnInput: ChatContextInput = {
       ...userContext,
       // A server with no profile (a Pi just set up) knows the person by the
@@ -1443,6 +1451,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       // The projects the message is about (named, or through the memories
       // given with it): their cards, with the message.
       projectCards: memoryMode === "full" ? cards.map((card) => card.card) : [],
+      personCards: people.map((card) => card.card),
       documentFiles: listingOnly ? [] : retrieved.files,
       documentFileTotal: listingOnly ? 0 : retrieved.total,
       excerpts: passages.map((passage) => excerptOf(passage, retrieved.remote)),
@@ -1450,7 +1459,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       documentNote: retrieved.note,
       local: provider.kind === "local_openai" || provider.kind === "peer_openai",
       remembered,
-      personal: fullFor && onThisComputer(fullFor) && access.mode !== "only" ? withoutLeftOut(loadPersonalData(auth.userId), left) : null,
+      personal: personalNow,
       // Done already: the list, with the states from before, would only
       // contradict what was done.
       homeDevices: home && !shortcut ? homeBlock(typedText(content), home, homeLast, homeAsked) : null,
@@ -2463,7 +2472,7 @@ export async function conversationStartPending(auth: { userId: string } & Parame
 // read again at each turn (history, memories, documents, the message).
 const WARM_SEEDS_FILE = join(DATA_DIR, "warm-seeds.json");
 const WARM_WATCH_MS = 10 * 60_000;
-const SEED_LEFT_OUT = ["isolatedProject", "prefs", "history", "memories", "content", "excerpts", "documentFiles", "documentFileTotal", "fileListings", "documentNote", "personal", "homeDevices", "homeDone", "emailFound", "googleDataFound", "projectCards", "remembered", "summary", "summaryThrough", "state", "currentId", "discussionId", "relevant", "profileHints", "now", "documentScan"];
+const SEED_LEFT_OUT = ["isolatedProject", "prefs", "history", "memories", "content", "excerpts", "documentFiles", "documentFileTotal", "fileListings", "documentNote", "personal", "homeDevices", "homeDone", "emailFound", "googleDataFound", "projectCards", "personCards", "remembered", "summary", "summaryThrough", "state", "currentId", "discussionId", "relevant", "profileHints", "now", "documentScan"];
 
 type WarmSeed = { input: Record<string, unknown>; tools: ChatTools["definitions"] | null; model: string | null };
 

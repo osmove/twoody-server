@@ -10,6 +10,8 @@ import { askedToRemember } from "../memoryLearning.js";
 import { recordTrace } from "../diagnostics/traces.js";
 import { createProject, knownProjects, PROJECT_SIZES, updateProject, type ProjectSize, projectIsolated } from "../projects/projects.js";
 import { languageName, messageLanguage, readContextState } from "../chatContext.js";
+import { learnPeople, PEOPLE_RULES } from "../people/learn.js";
+import { acceptPeopleCandidate, candidateLive, ensurePeople, PeopleError, PEOPLE_CANDIDATES } from "../people/people.js";
 
 // What Twoody learns from a conversation, once it is over (Mémoire v2, L6,
 // docs/memory-v2-design.md §4). Jimmy, 01/10/2026: learn from everything
@@ -130,8 +132,9 @@ export function learningPrompt(lines: Array<{ role: "person" | "assistant"; cont
         "title: a short name in their language (« Achat d'un Mac mini »); name: how they call it in a sentence (« Mac mini »); kind: one of purchase, event, home, travel, work, health, learning, admin, other; " +
         "size: \"critical\" when much rides on it and it cannot slip (their health, their job or company, a legal or tax deadline, their home), \"large\" for months of effort or a big budget, \"medium\" for weeks of effort or a real budget, else \"small\"; status: idea, active, paused, done or dropped; due: a date YYYY-MM-DD if they say one, else null; evidence and confidence as for facts. " +
         "When it is one of PROJECTS, set \"ref\" to its ref and give it only if its status or due date changes. A project never replaces the facts: still list in facts what the person said about it.\n" +
-        "Answer with JSON only: {\"facts\":[{\"text\":\"…\",\"kind\":\"user\",\"category\":\"…\",\"confidence\":0.9,\"evidence\":\"…\",\"supersedes\":null}],\"projects\":[{\"title\":\"…\",\"name\":\"…\",\"kind\":\"purchase\",\"size\":\"small\",\"status\":\"idea\",\"due\":null,\"evidence\":\"…\",\"confidence\":0.8,\"ref\":null}]}. " +
-        "Most conversations hold nothing to remember: then {\"facts\":[],\"projects\":[]}.",
+        PEOPLE_RULES +
+        "Answer with JSON only: {\"facts\":[{\"text\":\"…\",\"kind\":\"user\",\"category\":\"…\",\"confidence\":0.9,\"evidence\":\"…\",\"supersedes\":null}],\"projects\":[{\"title\":\"…\",\"name\":\"…\",\"kind\":\"purchase\",\"size\":\"small\",\"status\":\"idea\",\"due\":null,\"evidence\":\"…\",\"confidence\":0.8,\"ref\":null}],\"people\":[{\"name\":\"…\",\"relation\":\"mother\",\"of\":\"me\",\"label\":\"…\",\"evidence\":\"…\",\"confidence\":0.9}]}. " +
+        "Most conversations hold nothing to remember: then {\"facts\":[],\"projects\":[],\"people\":[]}.",
     },
     // The language last, with the conversation: the system message stays
     // the same for every conversation (the runtime reuses it).
@@ -568,6 +571,9 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
     const earlierPersonLines = earlier.filter((line) => line.role === "person").map((line) => line.content);
     const judged = judgeFacts(facts, { personLines, assistantLines, known, refused, forgotten: isForgottenFact, askedLines, earlierPersonLines });
     const judgedProjects = judgeProjects(parseProjects(answer), { personLines, known: projects, refused });
+    // The people and their relations: always proposed (docs/people-design.md §5).
+    const language = conversationLanguage(row.user_id, row.id, personLines);
+    const people = learnPeople(row.user_id, answer, { personLines, language, discussionId: row.id, now: options.now });
     // What it made of the conversation, for the Diagnostic screen.
     recordTrace(row.user_id, {
       kind: "learn",
@@ -584,6 +590,10 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
           proposed: judgedProjects.propose.map((j) => ({ title: j.project.title, status: j.project.status, confidence: j.confidence, updates: j.updates?.id ?? null })),
           dropped: judgedProjects.dropped.map((d) => ({ title: d.project.title, reason: d.reason })),
         },
+        people: {
+          proposed: people.judged.propose.map((j) => ({ kind: j.kind, of_person: j.person.of === null, confidence: j.confidence })),
+          dropped: people.judged.dropped.map((d) => ({ kind: d.person.relation, reason: d.reason })),
+        },
       },
     });
     result.dropped = judged.dropped.length;
@@ -596,6 +606,7 @@ export async function learnDiscussion(discussionId: string, options: { ask?: Lea
       if (id) result.proposed.push(id);
     }
     for (const project of judgedProjects.propose) result.proposed.push(proposeProject(row.user_id, project, row.id, options.now ?? Date.now()));
+    result.proposed.push(...people.proposed);
     if (result.saved.length || result.proposed.length) {
       sqlite.prepare("INSERT INTO memory_notices (id, user_id, discussion_id, saved, proposed, created_at) VALUES (?, ?, ?, ?, ?, ?)")
         .run(randomUUID(), row.user_id, row.id, JSON.stringify(result.saved), result.proposed.length, options.now ?? Date.now());
@@ -670,17 +681,26 @@ export interface CandidateRow {
   supersedes: { id: string; content: string } | null;
   discussion_id: string | null;
   created_at: string;
-  /// A fact, a new project, or a change of a known one (status, due date).
-  type: "fact" | "project" | "project_update";
+  /// A fact, a new project, or a change of a known one (status, due date);
+  /// a relation, a card that may be someone's, two people who may be one
+  /// (docs/people-design.md).
+  type: "fact" | "project" | "project_update" | "relation" | "person_link" | "person_duplicate";
   /// What was found of the project (title, name, kind, size, status, due).
   project: Record<string, unknown> | null;
 }
 
 export function listCandidates(userId: string): CandidateRow[] {
+  // The cards that may be someone's and the people who may be one, found now.
+  try { ensurePeople(userId); } catch { /* proposals are no reason to fail the list */ }
   const rows = sqlite.prepare(`SELECT c.*, m.content AS superseded_content FROM memory_candidates c
     LEFT JOIN memories m ON m.id = c.supersedes_id AND m.user_id = c.user_id
     WHERE c.user_id = ? AND c.status = 'pending' ORDER BY c.created_at DESC LIMIT 200`).all(userId) as Array<Record<string, unknown>>;
-  return rows.map((row) => ({
+  const parsed = (payload: unknown) => { if (!payload) return null; try { return JSON.parse(String(payload)) as Record<string, unknown>; } catch { return null; } };
+  return rows.filter((row) => {
+    const type = String(row.candidate_type ?? "fact");
+    // About a person since merged or gone: nothing to ask any more.
+    return !(PEOPLE_CANDIDATES as readonly string[]).includes(type) || candidateLive(userId, type, parsed(row.payload));
+  }).map((row) => ({
     id: String(row.id),
     content: String(row.content),
     kind: String(row.kind),
@@ -709,6 +729,22 @@ export function acceptCandidate(userId: string, id: string, content?: string | n
     { content: string; kind: string; category: string | null; confidence: number; sensitive: number; evidence: string | null; supersedes_id: string | null; discussion_id: string | null } | undefined;
   if (!row) throw new CandidateError(404, "not_found");
   const project = (sqlite.prepare("SELECT candidate_type, payload FROM memory_candidates WHERE id = ?").get(id) as { candidate_type: string; payload: string | null });
+  if ((PEOPLE_CANDIDATES as readonly string[]).includes(project.candidate_type)) {
+    let payload: Record<string, unknown> = {};
+    try { payload = JSON.parse(project.payload ?? "{}"); } catch { /* empty */ }
+    let personId: string;
+    try {
+      personId = acceptPeopleCandidate(userId, project.candidate_type, payload, now);
+    } catch (err) {
+      if (err instanceof PeopleError) {
+        sqlite.prepare("UPDATE memory_candidates SET status = 'rejected', decided_at = ? WHERE id = ?").run(now, id);
+        throw new CandidateError(409, err.code);
+      }
+      throw err;
+    }
+    sqlite.prepare("UPDATE memory_candidates SET status = 'accepted', memory_id = ?, decided_at = ? WHERE id = ?").run(personId, now, id);
+    return personId;
+  }
   if (project.candidate_type === "project" || project.candidate_type === "project_update") {
     let payload: Record<string, unknown> = {};
     try { payload = JSON.parse(project.payload ?? "{}"); } catch { /* empty */ }

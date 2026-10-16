@@ -3,6 +3,7 @@ import { and, asc, eq, isNull, like, or } from "drizzle-orm";
 import { db, contacts } from "../db.js";
 import { requireAuth, generateId } from "../auth.js";
 import { storedValues } from "../contactFields.js";
+import { markPeopleStale, peopleOfContacts } from "../people/people.js";
 
 // Small local /contacts surface. It preserves the Rails JSON names the
 // clients use, but stores only the common fields needed for local search
@@ -162,7 +163,9 @@ export async function contactRoutes(app: FastifyInstance) {
         .orderBy(asc(contacts.name), asc(contacts.firstName))
         .limit(5_000)
         .all();
-      reply.send(rows.map(serialize));
+      // Whose card it is in « Proches » (docs/people-design.md §3).
+      const people = peopleOfContacts(auth.userId);
+      reply.send(rows.map((row) => ({ ...serialize(row), person: people.get(row.id) ?? null })));
     },
   });
 
@@ -228,6 +231,7 @@ export async function contactRoutes(app: FastifyInstance) {
         })
         .run();
       const [row] = db.select().from(contacts).where(eq(contacts.id, id)).limit(1).all();
+      markPeopleStale(auth.userId);
       reply.code(201).send(serialize(row!));
     },
   });
@@ -273,6 +277,7 @@ export async function contactRoutes(app: FastifyInstance) {
       };
       db.update(contacts).set(next).where(eq(contacts.id, existing.id)).run();
       const [row] = db.select().from(contacts).where(eq(contacts.id, existing.id)).limit(1).all();
+      markPeopleStale(auth.userId);
       reply.send(serialize(row!));
     },
   });
@@ -291,6 +296,7 @@ export async function contactRoutes(app: FastifyInstance) {
         .where(and(eq(contacts.id, req.params.id), eq(contacts.userId, auth.userId), isNull(contacts.source)))
         .run();
       if (result.changes === 0) return reply.code(404).send({ error: "not_found" });
+      markPeopleStale(auth.userId);
       reply.code(204).send();
     },
   });

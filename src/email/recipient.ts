@@ -1,6 +1,7 @@
 import { sqlite } from "../db.js";
 import { aliasesOf, kinLabels, listEntities, memoryIdsOf, normaliseName, relationsOf, selfOf } from "../memory/entities.js";
 import type { PersonalContact } from "../personalContext.js";
+import { contactsOf, linksOf } from "../people/people.js";
 import { cleanAddress } from "./parse.js";
 import { correspondentsNamed } from "./store.js";
 
@@ -234,6 +235,9 @@ export interface EntityView {
   labels: string[];
   /// The memories linked to it.
   memories: string[];
+  /// The addresses of the contact cards linked to it in « Proches »
+  /// (docs/people-design.md §3).
+  emails?: string[];
 }
 
 export interface RecipientSources {
@@ -286,6 +290,7 @@ export function resolveRecipient(said: string, sources: RecipientSources): Recip
       names.add(entity.name);
       for (const alias of entity.aliases) if (!relativeIn(alias)) names.add(alias);
       for (const address of addressesIn(entity.note ?? "")) add(address, entity.name, "Memories");
+      for (const address of entity.emails ?? []) add(address, entity.name, "Contacts");
       for (const text of entity.memories) for (const address of addressesFor(text, (sentence) => mentionsRelative(sentence, relative) || [entity.name, ...entity.aliases].some((alias) => nameIn(alias, sentence)))) add(address, entity.name, "Memories");
     }
     // The memories that say the relative: their addresses, and the names
@@ -330,6 +335,7 @@ export function resolveRecipient(said: string, sources: RecipientSources): Recip
       if (![entity.name, ...entity.aliases].some(matches)) continue;
       names.add(entity.name);
       for (const address of addressesIn(entity.note ?? "")) add(address, entity.name, "Memories");
+      for (const address of entity.emails ?? []) add(address, entity.name, "Contacts");
       for (const text of entity.memories) for (const address of addressesFor(text, (sentence) => [entity.name, ...entity.aliases].some((alias) => matches(alias) && nameIn(alias, sentence)) || nameIn(plain, sentence))) add(address, entity.name, "Memories");
     }
     for (const text of memories) {
@@ -346,20 +352,25 @@ export function resolveRecipient(said: string, sources: RecipientSources): Recip
 
 /// The person's entities as resolveRecipient reads them: each one's names,
 /// note, the labels of the relations from the person to it, its memories.
-export function entityViews(userId: string, memoryText: (id: string) => string | null): EntityView[] {
+export function entityViews(userId: string, memoryText: (id: string) => string | null, withCards = true): EntityView[] {
   const self = selfOf(userId);
   const labels = new Map<string, string[]>();
-  if (self) for (const relation of relationsOf(self.id)) labels.set(relation.to, [...(labels.get(relation.to) ?? []), relation.label]);
-  return listEntities(userId)
+  // The label as written and the relation's kind (« mother »): a relation
+  // labelled « Mutter » is Mum too.
+  if (self) for (const relation of relationsOf(self.id)) labels.set(relation.to, [...(labels.get(relation.to) ?? []), relation.label, ...(relation.kind ? [relation.kind] : [])]);
+  const entities = listEntities(userId)
     .filter((entity) => entity.kind === "person" || entity.kind === "other" || labels.has(entity.id))
-    .slice(0, 500)
-    .map((entity) => ({
-      name: entity.name,
-      aliases: aliasesOf(entity.id),
-      note: entity.note,
-      labels: labels.get(entity.id) ?? [],
-      memories: memoryIdsOf(entity.id).slice(0, 40).map(memoryText).filter((text): text is string => !!text),
-    }));
+    .slice(0, 500);
+  const links = withCards ? linksOf(entities.map((entity) => entity.id)) : [];
+  const cards = withCards && links.length ? contactsOf(userId, [...new Set(links.map((link) => link.contact_id))]) : new Map();
+  return entities.map((entity) => ({
+    name: entity.name,
+    aliases: aliasesOf(entity.id),
+    note: entity.note,
+    labels: labels.get(entity.id) ?? [],
+    memories: memoryIdsOf(entity.id).slice(0, 40).map(memoryText).filter((text): text is string => !!text),
+    emails: links.filter((link) => link.entity_id === entity.id).flatMap((link) => (cards.get(link.contact_id) as { emails: string[] } | undefined)?.emails ?? []),
+  }));
 }
 
 /// resolveRecipient on this person's data: their memories (when the turn
@@ -373,7 +384,8 @@ export function recipientFor(userId: string, said: string, data: { memories: Rec
   return resolveRecipient(said, {
     memories: data.memories ?? [],
     contacts: data.contacts,
-    entities: useMemories ? entityViews(userId, memoryText) : [],
+    // The cards linked to a relative count only when Contacts is on for it.
+    entities: useMemories ? entityViews(userId, memoryText, data.contacts.length > 0) : [],
     correspondents: (names) => correspondentsNamed(userId, names),
   });
 }

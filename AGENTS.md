@@ -58,6 +58,7 @@ documents), also measure with a real model (root AGENTS.md §5, §7):
 | `routes/queries.ts`, `chatContext.ts` | the chat turn (§4) |
 | `discussionWindow.ts` | which conversation a turn belongs to |
 | `memory/` | memory v2: `learner.ts`, `retrieve.ts`, `search.ts`, `rank.ts`, `entities.ts`, `embeddings.ts`, `similar.ts`, `changes.ts` |
+| `people/` | « Proches » (16/10/2026, docs/people-design.md): `kinship.ts` (the fixed kinds of relation — mother, sister_in_law, colleague… — their words in the ten languages, and how one's own relative is said: « ma mère », « meine Mutter », « 母 », « 우리 엄마 », never « la mère de Paul », « 友達の母 », « grand-mère » for « mère »; `entities.ts` `kinshipIn`/`kinLabels` read it), `people.ts` (a person = one entity, its contact cards in `entity_contacts` — migration 10: sure → `auto`, a first name → « À confirmer », refused never again —, relation to the person and links between people with `entity_relations.kind`, merge and split, « Doublons possibles » for people), `learn.ts` (the learner's `people` — always proposed, on the person's own words, hypotheses of the ten languages dropped), `cards.ts` (the person card on the last message, one hop: « la sœur de ma femme ») |
 | `memoryLearning.ts` | « Retiens que… »: kept as said and at once, no model involved (what is said in passing is learned by `memory/learner.ts`) |
 | `personalContext.ts` | the person's contacts and events matching a message, on the last message: the days named (`dateWindow`) and the agenda's words in the ten languages, names in Japanese, Chinese and Korean found inside the text |
 | `dateWords.ts` | the days and periods a message names in the ten languages (« morgen », « el viernes pasado », « 来週の金曜 », « 다음 달 », « seit Montag »), shared by `personalContext.ts` and the e-mails' periods (`email/chat.ts periodSpanIn`); « hier » is not yesterday among German or Dutch words (`test/multilingualAgendaMail.test.ts`) |
@@ -316,6 +317,7 @@ plans; the code says what was built.
 | `docs/multi-computer-design.md` | headless computers in the account, routing between computers | built (lots and review fixes recorded in §6–9 of the doc): `src/account/`, `src/router/` |
 | `docs/mesh-design.md` | trusted computers as vault members; distributed document search | built: `src/vault/`, `src/peerDocuments/`, `routes/peer*.ts` |
 | `docs/memory-v2-design.md` | profile, hybrid retrieval, entities, learner, « À confirmer » | largely built (`src/memory/`); open items in root AGENTS.md §10 |
+| `docs/people-design.md` | « Proches »: one person = one entity with their cards, relations in ten languages, learned relations proposed, the person card in the chat | built 16/10/2026 (`src/people/`, `routes/people.ts`, migration 10) |
 | `docs/projects-design.md` | projects found by the learner, used in chat, screens, sync; §8 walled-off projects (« Cloisonner ce projet ») | lots P1–P4 built (`src/projects/`); P5 (sync between computers) not yet; §8 built 14/10/2026 (`isolation.ts`, `walledAccess.ts`) |
 
 Other docs in this repository: `README.md` (running and configuring the

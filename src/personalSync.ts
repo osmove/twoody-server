@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { calendarEvents, contacts, db, sqlite } from "./db.js";
 import { toStored } from "./contactFields.js";
+import { markPeopleStale } from "./people/people.js";
 
 // The person's contacts and calendar copied from elsewhere, each copy by its
 // source: « macos », the Mac's Contacts and Calendar sent by this computer's
@@ -147,6 +148,9 @@ export function replaceContacts(userId: string, src: SyncSource, rows: ReturnTyp
       }).run();
     }
   })();
+  // Cards linked to « Proches » keep their id (rowId): the links hold; new
+  // cards may be someone's (docs/people-design.md §3).
+  markPeopleStale(userId);
   return rows.length;
 }
 

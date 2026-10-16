@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { sqlite } from "../db.js";
+import { isRelationKind, kindsOfWord, kinshipMentions, wordsOfKind, type RelationKind } from "../people/kinship.js";
 
 // The people, projects, places… the person's memories are about
 // (docs/memory-v2-design.md §2, lot L2): entities with their other names
@@ -102,7 +103,29 @@ export function kinLabels(label: string): Set<string> {
     const labels = kin.labels.map(normaliseName);
     if (labels.includes(norm)) for (const other of labels) out.add(other);
   }
+  // The same relation in the app's ten languages (« Mutter », « madre »,
+  // « 엄마 »): docs/people-design.md §4.
+  for (const kind of kindsOfWord(label)) for (const word of kindWords(kind)) out.add(word);
   return out;
+}
+
+const KIND_WORD_CACHE = new Map<RelationKind, string[]>();
+
+/// Every word of a kind of relation, folded as names are here.
+export function kindWords(kind: RelationKind): string[] {
+  let words = KIND_WORD_CACHE.get(kind);
+  if (!words) {
+    words = [...new Set(wordsOfKind(kind).map((word) => normaliseName(word) || word))];
+    KIND_WORD_CACHE.set(kind, words);
+  }
+  return words;
+}
+
+/// The kind of a relation: its own, else what its label says (one kind only).
+export function relationKind(kind: string | null | undefined, label: string): RelationKind | null {
+  if (isRelationKind(kind)) return kind;
+  const kinds = kindsOfWord(label);
+  return kinds.length === 1 ? kinds[0]! : null;
 }
 
 /// The kinship phrases a text says, each with its labels.
@@ -110,6 +133,19 @@ export function kinshipIn(text: string): Array<{ phrase: string; labels: Readonl
   const padded = ` ${normaliseName(text)} `;
   const found: Array<{ phrase: string; labels: ReadonlySet<string> }> = [];
   for (const [phrase, labels] of KINSHIP) if (padded.includes(` ${phrase} `)) found.push({ phrase, labels });
+  // The other languages of the app, and their words for one's own
+  // relatives (« meine Mutter », « mi madre », « 母 », « 우리 엄마 »):
+  // never someone else's (« la mère de Paul », « 友達の母 »).
+  const said = new Set(found.map((kin) => kin.phrase));
+  for (const mention of kinshipMentions(text)) {
+    if (!mention.own || mention.owner) continue;
+    const phrase = mention.script === "latin" ? normaliseName(mention.phrase) : mention.phrase;
+    if (said.has(phrase)) continue;
+    said.add(phrase);
+    // The word said too (« nipote » says five kinds and is none of theirs).
+    const word = phrase.split(" ").at(-1) ?? phrase;
+    found.push({ phrase, labels: new Set([...mention.kinds.flatMap((kind) => kindWords(kind)), phrase, word]) });
+  }
   return found;
 }
 
@@ -146,16 +182,16 @@ export function aliasesOf(entityId: string): string[] {
   return (sqlite.prepare("SELECT alias FROM entity_aliases WHERE entity_id = ? ORDER BY rowid").all(entityId) as Array<{ alias: string }>).map((r) => r.alias);
 }
 
-export function relationsOf(entityId: string): Array<{ to: string; to_name: string; label: string }> {
+export function relationsOf(entityId: string): Array<{ to: string; to_name: string; label: string; kind: string | null }> {
   return sqlite.prepare(
-    "SELECT r.to_id AS \"to\", e.name AS to_name, r.label FROM entity_relations r JOIN entities e ON e.id = r.to_id WHERE r.from_id = ? ORDER BY r.rowid",
-  ).all(entityId) as Array<{ to: string; to_name: string; label: string }>;
+    "SELECT r.to_id AS \"to\", e.name AS to_name, r.label, r.kind FROM entity_relations r JOIN entities e ON e.id = r.to_id WHERE r.from_id = ? ORDER BY r.rowid",
+  ).all(entityId) as Array<{ to: string; to_name: string; label: string; kind: string | null }>;
 }
 
-export function relatedFrom(entityId: string): Array<{ from: string; from_name: string; label: string }> {
+export function relatedFrom(entityId: string): Array<{ from: string; from_name: string; label: string; kind: string | null }> {
   return sqlite.prepare(
-    "SELECT r.from_id AS \"from\", e.name AS from_name, r.label FROM entity_relations r JOIN entities e ON e.id = r.from_id WHERE r.to_id = ? ORDER BY r.rowid",
-  ).all(entityId) as Array<{ from: string; from_name: string; label: string }>;
+    "SELECT r.from_id AS \"from\", e.name AS from_name, r.label, r.kind FROM entity_relations r JOIN entities e ON e.id = r.from_id WHERE r.to_id = ? ORDER BY r.rowid",
+  ).all(entityId) as Array<{ from: string; from_name: string; label: string; kind: string | null }>;
 }
 
 export function memoryIdsOf(entityId: string): string[] {
@@ -171,7 +207,7 @@ export type EntityInput = {
   aliases?: string[];
   /// To an entity by its id, or by its name (one not there yet is made,
   /// to be filled in when it is written in turn).
-  relations?: Array<{ to: string; label: string }>;
+  relations?: Array<{ to: string; label: string; kind?: RelationKind | null }>;
 };
 
 export class EntityError extends Error {
@@ -208,11 +244,12 @@ export function readEntityInput(raw: unknown, creating: boolean): EntityInput {
   if (body.relations !== undefined) {
     if (!Array.isArray(body.relations) || body.relations.length > MAX_RELATIONS) throw new EntityError(422, "invalid_relations");
     out.relations = body.relations.map((relation) => {
-      const r = relation as { to?: unknown; label?: unknown } | null;
+      const r = relation as { to?: unknown; label?: unknown; kind?: unknown } | null;
       const to = typeof r?.to === "string" ? r.to.trim() : "";
       const label = typeof r?.label === "string" ? r.label.trim().replace(/\s+/g, " ") : "";
       if (!to || to.length > MAX_NAME || !label || label.length > MAX_LABEL) throw new EntityError(422, "invalid_relations");
-      return { to, label };
+      if (r?.kind !== undefined && r.kind !== null && !isRelationKind(r.kind)) throw new EntityError(422, "invalid_relations");
+      return { to, label, ...(isRelationKind(r?.kind) ? { kind: r.kind } : {}) };
     });
   }
   return out;
@@ -254,12 +291,15 @@ function relationTarget(userId: string, to: string, now: number): EntityRow {
   return insertEntity(userId, { kind: "other", name: to.slice(0, MAX_NAME), note: null, source: "stub" }, now);
 }
 
-function setRelations(entity: EntityRow, relations: Array<{ to: string; label: string }>, now: number) {
+function setRelations(entity: EntityRow, relations: Array<{ to: string; label: string; kind?: RelationKind | null }>, now: number) {
+  // The source of a relation kept as it was is kept (learned, from a card).
+  const before = new Map((sqlite.prepare("SELECT to_id, label, source FROM entity_relations WHERE from_id = ?").all(entity.id) as Array<{ to_id: string; label: string; source: string | null }>)
+    .map((row) => [`${row.to_id}\n${row.label}`, row.source] as const));
   sqlite.prepare("DELETE FROM entity_relations WHERE from_id = ?").run(entity.id);
-  const put = sqlite.prepare("INSERT OR IGNORE INTO entity_relations (from_id, to_id, label) VALUES (?, ?, ?)");
+  const put = sqlite.prepare("INSERT OR IGNORE INTO entity_relations (from_id, to_id, label, kind, source) VALUES (?, ?, ?, ?, ?)");
   for (const relation of relations) {
     const target = relationTarget(entity.user_id, relation.to, now);
-    if (target.id !== entity.id) put.run(entity.id, target.id, relation.label);
+    if (target.id !== entity.id) put.run(entity.id, target.id, relation.label, relationKind(relation.kind, relation.label), before.get(`${target.id}\n${relation.label}`) ?? "manual");
   }
 }
 
@@ -378,9 +418,14 @@ function matcherFor(userId: string): Matcher {
   const kin = new Map<string, string[]>();
   const self = selfOf(userId);
   if (self) {
-    for (const relation of sqlite.prepare("SELECT to_id, label FROM entity_relations WHERE from_id = ?").all(self.id) as Array<{ to_id: string; label: string }>) {
-      const label = normaliseName(relation.label);
-      kin.set(label, [...(kin.get(label) ?? []), relation.to_id]);
+    for (const relation of sqlite.prepare("SELECT to_id, label, kind FROM entity_relations WHERE from_id = ?").all(self.id) as Array<{ to_id: string; label: string; kind: string | null }>) {
+      // Its label, and its kind's words in the ten languages: « ma mère »
+      // and « meine Mutter » reach a relation labelled « maman ».
+      const kind = relationKind(relation.kind, relation.label);
+      for (const label of new Set([normaliseName(relation.label), ...(kind ? kindWords(kind) : [])])) {
+        const ids = kin.get(label) ?? [];
+        if (!ids.includes(relation.to_id)) kin.set(label, [...ids, relation.to_id]);
+      }
     }
   }
   return { phrases, kin };

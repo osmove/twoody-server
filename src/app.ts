@@ -40,6 +40,7 @@ import { memoryRoutes } from "./routes/memories.js";
 import { diagnosticsRoutes } from "./routes/diagnostics.js";
 import { projectRoutes } from "./routes/projects.js";
 import { entityRoutes } from "./routes/entities.js";
+import { peopleRoutes } from "./routes/people.js";
 import { memorySearchRoutes } from "./routes/memorySearch.js";
 import { usageRoutes } from "./routes/usage.js";
 import { noteRoutes } from "./routes/notes.js";
@@ -194,6 +195,7 @@ export async function buildApp() {
   await app.register(diagnosticsRoutes);
   await app.register(projectRoutes);
   await app.register(entityRoutes);
+  await app.register(peopleRoutes);
   await app.register(memorySearchRoutes);
   await app.register(usageRoutes);
   await app.register(taskRoutes);
@@ -245,6 +247,7 @@ export async function buildApp() {
   await app.register(diagnosticsRoutes, { prefix: "/api/v1" });
   await app.register(projectRoutes, { prefix: "/api/v1" });
   await app.register(entityRoutes, { prefix: "/api/v1" });
+  await app.register(peopleRoutes, { prefix: "/api/v1" });
   await app.register(memorySearchRoutes, { prefix: "/api/v1" });
   await app.register(usageRoutes, { prefix: "/api/v1" });
   await app.register(taskRoutes, { prefix: "/api/v1" });
