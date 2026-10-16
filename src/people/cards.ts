@@ -40,7 +40,7 @@ function edgesOf(ids: string[]): Edge[] {
   const marks = ids.map(() => "?").join(",");
   return (sqlite.prepare(`SELECT r.from_id AS "from", r.to_id AS "to", r.label, r.kind FROM entity_relations r
     JOIN entities f ON f.id = r.from_id JOIN entities t ON t.id = r.to_id
-    WHERE (r.from_id IN (${marks}) OR r.to_id IN (${marks})) AND f.merged_into IS NULL AND t.merged_into IS NULL ORDER BY r.rowid`).all(...ids, ...ids) as Array<{ from: string; to: string; label: string; kind: string | null }>)
+    WHERE (r.from_id IN (${marks}) OR r.to_id IN (${marks})) AND f.merged_into IS NULL AND t.merged_into IS NULL AND f.removed_at IS NULL AND t.removed_at IS NULL ORDER BY r.rowid`).all(...ids, ...ids) as Array<{ from: string; to: string; label: string; kind: string | null }>)
     .map((row) => ({ ...row, kind: relationKind(row.kind, row.label) }));
 }
 

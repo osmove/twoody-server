@@ -116,6 +116,11 @@ Routes (`routes/people.ts`, `requirePerson` like `/entities`): `GET /people`, `G
 `PATCH /people/:id` (name, aliases, note, relation {kind, label}), `PUT /people/:id/links` (relations to others),
 `POST /people/:id/contacts` {contact_id}, `DELETE /people/:id/contacts/:contact_id`, `POST /people/:id/merge` {into},
 `POST /people/:id/split` {alias | contact_id | merged_id}, `GET /people/candidates`.
+**« Retirer de vos proches »** (17/10/2026, « rien de définitif », migration 12 `entities.removed_at`): `DELETE /people/:id`
+keeps the person — names, relations, cards, memories — hidden from « Proches », the chat's cards, the graph the memory
+follows, « dis à maman » and the learner (a relation naming them is dropped, `removed`; one pending waits unseen); « Proches
+retirés » (`removed` of `GET /people`) with « Rétablir » (`POST /people/:id/restore`); added again under the same name, the
+same person comes back.
 
 ## 8. What stays apart
 - **Walled-off projects**: nothing of theirs reaches the graph — their conversations are never learned

@@ -5126,7 +5126,7 @@
     },
     "/people": {
       "get": {
-        "summary": "The user's people: their relation to the user, links, contact cards, birthday",
+        "summary": "The user's people: their relation to the user, links, contact cards, birthday; « removed »: those removed, kept",
         "tags": [
           "memories"
         ],
@@ -5246,7 +5246,7 @@
         }
       },
       "delete": {
-        "summary": "Remove a person from the graph (their memories stay)",
+        "summary": "Remove a person from the user's people: kept, hidden until restored (their memories stay)",
         "tags": [
           "memories"
         ],
@@ -5457,6 +5457,37 @@
             }
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/people/{id}/restore": {
+      "post": {
+        "summary": "Restore a person removed from the user's people, as they were",
+        "tags": [
+          "memories"
+        ],
         "security": [
           {
             "bearerAuth": []
@@ -13047,7 +13078,7 @@
     },
     "/api/v1/people": {
       "get": {
-        "summary": "The user's people: their relation to the user, links, contact cards, birthday",
+        "summary": "The user's people: their relation to the user, links, contact cards, birthday; « removed »: those removed, kept",
         "tags": [
           "memories"
         ],
@@ -13167,7 +13198,7 @@
         }
       },
       "delete": {
-        "summary": "Remove a person from the graph (their memories stay)",
+        "summary": "Remove a person from the user's people: kept, hidden until restored (their memories stay)",
         "tags": [
           "memories"
         ],
@@ -13378,6 +13409,37 @@
             }
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/people/{id}/restore": {
+      "post": {
+        "summary": "Restore a person removed from the user's people, as they were",
+        "tags": [
+          "memories"
+        ],
         "security": [
           {
             "bearerAuth": []

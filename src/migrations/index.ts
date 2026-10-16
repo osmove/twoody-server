@@ -11,6 +11,8 @@ import { retireClientFiles } from "./0007_retire_client_files.js";
 import { folderShares } from "./0008_folder_shares.js";
 import { documentGrams } from "./0009_document_grams.js";
 import { people } from "./0010_people.js";
+import { fileActions } from "./0011_file_actions.js";
+import { peopleRemoved } from "./0012_people_removed.js";
 
 // Versioned migrations (03/10/2026, docs/schema-convergence.md): the
 // database's version is SQLite's `user_version`. A database at 0 — fresh,
@@ -39,6 +41,8 @@ export const MIGRATIONS: Migration[] = [
   { version: 8, name: "folder_shares", up: folderShares },
   { version: 9, name: "document_grams", up: documentGrams },
   { version: 10, name: "people", up: people },
+  { version: 11, name: "file_actions", up: fileActions },
+  { version: 12, name: "people_removed", up: peopleRemoved },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

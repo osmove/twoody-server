@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { sqlite } from "../db.js";
 import { normaliseName, selfOf } from "../memory/entities.js";
 import { compatibleKinds, fold, hypothetical, isRelationKind, KIND_GROUP, kindsOfWord, kindWord, kinshipMentions, narrower, RELATION_KINDS, type KinshipMention, type RelationKind } from "./kinship.js";
-import { relationKey, relationKnown, type RelationProposal } from "./people.js";
+import { relationKey, relationKnown, removedNamed, type RelationProposal } from "./people.js";
 
 // The relations the learner finds in a conversation (docs/people-design.md
 // §5): « ma mère s'appelle Nadine », « my boss Bruno », « la sœur de Nadine,
@@ -121,7 +121,7 @@ export interface JudgedPerson {
 /// database but through the callbacks given.
 export function judgePeople(
   people: LearnedPerson[],
-  context: { personLines: string[]; language?: string | null; selfNames?: string[]; known?: (proposal: RelationProposal) => boolean; refused?: ReadonlySet<string> },
+  context: { personLines: string[]; language?: string | null; selfNames?: string[]; known?: (proposal: RelationProposal) => boolean; refused?: ReadonlySet<string>; removed?: (name: string) => boolean },
 ): { propose: JudgedPerson[]; dropped: Array<{ person: LearnedPerson; reason: string }> } {
   const out: { propose: JudgedPerson[]; dropped: Array<{ person: LearnedPerson; reason: string }> } = { propose: [], dropped: [] };
   const seen = new Set<string>();
@@ -182,6 +182,8 @@ export function judgePeople(
     seen.add(key);
     if (context.refused?.has(key)) { drop("refused"); continue; }
     if (context.known?.(proposal)) { drop("known"); continue; }
+    // Someone the person removed from their people: not proposed again.
+    if (context.removed && (context.removed(proposal.to_name) || (proposal.from_name && context.removed(proposal.from_name)))) { drop("removed"); continue; }
     out.propose.push({ person, kind, label, confidence });
   }
   return out;
@@ -220,6 +222,7 @@ export function learnPeople(userId: string, answer: string, context: { personLin
     selfNames: selfNames(userId),
     known: (proposal) => relationKnown(userId, proposal),
     refused: relationKeysSeen(userId),
+    removed: (name) => removedNamed(userId, name),
   });
   const proposed = judged.propose.map((one) => proposeRelation(userId, one, context.discussionId, context.now ?? Date.now()));
   return { proposed, judged };

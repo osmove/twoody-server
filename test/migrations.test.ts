@@ -113,3 +113,37 @@ test("migration 9 indexes the Japanese, Chinese and Korean passages already ther
   assert.deepEqual(found('"解除 除通 通知 知期"'), ["zh"]);
   assert.deepEqual(found('"해지" AND "예고" AND "기간"'), ["ko"]);
 });
+
+test("migration 11 makes file_actions, and keeps the one a computer made on first use with its rows; migration 12 adds entities.removed_at", () => {
+  const made = (db: Database.Database) => db.exec(`CREATE TABLE IF NOT EXISTS file_actions (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL, discussion_id TEXT NOT NULL, message_id TEXT, kind TEXT NOT NULL, status TEXT NOT NULL,
+      plan TEXT NOT NULL, result TEXT, asker_session TEXT, asker_app INTEGER NOT NULL DEFAULT 0, model TEXT, language TEXT NOT NULL,
+      created_at INTEGER NOT NULL, decided_at INTEGER, done_at INTEGER);
+    CREATE INDEX IF NOT EXISTS file_actions_discussion ON file_actions(discussion_id);
+    CREATE INDEX IF NOT EXISTS file_actions_message ON file_actions(message_id);`);
+  const atVersion10 = (withTable: boolean) => {
+    const dir = mkdtempSync(join(tmpdir(), "twoody-migrations-"));
+    const db = new Database(join(dir, "local.db"));
+    migrate(db, { dataDir: dir, log: quiet });
+    db.exec("DROP TABLE file_actions; ALTER TABLE entities DROP COLUMN removed_at");
+    db.pragma("user_version = 10");
+    db.prepare("INSERT INTO users (id, email, created_at) VALUES ('u1', 'u@example.com', ?)").run(Date.now());
+    db.prepare("INSERT INTO entities (id, user_id, kind, name, norm, source, created_at, updated_at) VALUES ('e1', 'u1', 'person', 'Nadine', 'nadine', 'manual', 1, 1)").run();
+    if (withTable) {
+      made(db);
+      db.prepare("INSERT INTO file_actions (id, user_id, discussion_id, kind, status, plan, language, created_at) VALUES ('a1', 'u1', 'd1', 'sort', 'done', '{}', 'fr', 1)").run();
+    }
+    return { dir, db };
+  };
+  for (const withTable of [true, false]) {
+    const { dir, db } = atVersion10(withTable);
+    migrate(db, { dataDir: dir, log: quiet });
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
+    assert.deepEqual(columns(db, "file_actions"), ["id", "user_id", "discussion_id", "message_id", "kind", "status", "plan", "result", "asker_session", "asker_app", "model", "language", "created_at", "decided_at", "done_at"]);
+    assert.deepEqual((db.prepare("SELECT id FROM file_actions").all() as Array<{ id: string }>).map((row) => row.id), withTable ? ["a1"] : [], "the rows made before are kept");
+    assert.deepEqual(db.prepare("SELECT name, removed_at FROM entities").all(), [{ name: "Nadine", removed_at: null }], "nobody removed by the migration");
+    // The store's old first-use statement on a migrated database: nothing changes.
+    made(db);
+    assert.equal((db.prepare("SELECT count(*) AS n FROM file_actions").get() as { n: number }).n, withTable ? 1 : 0);
+  }
+});

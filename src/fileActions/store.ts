@@ -7,10 +7,8 @@ import type { Language } from "./words.js";
 // twoody-desktop): what was proposed, to whom, and what came of it. In the
 // encrypted database, like the conversation they belong to.
 //
-// The table is made here on first use (as peerDocuments/audit.ts makes its
-// own) rather than by a versioned migration: migration 10 (« people ») was
-// being written beside this on 16/10/2026, and two versions numbered at
-// once would leave one of them never run. To fold into the next migration.
+// The table is made by migration 11 (src/migrations/0011_file_actions.ts);
+// it was made here on first use before, with the same columns.
 
 export type FileActionStatus = "proposed" | "running" | "done" | "failed" | "declined" | "undone";
 
@@ -57,31 +55,11 @@ export interface FileActionRow {
 
 let ready = false;
 
-function ensureTable() {
+/// Once per run: an action the server stopped in the middle of (quit,
+/// crash) is no longer running — said failed, what it did kept in its
+/// result.
+function recoverInterrupted() {
   if (ready) return;
-  sqlite.exec(`
-    CREATE TABLE IF NOT EXISTS file_actions (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      discussion_id TEXT NOT NULL,
-      message_id TEXT,
-      kind TEXT NOT NULL,
-      status TEXT NOT NULL,
-      plan TEXT NOT NULL,
-      result TEXT,
-      asker_session TEXT,
-      asker_app INTEGER NOT NULL DEFAULT 0,
-      model TEXT,
-      language TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      decided_at INTEGER,
-      done_at INTEGER
-    );
-    CREATE INDEX IF NOT EXISTS file_actions_discussion ON file_actions(discussion_id);
-    CREATE INDEX IF NOT EXISTS file_actions_message ON file_actions(message_id);
-  `);
-  // A run the server stopped in the middle of (quit, crash) is no longer
-  // running: said failed, what it did kept in its result.
   sqlite.prepare("UPDATE file_actions SET status = 'failed', done_at = ? WHERE status = 'running'").run(Date.now());
   ready = true;
 }
@@ -113,7 +91,7 @@ function rowOf(raw: Raw | undefined): FileActionRow | null {
 }
 
 export function createFileAction(args: { userId: string; discussionId: string; plan: FileActionPlan; askerSession: string | null; askerApp: boolean; model: string | null; language: Language; now?: number }): FileActionRow {
-  ensureTable();
+  recoverInterrupted();
   const id = randomUUID();
   sqlite.prepare(`INSERT INTO file_actions (id, user_id, discussion_id, message_id, kind, status, plan, result, asker_session, asker_app, model, language, created_at)
     VALUES (?, ?, ?, NULL, ?, 'proposed', ?, NULL, ?, ?, ?, ?, ?)`).run(
@@ -123,20 +101,20 @@ export function createFileAction(args: { userId: string; discussionId: string; p
 }
 
 export function fileAction(userId: string, id: string): FileActionRow | null {
-  ensureTable();
+  recoverInterrupted();
   if (typeof id !== "string" || !/^[0-9a-f-]{36}$/.test(id)) return null;
   return rowOf(sqlite.prepare("SELECT * FROM file_actions WHERE id = ? AND user_id = ?").get(id, userId) as Raw | undefined);
 }
 
 export function setActionMessage(id: string, messageId: string) {
-  ensureTable();
+  recoverInterrupted();
   sqlite.prepare("UPDATE file_actions SET message_id = ? WHERE id = ?").run(messageId, id);
 }
 
 /// Moves an action from one status to another, only from the one expected:
 /// two answers at once start it once.
 export function transition(id: string, from: FileActionStatus[], to: FileActionStatus, fields: { result?: FileActionResult | null; now?: number } = {}): boolean {
-  ensureTable();
+  recoverInterrupted();
   const now = fields.now ?? Date.now();
   const placeholders = from.map(() => "?").join(", ");
   const done = to === "done" || to === "failed" || to === "undone";
@@ -147,13 +125,13 @@ export function transition(id: string, from: FileActionStatus[], to: FileActionS
 }
 
 export function setResult(id: string, result: FileActionResult) {
-  ensureTable();
+  recoverInterrupted();
   sqlite.prepare("UPDATE file_actions SET result = ? WHERE id = ?").run(JSON.stringify(result), id);
 }
 
 /// The proposals of a conversation's messages, for GET /discussions/:id.
 export function actionsOfMessages(userId: string, messageIds: string[]): Map<string, FileActionRow> {
-  ensureTable();
+  recoverInterrupted();
   const found = new Map<string, FileActionRow>();
   if (!messageIds.length) return found;
   for (let i = 0; i < messageIds.length; i += 500) {
@@ -170,13 +148,13 @@ export function actionsOfMessages(userId: string, messageIds: string[]): Map<str
 /// The conversation's latest proposal still waiting, if its message is the
 /// last answer (a « oui » typed after it).
 export function waitingProposal(userId: string, discussionId: string): FileActionRow | null {
-  ensureTable();
+  recoverInterrupted();
   return rowOf(sqlite.prepare("SELECT * FROM file_actions WHERE user_id = ? AND discussion_id = ? AND status = 'proposed' ORDER BY created_at DESC LIMIT 1").get(userId, discussionId) as Raw | undefined);
 }
 
 /// The folder of the conversation's latest action (« et renomme-les avec leur date »).
 export function lastActionFolder(userId: string, discussionId: string): string | null {
-  ensureTable();
+  recoverInterrupted();
   const raw = sqlite.prepare("SELECT plan FROM file_actions WHERE user_id = ? AND discussion_id = ? ORDER BY created_at DESC LIMIT 1").get(userId, discussionId) as { plan: string } | undefined;
   try {
     return raw ? ((JSON.parse(raw.plan) as FileActionPlan).folder.real ?? null) : null;

@@ -173,7 +173,7 @@ families, by file in `src/routes/`:
 | Chat | `/queries` (SSE), `/queries/answer_now`, `/discussions*` | `queries.ts`, `discussions.ts` |
 | Providers and engine | `/providers*`, `/runtime*`, `/local_llm/*` | `providers.ts`, `runtime.ts`, `llmModels.ts`, `localLlm.ts` |
 | Memory | `/memories*` (candidates, duplicates, import, learn), `/memories/search`, `/memories/retrieve`, `/conversations/search`, `/entities*` | `memories.ts`, `memorySearch.ts`, `entities.ts` |
-| Proches | `/people*` (relation to the person, links, contact cards, merge, split; docs/people-design.md) | `people.ts` |
+| Proches | `/people*` (relation to the person, links, contact cards, merge, split, remove and restore; docs/people-design.md) | `people.ts` |
 | Projects, tasks, reminders, notes, events, contacts | `/projects*`, `/tasks*`, `/reminders*`, `/notes*`, `/events*`, `/contacts*`, `/local_sync/*` | `projects.ts`, `tasks.ts`, `reminders.ts`, `notes.ts`, `calendarEvents.ts`, `contacts.ts`, `localSync.ts` |
 | Documents | `/local_documents/*` | `localDocuments.ts` |
 | Shared folders (the owner's side: shares, grantees' devices, audit, serving) | `/local_shares/*` | `localShares.ts` |

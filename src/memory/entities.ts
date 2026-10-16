@@ -155,6 +155,9 @@ export function kinshipIn(text: string): Array<{ phrase: string; labels: Readonl
 export type EntityRow = {
   id: string; user_id: string; kind: string; name: string; norm: string; note: string | null; source: string;
   merged_into: string | null; hlc: string | null; vault_event_id: string | null; created_at: number; updated_at: number;
+  /// « Retirer de vos proches » (migration 12): kept, hidden from the live
+  /// graph until restored. findEntity still finds it (its page, « Rétablir »).
+  removed_at?: number | null;
 };
 
 const byId = (id: string) => sqlite.prepare("SELECT * FROM entities WHERE id = ?").get(id) as EntityRow | undefined;
@@ -166,9 +169,9 @@ export function findEntity(userId: string, id: string): EntityRow | null {
   return row && row.user_id === userId && !row.merged_into ? row : null;
 }
 
-/// This person's entities, merged ones left out unless asked for.
+/// This person's entities, merged and removed ones left out unless asked for.
 export function listEntities(userId: string, includeMerged = false): EntityRow[] {
-  return sqlite.prepare(`SELECT * FROM entities WHERE user_id = ? ${includeMerged ? "" : "AND merged_into IS NULL"} ORDER BY kind = 'self' DESC, name COLLATE NOCASE, id`).all(userId) as EntityRow[];
+  return sqlite.prepare(`SELECT * FROM entities WHERE user_id = ? ${includeMerged ? "" : "AND merged_into IS NULL AND removed_at IS NULL"} ORDER BY kind = 'self' DESC, name COLLATE NOCASE, id`).all(userId) as EntityRow[];
 }
 
 function liveByNorm(userId: string, norm: string): EntityRow | undefined {
@@ -185,13 +188,13 @@ export function aliasesOf(entityId: string): string[] {
 
 export function relationsOf(entityId: string): Array<{ to: string; to_name: string; label: string; kind: string | null }> {
   return sqlite.prepare(
-    "SELECT r.to_id AS \"to\", e.name AS to_name, r.label, r.kind FROM entity_relations r JOIN entities e ON e.id = r.to_id WHERE r.from_id = ? ORDER BY r.rowid",
+    "SELECT r.to_id AS \"to\", e.name AS to_name, r.label, r.kind FROM entity_relations r JOIN entities e ON e.id = r.to_id WHERE r.from_id = ? AND e.removed_at IS NULL ORDER BY r.rowid",
   ).all(entityId) as Array<{ to: string; to_name: string; label: string; kind: string | null }>;
 }
 
 export function relatedFrom(entityId: string): Array<{ from: string; from_name: string; label: string; kind: string | null }> {
   return sqlite.prepare(
-    "SELECT r.from_id AS \"from\", e.name AS from_name, r.label, r.kind FROM entity_relations r JOIN entities e ON e.id = r.from_id WHERE r.to_id = ? ORDER BY r.rowid",
+    "SELECT r.from_id AS \"from\", e.name AS from_name, r.label, r.kind FROM entity_relations r JOIN entities e ON e.id = r.from_id WHERE r.to_id = ? AND e.removed_at IS NULL ORDER BY r.rowid",
   ).all(entityId) as Array<{ from: string; from_name: string; label: string; kind: string | null }>;
 }
 
@@ -413,13 +416,13 @@ function matcherFor(userId: string): Matcher {
     if (entity.norm.length >= 2) phrases.push({ norm: entity.norm, entityId: entity.id, how: "name" });
   }
   const aliases = sqlite.prepare(
-    "SELECT a.entity_id, a.norm FROM entity_aliases a JOIN entities e ON e.id = a.entity_id WHERE e.user_id = ? AND e.merged_into IS NULL",
+    "SELECT a.entity_id, a.norm FROM entity_aliases a JOIN entities e ON e.id = a.entity_id WHERE e.user_id = ? AND e.merged_into IS NULL AND e.removed_at IS NULL",
   ).all(userId) as Array<{ entity_id: string; norm: string }>;
   for (const alias of aliases) if (alias.norm.length >= 2) phrases.push({ norm: alias.norm, entityId: alias.entity_id, how: "alias" });
   const kin = new Map<string, string[]>();
   const self = selfOf(userId);
   if (self) {
-    for (const relation of sqlite.prepare("SELECT to_id, label, kind FROM entity_relations WHERE from_id = ?").all(self.id) as Array<{ to_id: string; label: string; kind: string | null }>) {
+    for (const relation of sqlite.prepare("SELECT r.to_id, r.label, r.kind FROM entity_relations r JOIN entities e ON e.id = r.to_id WHERE r.from_id = ? AND e.removed_at IS NULL").all(self.id) as Array<{ to_id: string; label: string; kind: string | null }>) {
       // Its label, and its kind's words in the ten languages: « ma mère »
       // and « meine Mutter » reach a relation labelled « maman ».
       const kind = relationKind(relation.kind, relation.label);

@@ -276,6 +276,44 @@ test("« dis à maman »: the address of the card linked to her counts", async (
   assert.deepEqual(none.candidates, [], "Contacts off for the turn: not the card's address");
 });
 
+test("« Retirer de vos proches » keeps the person: hidden from Proches, cards, « dis à maman » and the learner; « Rétablir » brings them back", async () => {
+  const nadine = (await named("Nadine"))!;
+  const gone = await api("DELETE", `/people/${nadine.id}`);
+  assert.equal(gone.status, 204);
+  const list = (await api("GET", "/people")).body as { people: Array<{ id: string }>; removed: Array<{ id: string; name: string; relation: { kind: string } | null }> };
+  assert.ok(!list.people.some((person) => person.id === nadine.id), "not among the people");
+  assert.deepEqual(list.removed.map((one) => [one.id, one.name, one.relation?.kind]), [[nadine.id, "Nadine", "mother"]], "« Proches retirés », with her relation kept");
+  const page = (await api("GET", `/people/${nadine.id}`)).body.person;
+  assert.ok(page.removed_at, "her page still opens, saying she was removed");
+  assert.equal(sqlite.prepare("SELECT count(*) AS n FROM entity_contacts WHERE entity_id = ? AND how != 'refused'").get(nadine.id)!.n, 1, "her card is still linked to her");
+  assert.deepEqual(personCards(userId, "C'est quand l'anniversaire de ma mère ?", { contacts: true }), [], "no card in the chat");
+  assert.deepEqual(entitiesInText(userId, "Nadine vient dimanche").map((link) => link.entity_id), [], "the graph the memory follows leaves her out");
+  const resolution = recipientFor(userId, "maman", { memories: [], contacts: [{ name: "Quelqu'un", firstName: null, lastName: null, organization: null, phones: [], emails: ["x@example.com"], birthday: null }] });
+  assert.ok(!resolution.candidates.some((one) => one.address === "nadine@example.com"), "« dis à maman » does not reach her");
+  // The learner proposes nothing about her any more.
+  const said = "Ma mère s'appelle Nadine.";
+  const learned = await learnDiscussion(conversation([{ role: "user", content: said }]), { ask: async () => JSON.stringify({ facts: [], people: [{ name: "Nadine", relation: "mother", of: "me", label: "mère", evidence: said, confidence: 0.95 }] }) });
+  assert.equal(learned?.proposed.length, 0);
+  assert.ok(!listCandidates(userId).some((one) => one.type === "relation" && one.project?.to_name === "Nadine"));
+  // « Rétablir »: back as she was.
+  const back = await api("POST", `/people/${nadine.id}/restore`, {});
+  assert.equal(back.status, 200);
+  assert.equal(back.body.person.removed_at, null);
+  assert.equal((await named("Nadine"))!.relation?.kind, "mother");
+  assert.deepEqual((await api("GET", "/people")).body.removed, []);
+  assert.deepEqual(personCards(userId, "C'est quand l'anniversaire de ma mère ?", { contacts: true }).map((card) => card.name), ["Nadine"]);
+  assert.deepEqual(recipientFor(userId, "maman", { memories: [], contacts: [{ name: "Quelqu'un", firstName: null, lastName: null, organization: null, phones: [], emails: ["x@example.com"], birthday: null }] }).candidates.map((one) => one.address), ["nadine@example.com"]);
+  // Removed, then added again under the same name: the same person comes back.
+  await api("DELETE", `/people/${nadine.id}`);
+  const again = await api("POST", "/people", { person: { name: "Nadine" } });
+  assert.equal(again.status, 201);
+  assert.equal(again.body.person.id, nadine.id);
+  assert.equal(again.body.person.relation?.kind, "mother");
+  // The person's own entity is never removed.
+  const self = (await people()).self!;
+  assert.equal((await api("DELETE", `/people/${self.id}`)).status, 422);
+});
+
 test("only the person's own devices: /people is refused to a session that is not theirs", async () => {
   const anonymous = await app.inject({ method: "GET", url: "/api/v1/people" });
   assert.equal(anonymous.statusCode, 401);

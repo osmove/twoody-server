@@ -6,9 +6,8 @@ import { listCandidates } from "../memory/learner.js";
 import { RELATION_KINDS, KIND_GROUP, LANGUAGES } from "../people/kinship.js";
 import {
   createPerson, ensurePeople, linkContact, mergePeople, PeopleError, PEOPLE_CANDIDATES, personDetail, listPeople, readLinks, readPersonInput,
-  setLinks, splitPerson, unlinkContact, updatePerson,
+  removedPeople, removePerson, restorePerson, setLinks, splitPerson, unlinkContact, updatePerson,
 } from "../people/people.js";
-import { deleteEntity, findEntity } from "../memory/entities.js";
 
 // /people — « Proches » (docs/people-design.md §7): the person's people
 // with their relation to them, their links to one another, their contact
@@ -43,14 +42,14 @@ async function person(req: FastifyRequest, reply: FastifyReply): Promise<string 
 
 export async function peopleRoutes(app: FastifyInstance) {
   app.get("/people", {
-    schema: { tags: ["memories"], summary: "The user's people: their relation to the user, links, contact cards, birthday", security },
+    schema: { tags: ["memories"], summary: "The user's people: their relation to the user, links, contact cards, birthday; « removed »: those removed, kept", security },
     handler: async (req, reply) => {
       const userId = await person(req, reply);
       if (!userId) return;
       ensureLinked(userId);
       ensurePeople(userId);
       const candidates = listCandidates(userId).filter((candidate) => (PEOPLE_CANDIDATES as readonly string[]).includes(candidate.type));
-      reply.send({ ...listPeople(userId), candidates, kinds: RELATION_KINDS.map((kind) => ({ kind, group: KIND_GROUP[kind] })) });
+      reply.send({ ...listPeople(userId), removed: removedPeople(userId), candidates, kinds: RELATION_KINDS.map((kind) => ({ kind, group: KIND_GROUP[kind] })) });
     },
   });
 
@@ -173,14 +172,32 @@ export async function peopleRoutes(app: FastifyInstance) {
   });
 
   app.delete<{ Params: { id: string } }>("/people/:id", {
-    schema: { tags: ["memories"], summary: "Remove a person from the graph (their memories stay)", security },
+    schema: { tags: ["memories"], summary: "Remove a person from the user's people: kept, hidden until restored (their memories stay)", security },
     handler: async (req, reply) => {
       const userId = await person(req, reply);
       if (!userId) return;
-      if (findEntity(userId, req.params.id)?.kind === "self") return reply.code(422).send({ error: "self" });
-      if (!deleteEntity(userId, req.params.id)) return reply.code(404).send({ error: "not_found" });
+      try {
+        if (!removePerson(userId, req.params.id)) return reply.code(404).send({ error: "not_found" });
+      } catch (err) {
+        return fail(reply, err);
+      }
       relinkMemories(userId);
       reply.code(204).send();
+    },
+  });
+
+  app.post<{ Params: { id: string } }>("/people/:id/restore", {
+    schema: { tags: ["memories"], summary: "Restore a person removed from the user's people, as they were", security },
+    handler: async (req, reply) => {
+      const userId = await person(req, reply);
+      if (!userId) return;
+      try {
+        const back = restorePerson(userId, req.params.id);
+        relinkMemories(userId);
+        reply.send({ person: personDetail(userId, back.id) });
+      } catch (err) {
+        return fail(reply, err);
+      }
     },
   });
 }

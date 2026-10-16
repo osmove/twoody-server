@@ -83,7 +83,7 @@ function resolveEntity(userId: string, ref: string): { id: string; name: string 
   const norm = normaliseName(ref);
   if (!norm) return null;
   const row = sqlite.prepare(
-    `SELECT e.id FROM entities e WHERE e.user_id = ? AND e.merged_into IS NULL AND (e.norm = ? OR e.id IN (SELECT entity_id FROM entity_aliases WHERE norm = ?))
+    `SELECT e.id FROM entities e WHERE e.user_id = ? AND e.merged_into IS NULL AND e.removed_at IS NULL AND (e.norm = ? OR e.id IN (SELECT entity_id FROM entity_aliases WHERE norm = ?))
       ORDER BY e.norm = ? DESC, e.created_at LIMIT 1`,
   ).get(userId, norm, norm, norm) as { id: string } | undefined;
   const found = row ? findEntity(userId, row.id) : null;
