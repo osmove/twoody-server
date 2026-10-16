@@ -14,6 +14,8 @@ import { discussionTitle } from "../documentBlocks.js";
 import { isolatedProjectOf } from "../projects/isolation.js";
 import { reachesWalledProjects, walledConversation } from "../projects/walledAccess.js";
 import { isThisComputersApp } from "./usage.js";
+import { actionsOfMessages } from "../fileActions/store.js";
+import { actionView } from "../fileActions/view.js";
 
 // `/discussions` mirrors the cloud's chat-history surface. The RN app
 // hits this on chat boot to render the recent-conversations drawer
@@ -218,6 +220,11 @@ export async function discussionRoutes(app: FastifyInstance) {
       // Which memories an answer was given is the person's to read (like
       // /memories): counted for anyone else, not listed.
       const listsMemories = rows.some((row) => row.memoryJson) && (await mayReachHistory(req, auth));
+      // The actions proposed in it (« Agir dans vos dossiers », fileActions/):
+      // their cards, for the person only — never a path.
+      const person = isThisComputersApp(auth) || (await mayReachHistory(req, auth));
+      const actions = person ? actionsOfMessages(auth.userId, rows.filter((row) => row.provider === "twoody").map((row) => row.id)) : new Map();
+      const actionViewer = { sessionId: auth.sessionId ?? null, thisComputersApp: isThisComputersApp(auth) };
       reply.send({
         id:               discussion.id,
         title:            discussion.title ?? null,
@@ -256,6 +263,7 @@ export async function discussionRoutes(app: FastifyInstance) {
           channel:    row.channel ?? null,
           // What an answer was given of the memories (/queries final.memory).
           memory:     memoryOf(row.memoryJson, listsMemories),
+          ...(actions.has(row.id) ? { file_action: actionView(actions.get(row.id)!, actionViewer) } : {}),
           created_at: row.createdAt.toISOString(),
         })),
       });

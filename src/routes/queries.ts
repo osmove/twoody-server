@@ -95,6 +95,10 @@ import { isolatedProjectContext, isolatedProjectOf, projectForConversation, reme
 import { reachesWalledProjects, walledConversation } from "../projects/walledAccess.js";
 import { ProjectError } from "../projects/projects.js";
 import { inProjectScope } from "../documents/retrieval.js";
+import { fileActionTurn } from "../fileActions/chat.js";
+import { setFileActionModel } from "../fileActions/run.js";
+import { fileAction, setActionMessage } from "../fileActions/store.js";
+import { actionView } from "../fileActions/view.js";
 
 interface QueryBody {
   document_access?: unknown;
@@ -201,6 +205,9 @@ interface QueryBody {
 export async function queryRoutes(app: FastifyInstance) {
   // What the learner runs its prompt on (src/memory/learner.ts).
   setLearningModel(learningCall);
+  // What writes a Word or Excel document « Agir dans vos dossiers » makes
+  // (src/fileActions/run.ts).
+  setFileActionModel(fileActionCall);
   // A memory saved, edited or learned: the next new conversation's start,
   // read ahead.
   onMemoriesChanged((userId) => { for (const key of warmKeysOf(userId)) scheduleWarm(key); });
@@ -740,6 +747,52 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       timings: { ...(trace.timings as object | undefined), ttft_ms: timing.first ? timing.first - timing.started : null, answer_ms: timing.started ? Date.now() - timing.started : null },
     },
   }, Date.now(), promptKept);
+
+  // « Agir dans vos dossiers » (twoody-desktop docs/agent-in-chat.md): a
+  // request to sort, rename or write in a folder gets a proposal, written
+  // by the server, and a « oui » after it the result — never the model's
+  // words, which say « C'est fait » without acting.
+  const fileTurn = await fileActionTurn({
+    userId: auth.userId,
+    discussionId: discussion.id,
+    text: typedQuestion,
+    locale: turnLocale,
+    isolated: !!isolated,
+    leftOut: left.has("agent"),
+    person: isThisComputersApp(auth) || requester !== null,
+    asker: { sessionId: auth.sessionId ?? null, thisComputersApp: isThisComputersApp(auth) },
+    model: model ?? null,
+    lastAnswerId: [...history].reverse().find((row) => row.role === "assistant")?.id ?? null,
+  }).catch((err) => {
+    req.log.warn({ err: err instanceof Error ? err.message : String(err) }, "file action failed");
+    return null;
+  });
+  if (fileTurn) {
+    startSse();
+    const said = fileTurn.text;
+    reply.raw.write(`event: message\ndata: ${escapeData(said)}\n\n`);
+    const memoryNone: MemoryUsage = { mode: "none", profile_tokens: 0, relevant_tokens: 0, items: [] };
+    const messageId = insertMessage({ discussionId: discussion.id, userId: auth.userId, role: "assistant", content: said, provider: "twoody", model: null, vaultRef: vaultRef ? `${vaultRef}#reply` : null, client: clientOf(auth) });
+    if (fileTurn.action && fileTurn.outcome === "proposed") setActionMessage(fileTurn.action.id, messageId);
+    trace.file_action = { outcome: fileTurn.outcome, kind: fileTurn.action?.kind ?? null };
+    keepTrace("answered", { messageId });
+    touchDiscussion(discussion.id);
+    if (vaultRef) void sealAnsweredTurn(discussion.id, vaultRef);
+    publishEvent({ kind: "message.appended", userId: auth.userId, discussionId: discussion.id, role: "assistant" });
+    const action = fileTurn.action ? fileAction(auth.userId, fileTurn.action.id) : null;
+    reply.raw.write(`event: final\ndata: ${JSON.stringify({
+      id: null, message_id: messageId, ref: null, discussion_id: discussion.id, provider: "twoody", model: null, text: said, message: said, status: "responded",
+      transcription: parsed.text ? null : (audioBuffer ? heard : null), language: null, sources: [], usage: { prompt_tokens: 0, completion_tokens: 0, estimated: true },
+      reasoning_ms: null, answered_by: null, memory: memoryNone, documents: { computers: [] },
+      // The card under the proposal (or the action a « oui » answered).
+      ...(action ? { file_action: actionView(action, { sessionId: auth.sessionId ?? null, thisComputersApp: isThisComputersApp(auth) }) } : {}),
+      ...(vaultConversationId ? { vault_conversation_id: vaultConversationId, catch_up: { status: caughtUp!.status, missing_refs: caughtUp!.missing } } : {}),
+    })}\n\n`);
+    if (keepalive) clearInterval(keepalive);
+    reply.raw.end();
+    return reply;
+  }
+
   try {
     // Which computer of the account answers, and with which model
     // (router/, docs/multi-computer-design.md §3): the ones to try in
@@ -2628,6 +2681,29 @@ function titleCall(userId: string, answered: Provider): TitleCall {
       done();
     }
   };
+}
+
+/// The content of a Word or Excel document « Agir dans vos dossiers » makes
+/// (src/fileActions/run.ts), after the person agreed: a model of this very
+/// computer, the conversation's when it holds it — the documents it is
+/// given never leave this computer.
+async function fileActionCall(userId: string, model: string | null, prompt: ChatMessage[], signal?: AbortSignal): Promise<string> {
+  const provider = await resolveProvider(userId, model ?? undefined);
+  if (provider.kind !== "local_openai" || !onThisComputer(provider)) throw new LocalLlmUnavailableError("Documents are written by a model of this computer only");
+  if (!(await localRuntimeReady(provider.baseUrl, provider.model))) throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
+  let text = "";
+  const asked = Date.now();
+  let first = 0;
+  const done = beginGeneration("chat");
+  runtimeHolds.clear();
+  try {
+    const timeout = AbortSignal.timeout(300_000);
+    const spent = await streamFromProvider(provider, prompt, 0.2, (delta) => { first ||= Date.now(); text += delta; }, signal ? AbortSignal.any([signal, timeout]) : timeout, { maxTokens: 4096 });
+    recordModelCall(userId, "chat", provider.model, "this-computer", spent, messagesChars(prompt), text.length, asked, first, Date.now());
+  } finally {
+    done();
+  }
+  return text;
 }
 
 /// One call to a model other than the answer itself (a memory extraction,

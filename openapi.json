@@ -2655,6 +2655,175 @@
         }
       }
     },
+    "/file_actions/{id}": {
+      "get": {
+        "summary": "An action on a folder proposed in the chat (« Agir dans vos dossiers »)",
+        "tags": [
+          "queries"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/file_actions/{id}/approve": {
+      "post": {
+        "summary": "Agree to an action on a folder: it starts, its result is said in the conversation",
+        "tags": [
+          "queries"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/file_actions/{id}/decline": {
+      "post": {
+        "summary": "Refuse an action on a folder: nothing is done",
+        "tags": [
+          "queries"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/file_actions/{id}/undo": {
+      "post": {
+        "summary": "Put back what a sort or a rename moved",
+        "tags": [
+          "queries"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/file_actions/{id}/path": {
+      "get": {
+        "summary": "The real path of a file an action made or moved, for this computer's app to open or show it",
+        "tags": [
+          "queries"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(-1|\\d{1,4})$"
+            },
+            "in": "query",
+            "name": "item",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/email/status": {
       "get": {
         "summary": "The mailbox set up (never its password or token), its sync, the copies kept",
@@ -10391,6 +10560,175 @@
         "summary": "Allow or refuse a connector's tool call asked in the chat",
         "tags": [
           "queries"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/file_actions/{id}": {
+      "get": {
+        "summary": "An action on a folder proposed in the chat (« Agir dans vos dossiers »)",
+        "tags": [
+          "queries"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/file_actions/{id}/approve": {
+      "post": {
+        "summary": "Agree to an action on a folder: it starts, its result is said in the conversation",
+        "tags": [
+          "queries"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/file_actions/{id}/decline": {
+      "post": {
+        "summary": "Refuse an action on a folder: nothing is done",
+        "tags": [
+          "queries"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/file_actions/{id}/undo": {
+      "post": {
+        "summary": "Put back what a sort or a rename moved",
+        "tags": [
+          "queries"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "userTokenAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/file_actions/{id}/path": {
+      "get": {
+        "summary": "The real path of a file an action made or moved, for this computer's app to open or show it",
+        "tags": [
+          "queries"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(-1|\\d{1,4})$"
+            },
+            "in": "query",
+            "name": "item",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
         ],
         "security": [
           {

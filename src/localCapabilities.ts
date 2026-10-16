@@ -6,8 +6,11 @@ import { RESERVED_FEATURES, reservedFeatureOffered, type ReservedFeature } from 
 // désactivées par défaut, le user pourra les activer et les configurer une
 // à une »). The server holds the switches because it is what reads the
 // documents, the contacts and the agenda for a chat — this computer's or a
-// phone's. Web search, dictation and the Agent are clicked in the chat:
-// their switch only shows or hides the button.
+// phone's. Web search and dictation are clicked in the chat: their switch
+// only shows or hides the button. « agent » is « Agir dans vos dossiers »
+// (16/10/2026, src/fileActions/, twoody-desktop docs/agent-in-chat.md): on,
+// a request to sort, rename or write in a folder of Documents gets a
+// proposal in the chat, carried out once the person agrees.
 //
 // Kept in `users.prefs` as `local_capabilities: { documents: true }`.
 // An installation from before the switches keeps what it was using: the
