@@ -782,7 +782,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     const action = fileTurn.action ? fileAction(auth.userId, fileTurn.action.id) : null;
     reply.raw.write(`event: final\ndata: ${JSON.stringify({
       id: null, message_id: messageId, ref: null, discussion_id: discussion.id, provider: "twoody", model: null, text: said, message: said, status: "responded",
-      transcription: parsed.text ? null : (audioBuffer ? heard : null), language: null, sources: [], usage: { prompt_tokens: 0, completion_tokens: 0, estimated: true },
+      transcription: parsed.text ? null : (audioBuffer ? heard : null), language: null, sources: [], usage: null,
       reasoning_ms: null, answered_by: null, memory: memoryNone, documents: { computers: [] },
       // The card under the proposal (or the action a « oui » answered).
       ...(action ? { file_action: actionView(action, { sessionId: auth.sessionId ?? null, thisComputersApp: isThisComputersApp(auth) }) } : {}),
