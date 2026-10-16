@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { realpathSync, statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, extname, isAbsolute, join, relative } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative } from "node:path";
 import { generateId } from "../auth.js";
 import { db, documentFolders, documents, sqlite } from "../db.js";
 import { chunkSections } from "./chunk.js";
@@ -15,6 +15,24 @@ import { folderReadable, walk } from "./walk.js";
 import { buildGramsQuery, buildMatchQuery, metadataScore, queryTerms, selectPassages, termsFound } from "./query.js";
 import { cjkSnippet, hasCjk, indexGrams } from "./cjk.js";
 import { holds, identitiesOn, identitiesOnAsync, pathPlace, pathPlaceAsync, spellingsOf, within as sameOrInside, type PathPlace } from "./samePath.js";
+import { folderIdentity, placeFromDocument, walledIdentity } from "./wallIdentity.js";
+import {
+  awayPrints,
+  checkWalls,
+  documentsThere,
+  forgetWall,
+  foundWalls,
+  noteSightings,
+  onWallAway,
+  pausedFor,
+  printMatch,
+  recordPlace,
+  wallKeys,
+  wallPlaces,
+  type Sighting,
+  type WallPlace,
+  type WallPrints,
+} from "./wallPlaces.js";
 
 // The user's document library: the folders they granted, the index
 // built from them, and the search that feeds /queries.
@@ -171,9 +189,16 @@ export function listFolders(userId: string) {
     .sort((a, b) => a.path.localeCompare(b.path));
   const layout = folderLayout(rows);
   const projectOf = layout.projectOf;
+  // Where each walled-off project's folder is now (wallPlaces.ts).
+  const walls = wallPlaces(userId);
+  const wallOf = new Map(walls.map((wall) => [wall.id, wall]));
   return rows.map((folder) => {
     const project = projectOf.get(folder.id) ?? null;
     const count = byFolder.get(folder.id);
+    // Another project's walled-off folder is missing and may be anywhere:
+    // nothing new is read in this one until it is found again.
+    const paused = pausedFor(walls, project);
+    const wall = wallOf.get(folder.id);
     return {
       id: folder.id,
       path: folder.path,
@@ -191,8 +216,20 @@ export function listFolders(userId: string) {
       // a walled-off project's documents are reached through its own folder,
       // in its own conversations only. Each one every way it may be met from
       // here (samePath.ts): as granted, as the system resolves it, and as
-      // written from this folder.
-      walled: wallsIn(layout, folder.id, project),
+      // written from this folder; where one was found away from its path; and
+      // the folder itself while it waits.
+      walled: [...new Set([...wallsIn(layout, folder.id, project), ...foundWalls(walls, project), ...(paused ? layout.spellings.get(folder.id) ?? [folder.path] : [])])],
+      // The other projects' walled-off folders by identity, wherever they
+      // are now (wallPlaces.ts wallKeys). Never sent: routes/localDocuments.ts.
+      walledIds: wallKeys(walls, project),
+      // Their documents, by name, size and date, while they are away from
+      // their path (wallPlaces.ts awayPrints). Never sent either.
+      walledPrints: awayPrints(userId, walls, project),
+      paused,
+      // A walled-off project's own folder: where it is (wallPlaces.ts) —
+      // ok, elsewhere (found: where, found_by: how), missing, unreachable —
+      // and what it is (« dev:ino »), for this computer's app only.
+      ...(wall ? { state: wall.state, found: wall.found, found_by: wall.foundBy, identity: wall.identity } : {}),
     };
   });
 }
@@ -213,7 +250,7 @@ function wallsIn(layout: FolderLayout, id: string, project: string | null): stri
 /// (fileActions/plan.ts).
 export function wallSpellings(userId: string): string[] {
   const layout = folderLayout(db.select().from(documentFolders).where(eq(documentFolders.userId, userId)).all());
-  return [...new Set(layout.placed.filter((folder) => layout.projectOf.get(folder.id)).flatMap((folder) => layout.spellings.get(folder.id)!))];
+  return [...new Set([...layout.placed.filter((folder) => layout.projectOf.get(folder.id)).flatMap((folder) => layout.spellings.get(folder.id)!), ...foundWalls(wallPlaces(userId), null)])];
 }
 
 /// The isolated project each granted folder belongs to: its own, else that
@@ -266,6 +303,7 @@ export function removeFolder(userId: string, folderId: string): boolean {
     sqlite.prepare("DELETE FROM document_folders WHERE id = ?").run(folderId);
   })();
   forgetGrantedPlace(folder.path);
+  forgetWall(userId, folderId);
   return true;
 }
 
@@ -294,6 +332,13 @@ export function indexStatus(userId: string): IndexStatus {
 
 /// Brings the index in line with the user's folders. Resolves once the
 /// pass is over; callers that only want to start it do not await it.
+///
+/// It also looks for the walled-off projects' folders renamed or moved
+/// outside Twoody (wallPlaces.ts) along its own walk — never elsewhere on the
+/// disk: one met by its identity is not entered and is followed, its
+/// documents being there too; one whose documents turn up is walled where they
+/// are; one found nowhere, its disk connected, keeps its index, and nothing
+/// new is read in any folder outside its project until it is found again.
 export async function reindex(userId: string): Promise<IndexStatus> {
   const current = jobs.get(userId);
   if (current?.running) {
@@ -312,8 +357,13 @@ export async function reindex(userId: string): Promise<IndexStatus> {
     finished_at: null,
   };
   jobs.set(userId, status);
+  // A walled-off folder followed to its new place: the pass starts again
+  // from there.
+  let followed = false;
 
   try {
+    // Where each walled-off project's folder is, asked of the system now.
+    const walls = await checkWalls(userId, true);
     const folders = db.select().from(documentFolders).where(eq(documentFolders.userId, userId)).all().sort((a,b)=>b.path.length-a.path.length);
     const work: Array<{ folderId: string; path: string }> = [];
     const seen = new Set<string>();
@@ -321,8 +371,36 @@ export async function reindex(userId: string): Promise<IndexStatus> {
     // holding the event loop (a network drive out of reach).
     await warmGrantedPlaces(folders.map((folder) => folder.path));
     const layout = folderLayout(folders);
+    const projectOf = (id: string) => layout.projectOf.get(id) ?? null;
+    // The walled-off folders this walk meets away from their path: by their
+    // identity, where; by their documents, the folders holding them and how
+    // many; and the files that are their documents.
+    const met = new Map<string, string>();
+    const metByDocuments = new Map<string, Map<string, number>>();
+    const printed = new Set<string>();
+    const prints = new Map<string | null, WallPrints | null>();
+    const printsOf = (project: string | null) => {
+      if (!prints.has(project)) prints.set(project, awayPrints(userId, walls, project));
+      return prints.get(project)!;
+    };
+    const sight = (path: string, identity: string, project: string | null) => {
+      for (const wall of walls) {
+        if (wall.projectId === project || met.has(wall.id)) continue;
+        if (walledIdentity(new Set(wallKeys([wall], null)), identity)) met.set(wall.id, path);
+      }
+    };
 
     for (const folder of folders) {
+      const project = projectOf(folder.id);
+      const keys = new Set(wallKeys(walls, project));
+      // The granted folder is itself another project's walled-off folder,
+      // granted again under its new name: not walked.
+      const itself = keys.size ? folderIdentity(folder.path) : null;
+      if (walledIdentity(keys, itself)) {
+        sight(folder.path, itself!, project);
+        ignoredByFolder.set(folder.id, 0);
+        continue;
+      }
       // Granted subfolders are walked for themselves (longest path first),
       // met however each was written (folderLayout); the files this one
       // indexed already, and when it was last read, decide what a full
@@ -330,10 +408,33 @@ export async function reindex(userId: string): Promise<IndexStatus> {
       const inside = layout.spelledFrom.get(folder.id) ?? new Map<string, string[]>();
       const indexed = sqlite.prepare("SELECT path, indexed_at AS indexedAt FROM documents WHERE user_id = ? AND folder_id = ?").all(userId, folder.id) as Array<{ path: string; indexedAt: number | null }>;
       const last = indexed.reduce<number | null>((latest, row) => (row.indexedAt !== null && (latest === null || row.indexedAt > latest) ? row.indexedAt : latest), null);
+      const away = printsOf(project);
+      // Where another project's walled-off folder was found last time is
+      // walked again — by identity it is not entered, by its documents only
+      // looked at — so that this pass finds it there again; nothing of it is
+      // indexed (`elsewhere` below).
       const scan = await walk(folder.path, undefined, {
         skip: [...inside.values()].flat(),
         keep: new Set(indexed.map((row) => row.path)),
         since: last,
+        ...(keys.size ? { walls: { keys, met: (path: string, identity: string) => sight(path, identity, project) } } : {}),
+        ...(away
+          ? {
+              prints: {
+                names: away.names,
+                match: (path: string, size: number, mtimeMs: number) => {
+                  const print = printMatch(away, basename(path), size, mtimeMs);
+                  if (!print) return false;
+                  printed.add(path);
+                  const place = placeFromDocument(path, print.rel);
+                  const counts = metByDocuments.get(print.wall) ?? new Map<string, number>();
+                  counts.set(place, (counts.get(place) ?? 0) + 1);
+                  metByDocuments.set(print.wall, counts);
+                  return true;
+                },
+              },
+            }
+          : {}),
       });
       ignoredByFolder.set(folder.id, scan.ignored);
       if (scan.limited) status.limited = true;
@@ -345,27 +446,144 @@ export async function reindex(userId: string): Promise<IndexStatus> {
       }
     }
 
-    // Files that disappeared since the last pass.
-    const known = db.select({ id: documents.id, path: documents.path }).from(documents).where(eq(documents.userId, userId)).all();
-    for (const row of known) {
-      if (!seen.has(row.path)) deleteDocument(row.id);
+    // Where the walled-off folders away from their path are now: met by their
+    // identity, else where their documents are — as many as two of them, or
+    // all it had.
+    const sighted = new Map<string, Sighting>();
+    for (const wall of walls) {
+      if (wall.state === "ok") continue;
+      const at = met.get(wall.id);
+      if (at) {
+        sighted.set(wall.id, { path: at, by: "identity" });
+        continue;
+      }
+      const places = [...(metByDocuments.get(wall.id) ?? [])].sort((a, b) => b[1] - a[1]);
+      const total = [...prints.values()].find((each) => each?.counts.has(wall.id))?.counts.get(wall.id) ?? 0;
+      if (places[0] && places[0][1] >= Math.min(2, total)) sighted.set(wall.id, { path: places[0][0], by: "documents" });
+    }
+    noteSightings(userId, sighted);
+    // Followed: met by its identity, its documents there too.
+    for (const wall of walls) {
+      const at = sighted.get(wall.id);
+      if (at?.by === "identity" && followWall(userId, wall, at.path)) followed = true;
     }
 
-    status.total = work.length;
-    for (const item of work) {
-      status.current = basename(item.path);
-      await indexFile(userId, item.folderId, item.path);
-      status.done += 1;
-      await new Promise((resolve) => setImmediate(resolve));
+    if (!followed) {
+      // With what this walk saw: elsewhere, missing, out of reach.
+      const places = await checkWalls(userId, true);
+      const away = places.filter((place) => place.state !== "ok");
+      const paused = (id: string) => pausedFor(places, projectOf(id));
+      // Where another project's walled-off folder was found: not this folder's.
+      const found = new Map<string | null, string[]>();
+      const elsewhere = (folderId: string, path: string) => {
+        const project = projectOf(folderId);
+        if (!found.has(project)) found.set(project, foundWalls(places, project));
+        return found.get(project)!.some((wall) => sameOrInside(wall, path));
+      };
+      // A walled-off folder away from its path keeps its index (and so do the
+      // folders granted inside it), and every folder that waits keeps its own.
+      const kept = new Set(folders.filter((folder) => paused(folder.id) || away.some((place) => place.projectId === projectOf(folder.id) && sameOrInside(place.path, folder.path))).map((folder) => folder.id));
+
+      // Files that disappeared since the last pass; and what another folder
+      // took of a walled-off folder away from its path, wherever it waits.
+      const known = db.select({ id: documents.id, path: documents.path, folderId: documents.folderId }).from(documents).where(eq(documents.userId, userId)).all();
+      for (const row of known) {
+        if (printed.has(row.path) || elsewhere(row.folderId, row.path)) deleteDocument(row.id);
+        else if (!seen.has(row.path) && !kept.has(row.folderId)) deleteDocument(row.id);
+      }
+
+      // Nothing new where it waits, nor where another project's folder was found.
+      const todo = work.filter((item) => !paused(item.folderId) && !elsewhere(item.folderId, item.path));
+      status.total = todo.length;
+      for (const item of todo) {
+        status.current = basename(item.path);
+        await indexFile(userId, item.folderId, item.path);
+        status.done += 1;
+        await new Promise((resolve) => setImmediate(resolve));
+      }
     }
   } finally {
     status.running = false;
     status.current = null;
     status.finished_at = new Date().toISOString();
   }
-  if (askedAgain.delete(userId)) return reindex(userId);
+  if (askedAgain.delete(userId) || followed) return reindex(userId);
   void indexSemantic(userId);
   return status;
+}
+
+// A walled-off folder found away from its path outside a pass (a request
+// asked where the walls are): a pass looks for it.
+onWallAway((userId) => void reindex(userId).catch(() => undefined));
+
+/// A walled-off folder met by its identity away from its path, its documents
+/// there too (wallPlaces.ts documentsThere — an identity alone is not
+/// enough): the project's folder takes its new place (moveWall). Never a
+/// place folderRisk refuses. Whether it was followed.
+function followWall(userId: string, wall: WallPlace, to: string): boolean {
+  let path: string;
+  try {
+    path = canonicalFolder(to);
+  } catch {
+    return false;
+  }
+  if (!documentsThere(userId, wall, path)) return false;
+  return moveWall(userId, wall, path) === null;
+}
+
+/// A walled-off project's folder (`wall`: its row, its project, where it
+/// was) at `path` from now on: the folders granted inside it move with it,
+/// their documents keep their index under their new paths, and what other
+/// folders indexed there is dropped (the next pass reads it again where it
+/// belongs). A folder left at its old place — a new one made under the old
+/// name — stays the project's: a folder at a walled-off project's path never
+/// becomes an ordinary one by itself. Refused onto a place granted on its own
+/// (« already_added »), into or around another project's walled-off folder
+/// (« other_project_folder »). Null when done.
+export function moveWall(userId: string, wall: { id: string; projectId: string; path: string }, path: string): "already_added" | "other_project_folder" | "failed" | null {
+  const rows = sqlite.prepare("SELECT id, path, project_id AS projectId FROM document_folders WHERE user_id = ?").all(userId) as FolderRow[];
+  const layout = folderLayout(rows);
+  const from = wall.path;
+  const moving = rows.filter((row) => sameOrInside(from, row.path));
+  const target = pathPlace(path);
+  const targetIds = identitiesOn(target.real);
+  for (const other of layout.placed) {
+    if (moving.some((row) => row.id === other.id)) continue;
+    if (holds(other.place, target, targetIds) && holds(target, other.place, other.ids)) return "already_added";
+    const project = layout.projectOf.get(other.id) ?? null;
+    if (project && project !== wall.projectId && (holds(other.place, target, targetIds) || holds(target, other.place, other.ids))) return "other_project_folder";
+  }
+  const samePlace = sameOrInside(path, from) && sameOrInside(from, path);
+  const leftId = !samePlace && folderIdentity(from) !== null ? generateId() : null;
+  const ids = new Set(moving.map((row) => row.id));
+  try {
+    sqlite.transaction(() => {
+      for (const document of sqlite.prepare("SELECT id, path, folder_id AS folderId FROM documents WHERE user_id = ?").all(userId) as Array<{ id: string; path: string; folderId: string }>) {
+        if (!ids.has(document.folderId) && sameOrInside(path, document.path)) deleteDocument(document.id);
+      }
+      const moveFolder = sqlite.prepare("UPDATE document_folders SET path = ? WHERE id = ?");
+      const moveDocument = sqlite.prepare("UPDATE documents SET path = ? WHERE id = ?");
+      for (const row of moving) {
+        const rel = relative(from, row.path);
+        if (rel.startsWith("..") || isAbsolute(rel)) continue;
+        moveFolder.run(rel ? join(path, rel) : path, row.id);
+        for (const document of sqlite.prepare("SELECT id, path FROM documents WHERE folder_id = ?").all(row.id) as Array<{ id: string; path: string }>) {
+          const inner = relative(from, document.path);
+          if (inner && !inner.startsWith("..") && !isAbsolute(inner)) moveDocument.run(join(path, inner), document.id);
+        }
+      }
+      if (leftId) sqlite.prepare("INSERT INTO document_folders (id, user_id, path, created_at, project_id) VALUES (?, ?, ?, ?, ?)").run(leftId, userId, from, Date.now(), wall.projectId);
+    })();
+  } catch {
+    return "failed";
+  }
+  recordPlace(wall.id, path);
+  if (leftId) recordPlace(leftId, from);
+  for (const row of moving) forgetGrantedPlace(row.path);
+  forgetGrantedPlace(path);
+  forgetGrantedPlace(from);
+  forgetWall(userId, wall.id);
+  return null;
 }
 
 /// The deepest granted folder holding a file, now — however the walk that
@@ -420,6 +638,9 @@ async function indexFile(userId: string, given: string, path: string): Promise<v
     .where(and(eq(documents.userId, userId), eq(documents.path, path)))
     .all();
   if (existing && existing.size === info.size && existing.mtimeMs === mtimeMs && existing.folderId === folderId) return;
+  // Never across another project's walls, wherever they are now: what
+  // Spotlight hands over is checked as the pass checks it.
+  if (!mayIndex(userId, folderId, path, info.size, info.mtimeMs)) return;
 
   const id = existing?.id ?? generateId();
   let status = "indexed";
@@ -470,6 +691,29 @@ async function indexFile(userId: string, given: string, path: string): Promise<v
     if (existing) db.update(documents).set(values).where(eq(documents.id, id)).run();
     else db.insert(documents).values({ id, ...values }).run();
   })();
+}
+
+/// Whether a file may be read into folder `folderId`'s index now: not while
+/// the folder waits (wallPlaces.ts pausedFor), nor when it lies in another
+/// project's walled-off folder — by identity, or where one was found away
+/// from its path —, nor when it is one of the documents of one away from its
+/// path.
+function mayIndex(userId: string, folderId: string, path: string, size: number, mtimeMs: number): boolean {
+  const walls = wallPlaces(userId);
+  if (!walls.length) return true;
+  const rows = sqlite.prepare("SELECT id, path, project_id AS projectId FROM document_folders WHERE user_id = ?").all(userId) as FolderRow[];
+  const project = folderLayout(rows).projectOf.get(folderId) ?? null;
+  if (pausedFor(walls, project)) return false;
+  if (foundWalls(walls, project).some((wall) => sameOrInside(wall, path))) return false;
+  const keys = new Set(wallKeys(walls, project));
+  if (keys.size) {
+    for (let current = dirname(path); ; current = dirname(current)) {
+      if (walledIdentity(keys, folderIdentity(current))) return false;
+      if (dirname(current) === current) break;
+    }
+  }
+  const prints = awayPrints(userId, walls, project);
+  return !prints || !printMatch(prints, basename(path), size, mtimeMs);
 }
 
 function deleteDocument(id: string): void {

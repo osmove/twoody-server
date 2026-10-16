@@ -39,7 +39,7 @@ export interface FileTurnContext {
 
 export type FileTurnOutcome =
   | "proposed" | "done" | "failed" | "declined"
-  | "refused_delete" | "off" | "left_out" | "walled" | "not_person" | "no_folders" | "not_found" | "nothing";
+  | "refused_delete" | "off" | "left_out" | "walled" | "not_person" | "no_folders" | "not_found" | "nothing" | "paused";
 
 export interface FileTurn {
   text: string;
@@ -158,6 +158,7 @@ export async function fileActionTurn(context: FileTurnContext): Promise<FileTurn
 
   const folder = await findFolder(context.userId, intent.words, lastActionFolder(context.userId, context.discussionId));
   if (folder.status === "none") return answer("no_folders", "noFolders");
+  if (folder.status === "paused") return answer("paused", "paused");
   if (folder.status === "not_found") {
     const roots = folder.roots.map((root) => quote(language, root)).join(", ");
     return folder.word ? answer("not_found", "notFound", { word: quote(language, folder.word), roots }) : answer("not_found", "whichFolder", { roots });

@@ -13,6 +13,7 @@ import {
   LISTING_KINDS,
   LISTING_SORTS,
   matchesKinds,
+  pausedNote,
   realHome,
   safeRoots,
   type GrantedRoot,
@@ -174,8 +175,9 @@ export interface FolderEntry {
 export interface FolderListing {
   /// ok: listed; not_granted: outside every granted folder; not_selected:
   /// granted, not among the folders this conversation may read; missing: no
-  /// such folder inside the granted folders; none: nothing granted at all.
-  status: "ok" | "not_granted" | "not_selected" | "missing" | "none";
+  /// such folder inside the granted folders; none: nothing granted at all;
+  /// paused: nothing new is read in them for now (GrantedRoot.paused).
+  status: "ok" | "not_granted" | "not_selected" | "missing" | "none" | "paused";
   /// The folder as asked.
   asked: string;
   /// Where it is, from its granted folder (« jimmy/Desktop »); empty for the granted folders themselves.
@@ -425,6 +427,8 @@ export async function listFolder(args: { request: FolderRequest; roots: GrantedR
   const request = args.request;
   const base: FolderListing = { status: "ok", asked: request.folder, where: "", folders: [], folderTotal: 0, files: [], total: 0, limited: false, recursive: request.recursive };
   if (!granted.length) return { ...base, status: "none" };
+  // Another project's walled-off folder is missing (wallPlaces.ts).
+  if (roots.length && roots.every((root) => root.paused)) return { ...base, status: "paused" };
   const located = roots.length ? await locate(request.folder, roots, system) : ({ kind: "none", outside: true } as Located);
   if (located.kind === "none") {
     const elsewhere = roots.length < granted.length ? await locate(request.folder, granted, system) : null;
@@ -493,6 +497,7 @@ const SORT_WORDS: Record<ListingSort, string> = {
 export function formatFolderListing(listing: FolderListing, request: Pick<FolderRequest, "sort" | "kinds">, computer: string | null = null, locale: string | null = null): string {
   const on = computer ? ` on ${computer}` : "";
   const asked = `« ${listing.asked.slice(0, 200)} »`;
+  if (listing.status === "paused") return `[Folder listing] ${pausedNote(on, locale)}\n[End of folder listing]`;
   if (listing.status !== "ok") {
     const granted = listing.roots?.length ? ` The granted folders${on} are: ${listing.roots.join(", ")} (and every folder inside them).` : "";
     const why = {

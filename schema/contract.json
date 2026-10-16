@@ -427,7 +427,7 @@
     "bank_transaction_imports": "@local_bank",
     "document_chunks": "@local_documents (the passages' full-text index)",
     "document_embeddings": "@local_documents (the passages' vectors)",
-    "document_folders": "@local_documents; a folder of a walled-off project (project_id) never leaves (never_leave.walled_projects)",
+    "document_folders": "@local_documents; a folder of a walled-off project (project_id) never leaves (never_leave.walled_projects), nor does where it is beyond its path (identity: device and file number, volume: the root of its disk — migration 16, to follow it when renamed or moved outside Twoody)",
     "document_grams": "@local_documents (the Japanese, Chinese and Korean index, migration 9)",
     "document_labels": "@local_documents",
     "document_semantic_settings": "@local_documents",

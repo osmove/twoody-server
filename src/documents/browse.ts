@@ -76,7 +76,8 @@ export interface BrowseResult {
   limited: boolean;
 }
 
-export type BrowseFailure = { error: "not_found" | "invalid_path" };
+/// paused: nothing new is read in that folder for now (fileListing.ts GrantedRoot.paused).
+export type BrowseFailure = { error: "not_found" | "invalid_path" | "paused" };
 
 export const BROWSE_PAGE = 100;
 export const BROWSE_MAX_PAGE = 200;
@@ -272,6 +273,7 @@ function indexedAt(userId: string, folderIds: string[], paths: string[]): Map<st
 export async function browseGranted(userId: string, roots: GrantedRoot[], request: BrowseRequest): Promise<BrowseResult | BrowseFailure> {
   const root = roots.find((r) => r.id === request.root);
   if (!root) return { error: "not_found" };
+  if (root.paused) return { error: "paused" };
   const segments = browsePath(request.path);
   if (!segments) return { error: "invalid_path" };
   const place = await resolveInside(root, segments);

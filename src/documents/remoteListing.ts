@@ -64,7 +64,7 @@ function readListedFile(raw: unknown): ListedFile | null {
 /// Another computer's listing, as far as it holds to the contract: never a path.
 export function readPeerListing(body: unknown, intent: Pick<ListingIntent, "folder" | "folderName">): Listing | null {
   const b = body as Record<string, unknown> | null;
-  const statuses: Listing["status"][] = ["ok", "not_granted", "not_selected", "missing", "none"];
+  const statuses: Listing["status"][] = ["ok", "not_granted", "not_selected", "missing", "none", "paused"];
   if (!b || typeof b !== "object" || !statuses.includes(b.status as Listing["status"])) return null;
   const label = intent.folder ? aliasLabel(intent.folder) : intent.folderName ? `the folder named « ${intent.folderName} »` : "every granted folder";
   const where = (Array.isArray(b.where) ? b.where : []).map((w) => cleanRelPath(w) ?? cleanName(w)).filter((w): w is string => !!w).slice(0, 10);

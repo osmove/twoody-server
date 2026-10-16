@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { isSupported } from "./extract.js";
 import { skipDirectory } from "./folderNames.js";
 import { foldPath } from "./samePath.js";
+import { folderIdentityAsync, walledIdentity } from "./wallIdentity.js";
 
 // How a granted folder is walked, and what is never read inside it.
 //
@@ -77,6 +78,14 @@ export interface WalkOptions {
   /// When the folder was last read (ms): a file changed since is always
   /// taken, past the limit. Null before the first pass.
   since?: number | null;
+  /// Another project's walled-off folders by identity (wallPlaces.ts
+  /// wallKeys): a folder that is one is not entered, whatever it is called
+  /// and wherever it is, and `met` says where it was.
+  walls?: { keys: ReadonlySet<string>; met: (path: string, identity: string) => void };
+  /// The documents of other projects' walled-off folders away from their path
+  /// (wallPlaces.ts awayPrints): a file of one of their names is looked at,
+  /// and not taken when `match` says it is one of them.
+  prints?: { names: ReadonlySet<string>; match: (path: string, size: number, mtimeMs: number) => boolean };
 }
 
 export function permissionDenied(error: unknown): boolean {
@@ -110,10 +119,27 @@ export async function walk(root: string, maxFiles = MAX_FILES_PER_FOLDER, option
       // Symlinks are not followed: a link must not widen the grant.
       const kind = await entryKind(entry, path);
       if (kind === "dir") {
-        if (!skipDirectory(entry.name) && !skip.has(foldPath(path))) pending.push(path);
+        if (skipDirectory(entry.name) || skip.has(foldPath(path))) continue;
+        // A walled-off folder renamed or moved here: still walled off.
+        if (options.walls?.keys.size) {
+          const identity = await folderIdentityAsync(path);
+          if (walledIdentity(options.walls.keys, identity)) {
+            options.walls.met(path, identity!);
+            continue;
+          }
+        }
+        pending.push(path);
       } else if (kind === "file" && !skipFile(entry.name)) {
-        if (isSupported(path)) files.push(path);
-        else ignored += 1;
+        if (!isSupported(path)) {
+          ignored += 1;
+          continue;
+        }
+        // One of a walled-off folder's documents away from its folder.
+        if (options.prints?.names.has(entry.name.normalize("NFC"))) {
+          const info = await stat(path).catch(() => null);
+          if (info && options.prints.match(path, info.size, info.mtimeMs)) continue;
+        }
+        files.push(path);
       }
     }
     if (files.length >= MAX_FILES_LISTED) {

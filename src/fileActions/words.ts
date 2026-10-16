@@ -170,6 +170,18 @@ const S = {
     zh: "在隔离的项目中不能使用“在文件夹中操作”：其中的文档保持原样。",
     ko: "격리된 프로젝트에서는 ‘폴더에서 작업’을 사용할 수 없습니다. 그 문서는 그대로 둡니다.",
   },
+  paused: {
+    en: "I am not touching your folders for the moment: a folder was moved or renamed outside Twoody, and until you find it again (Documents, in the Twoody app on this computer, says which), nothing new is read or changed in them.",
+    fr: "Je ne touche pas à vos dossiers pour le moment : un dossier a été déplacé ou renommé hors de Twoody, et tant que vous ne l'avez pas retrouvé (Documents, dans l'app Twoody de cet ordinateur, dit lequel), rien de nouveau n'y est lu ni changé.",
+    de: "Ich rühre Ihre Ordner im Moment nicht an: Ein Ordner wurde außerhalb von Twoody verschoben oder umbenannt, und bis Sie ihn wiederfinden (Dokumente in der Twoody-App auf diesem Computer sagt, welcher), wird darin nichts Neues gelesen oder geändert.",
+    es: "No toco tus carpetas por ahora: una carpeta se movió o se renombró fuera de Twoody y, hasta que la vuelvas a encontrar (Documentos, en la app de Twoody de este ordenador, dice cuál), no se lee ni se cambia nada nuevo en ellas.",
+    it: "Per ora non tocco le tue cartelle: una cartella è stata spostata o rinominata fuori da Twoody e, finché non la ritrovi (Documenti, nell'app Twoody di questo computer, dice quale), lì non si legge né si cambia nulla di nuovo.",
+    pt: "Não mexo nas suas pastas por enquanto: uma pasta foi movida ou renomeada fora do Twoody e, até você encontrá-la de novo (Documentos, no app Twoody deste computador, diz qual), nada de novo é lido ou alterado nelas.",
+    nl: "Ik raak uw mappen voorlopig niet aan: een map is buiten Twoody verplaatst of hernoemd, en tot u die terugvindt (Documenten, in de Twoody-app op deze computer, zegt welke) wordt er niets nieuws in gelezen of veranderd.",
+    ja: "今はフォルダに手を付けません。Twoody の外でフォルダが移動または名前変更されました。それを見つけ直すまで（このコンピュータの Twoody アプリの「文書」にどれかが表示されます）、新しいものは読み込みも変更もしません。",
+    zh: "我暂时不动你的文件夹：有一个文件夹在 Twoody 之外被移动或改名了，在你重新找到它之前（这台电脑上 Twoody 应用的“文档”会说是哪一个），不会读取或更改其中任何新内容。",
+    ko: "지금은 폴더를 건드리지 않습니다. Twoody 밖에서 폴더 하나가 이동되거나 이름이 바뀌었고, 그 폴더를 다시 찾을 때까지(이 컴퓨터의 Twoody 앱 ‘문서’에 어느 폴더인지 나옵니다) 새로운 것은 읽거나 바꾸지 않습니다.",
+  },
   notPerson: {
     en: "Only the person whose computer this is can have Twoody act in its folders, from its app or from their own devices.",
     fr: "Seule la personne à qui appartient cet ordinateur peut demander à Twoody d'agir dans ses dossiers, depuis son app ou ses propres appareils.",
@@ -384,6 +396,10 @@ const REASONS = {
   walled: {
     en: "the folder belongs to a walled-off project", fr: "le dossier appartient à un projet cloisonné", de: "der Ordner gehört zu einem abgeschotteten Projekt", es: "la carpeta pertenece a un proyecto aislado", it: "la cartella appartiene a un progetto isolato",
     pt: "a pasta pertence a um projeto isolado", nl: "de map hoort bij een afgeschermd project", ja: "フォルダが隔離されたプロジェクトのものです", zh: "该文件夹属于一个隔离的项目", ko: "폴더가 격리된 프로젝트에 속합니다",
+  },
+  paused: {
+    en: "a folder was moved or renamed outside Twoody and must be found again first", fr: "un dossier a été déplacé ou renommé hors de Twoody et doit d'abord être retrouvé", de: "ein Ordner wurde außerhalb von Twoody verschoben oder umbenannt und muss zuerst wiedergefunden werden", es: "una carpeta se movió o se renombró fuera de Twoody y primero hay que volver a encontrarla", it: "una cartella è stata spostata o rinominata fuori da Twoody e va prima ritrovata",
+    pt: "uma pasta foi movida ou renomeada fora do Twoody e precisa ser encontrada de novo primeiro", nl: "een map is buiten Twoody verplaatst of hernoemd en moet eerst worden teruggevonden", ja: "Twoody の外でフォルダが移動または名前変更されたため、先に見つけ直す必要があります", zh: "有一个文件夹在 Twoody 之外被移动或改名，需要先重新找到它", ko: "Twoody 밖에서 폴더가 이동되거나 이름이 바뀌어 먼저 다시 찾아야 합니다",
   },
   source_missing: {
     en: "the file is no longer there", fr: "le fichier n'est plus là", de: "die Datei ist nicht mehr da", es: "el archivo ya no está", it: "il file non c'è più",

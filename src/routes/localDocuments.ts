@@ -28,6 +28,7 @@ import {
   searchPassages,
 } from "../documents/library.js";
 import { MAX_FILES_PER_FOLDER, SKIPPED_BUNDLES, SKIPPED_DIRECTORIES } from "../documents/walk.js";
+import { checkWalls } from "../documents/wallPlaces.js";
 import { setLocalCapability } from "../localCapabilities.js";
 import { isThisComputersApp } from "./usage.js";
 
@@ -65,7 +66,12 @@ function rejectionStatus(err: FolderRejected): number {
 /// (src/projects/isolation.ts).
 async function sendBrowse(reply: FastifyReply, userId: string, request: BrowseRequest, withIsolated: boolean) {
   const result = await browseGranted(userId, scopedFolders(userId, {mode: "all"}, {withIsolated}), request);
-  if ("error" in result) return reply.code(result.error === "invalid_path" ? 400 : 404).send({error: result.error === "invalid_path" ? "invalid_directory" : "folder_unavailable"});
+  if ("error" in result) {
+    // While a walled-off project's folder is missing, said as such to this
+    // computer's app (documents/wallPlaces.ts); unavailable to anyone else.
+    if (result.error === "paused" && withIsolated) return reply.code(409).send({error: "folder_paused"});
+    return reply.code(result.error === "invalid_path" ? 400 : 404).send({error: result.error === "invalid_path" ? "invalid_directory" : "folder_unavailable"});
+  }
   return reply.send({computer_id: selfIdentity().id, computer_name: selfIdentity().name, ...result});
 }
 
@@ -157,7 +163,16 @@ export async function localDocumentRoutes(app: FastifyInstance) {
       const auth = await requireAuth(req, reply);
       if (!auth) return;
       const mine = isThisComputersApp(auth);
-      reply.send({ folders: listFolders(auth.userId).filter((folder) => mine || folder.project_id === null), index: indexStatus(auth.userId) });
+      // Where the walled-off projects' folders are, asked of the system now:
+      // the Desktop's Agent and Twoody Code take their walls from here
+      // (documents/wallPlaces.ts).
+      await checkWalls(auth.userId).catch(() => undefined);
+      // The walls themselves never leave: identities to no one, the walled-off
+      // folders' paths to this computer's app only.
+      const folders = listFolders(auth.userId)
+        .filter((folder) => mine || folder.project_id === null)
+        .map(({ walledIds: _identities, walledPrints: _documents, walled, ...folder }) => (mine ? { ...folder, walled } : folder));
+      reply.send({ folders, index: indexStatus(auth.userId) });
     },
   });
 

@@ -463,6 +463,11 @@ export const documentFolders = sqliteTable("document_folders", {
   // The isolated project whose documents this folder holds (migration 6,
   // src/projects/isolation.ts): searched in its conversations only.
   projectId: text("project_id"),
+  // A walled-off project's folder as last seen at its path (migration 16,
+  // src/documents/wallPlaces.ts): « device:file number », and the root of the
+  // disk holding it. NULL for every other folder.
+  identity: text("identity"),
+  volume: text("volume"),
 });
 
 /// One row per indexed file. The text itself lives in the

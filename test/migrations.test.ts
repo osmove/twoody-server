@@ -231,3 +231,28 @@ test("migrations 13 to 15 run again change nothing (idempotent), and a fresh dat
   assert.deepEqual(ddl(fresh), ddl(db));
   for (const table of ["folder_shares", "entities", "entity_relations", "entity_contacts", "peer_document_audit"]) assert.deepEqual(columns(fresh, table), columns(db, table), table);
 });
+
+test("migration 16 gives a walled-off project's folder its identity and its disk's root, every folder kept; run again, it changes nothing", async () => {
+  const { walledFolderPlaces } = await import("../src/migrations/0016_walled_folder_places.ts");
+  const dir = mkdtempSync(join(tmpdir(), "twoody-migrations-"));
+  const db = new Database(join(dir, "local.db"));
+  migrate(db, { dataDir: dir, log: quiet, upTo: 15 });
+  db.prepare("INSERT INTO users (id, email, created_at) VALUES ('u1', 'u@example.com', 1)").run();
+  db.prepare("INSERT INTO projects (id, user_id, title, status, isolated, created_at, updated_at) VALUES ('p1', 'u1', 'Tessane SAS', 'active', 1, 1, 1)").run();
+  db.prepare("INSERT INTO document_folders (id, user_id, path, created_at, project_id) VALUES ('f1', 'u1', '/Users/claire/Cabinet', 1, NULL), ('f2', 'u1', '/Users/claire/Cabinet/Tessane', 2, 'p1')").run();
+  migrate(db, { dataDir: dir, log: quiet });
+  assert.equal(schemaVersion(db), 16);
+  assert.deepEqual(columns(db, "document_folders").slice(-2), ["identity", "volume"]);
+  const rows = () => db.prepare("SELECT id, path, project_id, identity, volume FROM document_folders ORDER BY id").all();
+  assert.deepEqual(rows(), [
+    { id: "f1", path: "/Users/claire/Cabinet", project_id: null, identity: null, volume: null },
+    { id: "f2", path: "/Users/claire/Cabinet/Tessane", project_id: "p1", identity: null, volume: null },
+  ]);
+  const before = JSON.stringify([columns(db, "document_folders"), rows()]);
+  walledFolderPlaces(db);
+  assert.equal(JSON.stringify([columns(db, "document_folders"), rows()]), before);
+  const freshDir = mkdtempSync(join(tmpdir(), "twoody-migrations-"));
+  const fresh = new Database(join(freshDir, "local.db"));
+  migrate(fresh, { dataDir: freshDir, log: quiet });
+  assert.deepEqual(columns(fresh, "document_folders"), columns(db, "document_folders"));
+});

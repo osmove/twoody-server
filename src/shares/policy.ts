@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { grantedPlace, listFolders } from "../documents/library.js";
+import { foundWalls, pausedFor, wallPlaces } from "../documents/wallPlaces.js";
 import { foldPath, holds, spellingsOf, within as sameOrInside } from "../documents/samePath.js";
 import { folderRisk } from "../documents/folderRisk.js";
 import { scopedFolders } from "../documents/retrieval.js";
@@ -133,18 +134,25 @@ export function shareScope(userId: string, share: ShareRow): { root: { id: strin
 /// The isolated projects' folders lying inside `rootPath`: never browsed
 /// nor named through a share, though the file system holds them there —
 /// each every way it may be met from the shared folder (documents/samePath.ts:
-/// as granted, as the system resolves it, as written from `rootPath`).
+/// as granted, as the system resolves it, as written from `rootPath`), and
+/// where one renamed or moved outside Twoody was found (documents/wallPlaces.ts;
+/// the browsing of a share also leaves them out by identity: its folders come
+/// from scopedFolders). While one is missing, the shared folder itself: nothing
+/// of it is served until it is found again.
 export function isolatedInside(userId: string, rootPath: string): string[] {
   const root = grantedPlace(rootPath);
+  const walls = wallPlaces(userId);
+  if (pausedFor(walls, null)) return [...new Set([rootPath, root.place.real])];
   return [
-    ...new Set(
-      listFolders(userId)
+    ...new Set([
+      ...listFolders(userId)
         .filter((folder) => folder.project_id)
         .flatMap((folder) => {
           const wall = grantedPlace(folder.path);
           return holds(root.place, wall.place, wall.ids) ? spellingsOf(wall.place, [root.place]) : [];
         }),
-    ),
+      ...foundWalls(walls, null),
+    ]),
   ];
 }
 

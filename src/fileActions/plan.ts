@@ -89,7 +89,7 @@ function slashed(path: string): string {
 export function actionRoots(userId: string): { roots: GrantedRoot[]; walls: string[] } {
   const folders = listFolders(userId);
   const walls = wallSpellings(userId);
-  const roots = safeRoots(folders.filter((folder) => folder.project_id === null).map((folder) => ({ id: folder.id, name: folder.name, path: folder.path, walled: folder.walled })));
+  const roots = safeRoots(folders.filter((folder) => folder.project_id === null).map((folder) => ({ id: folder.id, name: folder.name, path: folder.path, walled: folder.walled, walledIds: folder.walledIds, walledPrints: folder.walledPrints, paused: folder.paused })));
   return { roots, walls };
 }
 
@@ -102,6 +102,8 @@ export function touchesWall(path: string, walls: string[]): boolean {
 export type FoundFolder =
   | { status: "ok"; root: GrantedRoot; real: string; shown: string }
   | { status: "none" }
+  /// Another project's walled-off folder is missing (documents/wallPlaces.ts): nothing is acted on until it is found again.
+  | { status: "paused" }
   | { status: "not_found"; word: string | null; roots: string[] };
 
 /// The folder the request names, inside the granted folders; the folder of
@@ -109,6 +111,7 @@ export type FoundFolder =
 export async function findFolder(userId: string, words: string[], previous: string | null): Promise<FoundFolder> {
   const { roots, walls } = actionRoots(userId);
   if (!roots.length) return { status: "none" };
+  if (roots.every((root) => root.paused)) return { status: "paused" };
   const system = nodeAliasSystem(realHome());
   const tried = new Set<string>();
   for (const word of words) {

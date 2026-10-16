@@ -60,6 +60,7 @@ export async function checkedFolder(userId: string, plan: FileActionPlan): Promi
   const { roots, walls } = actionRoots(userId);
   const root = roots.find((each) => each.id === plan.folder.root);
   if (!root) throw new ActionError("not_granted");
+  if (root.paused) throw new ActionError("paused");
   const real = await realpath(plan.folder.real).catch(() => null);
   if (!real) throw new ActionError("folder_gone");
   if (real !== plan.folder.real || !inside(root.path, real)) throw new ActionError("folder_gone");

@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { sqlite } from "../db.js";
 import { typedText } from "../documentBlocks.js";
-import { addFolder, canonicalFolder, forgetGrantedPlace, grantedPlace, listFolders, reindex, removeFolder } from "../documents/library.js";
+import { addFolder, canonicalFolder, forgetGrantedPlace, grantedPlace, listFolders, moveWall, reindex, removeFolder } from "../documents/library.js";
 import { holds, spellingsOf, within as sameOrInside } from "../documents/samePath.js";
+import { forgetWall, recordPlace, type WallState } from "../documents/wallPlaces.js";
 import { normaliseMemoryContent } from "../vault/contracts.js";
 import { ProjectError } from "./projects.js";
 
@@ -55,6 +56,14 @@ export interface ProjectFolder {
   indexed: number;
   without_text: number;
   failed: number;
+  /// Where it is (documents/wallPlaces.ts): at its path (« ok »); renamed or
+  /// moved outside Twoody and found there (« elsewhere », `found`, `found_by`:
+  /// by its identity or by its documents); found nowhere while its disk is
+  /// connected (« missing »: nothing new is read outside this project until
+  /// it is found again); its disk not connected (« unreachable »).
+  state: WallState;
+  found: string | null;
+  found_by: "identity" | "documents" | null;
 }
 
 export interface ProjectNote {
@@ -114,7 +123,7 @@ export function isolatedFolders(userId: string, projectId: string): ProjectFolde
   if (!own.size) return [];
   return listFolders(userId)
     .filter((folder) => own.has(folder.id))
-    .map(({ id, path, name, documents, indexed, without_text, failed }) => ({ id, path, name, documents, indexed, without_text, failed }));
+    .map(({ id, path, name, documents, indexed, without_text, failed, state, found, found_by }) => ({ id, path, name, documents, indexed, without_text, failed, state: state ?? "ok", found: found ?? null, found_by: found_by ?? null }));
 }
 
 /// Grants the folder of an isolated project's documents (or gives it one
@@ -153,6 +162,36 @@ export async function linkProjectFolder(userId: string, projectId: string, input
     touch(projectId);
   })();
   forgetGrantedPlace(path);
+  // What it is beyond its path, to follow it if it is renamed or moved
+  // outside Twoody (documents/wallPlaces.ts).
+  recordPlace(folderId, path);
+  forgetWall(userId, folderId);
+  void reindex(userId).catch(() => undefined);
+}
+
+/// « Retrouver le dossier »: where the person says the folder of a walled-off
+/// project is now, after it was renamed or moved outside Twoody
+/// (documents/wallPlaces.ts) — or the folder now at its path, said to be it.
+/// The folder takes that place, its index kept for what is still there
+/// (library.ts moveWall); an ordinary folder granted there on its own becomes
+/// the project's (its grant goes, its files stay, as linkProjectFolder does).
+/// Another project's folder holding it or inside it is refused.
+export function relinkProjectFolder(userId: string, projectId: string, folderId: string, input: string): void {
+  mustIsolated(userId, projectId);
+  const row = sqlite.prepare("SELECT id, path, project_id AS projectId FROM document_folders WHERE id = ? AND project_id = ? AND user_id = ?").get(folderId, projectId, userId) as { id: string; path: string; projectId: string } | undefined;
+  if (!row) throw new ProjectError(404, "folder_not_found");
+  const path = canonicalFolder(input);
+  let outcome = moveWall(userId, row, path);
+  if (outcome === "already_added") {
+    const place = grantedPlace(path);
+    const there = listFolders(userId).find((folder) => folder.project_id === null && holds(grantedPlace(folder.path).place, place.place, place.ids) && holds(place.place, grantedPlace(folder.path).place, grantedPlace(folder.path).ids));
+    if (there) {
+      removeFolder(userId, there.id);
+      outcome = moveWall(userId, row, path);
+    }
+  }
+  if (outcome) throw new ProjectError(409, outcome === "failed" ? "folder_not_moved" : outcome);
+  touch(projectId);
   void reindex(userId).catch(() => undefined);
 }
 

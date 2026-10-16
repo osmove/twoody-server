@@ -7,7 +7,7 @@ import { EntityError } from "../memory/entities.js";
 import { FolderRejected } from "../documents/library.js";
 import { createProject, deleteProject, linkToProject, listProjects, projectDetail, ProjectError, projectIsolated, readProjectInput, updateProject } from "../projects/projects.js";
 import {
-  addProjectNote, exportIsolatedProject, linkProjectFolder, listProjectNotes, readNoteContent, removeProjectNote, unlinkProjectFolder, updateProjectNote,
+  addProjectNote, exportIsolatedProject, linkProjectFolder, listProjectNotes, readNoteContent, relinkProjectFolder, removeProjectNote, unlinkProjectFolder, updateProjectNote,
 } from "../projects/isolation.js";
 
 // /projects (docs/projects-design.md, lot P1): what the person is working
@@ -23,6 +23,8 @@ import {
 // (desktop_app_only), and a device never sees the computer's paths. Its
 // own routes:
 //   POST   /projects/:id/folders             { path } → the folder of its documents
+//   PUT    /projects/:id/folders/:folder_id  { path } → « Retrouver le dossier »: where it is now, after it was renamed
+//                                              or moved outside Twoody (documents/wallPlaces.ts; its `state` says so)
 //   DELETE /projects/:id/folders/:folder_id  → no longer its (the files stay)
 //   GET    /projects/:id/export              → everything of it, for the app to write where the person says
 // and, for any project, its notes:
@@ -62,10 +64,11 @@ async function changesWalled(req: FastifyRequest, reply: FastifyReply, auth: Aut
 }
 
 /// What a device is told of a project: never the computer's paths (the
-/// folder of a walled-off project's documents keeps its name and counts).
-function forRequest<T extends { folders?: Array<{ path?: string }> }>(project: T, auth: Auth): T {
+/// folder of a walled-off project's documents keeps its name, counts and
+/// state, not where it was found).
+function forRequest<T extends { folders?: Array<{ path?: string; found?: string | null }> }>(project: T, auth: Auth): T {
   if (isThisComputersApp(auth) || !project.folders?.length) return project;
-  return { ...project, folders: project.folders.map(({ path: _path, ...folder }) => folder) };
+  return { ...project, folders: project.folders.map(({ path: _path, found: _found, ...folder }) => folder) };
 }
 
 /// An isolated project's own routes: this computer's app only.
@@ -173,6 +176,23 @@ export async function projectRoutes(app: FastifyInstance) {
       if (!auth) return;
       try {
         await linkProjectFolder(auth.userId, req.params.id, String(req.body.path));
+        reply.send({ project: projectDetail(auth.userId, req.params.id) });
+      } catch (err) { fail(reply, err); }
+    },
+  });
+
+  app.put<{ Params: { id: string; folder_id: string }; Body: { path?: unknown } }>("/projects/:id/folders/:folder_id", {
+    schema: {
+      tags: ["projects"],
+      summary: "Where the folder of an isolated project's documents is now, after it was renamed or moved outside Twoody (« Retrouver le dossier »)",
+      security,
+      body: { type: "object", required: ["path"], properties: { path: { type: "string", minLength: 1, maxLength: 4096 } } },
+    },
+    handler: async (req, reply) => {
+      const auth = await reachIsolated(req, reply, req.params.id);
+      if (!auth) return;
+      try {
+        relinkProjectFolder(auth.userId, req.params.id, req.params.folder_id, String(req.body.path));
         reply.send({ project: projectDetail(auth.userId, req.params.id) });
       } catch (err) { fail(reply, err); }
     },

@@ -1,7 +1,7 @@
 import { lstat, readdir } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { aliasLabel, aliasPaths, cloudAliasPaths, FOLDER_ALIAS_IDS, folderAliasIn, nodeAliasSystem, plain, syncedInCloud, type AliasSystem, type FolderAliasId } from "./folderAliases.js";
 import { folderRisk } from "./folderRisk.js";
 import { spotlightDatesAdded, spotlightItems } from "./spotlight.js";
@@ -9,7 +9,8 @@ import { asksNothing } from "./query.js";
 import { uiLabels } from "../uiLabels.js";
 import { CJK } from "../intentText.js";
 import { entryKind, skipDirectory, skipFile } from "./walk.js";
-import { within as sameOrInside } from "./samePath.js";
+import { foldPath, within as sameOrInside } from "./samePath.js";
+import { folderIdentity, printMatch, walledIdentity, type WallPrints } from "./wallIdentity.js";
 
 // The files of the person's granted folders as the file system has them —
 // names, sizes, kinds and modification dates of every regular file, indexed
@@ -287,8 +288,10 @@ export interface ListedFile {
 export interface Listing {
   /// ok: listed; not_granted: the folder is outside every granted folder;
   /// not_selected: granted, but not among the folders this conversation
-  /// may read; missing: no such folder here; none: nothing granted at all.
-  status: "ok" | "not_granted" | "not_selected" | "missing" | "none";
+  /// may read; missing: no such folder here; none: nothing granted at all;
+  /// paused: nothing new is read in the folders it may read for now
+  /// (GrantedRoot.paused).
+  status: "ok" | "not_granted" | "not_selected" | "missing" | "none" | "paused";
   /// What was listed, said to the model: « Downloads (~/Downloads) », or the named folder.
   label: string;
   /// Where it is, from its granted folder (« jimmy/Downloads »); empty for every granted folder.
@@ -315,14 +318,70 @@ export interface GrantedRoot {
   /// its own (library.ts listFolders, src/projects/isolation.ts): nothing
   /// under them is walked, listed, browsed or read from this folder.
   walled?: readonly string[];
+  /// The other projects' walled-off folders by identity (wallPlaces.ts
+  /// wallKeys): renamed or moved outside Twoody, still walled off wherever
+  /// they are now.
+  walledIds?: readonly string[];
+  /// The documents of the other projects' walled-off folders away from their
+  /// path (wallPlaces.ts awayPrints): a file that is one of them, by its
+  /// name, size and date, is not there from here.
+  walledPrints?: WallPrints | null;
+  /// Nothing new is read in it: another project's walled-off folder is
+  /// missing (wallPlaces.ts), and may be anywhere.
+  paused?: boolean;
 }
 
 /// Whether `path` lies in a walled-off project's folder inside `root`,
 /// compared as this disk does (samePath.ts: case, separators, a trailing dot
 /// or an NTFS stream suffix on Windows); `walled` holds each such folder every
-/// way it may be met from `root` (library.ts listFolders).
-export function walledAt(root: Pick<GrantedRoot, "walled"> | null | undefined, path: string): boolean {
-  return !!root?.walled?.some((wall) => sameOrInside(wall, path));
+/// way it may be met from `root` (library.ts listFolders) — or, renamed or
+/// moved outside Twoody, is one of them by identity: the folders on its way
+/// from `root` are asked what they are (`walledIds`).
+export function walledAt(root: Pick<GrantedRoot, "walled" | "walledIds" | "walledPrints" | "path"> | null | undefined, path: string): boolean {
+  if (!root) return false;
+  if (root.walled?.some((wall) => sameOrInside(wall, path))) return true;
+  if (root.walledIds?.length && walledOnTheWay(root as Pick<GrantedRoot, "walledIds" | "path">, path)) return true;
+  return !!root.walledPrints && walledDocument(root.walledPrints, path);
+}
+
+/// Whether the file at `path` is one of the documents of a walled-off folder
+/// away from its path, by its name, size and date.
+function walledDocument(prints: WallPrints, path: string): boolean {
+  const name = basename(path).normalize("NFC");
+  if (!prints.names.has(name)) return false;
+  try {
+    const info = statSync(path);
+    return info.isFile() && printMatch(prints, name, info.size, info.mtimeMs) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/// What each folder is, asked once for one granted folder as a request uses
+/// it (listFolders makes them anew for each request).
+const identities = new WeakMap<object, { keys: ReadonlySet<string>; seen: Map<string, string | null> }>();
+
+/// Whether a folder on the way from `root` down to `path` (both included) is
+/// a walled-off folder by its identity.
+function walledOnTheWay(root: Pick<GrantedRoot, "walledIds" | "path">, path: string): boolean {
+  let memo = identities.get(root);
+  if (!memo) {
+    memo = { keys: new Set(root.walledIds), seen: new Map() };
+    identities.set(root, memo);
+  }
+  const top = foldPath(root.path);
+  let current = resolve(path);
+  for (;;) {
+    let identity = memo.seen.get(current);
+    if (identity === undefined) {
+      identity = folderIdentity(current);
+      memo.seen.set(current, identity);
+    }
+    if (walledIdentity(memo.keys, identity)) return true;
+    const parent = dirname(current);
+    if (parent === current || foldPath(current) === top) return false;
+    current = parent;
+  }
 }
 
 const MAX_SCAN = 20_000;
@@ -518,6 +577,9 @@ export async function listGrantedFiles(args: {
   const label = folder ? aliasLabel(folder) : folderName ? `the folder named « ${folderName} »` : "every granted folder";
   const empty = (status: Listing["status"], extra: Partial<Listing> = {}): Listing => ({ status, label, where: [], total: 0, files: [], limited: false, ...extra });
   if (!granted.length) return empty("none");
+  // Another project's walled-off folder is missing: nothing new is read in
+  // these folders until the person finds it again (wallPlaces.ts).
+  if (roots.length && roots.every((root) => root.paused)) return empty("paused");
 
   // Where to walk: [start, the granted folder it is said from, recursive].
   let starts: Array<{ start: string; root: GrantedRoot }> = [];
@@ -651,6 +713,17 @@ export function howToGrant(locale: string | null = null): string {
   return `To give Twoody access, they open ${labels.documents} in the Twoody app on that computer and add the folder (« ${labels.addFolder} », or the one-click shortcut such as « ${labels.downloads} », « ${labels.desktop} » or « ${labels.icloud} »). Name these exactly as written here.`;
 }
 
+/// Why nothing is listed while the folders wait (GrantedRoot.paused): said to
+/// the model without naming what was moved — the general chat never learns of
+/// a walled-off project (docs/projects-design.md §8).
+export function pausedNote(on: string, locale: string | null = null): string {
+  return (
+    `Twoody is not reading the user's folders${on} for the moment: a folder was moved or renamed outside Twoody, and until the user finds it again ` +
+    `(${uiLabels(locale).documents} in the Twoody app on that computer says which), nothing new is listed or read there. ` +
+    "Say so plainly, in their language. Do not guess what the folders hold, and do not answer with files or excerpts."
+  );
+}
+
 /// Where the folders a conversation may read are chosen, as the app names it.
 export function howToSelect(locale: string | null = null): string {
   const labels = uiLabels(locale);
@@ -664,6 +737,7 @@ export function howToSelect(locale: string | null = null): string {
 export function formatListing(listing: Listing, intent: Pick<ListingIntent, "sort" | "kinds" | "count" | "again">, computer: string | null = null, locale: string | null = null): string {
   const on = computer ? ` on ${computer}` : "";
   if (listing.status !== "ok") {
+    if (listing.status === "paused") return `[File listing] ${pausedNote(on, locale)}\n[End of file listing]`;
     const why = {
       not_granted: `is not among the folders the user granted to Twoody${on}, so it cannot be read`,
       not_selected: `is granted${on} but not among the folders selected for this conversation`,

@@ -7,6 +7,7 @@ import { folderName, listFolders, searchPassages, type Passage } from "./library
 import { folderRisk } from "./folderRisk.js";
 import { spotlightCandidates } from "./spotlightRetrieval.js";
 import type { DocumentAccess } from "./access.js";
+import type { WallPrints } from "./wallIdentity.js";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, relative, sep } from "node:path";
@@ -41,7 +42,7 @@ type Retrieved<P, F> = { passages: P[]; files: F[]; total: number; semantic?: Se
  * unless `project` names it (its conversations), or `withIsolated` is set
  * (this computer's own app, browsing or opening a document it cited).
  */
-export function scopedFolders(userId: string, scope: Pick<DocumentAccess, "mode" | "folderIds">, options: FolderScopeOptions = {}): Array<{ id: string; name: string; path: string; documents: number; indexed: number; walled: string[] }> {
+export function scopedFolders(userId: string, scope: Pick<DocumentAccess, "mode" | "folderIds">, options: FolderScopeOptions = {}): Array<{ id: string; name: string; path: string; documents: number; indexed: number; walled: string[]; walledIds: string[]; walledPrints: WallPrints | null; paused: boolean }> {
   // Documents switched off in Capabilities: no folder is searched, for
   // anyone (localCapabilities.ts).
   if (scope.mode === "off" || !capabilityOn(userId, "documents")) return [];
@@ -54,7 +55,7 @@ export function scopedFolders(userId: string, scope: Pick<DocumentAccess, "mode"
   let home: string;
   try { home = realpathSync(homedir()); } catch { home = homedir(); }
   return within.filter(folder => folderRisk(folder.path, home, process.platform, folder.path === home) === null)
-    .map(folder => ({ id: folder.id, name: folder.name, path: folder.path, documents: folder.documents, indexed: folder.indexed, walled: folder.walled }));
+    .map(folder => ({ id: folder.id, name: folder.name, path: folder.path, documents: folder.documents, indexed: folder.indexed, walled: folder.walled, walledIds: folder.walledIds, walledPrints: folder.walledPrints, paused: folder.paused }));
 }
 
 export interface FolderScopeOptions {

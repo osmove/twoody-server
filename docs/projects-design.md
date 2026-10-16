@@ -138,9 +138,52 @@ place asked of the system once and again in the background after a minute. Befor
 under another spelling than the general folder holding it was indexed under the general folder and found by its chat
 (`test/walledSpellings.test.ts`, 5 attacks, all failing on the code of 811dbd3).
 
+**Moved outside Twoody** (16/10/2026, Jimmy's go; `src/documents/wallPlaces.ts`, `wallIdentity.ts`, migration 16).
+A walled-off folder was known by its path only: renamed in place, its parent renamed, or moved under the firm's
+general folder in the Finder, the Explorer or by a sync client, it was listed and acted on from the general folder at
+once, indexed under it at the next pass — found by the general chat, the phone, the other computers, a shared folder —
+and its project lost its documents (`test/walledMoved.test.ts`, three attacks, all failing on the code of d7c7c92).
+Now each one is also known:
+- by its identity (device and file number, `document_folders.identity`, with the root of its disk, `volume`), kept
+  as last seen at its path — the same file number on another device counts when its disk was mounted again. Every
+  walk leaves out a folder that is one of another project's, whatever it is called and wherever it is: the index
+  pass (`walk.ts` `walls`), the listings and `list_files`, browsing, Spotlight's candidates, « Agir dans vos
+  dossiers », a share, another computer (`fileListing.ts walledAt`: `walledIds`, the folders on the way asked what
+  they are). So the walls hold at once, before Twoody has noticed anything. The index pass, which looks for it
+  along its own walk only (never elsewhere on the disk), follows it: the project's folder takes its new path, the
+  folders granted inside it move with it, its index is kept as it is (nothing read again) — when its documents are
+  there too (`documentsThere`: an identity alone is not enough, a disk may give a deleted folder's number to
+  another), never onto a folder granted on its own nor into or around another project's walled-off folder (then
+  walled where it is, `elsewhere`, and the project's page asks). A folder made afterwards under the old name stays
+  the project's: a folder at a walled-off project's path never becomes an ordinary one by itself;
+- by its documents (the name, size and date of what was indexed of it, to two seconds): not at its path, a
+  walled-off folder whose documents turn up somewhere — moved to another disk, a copy then the original removed;
+  recreated by a sync client — is taken to be where most of them are (as many as two, or all it had): walled
+  there, proposed on the project's page (`elsewhere`, `found_by: "documents"`), never followed alone. Meanwhile
+  none of its documents is listed, browsed or read into another folder's index, wherever it lies (`walledPrints`).
+  A copy made while the original is at its path is an ordinary folder, as before.
+Found nowhere while its disk is connected (`missing`), it may be anywhere: until the person finds it again on the
+project's page (« Retrouver le dossier », `PUT /projects/:id/folders/:folder_id {path}`, this computer's app only)
+or takes it out of the project, nothing new is read in any folder outside its project — the index pass reads no
+new file there, the listings say so to the model without naming anything (`pausedNote`), browsing answers
+`folder_paused`, « Agir dans vos dossiers » answers in the person's language, a share serves nothing — what was
+indexed before stays searchable, and its own index stays with the project (a pass no longer drops it). Its disk not
+connected (`unreachable`: a NAS out of the office, a USB disk out), nothing of it can be walked: nothing waits, and
+its documents stay out of the other folders all the same. `GET /local_documents/folders` asks where the walls are
+before it answers and gives this computer's app each walled-off folder's `state`, `found`, `found_by` and
+`identity` (never to a device), and `paused` on the folders that wait; the project's page gets `state`, `found`
+and `found_by` (a device never `found`). A pass is started as soon as a request finds a walled-off folder away
+from its path. Not covered, and said so: during a copy to another disk, the copy is an ordinary folder until the
+original is removed; a disk without stable file numbers (FAT, exFAT) loses the identity on a move, so the folder
+is `missing` there; the screens (the notice on the project's page, the Documents banner, the iPhone) and the
+Desktop's Agent and Code, which take the walls from the server, come next in twoody-desktop and twoody-app.
+
 **Tests**: `test/isolatedProjects.test.ts` (the conversation's own walls), `test/walledProjects.test.ts` (attack
 tests: the general chat and its `list_files`, another walled-off project, the phone, the websocket, a trusted peer,
-the diagnostics shared, the seeds, a shared folder), `test/walledProjectsPhone.test.ts` (the person's iPhone, and
+the diagnostics shared, the seeds, a shared folder), `test/walledMoved.test.ts` (a walled-off folder renamed, its
+parent renamed, moved under the general folder, copied then removed, out of the granted folders, on a disk not
+connected, on a disk mounted again, into another walled-off project's folder — each before and after the next
+pass), `test/walledProjectsPhone.test.ts` (the person's iPhone, and
 every attack of the phone's security review), Desktop `test/walledProjects.test.mjs` and `test/walledCodeFolders.test.mjs`
 (the Agent and Twoody Code: the folder itself, inside, holding, a link to it, the iPhone's grants and folders, a folder
 opened before, a walled-off conversation handed over, the server out of reach). **Bench**:
