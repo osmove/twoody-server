@@ -15,6 +15,9 @@ import test from "node:test";
 // fakes on this machine; no network beyond it.
 
 process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-connector-icons-"));
+// E-mails and Google Analytics / Search Console are offered to this
+// account (src/reservedFeatures.ts: kept for the accounts Osmove chooses).
+process.env.TWOODY_RESERVED_FEATURES = "all";
 process.env.TWOODY_BONJOUR_DISABLED = "1";
 
 const network = globalThis.fetch;

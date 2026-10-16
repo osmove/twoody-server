@@ -7,6 +7,7 @@ import { forgetGoogleDataLink, setGoogleDataEnabled } from "../google/dataLink.j
 import { GOOGLE_DATA_CONNECTOR_ID, googleDataConnectorView } from "../google/dataTools.js";
 import { meshRequester, personStanding } from "../sessionTrust.js";
 import { meshRoster } from "../vault/roster.js";
+import { reservedFeatureOffered } from "../reservedFeatures.js";
 
 // « Connecteurs » (Capacités, Jimmy, 03/10/2026), src/connectors/connectors.ts:
 //   GET    /connectors                 the person's, with their tools
@@ -101,6 +102,8 @@ export async function connectorRoutes(app: FastifyInstance) {
       if (!fromThisComputersApp(req, auth)) return reply.code(403).send({ error: "desktop_app_only" });
       if (req.params.id === GOOGLE_DATA_CONNECTOR_ID) {
         const input = (req.body && typeof req.body === "object" ? (req.body as { connector?: unknown }).connector ?? req.body : {}) as Record<string, unknown>;
+        // Not offered to this person (reservedFeatures.ts): never switched on.
+        if (input.enabled === true && !reservedFeatureOffered("google_data")) return reply.code(403).send({ error: "reserved_feature" });
         if (typeof input.enabled === "boolean" && !setGoogleDataEnabled(auth.userId, input.enabled)) return reply.code(404).send({ error: "not_found" });
         const google = googleDataConnectorView(auth.userId);
         return google ? reply.send({ connector: google }) : reply.code(404).send({ error: "not_found" });

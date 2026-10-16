@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
 import { reindex } from "../documents/library.js";
-import { capabilityOrder, capabilityPlaces, isLocalCapability, LOCAL_CAPABILITIES, localCapabilities, setCapabilityOrder, setCapabilityPlace, setLocalCapability, setUsageProfile, usageProfile } from "../localCapabilities.js";
+import { capabilityNotOffered, capabilityOrder, capabilityPlaces, isLocalCapability, LOCAL_CAPABILITIES, localCapabilities, setCapabilityOrder, setCapabilityPlace, setLocalCapability, setUsageProfile, setWithdrawnReserved, usageProfile, withdrawnReserved } from "../localCapabilities.js";
+import { reservedFeatures } from "../reservedFeatures.js";
 import { isThisComputersApp } from "./usage.js";
 import { homeOn } from "../home/homeAssistant.js";
 import { graphCapabilityChanged } from "../microsoft/sync.js";
@@ -29,6 +30,11 @@ import { webForDevicesAvailable } from "../webResearch.js";
 // `person`, `reason`, `until`: whether the device asking is one of the
 // person's here, and if not why (sessionTrust.ts personStanding) — what
 // its « Outils » says, and what makes a phone sign a fresh device-access.
+// `reserved` (16/10/2026, reservedFeatures.ts): whether E-mails
+// (`email`) and Google Analytics / Search Console (`google_data`) are
+// offered to this person — the apps show neither otherwise; `withdrawn`:
+// those switched off here because they no longer are, for the app to say
+// once (DELETE /local_capabilities/withdrawn).
 export async function localCapabilityRoutes(app: FastifyInstance) {
   app.get("/local_capabilities", {
     schema: { tags: ["capabilities"], summary: "What the person switched on on this computer", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
@@ -45,7 +51,19 @@ export async function localCapabilityRoutes(app: FastifyInstance) {
         usage: usageProfile(auth.userId),
         known: LOCAL_CAPABILITIES,
         devices: { web: person && webForDevicesAvailable(), email: person && emailToolsAvailable(auth.userId), person, reason: standing.reason, until: standing.until },
+        reserved: reservedFeatures(),
+        withdrawn: withdrawnReserved(auth.userId),
       });
+    },
+  });
+
+  app.delete("/local_capabilities/withdrawn", {
+    schema: { tags: ["capabilities"], summary: "The notice that a reserved capability was switched off has been shown (this computer's app only)", security: [{ bearerAuth: [] }, { userTokenAuth: [] }] },
+    handler: async (req, reply) => {
+      const auth = await requireAuth(req, reply);
+      if (!auth) return;
+      if (!isThisComputersApp(auth)) return reply.code(403).send({ error: "desktop_app_only" });
+      reply.send({ withdrawn: setWithdrawnReserved(auth.userId, []) });
     },
   });
 
@@ -64,6 +82,8 @@ export async function localCapabilityRoutes(app: FastifyInstance) {
       const id = req.params.id;
       const body = req.body ?? {};
       let capabilities = localCapabilities(auth.userId);
+      // E-mails while it is not offered to this person (reservedFeatures.ts).
+      if (body.enabled === true && capabilityNotOffered(id)) return reply.code(403).send({ error: "reserved_feature" });
       if (typeof body.enabled === "boolean") {
         const was = capabilities[id];
         capabilities = setLocalCapability(auth.userId, id, body.enabled);

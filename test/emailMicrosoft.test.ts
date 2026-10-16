@@ -15,6 +15,9 @@ import { FakeMailServer, rfc822 } from "./helpers/fakeMailServer.js";
 // network beyond this machine.
 
 process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-email-microsoft-"));
+// E-mails and Google Analytics / Search Console are offered to this
+// account (src/reservedFeatures.ts: kept for the accounts Osmove chooses).
+process.env.TWOODY_RESERVED_FEATURES = "all";
 process.env.TWOODY_BONJOUR_DISABLED = "1";
 
 const CLIENT_ID = "804f73f0-5611-4e2e-a8da-fd5efb0293ea";

@@ -10,6 +10,9 @@ import test from "node:test";
 // asks the person something.
 
 process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-email-chat-"));
+// E-mails and Google Analytics / Search Console are offered to this
+// account (src/reservedFeatures.ts: kept for the accounts Osmove chooses).
+process.env.TWOODY_RESERVED_FEATURES = "all";
 process.env.TWOODY_BONJOUR_DISABLED = "1";
 
 const { expandQuery, messageWords, periodBounds, periodIn } = await import("../src/email/chat.js");

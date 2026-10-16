@@ -13,6 +13,9 @@ import { FakeMailServer, rfc822 } from "./helpers/fakeMailServer.js";
 // the chat by a model of theirs, a draft saved only once allowed.
 
 process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-email-"));
+// E-mails and Google Analytics / Search Console are offered to this
+// account (src/reservedFeatures.ts: kept for the accounts Osmove chooses).
+process.env.TWOODY_RESERVED_FEATURES = "all";
 process.env.TWOODY_BONJOUR_DISABLED = "1";
 delete process.env.BRIDGE_LOCAL_LLM_ENDPOINT;
 delete process.env.TWOODY_EMBEDDING_BINARY;

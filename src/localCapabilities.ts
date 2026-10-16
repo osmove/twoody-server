@@ -1,4 +1,5 @@
 import { sqlite } from "./db.js";
+import { RESERVED_FEATURES, reservedFeatureOffered, type ReservedFeature } from "./reservedFeatures.js";
 
 // What Twoody may do for the person on this computer, each switched on by
 // them, one by one (Jimmy, 02/10/2026: « toutes les capacités doivent être
@@ -50,10 +51,23 @@ function some(sql: string, userId: string): boolean {
 /// 04/10/2026: « mets aussi Mémoire dans Capacités »), which is the
 /// person's `memory_enabled`, on unless they turned it off: Twoody has
 /// always remembered, and a capability must not take that away unasked.
+/// E-mails reads as off while it is not offered to this person
+/// (reservedFeatures.ts, 16/10/2026): their switch is kept as it was.
 export function localCapabilities(userId: string): Record<LocalCapability, boolean> {
   const switches = storedCapabilities(userId);
   const prefs = readPrefs(userId);
-  return { ...switches, memory: prefs.memory_enabled !== false && prefs.memory_enabled !== "false" };
+  return { ...switches, email: switches.email && reservedFeatureOffered("email"), memory: prefs.memory_enabled !== false && prefs.memory_enabled !== "false" };
+}
+
+/// Whether the person's own switch is on, offered or not (reservedWithdrawal.ts).
+export function storedCapabilityOn(userId: string, id: LocalCapability): boolean {
+  return storedCapabilities(userId)[id];
+}
+
+/// A capability that cannot be switched on here: E-mails while it is not
+/// offered to this person.
+export function capabilityNotOffered(id: LocalCapability): boolean {
+  return id === "email" && !reservedFeatureOffered("email");
 }
 
 function storedCapabilities(userId: string): Record<LocalCapability, boolean> {
@@ -163,4 +177,22 @@ export function setUsageProfile(userId: string, patch: { kind?: unknown; team?: 
   const prefs = readPrefs(userId);
   sqlite.prepare("UPDATE users SET prefs = ? WHERE id = ?").run(JSON.stringify({ ...prefs, usage_profile: next }), userId);
   return next;
+}
+
+// What reserved (reservedFeatures.ts) was switched off on this computer
+// because it is no longer offered to the person — said once by the app,
+// then forgotten (DELETE /local_capabilities/withdrawn). Kept in
+// `users.prefs` as `reserved_withdrawn: ["email"]`; one offered again
+// leaves the list.
+export function withdrawnReserved(userId: string): ReservedFeature[] {
+  const stored = readPrefs(userId).reserved_withdrawn;
+  if (!Array.isArray(stored)) return [];
+  return RESERVED_FEATURES.filter((feature) => stored.includes(feature) && !reservedFeatureOffered(feature));
+}
+
+export function setWithdrawnReserved(userId: string, list: readonly ReservedFeature[]): ReservedFeature[] {
+  const prefs = readPrefs(userId);
+  const next = RESERVED_FEATURES.filter((feature) => list.includes(feature));
+  sqlite.prepare("UPDATE users SET prefs = ? WHERE id = ?").run(JSON.stringify({ ...prefs, reserved_withdrawn: next }), userId);
+  return withdrawnReserved(userId);
 }

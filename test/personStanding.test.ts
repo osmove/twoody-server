@@ -27,6 +27,9 @@ import { FakeMailServer, rfc822 } from "./helpers/fakeMailServer.js";
 //   and answered only by that session (or this computer's app).
 
 process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-person-standing-"));
+// E-mails and Google Analytics / Search Console are offered to this
+// account (src/reservedFeatures.ts: kept for the accounts Osmove chooses).
+process.env.TWOODY_RESERVED_FEATURES = "all";
 process.env.TWOODY_BONJOUR_DISABLED = "1";
 delete process.env.TWOODY_USER_TOKEN;
 delete process.env.TWOODY_BACKEND_URL;

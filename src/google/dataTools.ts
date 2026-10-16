@@ -7,6 +7,7 @@ import {
 } from "../outbound.js";
 import { googleDataLink, googleDataRefreshToken, type GoogleDataLink } from "./dataLink.js";
 import { googleAccess, GoogleSignInError, type GoogleSignInCode } from "./token.js";
+import { reservedFeatureOffered } from "../reservedFeatures.js";
 
 // Google Analytics (GA4) and Search Console in the chat (Connecteurs ›
 // Google, 08/10/2026): the statistics of the person's own websites, read by
@@ -183,6 +184,9 @@ export function googleDataChatTools(userId: string): GoogleDataToolDefinition[] 
 /// The link as « Outils » and Connecteurs list it, beside the person's MCP
 /// servers (GET /connectors): never its token.
 export function googleDataConnectorView(userId: string) {
+  // Not listed at all while it is not offered to this person
+  // (reservedFeatures.ts, 16/10/2026).
+  if (!reservedFeatureOffered("google_data")) return null;
   const link = googleDataLink(userId);
   if (!link) return null;
   const tools = link.granted.flatMap((family) => FAMILY_TOOLS[family]).map((tool) => ({

@@ -13,6 +13,9 @@ import test from "node:test";
 // exactly as before.
 
 process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-cjk-search-"));
+// E-mails and Google Analytics / Search Console are offered to this
+// account (src/reservedFeatures.ts: kept for the accounts Osmove chooses).
+process.env.TWOODY_RESERVED_FEATURES = "all";
 process.env.TWOODY_BONJOUR_DISABLED = "1";
 delete process.env.TWOODY_EMBEDDING_BINARY;
 delete process.env.TWOODY_EMBEDDING_MODEL;

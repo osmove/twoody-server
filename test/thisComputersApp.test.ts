@@ -15,6 +15,9 @@ import test from "node:test";
 // What the iPhone reads keeps working.
 
 process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-this-computers-app-"));
+// E-mails and Google Analytics / Search Console are offered to this
+// account (src/reservedFeatures.ts: kept for the accounts Osmove chooses).
+process.env.TWOODY_RESERVED_FEATURES = "all";
 process.env.TWOODY_BONJOUR_DISABLED = "1";
 delete process.env.HOME_ASSISTANT_URL;
 delete process.env.HOME_ASSISTANT_TOKEN;

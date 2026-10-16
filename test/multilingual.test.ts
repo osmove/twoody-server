@@ -13,6 +13,9 @@ import test from "node:test";
 // order; « Ich sitze am Schreibtisch » is no listing).
 
 process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-multilingual-"));
+// E-mails and Google Analytics / Search Console are offered to this
+// account (src/reservedFeatures.ts: kept for the accounts Osmove chooses).
+process.env.TWOODY_RESERVED_FEATURES = "all";
 
 const { homeShortcut, homeFollowUp, asksHome, asksHomeAgain, homeBlock, homeDoneNote, homeUnusedNote, homeErrorSentence, HomeError } = await import("../src/home/homeAssistant.js");
 const { askedAction, namedDay } = await import("../src/projects/actions.js");

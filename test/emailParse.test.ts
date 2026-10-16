@@ -5,6 +5,10 @@ import {
   textMayBeCut, threadIdOf, tidyText, type ListedFolder,
 } from "../src/email/parse.js";
 
+// E-mails and Google Analytics / Search Console are offered to this
+// account (src/reservedFeatures.ts: kept for the accounts Osmove chooses).
+process.env.TWOODY_RESERVED_FEATURES = "all";
+
 // « E-mails » (Capacités): what an e-mail is made of, as Twoody keeps it —
 // pure helpers, no mail server, no database.
 

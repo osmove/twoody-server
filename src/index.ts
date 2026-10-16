@@ -43,6 +43,7 @@ import { builtinAddress, initEngine, preloadBuiltin, stopEngine } from "./engine
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { desktopKeepsTunnelKey, tunnelKeyFromDesktop, type KeyParentPort } from "./tunnel/desktopKeyStore.js";
+import { applyReservedWord } from "./reservedWithdrawal.js";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 const HOST = process.env.HOST ?? "0.0.0.0";
@@ -323,6 +324,16 @@ try {
       if (type === "account" || type === "tunnel") desktopAccount(data);
       // The Desktop's vault keys, held in memory only (src/vault/service.ts).
       if (type === "vault") setDesktopVault(data, vaultAccount);
+      // What the account offers the person of what is reserved (E-mails,
+      // Google Analytics and Search Console: src/reservedFeatures.ts).
+      if (type === "reserved-features") {
+        try {
+          const off = applyReservedWord(data);
+          if (off.length) console.log(`  No longer offered to this account, switched off (data kept): ${off.join(", ")}`);
+        } catch (err) {
+          console.warn(`  Could not apply the reserved features: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
     });
   }
   // A headless computer in an account is a member of the encrypted history

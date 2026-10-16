@@ -5,6 +5,7 @@ import { cleanAddress } from "../email/parse.js";
 import { forgetGoogleDataLink, googleDataLink, googleDataScopes, grantedFamilies, keepGoogleDataLink, setGoogleDataEnabled } from "../google/dataLink.js";
 import { googleDataErrorCode } from "../google/dataTools.js";
 import { googleAccess } from "../google/token.js";
+import { reservedFeatureOffered } from "../reservedFeatures.js";
 
 // The link to Google Analytics and Search Console (Connecteurs › Google,
 // 08/10/2026), src/google/dataLink.ts:
@@ -14,6 +15,9 @@ import { googleAccess } from "../google/token.js";
 //                              main process after Google's sign-in (the page never holds a token)
 //   PATCH  /google_data        { enabled } — switched on or off (kept)
 //   DELETE /google_data        the sign-in forgotten
+// Kept for the accounts Osmove chooses (reservedFeatures.ts, 16/10/2026):
+// `offered` says whether it is offered to this person; linking or switching
+// it on otherwise is refused (`reserved_feature`); forgetting it never is.
 // Read by any of the person's devices (« Outils » lists it); made, changed
 // and removed only from this computer's app. No answer carries a token.
 
@@ -22,7 +26,7 @@ const REFRESH_TOKEN_MAX_CHARS = 16_384;
 
 /// How a refusal is answered.
 function statusFor(error: string): number {
-  if (["desktop_app_only", "admin_consent_required"].includes(error)) return 403;
+  if (["desktop_app_only", "admin_consent_required", "reserved_feature"].includes(error)) return 403;
   if (["signin_required"].includes(error)) return 409;
   if (["address_required", "invalid_address", "scope_missing", "invalid_enabled"].includes(error)) return 422;
   return 502;
@@ -39,6 +43,7 @@ export function googleDataStatus(userId: string) {
     search_console: !!link?.granted.includes("search_console"),
     enabled: link?.enabled ?? false,
     linked_at: link?.linked_at ?? null,
+    offered: reservedFeatureOffered("google_data"),
   };
 }
 
@@ -76,6 +81,7 @@ export async function googleDataRoutes(app: FastifyInstance) {
     handler: async (req, reply) => {
       const auth = await appOnly(req, reply);
       if (!auth) return;
+      if (!reservedFeatureOffered("google_data")) return reply.code(403).send({ error: "reserved_feature" });
       const given = (req.body && typeof req.body === "object" ? req.body : {}) as Record<string, unknown>;
       const typed = typeof given.address === "string" ? given.address.trim() : "";
       if (!typed) return reply.code(422).send({ error: "address_required" });
@@ -105,6 +111,7 @@ export async function googleDataRoutes(app: FastifyInstance) {
       if (!auth) return;
       const enabled = (req.body as { enabled?: unknown } | null)?.enabled;
       if (typeof enabled !== "boolean") return reply.code(422).send({ error: "invalid_enabled" });
+      if (enabled && !reservedFeatureOffered("google_data")) return reply.code(403).send({ error: "reserved_feature" });
       if (!setGoogleDataEnabled(auth.userId, enabled)) return reply.code(404).send({ error: "not_linked" });
       reply.send(googleDataStatus(auth.userId));
     },

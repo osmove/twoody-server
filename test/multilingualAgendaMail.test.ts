@@ -13,6 +13,9 @@ import test from "node:test";
 // must leave alone.
 
 process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-multilingual-agenda-"));
+// E-mails and Google Analytics / Search Console are offered to this
+// account (src/reservedFeatures.ts: kept for the accounts Osmove chooses).
+process.env.TWOODY_RESERVED_FEATURES = "all";
 
 const { dateWindow, matchContacts, personalContextBlock } = await import("../src/personalContext.js");
 const { periodIn, periodSpanIn, messageWords, passOnFirst } = await import("../src/email/chat.js");

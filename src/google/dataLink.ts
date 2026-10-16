@@ -5,6 +5,7 @@ import { DATA_DIR } from "../db.js";
 import { readSecretFile, removeSecretFile, secretFileContent } from "../secretFile.js";
 import type { GoogleDataFamily } from "../outbound.js";
 import { forgetGoogleAccess } from "./token.js";
+import { reservedFeatureOffered } from "../reservedFeatures.js";
 
 // The link to the person's Google account for Google Analytics and Search
 // Console (Connecteurs › Google, 08/10/2026: « Google Analytics et Search
@@ -98,7 +99,16 @@ function writeAll(all: Record<string, Kept>) {
 
 function linkOf(kept: Kept): GoogleDataLink {
   const scopes = googleDataScopes(kept.scopes);
-  return { id: kept.id, address: kept.address, scopes, granted: grantedFamilies(scopes), linked_at: kept.linked_at, enabled: kept.enabled !== false };
+  // Off while Google Analytics and Search Console are not offered to this
+  // person (reservedFeatures.ts, 16/10/2026): the door stays shut, no tool
+  // is offered; their own switch is kept as it was.
+  return { id: kept.id, address: kept.address, scopes, granted: grantedFamilies(scopes), linked_at: kept.linked_at, enabled: kept.enabled !== false && reservedFeatureOffered("google_data") };
+}
+
+/// Whether the person's own switch is on, offered or not (reservedWithdrawal.ts).
+export function googleDataSwitchedOn(userId: string): boolean {
+  const kept = keptFor(userId);
+  return !!kept && kept.enabled !== false;
 }
 
 function keptFor(userId: string): Kept | null {

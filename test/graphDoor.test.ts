@@ -16,6 +16,9 @@ import test from "node:test";
 // on, and the link kept (or being made). Nothing sends an e-mail.
 
 process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-graph-door-"));
+// E-mails and Google Analytics / Search Console are offered to this
+// account (src/reservedFeatures.ts: kept for the accounts Osmove chooses).
+process.env.TWOODY_RESERVED_FEATURES = "all";
 process.env.TWOODY_BONJOUR_DISABLED = "1";
 
 const { GRAPH_ME, graphDoor, GraphDoorClosedError, graphFetch, graphRoute, MailDoorClosedError, MICROSOFT_TOKEN_URL, microsoftTokenDoor, microsoftTokenFetch } = await import("../src/outbound.js");

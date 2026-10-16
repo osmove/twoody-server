@@ -17,6 +17,9 @@ import test from "node:test";
 // Martin, Tessane.
 
 process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-google-data-"));
+// E-mails and Google Analytics / Search Console are offered to this
+// account (src/reservedFeatures.ts: kept for the accounts Osmove chooses).
+process.env.TWOODY_RESERVED_FEATURES = "all";
 process.env.TWOODY_BONJOUR_DISABLED = "1";
 // Twoody's client at Google, made up for the tests.
 process.env.TWOODY_GOOGLE_CLIENT_ID = "twoody-test-client";
@@ -171,7 +174,7 @@ const offered = () => (bodies.at(-1)?.tools ?? []).map((tool) => tool.function.n
 const GOOGLE_TOOLS = ["google_analytics_properties", "google_analytics_report", "google_analytics_realtime", "search_console_sites", "search_console_query", "search_console_inspect_url"];
 
 test("linked from this computer's app only, tried first, kept apart (0600), never shown", async () => {
-  assert.deepEqual((await app.inject({ url: "/google_data", headers: auth })).json(), { linked: false, address: null, scopes: [], analytics: false, search_console: false, enabled: false, linked_at: null });
+  assert.deepEqual((await app.inject({ url: "/google_data", headers: auth })).json(), { linked: false, address: null, scopes: [], analytics: false, search_console: false, enabled: false, linked_at: null, offered: true });
   const scopes = `openid email ${ANALYTICS} ${WEBMASTERS}`;
   assert.equal((await link({ address: ADDRESS, refresh_token: REFRESH, scopes }, phone)).statusCode, 403);
   assert.equal((await app.inject({ method: "PATCH", url: "/google_data", headers: phone, payload: { enabled: false } })).statusCode, 403);
@@ -194,7 +197,7 @@ test("linked from this computer's app only, tried first, kept apart (0600), neve
     const status = await app.inject({ url: "/google_data", headers });
     assert.equal(status.statusCode, 200);
     assert.doesNotMatch(status.body, new RegExp(`${REFRESH}|g-data-access`));
-    assert.deepEqual({ ...status.json(), linked_at: null }, { linked: true, address: ADDRESS, scopes: [ANALYTICS, WEBMASTERS], analytics: true, search_console: true, enabled: true, linked_at: null });
+    assert.deepEqual({ ...status.json(), linked_at: null }, { linked: true, address: ADDRESS, scopes: [ANALYTICS, WEBMASTERS], analytics: true, search_console: true, enabled: true, linked_at: null, offered: true });
   }
   assert.doesNotMatch((await app.inject({ url: "/api/v1/connectors", headers: auth })).body, new RegExp(REFRESH));
 });

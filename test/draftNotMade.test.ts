@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+// E-mails and Google Analytics / Search Console are offered to this
+// account (src/reservedFeatures.ts: kept for the accounts Osmove chooses).
+process.env.TWOODY_RESERVED_FEATURES = "all";
+
 // No answer may tell the person a draft was made when none was (12/10/2026):
 // « Dis à maman que je serai en retard », « はい », and Qwen3.5 9B answered
 // « ママへのメールの下書きを作成しました … メールはあなたのメールアプリの「下書き」

@@ -16,6 +16,9 @@ import { FakeMailServer, rfc822 } from "./helpers/fakeMailServer.js";
 // Claire Martin, Tessane.
 
 process.env.TWOODY_DATA_DIR = mkdtempSync(join(tmpdir(), "twoody-email-gmail-"));
+// E-mails and Google Analytics / Search Console are offered to this
+// account (src/reservedFeatures.ts: kept for the accounts Osmove chooses).
+process.env.TWOODY_RESERVED_FEATURES = "all";
 process.env.TWOODY_BONJOUR_DISABLED = "1";
 // Twoody's client at Google, made up for the tests.
 process.env.TWOODY_GOOGLE_CLIENT_ID = "twoody-test-client";
