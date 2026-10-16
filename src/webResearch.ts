@@ -1,4 +1,5 @@
 import { webBridgeFetch, webBridgeOrigin } from "./outbound.js";
+import { readWebFailure, webFailureOf, type WebFailure } from "./webUnavailable.js";
 
 // « Recherche Internet » from the person's own devices (Jimmy, 08/10/2026):
 // their iPhone asks a question with the web on, and this computer searches
@@ -29,16 +30,27 @@ export interface WebResearch {
   results: WebResult[];
 }
 
+/// The search did not happen. `reason`: no connection, the search engine,
+/// anything else — as the Desktop says it (twoody-desktop
+/// shared/webFailure.ts), else as its words tell (webUnavailable.ts).
 export class WebResearchError extends Error {
-  constructor(message: string) {
+  readonly reason: WebFailure;
+  constructor(message: string, reason?: WebFailure) {
     super(message);
     this.name = "WebResearchError";
+    this.reason = reason ?? webFailureOf(message);
   }
 }
 
 /// How long a search and its pages may take (the Desktop gives each page 8 s).
 const BRIDGE_TIMEOUT_MS = 45_000;
 const MAX_RESULTS = 10;
+let bridgeTimeoutMs = BRIDGE_TIMEOUT_MS;
+
+/// Tests: a shorter wait for the Desktop's search (null: back to 45 s).
+export function webBridgeTimeoutForTests(ms: number | null) {
+  bridgeTimeoutMs = ms ?? BRIDGE_TIMEOUT_MS;
+}
 
 /// The Desktop's door, when it handed one over that is on this machine.
 export function webBridge(env: NodeJS.ProcessEnv = process.env): { url: string; key: string } | null {
@@ -66,8 +78,11 @@ const text = (value: unknown, max: number) => (typeof value === "string" ? unmar
 
 /// What came back, as no more than the Mac's own app would get.
 export function readResearch(body: unknown, budget: number): WebResearch {
-  const raw = (body && typeof body === "object" ? body : {}) as { ok?: unknown; message?: unknown; query?: unknown; results?: unknown };
-  if (raw.ok !== true) throw new WebResearchError(text(raw.message, 300) || "the search did not answer");
+  const raw = (body && typeof body === "object" ? body : {}) as { ok?: unknown; message?: unknown; reason?: unknown; query?: unknown; results?: unknown };
+  if (raw.ok !== true) {
+    const message = text(raw.message, 300) || "the search did not answer";
+    throw new WebResearchError(message, readWebFailure(raw.reason) ?? webFailureOf(message));
+  }
   const results: WebResult[] = [];
   for (const entry of Array.isArray(raw.results) ? raw.results.slice(0, MAX_RESULTS) : []) {
     const one = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>;
@@ -87,20 +102,23 @@ export function readResearch(body: unknown, budget: number): WebResearch {
 /// The search, run by the Desktop for `question`.
 export async function researchOnComputer(question: string, budget: number, signal?: AbortSignal): Promise<WebResearch> {
   const bridge = webBridge();
-  if (!bridge) throw new WebResearchError("web search is not available on this computer");
+  if (!bridge) throw new WebResearchError("web search is not available on this computer", "failed");
   let response: Response;
   try {
     response = await webBridgeFetch(bridge.url)(`${bridge.url}/research`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${bridge.key}` },
       body: JSON.stringify({ question, budget }),
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(BRIDGE_TIMEOUT_MS)]) : AbortSignal.timeout(BRIDGE_TIMEOUT_MS),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(bridgeTimeoutMs)]) : AbortSignal.timeout(bridgeTimeoutMs),
     });
   } catch (err) {
-    throw new WebResearchError(err instanceof Error && err.name === "TimeoutError" ? "the search took too long" : "the search could not be reached on this computer");
+    // Its 45 s gone: the search engine (12 s) and the pages (8 s each) did
+    // not answer. Not reached at all: the Desktop's door, not the web.
+    if (err instanceof Error && err.name === "TimeoutError") throw new WebResearchError("the search took too long", "engine");
+    throw new WebResearchError("the search could not be reached on this computer", "failed");
   }
   const body = await response.json().catch(() => null);
-  if (!response.ok && !(body && typeof body === "object" && "ok" in body)) throw new WebResearchError(`the search answered ${response.status}`);
+  if (!response.ok && !(body && typeof body === "object" && "ok" in body)) throw new WebResearchError(`the search answered ${response.status}`, "failed");
   return readResearch(body, budget);
 }
 

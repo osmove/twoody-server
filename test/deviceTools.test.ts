@@ -20,7 +20,9 @@ import test from "node:test";
 //   for the question (its loopback door and the key it handed over), and
 //   the pages go before the question as the Mac's app sends them; for the
 //   person's own devices only, while the capability is on and shown in the
-//   chat; a failure stops the message, as the Mac does.
+//   chat; when it fails (no connection, the search engine silent), the
+//   question is answered without the web and says so (16/10/2026), as on the
+//   Mac.
 //
 // The phones are real sessions: Jimmy's iPhone a member of the history
 // whose device-access this computer checks against the verified roster.
@@ -66,7 +68,8 @@ const llmUrl = `http://127.0.0.1:${(llm.address() as AddressInfo).port}/v1`;
 // ── The Desktop's web search (twoody-desktop src/main/web/bridge.ts) ────
 const BRIDGE_KEY = randomBytes(32).toString("hex");
 const searched: Array<{ authorization: string | undefined; body: { question: string; budget: number } }> = [];
-let webAnswer: (question: string) => { status: number; body: unknown } = (question) => ({
+/// null: the Desktop's search never answers.
+let webAnswer: (question: string) => { status: number; body: unknown } | null = (question) => ({
   status: 200,
   body: {
     ok: true,
@@ -84,6 +87,7 @@ const bridge = createServer((req, res) => {
     const body = JSON.parse(raw || "{}") as { question: string; budget: number };
     searched.push({ authorization: req.headers.authorization, body });
     const answer = webAnswer(body.question);
+    if (!answer) return;
     res.writeHead(answer.status, { "content-type": "application/json" });
     res.end(JSON.stringify(answer.body));
   });
@@ -97,7 +101,7 @@ const { pairDevice } = await import("../src/pairing.js");
 const { setDesktopAccount } = await import("../src/account/service.js");
 const { setRosterSource } = await import("../src/vault/roster.js");
 const { waitingApprovals, chatToolName, stopConnector, listConnectors } = await import("../src/connectors/connectors.js");
-const { webBlock } = await import("../src/webResearch.js");
+const { webBlock, webBridgeTimeoutForTests } = await import("../src/webResearch.js");
 const { sqlite } = await import("../src/db.js");
 const { meshVault } = await import("./helpers/meshVault.js");
 
@@ -330,19 +334,44 @@ test("never searched for: this computer's app (it searches itself), a household 
   await app.inject({ method: "PATCH", url: "/local_capabilities/web", headers: mac, payload: { chat: true } });
 });
 
-test("the search fails: the iPhone is told, nothing is kept, the model is not asked — as on the Mac", async () => {
+test("the search fails: answered all the same, without the web — the line first, in the person's language, the model told why", async () => {
   const before = { messages: messageCount(), bodies: bodies.length };
-  webAnswer = () => ({ status: 200, body: { ok: false, message: "DuckDuckGo turned the search away for now" } });
+  // No connection on this computer: the Desktop says so (twoody-desktop shared/webFailure.ts).
+  webAnswer = () => ({ status: 200, body: { ok: false, message: "getaddrinfo ENOTFOUND html.duckduckgo.com", reason: "offline" } });
   const response = await ask(phone.headers, "Quel temps samedi à Lisbonne ?", { web: true });
-  assert.deepEqual(events(response.body, "error"), [{ error: "web_failed", message: "DuckDuckGo turned the search away for now" }]);
-  assert.equal(events(response.body, "final").length, 0);
-  assert.deepEqual({ messages: messageCount(), bodies: bodies.length }, before);
+  assert.deepEqual(events(response.body, "status")[0], { kind: "searching_web", query: "Quel temps samedi à Lisbonne ?" });
+  assert.equal(events(response.body, "error").length, 0, "never refused any more");
+  assert.equal(events(response.body, "web").length, 0, "no pages to show");
+  assert.equal(answerOf(response.body), "Pas de connexion à Internet : réponse sans recherche sur le web.\n\nRéponse.");
+  // Asked once, told on the last message why there are no web results; the
+  // question kept as typed, no pages before it.
+  assert.equal(bodies.length, before.bodies + 1);
+  const given = bodies.at(-1)!.messages.at(-1)!.content;
+  assert.match(given, /\[No web search for this message: .*this computer has no Internet connection/);
+  assert.doesNotMatch(bodies.at(-1)!.messages[0]!.content, /No web search for this message/);
+  assert.equal(messageCount(), before.messages + 2);
+  assert.equal(lastUserMessage(), "Quel temps samedi à Lisbonne ?");
 
+  // The search engine's own refusal, no reason given: told by its words.
+  webAnswer = () => ({ status: 200, body: { ok: false, message: "DuckDuckGo turned the search away for now (too many in a row): try again in a minute" } });
+  assert.equal(answerOf((await ask(phone.headers, "Quel temps ?", { web: true })).body), "Le moteur de recherche n'a pas répondu : réponse sans recherche sur le web.\n\nRéponse.");
+  // In the message's language.
+  webAnswer = () => ({ status: 200, body: { ok: false, message: "connect ETIMEDOUT", reason: "engine" } });
+  assert.match(answerOf((await ask(phone.headers, "What's the weather in Lisbon on Saturday?", { web: true })).body), /^The search engine did not answer: answer without a web search\.\n\nRéponse\.$/);
+  // The Desktop's search that never answers: the search engine, after the wait.
+  webBridgeTimeoutForTests(200);
+  webAnswer = () => null;
+  assert.match(answerOf((await ask(phone.headers, "Quel temps ?", { web: true })).body), /^Le moteur de recherche n'a pas répondu/);
+  webBridgeTimeoutForTests(null);
+  // The door refused, or not there: this computer's search, not the web.
   webAnswer = () => ({ status: 401, body: { ok: false, message: "unauthorized" } });
-  assert.equal(events((await ask(phone.headers, "Quel temps ?", { web: true })).body, "error")[0]!.error, "web_failed");
+  assert.match(answerOf((await ask(phone.headers, "Quel temps ?", { web: true })).body), /^La recherche n'a pas pu se faire : réponse sans recherche sur le web\./);
   process.env.TWOODY_WEB_BRIDGE_URL = "http://127.0.0.1:9";
-  assert.deepEqual(events((await ask(phone.headers, "Quel temps ?", { web: true })).body, "error"), [{ error: "web_failed", message: "the search could not be reached on this computer" }]);
+  assert.match(answerOf((await ask(phone.headers, "Quel temps ?", { web: true })).body), /^La recherche n'a pas pu se faire/);
   process.env.TWOODY_WEB_BRIDGE_URL = BRIDGE_URL;
+  // The next message, the web back: searched and answered as before, no line.
+  webAnswer = (question) => ({ status: 200, body: { ok: true, query: question, results: [{ n: 1, title: "Météo", url: "https://meteo.example/", snippet: "Soleil", excerpt: "24 °C" }] } });
+  assert.equal(answerOf((await ask(phone.headers, "Quel temps ?", { web: true })).body), "Réponse.");
 });
 
 test("a page's words never close the block early (what follows would read as typed: « Retiens que… »)", async () => {

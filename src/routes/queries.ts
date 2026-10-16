@@ -84,7 +84,8 @@ import { peerById, peerRequest, PeerUnavailableError, type PeerRow } from "../pe
 import { isSelf, peerRoutable, peerTrusted, pick, pickBackground, selfIdentity } from "../router/index.js";
 import { meshRoster } from "../vault/roster.js";
 import { meshRequester } from "../sessionTrust.js";
-import { researchOnComputer, webBlock, webBridge, webBudget } from "../webResearch.js";
+import { researchOnComputer, webBlock, webBridge, webBudget, WebResearchError } from "../webResearch.js";
+import { createWebClaimGuard, readWebFailure, webUnavailableNote, webUnavailableNotice, type WebClaimGuard, type WebFailure } from "../webUnavailable.js";
 import { ownerRequest } from "../localAccess.js";
 import { ensureConversation, sealAnsweredTurn } from "../vault/service.js";
 import { sqliteHistory } from "../vault/localHistory.js";
@@ -120,6 +121,10 @@ interface QueryBody {
   /// own app does in its window (src/webResearch.ts). This computer's app
   /// searches itself and sends the pages found with the message.
   web?: unknown;
+  /// This computer's app searched the web for the message and got nothing
+  /// (« offline », « engine », « failed »): answered without the web, and
+  /// said so (src/webUnavailable.ts).
+  web_failed?: unknown;
   /// The project a new conversation starts in: an isolated one's
   /// (src/projects/isolation.ts) from then on, never changed.
   project_id?: string;
@@ -609,13 +614,17 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // person's own devices only: never a household member's phone nor a
   // device paired by code. This computer's app searches in its own window
   // (Chat.tsx) and never asks for it here. Done before the question is
-  // kept, and stopped like the app does when it fails: the person is told
-  // and nothing is kept.
+  // kept. When it fails — no connection, the search engine silent — the
+  // question is answered all the same, without the web, and says so (Jimmy,
+  // 16/10/2026; src/webUnavailable.ts): no longer refused.
+  let webFailure: WebFailure | null = null;
+  let webSearchedHere = false;
   const webWanted = readBool(parsed.web, false);
   if (webWanted && typedQuestion && requester !== null && !isThisComputersApp(auth) && !isolatedRequest
     && webBridge() !== null && capabilityOn(auth.userId, "web") && capabilityPlaces(auth.userId).web.chat
     && !left.has("web") && !documentsOnly) {
     startSse();
+    webSearchedHere = true;
     reply.raw.write(`event: status\ndata: ${JSON.stringify({ kind: "searching_web", query: typedQuestion.replace(/\s+/g, " ").trim().slice(0, 200) })}\n\n`);
     try {
       const found = await researchOnComputer(typedQuestion, webBudget(readWindow(parsed.context_window)), upstream.signal);
@@ -623,12 +632,13 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       // The pages found, for the device to show and to resolve [1], [2]…
       reply.raw.write(`event: web\ndata: ${JSON.stringify({ query: found.query, results: found.results.map((result) => ({ n: result.n, title: result.title, url: result.url })) })}\n\n`);
     } catch (err) {
-      if (!upstream.signal.aborted) {
-        reply.raw.write(`event: error\ndata: ${JSON.stringify({ error: "web_failed", message: err instanceof Error ? err.message : String(err) })}\n\n`);
+      // Stopped by the person while it searched: nothing more.
+      if (upstream.signal.aborted) {
+        if (keepalive) clearInterval(keepalive);
+        reply.raw.end();
+        return reply;
       }
-      if (keepalive) clearInterval(keepalive);
-      reply.raw.end();
-      return reply;
+      webFailure = err instanceof WebResearchError ? err.reason : "failed";
     }
   }
 
@@ -656,6 +666,12 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     const asked = isThisComputersApp(auth) ? capabilitiesOff(parsed.capabilities_on) : new Set<string>();
     for (const id of OUTSIDE_AN_ISOLATED_PROJECT) if (!asked.has(id)) left.add(id);
   }
+  // This computer's app searched the web for the message and got nothing
+  // (Chat.tsx): the same answer without the web as for a device. Only where
+  // the web may be used for it — never « Seulement mes documents », never a
+  // walled-off project's conversation that did not switch it on.
+  webFailure ??= readWebFailure(parsed.web_failed);
+  if (webFailure && (left.has("web") || documentsOnly)) webFailure = null;
 
   // The memory mode asked for is the conversation's from now on.
   if (askedMemoryMode) db.update(discussions).set({ memoryMode: askedMemoryMode }).where(eq(discussions.id, discussion.id)).run();
@@ -668,6 +684,17 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // conversation's when the client said none): the screens and buttons the
   // model is told of are named as that app names them (src/uiLabels.ts).
   const turnLocale = validLocale(parsed.locale ?? (parsed.query as { locale?: unknown } | undefined)?.locale) ?? compacted.state?.locale ?? null;
+  // The line an answer without the web starts with: in the message's
+  // language, else the app's (src/webUnavailable.ts).
+  const webNotice = webFailure ? `${webUnavailableNotice(webFailure, messageLanguage(typedText(content), turnLocale) ?? turnLocale?.split("-")[0] ?? null)}\n\n` : "";
+  // Written once, ahead of the model's words (kept with the answer at its end).
+  let webNoticeShown = false;
+  const showWebNotice = () => {
+    if (!webNotice || webNoticeShown) return;
+    webNoticeShown = true;
+    startSse();
+    reply.raw.write(`event: message\ndata: ${escapeData(webNotice)}\n\n`);
+  };
 
   // An exchange is sealed under its ref once: a ref already in the
   // conversation (an exchange imported, inlined, or asked before) is
@@ -717,6 +744,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   });
 
   let aggregated = "";
+  // No web this time: the guard the model's words go through (below).
+  let webGuard: WebClaimGuard | null = null;
   const timing = { started: 0, first: 0, sentChars: 0 };
   let reasoningMs: number | null = null;
   let answerNowKey: string | null = null;
@@ -727,6 +756,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // (src/diagnostics/traces.ts): filled as it goes, kept at the end.
   const traceStarted = Date.now();
   const trace: Record<string, unknown> = { channel, effort: readEffort(parsed.effort), routing: routing.mode };
+  // « Recherche Internet » on and nothing from the web this time: why, and
+  // (at the end) what the guard took out of the answer.
+  if (webFailure) trace.web = { failed: webFailure };
   const toolCallsTraced: ToolCallTrace[] = [];
   // What the model was given, kept with the trace (« Détails » under the answer).
   let promptKept: TurnPrompt | null = null;
@@ -965,6 +997,30 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     });
     const sources = passages.map(sourceOf);
     const documentFolders = allowedFolders;
+    // No web this time (src/webUnavailable.ts): the model's words go out
+    // sentence by sentence, a claim to have searched the web, a citation of
+    // no source of this turn and a list of web « Sources » taken out — the
+    // person's documents, numbered in `sources`, are cited as ever.
+    webGuard = webFailure ? createWebClaimGuard({ sources: () => sources.length }) : null;
+    // What the model writes, once it may go out: through the guard when there
+    // is one, then to the person and into the answer kept.
+    const emitModel = (text: string) => {
+      const shown = webGuard ? webGuard.push(text) : text;
+      if (!shown) return;
+      showWebNotice();
+      startSse();
+      aggregated += shown;
+      reply.raw.write(`event: message\ndata: ${escapeData(shown)}\n\n`);
+    };
+    // The end of the answer: what the guard still holds (its last sentence).
+    const flushModel = () => {
+      const rest = webGuard?.flush() ?? "";
+      if (!rest) return;
+      showWebNotice();
+      startSse();
+      aggregated += rest;
+      reply.raw.write(`event: message\ndata: ${escapeData(rest)}\n\n`);
+    };
     // Someone else's document (a shared folder) is said to be theirs.
     const excerptOf = (passage: MeshPassage, remote: boolean) => ({
       name: passage.name,
@@ -1088,9 +1144,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       if (homeHold.on) {
         homeHold.on = false;
         if (homeHold.text) {
-          startSse();
-          aggregated += homeHold.text;
-          reply.raw.write(`event: message\ndata: ${escapeData(homeHold.text)}\n\n`);
+          emitModel(homeHold.text);
           homeHold.text = "";
         }
       }
@@ -1340,9 +1394,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
           // Saved: what was held goes out, and nothing more is.
           draftHold.on = false;
           if (draftHold.text) {
-            startSse();
-            aggregated += draftHold.text;
-            reply.raw.write(`event: message\ndata: ${escapeData(draftHold.text)}\n\n`);
+            emitModel(draftHold.text);
             draftHold.text = "";
           }
         } else if (done.error && done.error !== "refused") draftHold.errors.push(done.error);
@@ -1517,6 +1569,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       // contradict what was done.
       homeDevices: home && !shortcut ? homeBlock(typedText(content), home, homeLast, homeAsked) : null,
       homeDone,
+      // No web this time: told to answer without it, and never to say it searched.
+      webUnavailable: webFailure ? webUnavailableNote(webFailure) : null,
       timeZone: validTimeZone(parsed.time_zone),
     };
     const turn = buildChatTurn(turnInput);
@@ -1565,6 +1619,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         contextWindow: readWindow(parsed.context_window),
         hasDocuments: false,
         local: true,
+        // Nothing of the person's: why there are no web results.
+        webUnavailable: webFailure ? webUnavailableNote(webFailure) : null,
         timeZone: validTimeZone(parsed.time_zone),
       }).messages;
       return conversationOnly;
@@ -1608,11 +1664,10 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         draftHold.text += delta;
         return;
       }
-      aggregated += delta;
       // Cloud-compat shape: per-token `event: message` with the
       // raw delta as the data line. The watch/RN parser slices
       // on event-name boundaries.
-      reply.raw.write(`event: message\ndata: ${escapeData(delta)}\n\n`);
+      emitModel(delta);
     });
     // The reply opens before the model's first word, which can be many
     // seconds away: a model to load, a long prompt to read. A phone
@@ -1621,6 +1676,15 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // (twoody-app/utils/chatStream.js) — the question then reached the
     // computer twice. Opened, the keepalive also runs while it waits.
     startSse();
+    // No web this time: the answer starts with the line that says so, in the
+    // person's language (src/webUnavailable.ts), kept with the answer, so
+    // that the Mac, the iPhone and the history show it. Not part of
+    // `aggregated`: a computer that fails before its first word is still
+    // replaced by the next one (« Automatique »). On a device this computer
+    // searched for, at once, in place of « Recherche sur le web… »; for this
+    // computer's app, with the model's first words — its own « Chargement… »
+    // and dots are shown until then.
+    if (webSearchedHere) showWebNotice();
     // The usage screen's speed: from the call to the model to its first
     // token (reasoning or answer), and from there to its last.
     timing.sentChars = messagesChars(chatMessages);
@@ -1699,6 +1763,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     }
     const ended = Date.now();
     thinkFilter.flush();
+    flushModel();
     if (draftRefused) {
       // « Je rédige le brouillon… » after it was refused is no truer.
       // What was held before the refusal is judged with what came after.
@@ -1706,9 +1771,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       draftHold.on = false;
       const told = answerAfterRefusal(said, answerLanguage(), draftAnnounced);
       if (told.corrected) trace.email = { ...(trace.email as Record<string, unknown> | undefined), refused_answer: said.trim() ? "corrected" : "empty", ...(said.trim() ? { replaced: said.trim().slice(0, 400) } : {}) };
-      const shown = aggregated && !/\s$/.test(aggregated) ? ` ${told.text.trimStart()}` : told.text;
-      aggregated += shown;
-      reply.raw.write(`event: message\ndata: ${escapeData(shown)}\n\n`);
+      emitModel(aggregated && !/\s$/.test(aggregated) ? ` ${told.text.trimStart()}` : told.text);
     }
     if (homeHold.on) {
       // Nothing was switched in the home this turn: an answer that says it
@@ -1717,9 +1780,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       const reason: HomeNotDoneReason = homeHold.failure?.reason ?? homeUnused ?? "not_called";
       const told = answerWithoutHomeClaim(homeHold.text, homeNotDoneSentence(reason, answerLanguage(), turnLocale, homeHold.failure?.detail ?? ""), { stateKnown: home !== null });
       trace.home = { ...(trace.home as Record<string, unknown> | undefined), not_done: reason, ...(told.corrected ? { answer: homeHold.text.trim() ? "corrected" : "empty", ...(homeHold.text.trim() ? { replaced: homeHold.text.trim().slice(0, 400) } : {}) } : {}) };
-      const shown = aggregated && !/\s$/.test(aggregated) ? ` ${told.text.trimStart()}` : told.text;
-      aggregated += shown;
-      reply.raw.write(`event: message\ndata: ${escapeData(shown)}\n\n`);
+      flushModel();
+      emitModel(aggregated && !/\s$/.test(aggregated) ? ` ${told.text.trimStart()}` : told.text);
     }
     if (draftHold.on) {
       // A draft asked for, none saved this turn: an answer that says one was
@@ -1729,10 +1791,24 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       const reason = draftNotMadeReason(draftHold.errors);
       const told = answerWithoutDraftClaim(draftHold.text, notDraftedSentence(reason, answerLanguage()));
       if (told.corrected) trace.email = { ...(trace.email as Record<string, unknown> | undefined), not_drafted: reason, answer: draftHold.text.trim() ? "corrected" : "empty", ...(draftHold.text.trim() ? { replaced: draftHold.text.trim().slice(0, 400) } : {}) };
-      const shown = aggregated && !/\s$/.test(aggregated) ? ` ${told.text.trimStart()}` : told.text;
-      aggregated += shown;
-      reply.raw.write(`event: message\ndata: ${escapeData(shown)}\n\n`);
+      flushModel();
+      emitModel(aggregated && !/\s$/.test(aggregated) ? ` ${told.text.trimStart()}` : told.text);
     }
+    flushModel();
+    // An answer with no words of the model's: the line all the same.
+    showWebNotice();
+    // What the guard took out of the answer, kept with the local trace.
+    if (webGuard?.removed.length) {
+      let room = 600;
+      trace.web = {
+        ...(trace.web as Record<string, unknown> | undefined),
+        removed: webGuard.removed.filter((one) => (room -= one.text.length) >= 0).map((one) => ({ kind: one.kind, text: one.text.slice(0, 300) })),
+        removed_count: webGuard.removed.length,
+      };
+    }
+    // The answer as it is kept and shown: the line said first, when the web
+    // brought nothing.
+    const answerText = webNotice ? `${webNotice}${aggregated}`.trimEnd() : aggregated;
     if (reasoningStarted && reasoningMs === null) reasoningMs = Date.now() - reasoningStarted;
     // The context gauge under the composer: what the runtime counted, or
     // a count from the characters when it did not say.
@@ -1760,7 +1836,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       discussionId: discussion.id,
       userId:       auth.userId,
       role:         "assistant",
-      content:      aggregated,
+      content:      answerText,
       provider:     provider.kind,
       model:        providerModel,
       sources:      cited,
@@ -1815,8 +1891,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       discussion_id: discussion.id,
       provider:      provider.kind,
       model:         providerModel,
-      text:          aggregated,
-      message:       aggregated,
+      text:          answerText,
+      message:       answerText,
       status:        "responded",
       transcription: parsed.text ? null : (audioBuffer ? heard : null),
       language:      null,
@@ -1863,12 +1939,14 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     if (upstream.signal.aborted) {
       // Keep what was written: the conversation would otherwise show a
       // question with no answer, and the next turn's history would lack it.
+      // What the guard still held is the model's too.
+      aggregated += webGuard?.flush() ?? "";
       if (aggregated.trim()) {
         const messageId = insertMessage({
           discussionId: discussion.id,
           userId:       auth.userId,
           role:         "assistant",
-          content:      `${aggregated.trimEnd()}…`,
+          content:      `${webNotice}${aggregated.trimEnd()}…`,
           provider:     answeredBy?.kind ?? null,
           model:        answeredBy?.model ?? null,
           vaultRef:     vaultRef ? `${vaultRef}#reply` : null,
@@ -1973,6 +2051,7 @@ async function parseMultipartBody(req: FastifyRequest): Promise<ParsedBody | nul
     capabilities_on: nested.capabilities_on ?? fields.capabilities_on,
     connectors_off: nested.connectors_off ?? fields.connectors_off,
     web: nested.web ?? fields.web,
+    web_failed: nested.web_failed ?? fields.web_failed,
     project_id:         (nested.project_id as string) ?? (fields.project_id as string),
     text:               (nested.text as string) ?? (fields.text as string),
     content:            (nested.content as string) ?? (fields.content as string),
@@ -2431,6 +2510,7 @@ export function newConversationSystem(key: string): { system: string; provider: 
     fileListings: null,
     documentNote: null,
     personal: null,
+    webUnavailable: null,
     now: new Date(),
   });
   const system = turn.messages[0];
@@ -2525,7 +2605,7 @@ export async function conversationStartPending(auth: { userId: string } & Parame
 // read again at each turn (history, memories, documents, the message).
 const WARM_SEEDS_FILE = join(DATA_DIR, "warm-seeds.json");
 const WARM_WATCH_MS = 10 * 60_000;
-const SEED_LEFT_OUT = ["isolatedProject", "prefs", "history", "memories", "content", "excerpts", "documentFiles", "documentFileTotal", "fileListings", "documentNote", "personal", "homeDevices", "homeDone", "emailFound", "googleDataFound", "projectCards", "personCards", "remembered", "summary", "summaryThrough", "state", "currentId", "discussionId", "relevant", "profileHints", "now", "documentScan"];
+const SEED_LEFT_OUT = ["isolatedProject", "prefs", "history", "memories", "content", "excerpts", "documentFiles", "documentFileTotal", "fileListings", "documentNote", "personal", "homeDevices", "homeDone", "emailFound", "googleDataFound", "webUnavailable", "projectCards", "personCards", "remembered", "summary", "summaryThrough", "state", "currentId", "discussionId", "relevant", "profileHints", "now", "documentScan"];
 
 type WarmSeed = { input: Record<string, unknown>; tools: ChatTools["definitions"] | null; model: string | null };
 
