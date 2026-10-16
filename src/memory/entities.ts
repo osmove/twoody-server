@@ -135,10 +135,11 @@ export function kinshipIn(text: string): Array<{ phrase: string; labels: Readonl
   for (const [phrase, labels] of KINSHIP) if (padded.includes(` ${phrase} `)) found.push({ phrase, labels });
   // The other languages of the app, and their words for one's own
   // relatives (« meine Mutter », « mi madre », « 母 », « 우리 엄마 »):
-  // never someone else's (« la mère de Paul », « 友達の母 »).
+  // never someone else's (« la mère de Paul », « 友達の母 »). One that owns
+  // another (« de zus van mijn vrouw », « 妻の姉妹 ») is named too.
   const said = new Set(found.map((kin) => kin.phrase));
   for (const mention of kinshipMentions(text)) {
-    if (!mention.own || mention.owner) continue;
+    if (!mention.own) continue;
     const phrase = mention.script === "latin" ? normaliseName(mention.phrase) : mention.phrase;
     if (said.has(phrase)) continue;
     said.add(phrase);

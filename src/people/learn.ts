@@ -161,6 +161,9 @@ export function judgePeople(
       // A word of several kinds (« copine »): the model's choice among them.
       if (mention.kinds.length > 1 && mention.kinds.includes(person.relation)) kind = person.relation;
     } else {
+      // Of a relative named by their relation only (« my colleague's
+      // daughter », « la madre de mi novia »): whom is not known by name.
+      if (kindsOfWord(person.of).length > 0) { drop("of_unnamed"); continue; }
       if (!says(evidence, person.of)) { drop("of_not_said"); continue; }
       // Someone else's relative, said as theirs: « la sœur de Nadine »,
       // « Nadines Schwester », « ナディーンの妹 ».

@@ -189,6 +189,10 @@ test("the learner proposes relations on the person's own words only, in any lang
     p("Marc", "colleague", null, "Mon collègue Marc est marié à Julie."),
     p("Zoé", "daughter", null, "Ma fille s'appelle Zoé"),
   ];
+  // Of someone named by their relation only: whom is not known.
+  const unnamed = judgePeople(parse([p("Lily", "daughter", "colleague", "My colleague's daughter, Lily, just started school."), p("Carmen", "mother", "mi novia", "La madre de mi novia se llama Carmen."), p("恵子さん", "mother", "友達", "友達のお母さんは恵子さんです。")]),
+    { personLines: ["My colleague's daughter, Lily, just started school.", "La madre de mi novia se llama Carmen.", "友達のお母さんは恵子さんです。"] });
+  assert.deepEqual(unnamed.dropped.map((one) => one.reason), ["of_unnamed", "of_unnamed", "of_unnamed"]);
   assert.equal(parse(all).length, 8, "eight people at most from one conversation");
   const judged = judgePeople([...parse(all.slice(0, 7)), ...parse(all.slice(7))], { personLines: lines, language: "fr", selfNames: ["Jimmy Douieb"] });
   const kept = judged.propose.map((one) => `${one.person.name}:${one.kind}:${one.person.of ?? "me"}`);
@@ -246,6 +250,8 @@ test("the person card: on the last message, one hop for « la sœur de ma femme 
   assert.doesNotMatch(personCards(userId, "C'est quand l'anniversaire de ma mère ?", { contacts: false })[0]!.card, /example\.com|Birthday/);
   assert.deepEqual(personCards(userId, "Wie heißt meine Mutter?", { contacts: false }).map((card) => card.name), ["Nadine"]);
   assert.deepEqual(personCards(userId, "우리 엄마 이름이 뭐야?", { contacts: false }).map((card) => card.name), ["Nadine"]);
+  assert.deepEqual(personCards(userId, "Hoe heet de zus van mijn vrouw?", { contacts: false }).map((card) => card.name), ["Élodie", "Léonie"]);
+  assert.deepEqual(personCards(userId, "妻の姉妹の名前は何ですか？", { contacts: false }).map((card) => card.name), ["Élodie", "Léonie"]);
   assert.deepEqual(personCards(userId, "La mère de Paul est malade", { contacts: false }).map((card) => card.name), ["Paul"], "someone else's mother is not hers");
   for (const card of [...hop, ...nadine]) assert.ok(card.card.length <= 600);
 
