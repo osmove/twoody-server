@@ -98,9 +98,33 @@ making one, its folder, export, renaming, archiving, deleting, and switching on 
 this computer's app. To anyone else — another computer, a household member's device, a device paired by code that is
 no member of the history, a browser on the network, the account — a walled-off project does not exist.
 
+**The Agent and Twoody Code** (16/10/2026, Jimmy's go; twoody-desktop `src/main/code/walledFolders.ts`). They work in
+folders the person opens for them, with tools that read files directly — outside this server's walls. The rule, the
+simplest that keeps the promise:
+- a folder that is a walled-off project's documents folder, lies inside one, or holds one (the firm's general folder)
+  cannot be opened for Twoody Code or the Agent — the folder dialog on the computer, « Agent depuis le mobile », Twoody
+  Code's « Autre dossier… » from the iPhone — and is refused with « Ce dossier contient les documents d'un projet
+  cloisonné, ou se trouve parmi eux : Twoody Code et l'Agent ne peuvent pas l'ouvrir. Choisissez un autre dossier. »;
+- every request is checked again before it runs (`WorkspaceStore.touch`, called by `CodeService.send`): a folder opened
+  before its project was walled off, or still among the recent folders, is refused too;
+- which folders are walled off is this server's word, asked by the Desktop's main process with this computer's app
+  session: `GET /local_documents/folders`, the folders whose `project_id` is set (their real paths; compared without
+  case on macOS and Windows, through links). When the server cannot answer and walled-off projects may exist on this
+  computer (a count kept by the Desktop, never a path), the answer is no (« Twoody n'a pas pu vérifier… ») — the last
+  list given in the run is used meanwhile;
+- a link inside an allowed folder that leads elsewhere (into a walled-off folder, say) is neither listed nor read by
+  their file tools (`walk`, `documentsUnder`: only links that stay inside the folder);
+- they never get a walled-off project's notes or conversations: they ask this server nothing, the chat's Agent is off in
+  a walled-off conversation (Desktop `Chat.tsx`), and a conversation handed to the Agent (`sourceDiscussion`) is refused
+  when this server says it is a walled-off one (`GET /discussions/:id` → `isolated_project`).
+Not covered, and said so in the help: a command the person allows Twoody Code to run reaches whatever their account can
+(its approval is the guard), and the files stay ordinary files that other applications open.
+
 **Tests**: `test/isolatedProjects.test.ts` (the conversation's own walls), `test/walledProjects.test.ts` (attack
 tests: the general chat and its `list_files`, another walled-off project, the phone, the websocket, a trusted peer,
 the diagnostics shared, the seeds, a shared folder), `test/walledProjectsPhone.test.ts` (the person's iPhone, and
-every attack of the phone's security review), Desktop `test/walledProjects.test.mjs`. **Bench**:
+every attack of the phone's security review), Desktop `test/walledProjects.test.mjs` and `test/walledCodeFolders.test.mjs`
+(the Agent and Twoody Code: the folder itself, inside, holding, a link to it, the iPhone's grants and folders, a folder
+opened before, a walled-off conversation handed over, the server out of reach). **Bench**:
 `twoody-bench/scripts/walled-projects-bench.mts` (the fictive client file « Tessane », real model; figures in the root
 AGENTS.md §5).
