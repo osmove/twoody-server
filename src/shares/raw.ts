@@ -5,6 +5,7 @@ import { isAbsolute, relative } from "node:path";
 import { sqlite } from "../db.js";
 import { browsedFile } from "../documents/browse.js";
 import { contentType } from "../peerDocuments/raw.js";
+import { within as sameOrInside } from "../documents/samePath.js";
 
 // The originals of a folder shared with « Lire les fichiers » (lot L5,
 // docs/sharing-contracts.md §6): one chunk of one file per request, sealed
@@ -63,8 +64,9 @@ const inside = (parent: string, child: string) => {
   return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 };
 
-/// Whether `path` lies in (or is) one of `folders`.
-const insideAny = (folders: string[], path: string) => folders.some((folder) => folder === path || inside(folder, path));
+/// Whether `path` lies in (or is) one of `folders`, compared as this disk
+/// does (documents/samePath.ts).
+const insideAny = (folders: string[], path: string) => folders.some((folder) => sameOrInside(folder, path));
 
 /// The path of an index row of the share's folders, from the shared folder.
 function documentPath(userId: string, scope: RawScope, documentId: string): string | null {

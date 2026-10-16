@@ -9,6 +9,7 @@ import { asksNothing } from "./query.js";
 import { uiLabels } from "../uiLabels.js";
 import { CJK } from "../intentText.js";
 import { entryKind, skipDirectory, skipFile } from "./walk.js";
+import { within as sameOrInside } from "./samePath.js";
 
 // The files of the person's granted folders as the file system has them —
 // names, sizes, kinds and modification dates of every regular file, indexed
@@ -316,9 +317,12 @@ export interface GrantedRoot {
   walled?: readonly string[];
 }
 
-/// Whether `path` lies in a walled-off project's folder inside `root`.
+/// Whether `path` lies in a walled-off project's folder inside `root`,
+/// compared as this disk does (samePath.ts: case, separators, a trailing dot
+/// or an NTFS stream suffix on Windows); `walled` holds each such folder every
+/// way it may be met from `root` (library.ts listFolders).
 export function walledAt(root: Pick<GrantedRoot, "walled"> | null | undefined, path: string): boolean {
-  return !!root?.walled?.some((wall) => inside(wall, path));
+  return !!root?.walled?.some((wall) => sameOrInside(wall, path));
 }
 
 const MAX_SCAN = 20_000;

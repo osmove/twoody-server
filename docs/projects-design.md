@@ -109,8 +109,10 @@ simplest that keeps the promise:
 - every request is checked again before it runs (`WorkspaceStore.touch`, called by `CodeService.send`): a folder opened
   before its project was walled off, or still among the recent folders, is refused too;
 - which folders are walled off is this server's word, asked by the Desktop's main process with this computer's app
-  session: `GET /local_documents/folders`, the folders whose `project_id` is set (their real paths; compared without
-  case on macOS and Windows, through links). When the server cannot answer and walled-off projects may exist on this
+  session: `GET /local_documents/folders`, the folders whose `project_id` is set, compared with a folder every way
+  either may be written (`src/documents/samePath.ts`, copied into the Desktop: as written, case and what Windows drops
+  folded; as the system resolves it, 8.3 short names, the disk's own case, a drive's real place; by identity). When the
+  server cannot answer and walled-off projects may exist on this
   computer (a count kept by the Desktop, never a path), the answer is no (« Twoody n'a pas pu vérifier… ») — the last
   list given in the run is used meanwhile;
 - a link inside an allowed folder that leads elsewhere (into a walled-off folder, say) is neither listed nor read by
@@ -126,6 +128,15 @@ simplest that keeps the promise:
 Not covered, and said so in the help: a program already running outside Twoody that takes orders from a command (an
 SSH server, Docker over the network, an editor), what a command leaves for the person to run themselves, what an
 allowed command sends over the network, and the files stay ordinary files that other applications open.
+
+**Spellings** (16/10/2026): two grants may name one place two ways — « Z:\Cabinet » and the share it stands for, a
+short name, another case, a link — and Node's JavaScript realpath, which `canonicalFolder` uses, keeps what it is
+given. So the walls are compared the way of `src/documents/samePath.ts` everywhere (`library.ts folderLayout`: which
+folder holds which, the project of each, every spelling of each walled-off folder from each folder holding it — in
+`walled`, in the index pass's skipped folders, in `isolatedInside`, in the file actions' walls), each granted folder's
+place asked of the system once and again in the background after a minute. Before, a walled-off folder granted
+under another spelling than the general folder holding it was indexed under the general folder and found by its chat
+(`test/walledSpellings.test.ts`, 5 attacks, all failing on the code of 811dbd3).
 
 **Tests**: `test/isolatedProjects.test.ts` (the conversation's own walls), `test/walledProjects.test.ts` (attack
 tests: the general chat and its `list_files`, another walled-off project, the phone, the websocket, a trusted peer,

@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, relative } from "node:path";
-import { listFolders } from "../documents/library.js";
+import { grantedPlace, listFolders } from "../documents/library.js";
+import { foldPath, holds, spellingsOf, within as sameOrInside } from "../documents/samePath.js";
 import { folderRisk } from "../documents/folderRisk.js";
 import { scopedFolders } from "../documents/retrieval.js";
 import { capabilityOn } from "../localCapabilities.js";
@@ -131,14 +131,27 @@ export function shareScope(userId: string, share: ShareRow): { root: { id: strin
 }
 
 /// The isolated projects' folders lying inside `rootPath`: never browsed
-/// nor named through a share, though the file system holds them there.
+/// nor named through a share, though the file system holds them there —
+/// each every way it may be met from the shared folder (documents/samePath.ts:
+/// as granted, as the system resolves it, as written from `rootPath`).
 export function isolatedInside(userId: string, rootPath: string): string[] {
-  return listFolders(userId).filter((folder) => folder.project_id && (folder.path === rootPath || within(rootPath, folder.path))).map((folder) => folder.path);
+  const root = grantedPlace(rootPath);
+  return [
+    ...new Set(
+      listFolders(userId)
+        .filter((folder) => folder.project_id)
+        .flatMap((folder) => {
+          const wall = grantedPlace(folder.path);
+          return holds(root.place, wall.place, wall.ids) ? spellingsOf(wall.place, [root.place]) : [];
+        }),
+    ),
+  ];
 }
 
+/// Whether `child` lies under `parent` (not the same folder), compared as
+/// this disk does (documents/samePath.ts).
 export function within(parent: string, child: string): boolean {
-  const rel = relative(parent, child);
-  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  return sameOrInside(parent, child) && foldPath(parent) !== foldPath(child);
 }
 
 export interface ShareRequest {

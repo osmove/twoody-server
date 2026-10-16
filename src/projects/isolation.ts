@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { isAbsolute, relative } from "node:path";
 import { sqlite } from "../db.js";
 import { typedText } from "../documentBlocks.js";
-import { addFolder, canonicalFolder, listFolders, reindex, removeFolder } from "../documents/library.js";
+import { addFolder, canonicalFolder, forgetGrantedPlace, grantedPlace, listFolders, reindex, removeFolder } from "../documents/library.js";
+import { holds, spellingsOf, within as sameOrInside } from "../documents/samePath.js";
 import { normaliseMemoryContent } from "../vault/contracts.js";
 import { ProjectError } from "./projects.js";
 
@@ -107,11 +107,6 @@ export function projectForConversation(userId: string, id: string): { id: string
 
 // ─── Its documents ──────────────────────────────────────────────────────────
 
-function sameOrWithin(parent: string, child: string): boolean {
-  const path = relative(parent, child);
-  return path === "" || (!path.startsWith("..") && !isAbsolute(path));
-}
-
 /// The folders an isolated project owns (not the ones granted inside them,
 /// which are its too).
 export function isolatedFolders(userId: string, projectId: string): ProjectFolder[] {
@@ -132,21 +127,32 @@ export async function linkProjectFolder(userId: string, projectId: string, input
   const row = mustIsolated(userId, projectId);
   if (closedStatus(row.status)) throw new ProjectError(409, "project_closed");
   const path = canonicalFolder(input);
+  forgetGrantedPlace(path);
   const granted = listFolders(userId);
-  const clash = granted.find((folder) => folder.project_id && folder.project_id !== projectId && (sameOrWithin(folder.path, path) || sameOrWithin(path, folder.path)));
+  // Compared however each folder was granted (documents/samePath.ts: another
+  // case, a short name, a mapped drive and its share…).
+  const place = grantedPlace(path);
+  const placeOf = (folder: { path: string }) => grantedPlace(folder.path);
+  const holdsIt = (folder: { path: string }) => holds(placeOf(folder).place, place.place, place.ids);
+  const inIt = (folder: { path: string }) => holds(place.place, placeOf(folder).place, placeOf(folder).ids);
+  const clash = granted.find((folder) => folder.project_id && folder.project_id !== projectId && (holdsIt(folder) || inIt(folder)));
   if (clash) throw new ProjectError(409, "other_project_folder");
-  const existing = granted.find((folder) => folder.path === path);
+  const existing = granted.find((folder) => folder.path === path) ?? granted.find((folder) => holdsIt(folder) && inIt(folder));
   const folderId = existing ? existing.id : (await addFolder(userId, path)).id;
+  // Its documents however a folder holding it wrote them.
+  const spelt = spellingsOf(place.place, granted.filter(holdsIt).map((folder) => placeOf(folder).place));
+  const inside = (candidate: string) => spelt.some((spelling) => sameOrInside(spelling, candidate));
   sqlite.transaction(() => {
     sqlite.prepare("UPDATE document_folders SET project_id = ? WHERE id = ? AND user_id = ?").run(projectId, folderId, userId);
     const folderPaths = new Map(granted.map((folder) => [folder.id, folder.path]));
     const move = sqlite.prepare("UPDATE documents SET folder_id = ? WHERE id = ?");
     for (const document of sqlite.prepare("SELECT id, path, folder_id FROM documents WHERE user_id = ? AND folder_id != ?").all(userId, folderId) as Array<{ id: string; path: string; folder_id: string }>) {
       const holder = folderPaths.get(document.folder_id);
-      if (sameOrWithin(path, document.path) && (!holder || !sameOrWithin(path, holder))) move.run(folderId, document.id);
+      if (inside(document.path) && (!holder || !inside(holder))) move.run(folderId, document.id);
     }
     touch(projectId);
   })();
+  forgetGrantedPlace(path);
   void reindex(userId).catch(() => undefined);
 }
 

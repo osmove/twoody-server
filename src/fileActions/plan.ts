@@ -6,7 +6,8 @@ import { extractSections, isSupported, maxBytesFor } from "../documents/extract.
 import { nodeAliasSystem, plain } from "../documents/folderAliases.js";
 import { folderAtPath } from "../documents/folderListing.js";
 import { fileKind, realHome, safeRoots, walledAt, type GrantedRoot } from "../documents/fileListing.js";
-import { listFolders } from "../documents/library.js";
+import { listFolders, wallSpellings } from "../documents/library.js";
+import { within as sameOrInside } from "../documents/samePath.js";
 import { skipDirectory, skipFile } from "../documents/walk.js";
 import { documentDate, fromTime, isoDay, namedWithDate, type FoundDate } from "./dates.js";
 import type { FileActionKind, FileIntent, SortBy } from "./intent.js";
@@ -83,10 +84,11 @@ function slashed(path: string): string {
 }
 
 /// The granted folders acting may happen in: none of a walled-off
-/// project's, and the folders of walled-off projects to keep out of.
+/// project's, and the folders of walled-off projects to keep out of — each
+/// every way it may be met (library.ts wallSpellings).
 export function actionRoots(userId: string): { roots: GrantedRoot[]; walls: string[] } {
   const folders = listFolders(userId);
-  const walls = folders.filter((folder) => folder.project_id !== null).map((folder) => folder.path);
+  const walls = wallSpellings(userId);
   const roots = safeRoots(folders.filter((folder) => folder.project_id === null).map((folder) => ({ id: folder.id, name: folder.name, path: folder.path, walled: folder.walled })));
   return { roots, walls };
 }
@@ -94,7 +96,7 @@ export function actionRoots(userId: string): { roots: GrantedRoot[]; walls: stri
 /// A folder that is, lies in or holds a walled-off project's folder is
 /// never acted on (twoody-desktop commit a8cce6b's rule for the Agent).
 export function touchesWall(path: string, walls: string[]): boolean {
-  return walls.some((wall) => inside(wall, path) || inside(path, wall));
+  return walls.some((wall) => sameOrInside(wall, path) || sameOrInside(path, wall));
 }
 
 export type FoundFolder =

@@ -3,6 +3,7 @@ import { lstat, opendir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { isSupported } from "./extract.js";
 import { skipDirectory } from "./folderNames.js";
+import { foldPath } from "./samePath.js";
 
 // How a granted folder is walked, and what is never read inside it.
 //
@@ -67,7 +68,9 @@ export interface Walk {
 
 export interface WalkOptions {
   /// Folders not entered: granted on their own, they are walked for
-  /// themselves and must not spend this folder's share.
+  /// themselves and must not spend this folder's share; a walled-off
+  /// project's folder is never read from another (library.ts folderLayout
+  /// gives each every way the walk may meet it).
   skip?: string[];
   /// Files indexed already: a full folder keeps them.
   keep?: Set<string>;
@@ -87,7 +90,9 @@ export function permissionDenied(error: unknown): boolean {
 export async function walk(root: string, maxFiles = MAX_FILES_PER_FOLDER, options: WalkOptions = {}): Promise<Walk> {
   const files: string[] = [];
   const denied: string[] = [];
-  const skip = new Set(options.skip ?? []);
+  // Compared as this disk does (samePath.ts): a folder granted on its own
+  // may be written with another case, or another way, than the walk meets it.
+  const skip = new Set((options.skip ?? []).map((path) => foldPath(path)));
   const pending = [root];
   let listedAll = true;
   let ignored = 0;
@@ -105,7 +110,7 @@ export async function walk(root: string, maxFiles = MAX_FILES_PER_FOLDER, option
       // Symlinks are not followed: a link must not widen the grant.
       const kind = await entryKind(entry, path);
       if (kind === "dir") {
-        if (!skipDirectory(entry.name) && !skip.has(path)) pending.push(path);
+        if (!skipDirectory(entry.name) && !skip.has(foldPath(path))) pending.push(path);
       } else if (kind === "file" && !skipFile(entry.name)) {
         if (isSupported(path)) files.push(path);
         else ignored += 1;

@@ -14,6 +14,7 @@ import { capabilityOn, setLocalCapability } from "../localCapabilities.js";
 import { folderReadable, walk } from "./walk.js";
 import { buildGramsQuery, buildMatchQuery, metadataScore, queryTerms, selectPassages, termsFound } from "./query.js";
 import { cjkSnippet, hasCjk, indexGrams } from "./cjk.js";
+import { holds, identitiesOn, identitiesOnAsync, pathPlace, pathPlaceAsync, spellingsOf, within as sameOrInside, type PathPlace } from "./samePath.js";
 
 // The user's document library: the folders they granted, the index
 // built from them, and the search that feeds /queries.
@@ -65,6 +66,90 @@ export function folderName(path: string): string {
 /// Files of each folder the last pass could not read (walk.ts `ignored`).
 const ignoredByFolder = new Map<string, number>();
 
+// ─── Where the granted folders are ─────────────────────────────────────────
+//
+// Two grants may name one place two ways — « Z:\Cabinet » and
+// « \\nas\cabinet\Clients\Tessane », a short name, another case — and a
+// walled-off project's folder must be met however a walk, a listing or the
+// system writes it (samePath.ts). Each granted folder's place is asked of the
+// system once, then kept: asked again in the background after a minute, so a
+// network drive out of reach costs one wait, never one per request.
+
+const PLACE_FRESH_MS = 60_000;
+const placeCache = new Map<string, { place: PathPlace; ids: string[]; at: number }>();
+let placesRefreshing = false;
+
+/// A granted folder's place, and the identities of the folders on its way.
+export function grantedPlace(path: string): { place: PathPlace; ids: string[] } {
+  const known = placeCache.get(path);
+  if (known) {
+    if (Date.now() - known.at > PLACE_FRESH_MS) refreshPlaces();
+    return known;
+  }
+  const place = pathPlace(path);
+  const fresh = { place, ids: identitiesOn(place.real), at: Date.now() };
+  placeCache.set(path, fresh);
+  return fresh;
+}
+
+/// A folder granted, taken back or walled off now: its place asked again at
+/// its next use.
+export function forgetGrantedPlace(path: string): void {
+  placeCache.delete(path);
+  layoutMemo = null;
+}
+
+function refreshPlaces(): void {
+  if (placesRefreshing) return;
+  placesRefreshing = true;
+  void (async () => {
+    for (const path of [...placeCache.keys()]) {
+      const place = await pathPlaceAsync(path).catch(() => null);
+      if (place && placeCache.has(path)) placeCache.set(path, { place, ids: await identitiesOnAsync(place.real), at: Date.now() });
+    }
+  })().finally(() => {
+    placesRefreshing = false;
+    layoutMemo = null;
+  });
+}
+
+type FolderRow = { id: string; path: string; projectId: string | null };
+type Placed = FolderRow & { place: PathPlace; ids: string[] };
+
+export interface FolderLayout {
+  placed: Placed[];
+  /// The granted folders holding each one (or naming the same place), however each is written.
+  holders: Map<string, Placed[]>;
+  /// The walled-off project each folder belongs to (`folderProjects`).
+  projectOf: Map<string, string | null>;
+  /// Every spelling of each folder worth comparing with what lies under the folders holding it.
+  spellings: Map<string, string[]>;
+  /// Each folder's spellings as written from one folder holding it: holder id → folder id → spellings.
+  spelledFrom: Map<string, Map<string, string[]>>;
+}
+
+let layoutMemo: { key: string; at: number; layout: FolderLayout } | null = null;
+
+/// The granted folders with their places, which holds which, the walled-off
+/// project each belongs to — its own, else that of the deepest walled-off
+/// folder holding it: a folder granted inside one is that project's too,
+/// whatever was granted first, and so is the same folder granted again under
+/// another spelling — and their spellings. Kept for as long as their places.
+export function folderLayout(rows: ReadonlyArray<FolderRow>): FolderLayout {
+  const key = [...rows].map((row) => `${row.id}\u0000${row.path}\u0000${row.projectId ?? ""}`).sort().join("\n");
+  if (layoutMemo && layoutMemo.key === key && Date.now() - layoutMemo.at <= PLACE_FRESH_MS) return layoutMemo.layout;
+  const placed: Placed[] = rows.map((row) => ({ id: row.id, path: row.path, projectId: row.projectId ?? null, ...grantedPlace(row.path) }));
+  const holders = new Map(placed.map((inner) => [inner.id, placed.filter((outer) => outer.id !== inner.id && holds(outer.place, inner.place, inner.ids))]));
+  const owners = placed.filter((row) => row.projectId).sort((a, b) => b.place.real.length - a.place.real.length);
+  const projectOf = new Map(placed.map((row) => [row.id, row.projectId ?? owners.find((owner) => holders.get(row.id)!.includes(owner))?.projectId ?? null]));
+  const spelledFrom = new Map<string, Map<string, string[]>>(placed.map((outer) => [outer.id, new Map()]));
+  for (const inner of placed) for (const outer of holders.get(inner.id)!) spelledFrom.get(outer.id)!.set(inner.id, spellingsOf(inner.place, [outer.place]));
+  const spellings = new Map(placed.map((row) => [row.id, [...new Set([row.place.path, row.place.real, ...holders.get(row.id)!.flatMap((outer) => spelledFrom.get(outer.id)!.get(row.id)!)])]]));
+  const layout = { placed, holders, projectOf, spellings, spelledFrom };
+  layoutMemo = { key, at: Date.now(), layout };
+  return layout;
+}
+
 export function listFolders(userId: string) {
   const counts = sqlite
     .prepare(
@@ -84,7 +169,8 @@ export function listFolders(userId: string) {
     .where(eq(documentFolders.userId, userId))
     .all()
     .sort((a, b) => a.path.localeCompare(b.path));
-  const projectOf = folderProjects(rows);
+  const layout = folderLayout(rows);
+  const projectOf = layout.projectOf;
   return rows.map((folder) => {
     const project = projectOf.get(folder.id) ?? null;
     const count = byFolder.get(folder.id);
@@ -103,18 +189,39 @@ export function listFolders(userId: string) {
       // The folders of another isolated project lying inside it: never
       // walked, listed, browsed nor read from it (fileListing.ts walledAt) —
       // a walled-off project's documents are reached through its own folder,
-      // in its own conversations only.
-      walled: rows.filter((other) => other.id !== folder.id && other.path !== folder.path && (projectOf.get(other.id) ?? null) !== null && (projectOf.get(other.id) ?? null) !== project && within(folder.path, other.path)).map((other) => other.path),
+      // in its own conversations only. Each one every way it may be met from
+      // here (samePath.ts): as granted, as the system resolves it, and as
+      // written from this folder.
+      walled: wallsIn(layout, folder.id, project),
     };
   });
 }
 
+/// The folders of a walled-off project other than `project` that lie in
+/// folder `id` (or are it, granted again under another spelling), every way
+/// they may be met from it.
+function wallsIn(layout: FolderLayout, id: string, project: string | null): string[] {
+  const from = layout.spelledFrom.get(id);
+  if (!from) return [];
+  const walls = layout.placed.filter((other) => other.id !== id && (layout.projectOf.get(other.id) ?? null) !== null && layout.projectOf.get(other.id) !== project && from.has(other.id));
+  return [...new Set(walls.flatMap((other) => from.get(other.id)!))];
+}
+
+/// Every spelling of every walled-off project's folder granted here: as
+/// granted, as the system resolves it, and as written from each granted
+/// folder holding it — what the Agent in the chat keeps out of
+/// (fileActions/plan.ts).
+export function wallSpellings(userId: string): string[] {
+  const layout = folderLayout(db.select().from(documentFolders).where(eq(documentFolders.userId, userId)).all());
+  return [...new Set(layout.placed.filter((folder) => layout.projectOf.get(folder.id)).flatMap((folder) => layout.spellings.get(folder.id)!))];
+}
+
 /// The isolated project each granted folder belongs to: its own, else that
 /// of an isolated project's folder holding it — a folder granted inside one
-/// is that project's too, whatever was granted first.
+/// is that project's too, whatever was granted first, and however each was
+/// written (folderLayout).
 export function folderProjects(rows: ReadonlyArray<{ id: string; path: string; projectId: string | null }>): Map<string, string | null> {
-  const owned = rows.filter((row) => row.projectId).sort((a, b) => b.path.length - a.path.length);
-  return new Map(rows.map((row) => [row.id, row.projectId ?? owned.find((folder) => within(folder.path, row.path))?.projectId ?? null]));
+  return folderLayout(rows).projectOf;
 }
 
 /// Grants a folder. Its first entry is read before it is kept, so that
@@ -133,6 +240,7 @@ export async function addFolder(userId: string, input: string, personalRoot = fa
 
   const id = generateId();
   db.insert(documentFolders).values({ id, userId, path, createdAt: new Date() }).run();
+  forgetGrantedPlace(path);
   // Granting a folder is asking for Documents — the way to switch it on
   // for a computer without a screen (a Pi), where Capacités is not shown.
   setLocalCapability(userId, "documents", true);
@@ -157,6 +265,7 @@ export function removeFolder(userId: string, folderId: string): boolean {
     sqlite.prepare("DELETE FROM documents WHERE folder_id = ?").run(folderId);
     sqlite.prepare("DELETE FROM document_folders WHERE id = ?").run(folderId);
   })();
+  forgetGrantedPlace(folder.path);
   return true;
 }
 
@@ -208,16 +317,21 @@ export async function reindex(userId: string): Promise<IndexStatus> {
     const folders = db.select().from(documentFolders).where(eq(documentFolders.userId, userId)).all().sort((a,b)=>b.path.length-a.path.length);
     const work: Array<{ folderId: string; path: string }> = [];
     const seen = new Set<string>();
+    // Where each folder is, asked of the system before the walk, without
+    // holding the event loop (a network drive out of reach).
+    await warmGrantedPlaces(folders.map((folder) => folder.path));
+    const layout = folderLayout(folders);
 
     for (const folder of folders) {
-      // Granted subfolders are walked for themselves (longest path first);
-      // the files this one indexed already, and when it was last read,
-      // decide what a full folder keeps (walk.ts).
-      const inside = folders.filter((other) => other.id !== folder.id && within(folder.path, other.path));
+      // Granted subfolders are walked for themselves (longest path first),
+      // met however each was written (folderLayout); the files this one
+      // indexed already, and when it was last read, decide what a full
+      // folder keeps (walk.ts).
+      const inside = layout.spelledFrom.get(folder.id) ?? new Map<string, string[]>();
       const indexed = sqlite.prepare("SELECT path, indexed_at AS indexedAt FROM documents WHERE user_id = ? AND folder_id = ?").all(userId, folder.id) as Array<{ path: string; indexedAt: number | null }>;
       const last = indexed.reduce<number | null>((latest, row) => (row.indexedAt !== null && (latest === null || row.indexedAt > latest) ? row.indexedAt : latest), null);
       const scan = await walk(folder.path, undefined, {
-        skip: inside.map((other) => other.path),
+        skip: [...inside.values()].flat(),
         keep: new Set(indexed.map((row) => row.path)),
         since: last,
       });
@@ -254,16 +368,30 @@ export async function reindex(userId: string): Promise<IndexStatus> {
   return status;
 }
 
-/// The deepest granted folder holding a file, now.
+/// The deepest granted folder holding a file, now — however the walk that
+/// found it, or Spotlight, wrote it (folderLayout's spellings).
 function holderOf(userId: string, path: string): string | null {
-  const folders = sqlite.prepare("SELECT id, path FROM document_folders WHERE user_id = ?").all(userId) as Array<{ id: string; path: string }>;
-  return folders.filter((folder) => within(folder.path, path)).sort((a, b) => b.path.length - a.path.length)[0]?.id ?? null;
+  const folders = sqlite.prepare("SELECT id, path, project_id AS projectId FROM document_folders WHERE user_id = ?").all(userId) as FolderRow[];
+  const layout = folderLayout(folders);
+  // The deepest; between two grants of one place, the one walled off itself.
+  return (
+    layout.placed
+      .filter((folder) => layout.spellings.get(folder.id)!.some((spelt) => sameOrInside(spelt, path)))
+      .sort((a, b) => b.place.real.length - a.place.real.length || Number(!!b.projectId) - Number(!!a.projectId))[0]?.id ?? null
+  );
 }
 
-/// Whether `child` lies under `parent` (not the same folder).
-function within(parent: string, child: string): boolean {
-  const path = relative(parent, child);
-  return path !== "" && !path.startsWith("..") && !isAbsolute(path);
+/// The places of these folders asked of the system without holding the
+/// event loop: the index pass does so before it walks them.
+async function warmGrantedPlaces(paths: string[]): Promise<void> {
+  await Promise.all(
+    paths
+      .filter((path) => !placeCache.has(path))
+      .map(async (path) => {
+        const place = await pathPlaceAsync(path).catch(() => null);
+        if (place && !placeCache.has(path)) placeCache.set(path, { place, ids: await identitiesOnAsync(place.real), at: Date.now() });
+      }),
+  );
 }
 
 /// One file read into the index now, outside a pass (a file Spotlight found

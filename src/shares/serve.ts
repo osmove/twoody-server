@@ -7,6 +7,7 @@ import { semanticStatus } from "../documents/semantic.js";
 import { checkShareRequest, isolatedInside, readShareRequest, type ShareError } from "./policy.js";
 import { RAW_CHUNK_BYTES, MAX_SHARED_FILE_BYTES, readSharedChunk, type RawAudit, type RawRef } from "./raw.js";
 import { recordShareAccess } from "./store.js";
+import { within as sameOrInside } from "../documents/samePath.js";
 
 // A grantee's request on a folder shared from this computer, once its
 // sealed body is open (docs/sharing-contracts.md §2): checked
@@ -93,11 +94,9 @@ export function sharedPath(rootPath: string, path: string): string | null {
   return rel.split(sep).join("/");
 }
 
-/// Whether `path` lies in (or is) one of `folders`.
-const insideAny = (folders: string[], path: string) => folders.some((folder) => {
-  const rel = relative(folder, path);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-});
+/// Whether `path` lies in (or is) one of `folders`, compared as this disk
+/// does (documents/samePath.ts).
+const insideAny = (folders: string[], path: string) => folders.some((folder) => sameOrInside(folder, path));
 
 /// The check made before a request is opened: `{op: "check"}` as the bridge
 /// worker sends it (the Desktop's main process passes on an object only),
