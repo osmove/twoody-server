@@ -305,6 +305,16 @@ message.
   `{status: "done", result: {sealed: true}}`. A model no runtime lists is
   refused (`model_not_installed`): the backend can never trigger a download.
   The poll loop must not wait for a completion (presence lasts 90 s).
+- A guest's turn is answered without reasoning (`bareCompletion`:
+  `enable_thinking: false`, `reasoning_effort: "none"`): with Qwen3.5's
+  default reasoning, Jimmy's daughter waited 35.7 s for a first word, 33 s
+  of it unseen reasoning (18/10/2026). Her phone's warm (`{warm: true}` in
+  the sealed body, twoody-app `utils/sharedTurn.js`) is answered at once and
+  empty whatever happens; it is read only for the model the runtime holds,
+  awake or asleep (`executors/localModels.ts modelHeldNow`, and llama.cpp's
+  router asked `?autoload=false`), once per grant every 15 s, never during
+  that grant's turn, one at a time (`compute/guestWarm.ts`,
+  `test/guestWarm.test.ts`).
 - The task queue is in memory (`taskMap` in `routes/bridge.ts`).
 - The JSON schema written for the macOS worker,
   `bridge-v1.schema.json`, lives in the dormant `twoody-mac` repository

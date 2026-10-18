@@ -41,6 +41,11 @@ export interface LlmInferHooks {
   onDelta?: (text: string) => void;
   /// Reported once the run is over, for the worker's heartbeat.
   onStats?: (stats: { model: string; completionTokens: number; latencyMs: number }) => void;
+  /// Only if the runtime holds the model now (a guest's warm,
+  /// compute/guestWarm.ts): llama.cpp's router is asked with
+  /// `?autoload=false`, and answers 400 « model is not loaded » rather than
+  /// loading it — a model asleep is woken, it is still the one it holds.
+  onlyIfLoaded?: boolean;
 }
 
 export async function runLlmInfer(args: Record<string, unknown>, hooks: LlmInferHooks = {}): Promise<LlmInferResult> {
@@ -59,7 +64,7 @@ export async function runLlmInfer(args: Record<string, unknown>, hooks: LlmInfer
   const request = { ...body, model, stream: true, stream_options: { include_usage: true } };
 
   const post = (payload: object) =>
-    outboundFetch(`${endpoint}/chat/completions`, {
+    outboundFetch(`${endpoint}/chat/completions${hooks.onlyIfLoaded ? "?autoload=false" : ""}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...runtimeAuthHeaders(endpoint) },
       body: JSON.stringify(payload),
@@ -67,10 +72,12 @@ export async function runLlmInfer(args: Record<string, unknown>, hooks: LlmInfer
     });
 
   let res = await post(request);
-  // `chat_template_kwargs` and `stream_options` are extensions a strict
-  // runtime may refuse; the completion works without them.
+  // `chat_template_kwargs`, `reasoning_effort` and `stream_options` are
+  // extensions a strict runtime may refuse; the completion works without
+  // them.
   if (res.status === 400 || res.status === 422) {
-    const { chat_template_kwargs: _kwargs, stream_options: _options, ...plain } = request as Record<string, unknown>;
+    await res.body?.cancel().catch(() => undefined);
+    const { chat_template_kwargs: _kwargs, reasoning_effort: _effort, stream_options: _options, ...plain } = request as Record<string, unknown>;
     res = await post(plain);
   }
   if (!res.ok || !res.body) {

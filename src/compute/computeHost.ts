@@ -267,16 +267,23 @@ export function createComputeHost({ path, now = Date.now, store }: { path: strin
   /// lines — `{"h": header}`, then `{"c": piece}`…, the last one final. Text
   /// is gathered as the relay paces it and sealed when it leaves, so the
   /// pieces are numbered in the order they go.
+  ///
+  /// A guest's warm (`{warm: true}` in the sealed body, isWarmRequest) is
+  /// answered at once, empty, and the same way whatever follows; what it
+  /// asks is then handed to `warm` (compute/guestWarm.ts decides whether it
+  /// runs), never to `runModel`. Without `warm`, nothing runs.
   async function runSealedTurn({
     args,
     runModel,
     send,
     minIntervalMs,
+    warm,
   }: {
     args: SealedTurnArgs;
     runModel: (openaiBody: Record<string, unknown>, onPiece: (text: string) => void) => Promise<{ model?: string }>;
     send: (line: string) => Promise<void>;
     minIntervalMs?: number;
+    warm?: (openaiBody: Record<string, unknown>, grantId: string) => void;
   }): Promise<{ sealed: true }> {
     const grantId = String(args.principal?.grant_id ?? "");
     const guestKey = args.guest_key;
@@ -298,6 +305,26 @@ export function createComputeHost({ path, now = Date.now, store }: { path: strin
     });
     const answer = startComputeResponse(turn);
     const line = (value: unknown) => `${JSON.stringify(value)}\n`;
+    if (isWarmRequest(body)) {
+      // Checked before anything is answered, as a question is.
+      let asked: Record<string, unknown>;
+      try {
+        asked = warmCompletion(body);
+        // Two lines, no text, nothing of the outcome: the guest (and the
+        // account in between) learns neither whether this computer slept,
+        // was busy or holds that model, nor whether the read ran.
+        await send(line({ h: answer.header }));
+        await send(line({ c: answer.finish("") }));
+      } finally {
+        forgetTurn(turn);
+      }
+      try {
+        warm?.(asked, grantId);
+      } catch {
+        // A read ahead that cannot start changes nothing for the guest.
+      }
+      return { sealed: true };
+    }
     const relay = createDeltaRelay((text) => send(line({ c: answer.piece(text) })), { minIntervalMs });
     try {
       await send(line({ h: answer.header }));
@@ -394,6 +421,19 @@ export function createComputeHost({ path, now = Date.now, store }: { path: strin
 
 /// What the model is given of the question: text messages and a bound on
 /// the answer, nothing else — no tools, whatever the sealed body says.
+///
+/// And no reasoning before the answer, as the owner's own chat by default
+/// (« Rapide », routes/queries.ts streamLocal): Qwen3.5's chat template
+/// reasons unless told not to, and a guest's phone has no effort to choose.
+/// On Jimmy's M5 (18/10/2026), the first word of his daughter's question
+/// came 35.7 s after it, 33 s of them reasoning nobody saw (751 tokens
+/// written, the answer the last 10 or so); the next one, 8.3 s, 7.5 of them
+/// reasoning (the runtime's own log). The bench's model on that Mac, the
+/// phone's body asked directly: first word 15 to 64 s with reasoning, 0.5 to
+/// 0.7 s without; the whole way, AGENTS.md §5 (twoody-bench
+/// scripts/shared-compute-bench.mts). llama.cpp, mlx-lm and vLLM read
+/// `chat_template_kwargs`, Ollama `reasoning_effort`; a runtime that refuses
+/// either is asked again without (executors/llmInfer.ts).
 export function bareCompletion(body: unknown): Record<string, unknown> {
   const value = (body ?? {}) as { model?: unknown; messages?: unknown; max_tokens?: unknown; temperature?: unknown };
   if (!Array.isArray(value.messages)) throw new Error("sealed_turn_malformed");
@@ -410,5 +450,23 @@ export function bareCompletion(body: unknown): Record<string, unknown> {
     messages,
     max_tokens: maxTokens,
     temperature: typeof value.temperature === "number" ? Math.min(Math.max(value.temperature, 0), 2) : 0.2,
+    chat_template_kwargs: { enable_thinking: false },
+    reasoning_effort: "none",
   };
+}
+
+/// A guest's warm (twoody-app utils/sharedTurn.js warmBody): sent when the
+/// conversation with this computer is opened or the first letter typed, so
+/// that the model wakes if it slept and the conversation so far is read
+/// before the question comes (compute/guestWarm.ts).
+export function isWarmRequest(body: unknown): boolean {
+  return !!body && typeof body === "object" && (body as { warm?: unknown }).warm === true;
+}
+
+/// What a warm may ask of the model: the same messages as a question (the
+/// conversation so far, its last message empty, so that what is read is
+/// the very start of the next question), one token written, no tools and
+/// no reasoning — whatever the sealed body says.
+export function warmCompletion(body: unknown): Record<string, unknown> {
+  return { ...bareCompletion(body), max_tokens: 1, temperature: 0 };
 }

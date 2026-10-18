@@ -113,6 +113,75 @@ test("the model gets text messages and a bound, never tools", () => {
     max_tokens: 1_000_000,
     messages: [{ role: "system", content: "s" }, { role: "tool", content: "x" }, { role: "user", content: "q", name: "n" }, { role: "user", content: 3 }],
   });
-  assert.deepEqual(body, { model: "qwen3-14b", messages: [{ role: "system", content: "s" }, { role: "user", content: "q" }], max_tokens: 4096, temperature: 0.2 });
+  assert.deepEqual(body, {
+    model: "qwen3-14b",
+    messages: [{ role: "system", content: "s" }, { role: "user", content: "q" }],
+    max_tokens: 4096,
+    temperature: 0.2,
+    chat_template_kwargs: { enable_thinking: false },
+    reasoning_effort: "none",
+  });
   assert.throws(() => bareCompletion({ messages: [] }), /malformed/);
+});
+
+test("no reasoning before the answer, whatever the guest's body asks (18/10/2026: 33 s of it before the first word)", () => {
+  const body = bareCompletion({
+    messages: [{ role: "user", content: "q" }],
+    chat_template_kwargs: { enable_thinking: true },
+    reasoning_effort: "high",
+    thinking_budget_tokens: 50_000,
+  });
+  assert.deepEqual(body.chat_template_kwargs, { enable_thinking: false });
+  assert.equal(body.reasoning_effort, "none");
+  assert.equal("thinking_budget_tokens" in body, false);
+});
+
+test("a warm is answered at once and empty, the same with or without a read; what it asks goes to `warm`, bounded, never to the model's turn", async () => {
+  const { host, ask, args } = setup();
+  const body = { warm: true, model: "qwen3-14b", max_tokens: 9_999, tools: [{ type: "function" }], messages: [{ role: "system", content: "s" }, { role: "user", content: "Bonjour" }, { role: "assistant", content: "Salut" }, { role: "user", content: "" }] };
+  const answers: Array<{ text: string; lines: number; extra: unknown[] }> = [];
+  const asked: Array<{ body: Record<string, unknown>; grant: string }> = [];
+  for (const [index, withWarm] of [true, false].entries()) {
+    const { request, turn } = ask(`w-${index}`, body);
+    const lines: string[] = [];
+    let modelRan = false;
+    await host.runSealedTurn({
+      args: args(request) as never,
+      minIntervalMs: 0,
+      send: async (line) => void lines.push(line),
+      runModel: async () => {
+        modelRan = true;
+        return {};
+      },
+      ...(withWarm ? { warm: (warmBody: Record<string, unknown>, grant: string) => void asked.push({ body: warmBody, grant }) } : {}),
+    });
+    assert.equal(modelRan, false, "a warm never runs as a question");
+    const parsed = lines.map((line) => JSON.parse(line));
+    const reader = openComputeResponse(turn, parsed[0].h);
+    const pieces = parsed.slice(1).map((line) => reader.open(line.c));
+    assert.equal(reader.done, true);
+    answers.push({ text: pieces.map((piece) => piece.text).join(""), lines: lines.length, extra: pieces.map((piece) => piece.extra) });
+  }
+  assert.deepEqual(answers[0], answers[1], "the guest cannot tell");
+  assert.deepEqual(answers[0], { text: "", lines: 2, extra: [{}] });
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0]!.grant, "5");
+  assert.deepEqual(asked[0]!.body, {
+    model: "qwen3-14b",
+    messages: body.messages,
+    max_tokens: 1,
+    temperature: 0,
+    chat_template_kwargs: { enable_thinking: false },
+    reasoning_effort: "none",
+  });
+});
+
+test("a malformed warm is refused before anything is answered, as a question is", async () => {
+  const { host, ask, args } = setup();
+  const { request } = ask("w-bad", { warm: true, messages: [] });
+  const lines: string[] = [];
+  let warmed = false;
+  await assert.rejects(host.runSealedTurn({ args: args(request) as never, minIntervalMs: 0, send: async (line) => void lines.push(line), runModel: async () => ({}), warm: () => void (warmed = true) }), /malformed/);
+  assert.deepEqual(lines, []);
+  assert.equal(warmed, false);
 });

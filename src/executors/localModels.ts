@@ -99,6 +99,47 @@ export async function downloadedModels(): Promise<string[]> {
   return [...seen];
 }
 
+/// What the runtime serving `model` says of it now: llama.cpp's router
+/// (Twoody Desktop's engine, and the server's own, builtin/manager.ts)
+/// lists each model with a status — « loaded », « sleeping » (its process
+/// let the weights go after --sleep-idle-seconds and loads them again at
+/// the next request), « loading », « unloaded », « failed ». Null when the
+/// runtime says nothing of it (Ollama, LM Studio, a single-model server) or
+/// cannot be reached. Never cached: it changes from one request to the next.
+export async function runtimeModelStatus(endpoint: string, model: string): Promise<string | null> {
+  try {
+    const res = await outboundFetch(`${endpoint}/models`, {
+      headers: runtimeAuthHeaders(endpoint),
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined);
+      return null;
+    }
+    const payload = (await res.json()) as { data?: Array<{ id?: unknown; status?: unknown }> };
+    const row = (payload.data ?? []).find((entry) => entry.id === model);
+    const status = typeof row?.status === "string" ? row.status : (row?.status as { value?: unknown } | null | undefined)?.value;
+    return typeof status === "string" ? status : null;
+  } catch {
+    return null;
+  }
+}
+
+/// Whether the runtime holds this model now, awake or asleep: what a
+/// guest's warm may read for (compute/guestWarm.ts). Never a model the
+/// runtime would have to load — another one than the one in memory, one
+/// not installed, or any model of a runtime that cannot say which it holds.
+export async function modelHeldNow(requested: unknown): Promise<boolean> {
+  let target: { endpoint: string; model: string };
+  try {
+    target = await resolveTarget(requested);
+  } catch {
+    return false;
+  }
+  const status = await runtimeModelStatus(target.endpoint, target.model);
+  return status === "loaded" || status === "sleeping";
+}
+
 export class ModelNotInstalledError extends Error {
   constructor(model: string) {
     super(`model_not_installed: ${model}`);

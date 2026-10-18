@@ -3,8 +3,10 @@
 //
 // What it runs (11/10/2026, end to end everywhere): another person's turn
 // on a computer shared with them (llm_infer sealed with computeSeal, a
-// compute grant's principal) and a request on a folder shared from here
-// (share_request, sealed the same way). Nothing else. The account is taken
+// compute grant's principal) — or their warm, the same sealed task, read
+// ahead only for the model the runtime holds (compute/guestWarm.ts,
+// 18/10/2026) — and a request on a folder shared from here (share_request,
+// sealed the same way). Nothing else. The account is taken
 // as possibly malicious (AGENTS.md rule 12): a task in clear — a completion
 // of the person's own (llm_infer without a seal), a document search or
 // read, a folder listing, a transcription, an OCR, a Home Assistant call
@@ -38,9 +40,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import { createComputeHost, isSealedTurn, type ComputeKeyStore, type ServeShare } from "./compute/computeHost.js";
+import { createGuestWarmer } from "./compute/guestWarm.js";
 import { createDeltaRelay } from "./executors/completionStream.js";
 import { executeBridgeTask } from "./executors/index.js";
-import { configuredDefaultModel, downloadedModels } from "./executors/localModels.js";
+import { configuredDefaultModel, downloadedModels, modelHeldNow } from "./executors/localModels.js";
 import { outboundFetch } from "./outbound.js";
 import { registerShareHostIdentity } from "./shares/hostIdentity.js";
 
@@ -277,6 +280,14 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   // What the last completions looked like, for the heartbeat.
   let lastModel: string | null = null;
   let tokensPerSecond: number | null = null;
+  // A guest's warm (compute/guestWarm.ts): read for the model the runtime
+  // holds only, rarely, one at a time; its answer is not this worker's to
+  // report (no onServed, no heartbeat figures).
+  const guestWarmer = createGuestWarmer({
+    run: (body) => executeBridgeTask("llm_infer", { openai_body_json: JSON.stringify(body) }, { onlyIfLoaded: true }),
+    held: modelHeldNow,
+    log: (_grantId, outcome) => console.log(`[bridge-client] guest warm: ${outcome}`),
+  });
 
   void pollLoop();
 
@@ -456,6 +467,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   /// account relays blocks it cannot read (compute/computeHost.ts).
   async function runSealedInference(task: Task): Promise<unknown> {
     if (!computeHost) throw new Error("shared_task_refused");
+    const grantId = String((task.args.principal as { grant_id?: unknown } | undefined)?.grant_id ?? "");
     return computeHost.runSealedTurn({
       args: task.args,
       send: (line) =>
@@ -463,19 +475,27 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
           console.warn(`[bridge-client] sealed piece not delivered for task ${task.id}: ${err instanceof Error ? err.message : err}`);
         }),
       runModel: async (body, onPiece) => {
-        const result = (await executeBridgeTask("llm_infer", { openai_body_json: JSON.stringify(body) }, {
-          onDelta: onPiece,
-          onStats: ({ model, completionTokens, latencyMs }) => {
-            lastModel = model;
-            opts.onServed?.(model);
-            if (completionTokens > 0 && latencyMs > 0) {
-              const measured = completionTokens / (latencyMs / 1000);
-              tokensPerSecond = tokensPerSecond === null ? measured : tokensPerSecond * 0.7 + measured * 0.3;
-            }
-          },
-        })) as { model_used?: string };
-        return { model: result?.model_used };
+        const ended = guestWarmer.turnStarted(grantId);
+        try {
+          const result = (await executeBridgeTask("llm_infer", { openai_body_json: JSON.stringify(body) }, {
+            onDelta: onPiece,
+            onStats: ({ model, completionTokens, latencyMs }) => {
+              lastModel = model;
+              opts.onServed?.(model);
+              if (completionTokens > 0 && latencyMs > 0) {
+                const measured = completionTokens / (latencyMs / 1000);
+                tokensPerSecond = tokensPerSecond === null ? measured : tokensPerSecond * 0.7 + measured * 0.3;
+              }
+            },
+          })) as { model_used?: string };
+          return { model: result?.model_used };
+        } finally {
+          ended();
+        }
       },
+      // Answered at once by computeHost; read here when allowed, never
+      // awaited by the task.
+      warm: (body, warmGrant) => void guestWarmer.request(warmGrant, body),
     });
   }
 
