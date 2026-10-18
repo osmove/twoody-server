@@ -178,8 +178,16 @@ before it answers and gives this computer's app each walled-off folder's `state`
 and `found_by` (a device never `found`). A pass is started as soon as a request finds a walled-off folder away
 from its path. Not covered, and said so: during a copy to another disk, the copy is an ordinary folder until the
 original is removed; a disk without stable file numbers (FAT, exFAT) loses the identity on a move, so the folder
-is `missing` there; the screens (the notice on the project's page, the Documents banner, the iPhone) and the
-Desktop's Agent and Code, which take the walls from the server, come next in twoody-desktop and twoody-app.
+is `missing` there. The screens and the Desktop's Agent and Code (18/10/2026): twoody-desktop
+`WalledProjectPage.tsx` (« Dossier introuvable », « Retrouvé ailleurs » with where and how, « Disque non branché »;
+« Retrouver le dossier » asking again with `confirm` on `folder_not_same`, « C'est bien lui », « Retirer du projet »),
+« Projets », Documents' banner while the folders wait and a chip on each, browsing a folder that waits, the « Agir »
+card's `paused` reason; twoody-app's walled-off project page, « Projets » and Documents (read only: found again on the
+computer); the Agent and Code take `identity`, `state` and `found` (`walledFolders.ts`): a walled-off folder hidden
+from their file tools by its identity wherever it is (on any device while it is away), a folder inside it refused at
+its new place, one that cannot be placed — missing, not where this server says, its found place gone — pausing their
+requests, tool calls and commands outside its project, its found place masked for commands. A sandbox masks paths:
+a command already running when the Finder moves such a folder keeps the mask it started with.
 
 **Tests**: `test/isolatedProjects.test.ts` (the conversation's own walls), `test/walledProjects.test.ts` (attack
 tests: the general chat and its `list_files`, another walled-off project, the phone, the websocket, a trusted peer,
@@ -189,6 +197,9 @@ connected, on a disk mounted again, into another walled-off project's folder —
 pass), `test/walledProjectsPhone.test.ts` (the person's iPhone, and
 every attack of the phone's security review), Desktop `test/walledProjects.test.mjs` and `test/walledCodeFolders.test.mjs`
 (the Agent and Twoody Code: the folder itself, inside, holding, a link to it, the iPhone's grants and folders, a folder
-opened before, a walled-off conversation handed over, the server out of reach). **Bench**:
+opened before, a walled-off conversation handed over, the server out of reach), `test/walledMovedCode.test.mjs` (the
+folder renamed in place, moved in, its parent renamed, renamed in case only, a link or a junction to it, moved while
+Code is open, the server silent, copied then removed, its disk mounted again; the commands' mask list, the real
+Seatbelt and bubblewrap) and `test/walledMovedScreens.test.mjs`; twoody-app `test/screens/WalledMoved.test.js`. **Bench**:
 `twoody-bench/scripts/walled-projects-bench.mts` (the fictive client file « Tessane », real model; figures in the root
 AGENTS.md §5).
