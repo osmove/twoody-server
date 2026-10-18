@@ -4673,7 +4673,7 @@
     },
     "/projects/{id}/folders/{folder_id}": {
       "put": {
-        "summary": "Where the folder of an isolated project's documents is now, after it was renamed or moved outside Twoody (« Retrouver le dossier »)",
+        "summary": "Where the folder of an isolated project's documents is now, after it was renamed or moved outside Twoody (« Retrouver le dossier »); a folder that is neither the same one nor holds its documents answers 409 folder_not_same unless `confirm` is true",
         "tags": [
           "projects"
         ],
@@ -4691,6 +4691,9 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 4096
+                  },
+                  "confirm": {
+                    "type": "boolean"
                   }
                 }
               }
@@ -12682,7 +12685,7 @@
     },
     "/api/v1/projects/{id}/folders/{folder_id}": {
       "put": {
-        "summary": "Where the folder of an isolated project's documents is now, after it was renamed or moved outside Twoody (« Retrouver le dossier »)",
+        "summary": "Where the folder of an isolated project's documents is now, after it was renamed or moved outside Twoody (« Retrouver le dossier »); a folder that is neither the same one nor holds its documents answers 409 folder_not_same unless `confirm` is true",
         "tags": [
           "projects"
         ],
@@ -12700,6 +12703,9 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 4096
+                  },
+                  "confirm": {
+                    "type": "boolean"
                   }
                 }
               }

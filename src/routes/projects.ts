@@ -23,8 +23,10 @@ import {
 // (desktop_app_only), and a device never sees the computer's paths. Its
 // own routes:
 //   POST   /projects/:id/folders             { path } → the folder of its documents
-//   PUT    /projects/:id/folders/:folder_id  { path } → « Retrouver le dossier »: where it is now, after it was renamed
-//                                              or moved outside Twoody (documents/wallPlaces.ts; its `state` says so)
+//   PUT    /projects/:id/folders/:folder_id  { path, confirm? } → « Retrouver le dossier »: where it is now, after it was
+//                                              renamed or moved outside Twoody (documents/wallPlaces.ts; its `state` says so);
+//                                              409 folder_not_same for a folder that is neither the same one nor holds its
+//                                              documents, unless `confirm` (the person was told and said it is the one)
 //   DELETE /projects/:id/folders/:folder_id  → no longer its (the files stay)
 //   GET    /projects/:id/export              → everything of it, for the app to write where the person says
 // and, for any project, its notes:
@@ -181,18 +183,18 @@ export async function projectRoutes(app: FastifyInstance) {
     },
   });
 
-  app.put<{ Params: { id: string; folder_id: string }; Body: { path?: unknown } }>("/projects/:id/folders/:folder_id", {
+  app.put<{ Params: { id: string; folder_id: string }; Body: { path?: unknown; confirm?: unknown } }>("/projects/:id/folders/:folder_id", {
     schema: {
       tags: ["projects"],
-      summary: "Where the folder of an isolated project's documents is now, after it was renamed or moved outside Twoody (« Retrouver le dossier »)",
+      summary: "Where the folder of an isolated project's documents is now, after it was renamed or moved outside Twoody (« Retrouver le dossier »); a folder that is neither the same one nor holds its documents answers 409 folder_not_same unless `confirm` is true",
       security,
-      body: { type: "object", required: ["path"], properties: { path: { type: "string", minLength: 1, maxLength: 4096 } } },
+      body: { type: "object", required: ["path"], properties: { path: { type: "string", minLength: 1, maxLength: 4096 }, confirm: { type: "boolean" } } },
     },
     handler: async (req, reply) => {
       const auth = await reachIsolated(req, reply, req.params.id);
       if (!auth) return;
       try {
-        relinkProjectFolder(auth.userId, req.params.id, req.params.folder_id, String(req.body.path));
+        relinkProjectFolder(auth.userId, req.params.id, req.params.folder_id, String(req.body.path), req.body.confirm === true);
         reply.send({ project: projectDetail(auth.userId, req.params.id) });
       } catch (err) { fail(reply, err); }
     },

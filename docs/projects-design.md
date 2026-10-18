@@ -163,7 +163,10 @@ Now each one is also known:
   none of its documents is listed, browsed or read into another folder's index, wherever it lies (`walledPrints`).
   A copy made while the original is at its path is an ordinary folder, as before.
 Found nowhere while its disk is connected (`missing`), it may be anywhere: until the person finds it again on the
-project's page (« Retrouver le dossier », `PUT /projects/:id/folders/:folder_id {path}`, this computer's app only)
+project's page (« Retrouver le dossier », `PUT /projects/:id/folders/:folder_id {path}`, this computer's app only;
+a folder that is neither the same one — its identity, or its file number on a disk mounted again — nor holds its
+documents answers `409 folder_not_same`, and is linked only with `confirm: true` once the person, told so, says it
+is the one: a wrong folder linked would end the pause while the real one, a copy say, lies in a general folder)
 or takes it out of the project, nothing new is read in any folder outside its project — the index pass reads no
 new file there, the listings say so to the model without naming anything (`pausedNote`), browsing answers
 `folder_paused`, « Agir dans vos dossiers » answers in the person's language, a share serves nothing — what was

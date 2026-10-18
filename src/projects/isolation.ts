@@ -3,7 +3,8 @@ import { sqlite } from "../db.js";
 import { typedText } from "../documentBlocks.js";
 import { addFolder, canonicalFolder, forgetGrantedPlace, grantedPlace, listFolders, moveWall, reindex, removeFolder } from "../documents/library.js";
 import { holds, spellingsOf, within as sameOrInside } from "../documents/samePath.js";
-import { forgetWall, recordPlace, type WallState } from "../documents/wallPlaces.js";
+import { documentsFoundAt, forgetWall, recordPlace, type WallState } from "../documents/wallPlaces.js";
+import { anyDevice, folderIdentity } from "../documents/wallIdentity.js";
 import { normaliseMemoryContent } from "../vault/contracts.js";
 import { ProjectError } from "./projects.js";
 
@@ -176,11 +177,23 @@ export async function linkProjectFolder(userId: string, projectId: string, input
 /// (library.ts moveWall); an ordinary folder granted there on its own becomes
 /// the project's (its grant goes, its files stay, as linkProjectFolder does).
 /// Another project's folder holding it or inside it is refused.
-export function relinkProjectFolder(userId: string, projectId: string, folderId: string, input: string): void {
+///
+/// A folder that is not the one it was — neither the same folder (its
+/// identity, or its file number on a disk mounted again) nor one holding its
+/// documents (name, place, size and date) — is refused with
+/// « folder_not_same » unless `confirmed`: the person is told first and says
+/// it is the one (Desktop WalledProjectPage.tsx). Linking a wrong folder would
+/// end the pause while the real one, a copy say, lies in a general folder.
+export function relinkProjectFolder(userId: string, projectId: string, folderId: string, input: string, confirmed = false): void {
   mustIsolated(userId, projectId);
-  const row = sqlite.prepare("SELECT id, path, project_id AS projectId FROM document_folders WHERE id = ? AND project_id = ? AND user_id = ?").get(folderId, projectId, userId) as { id: string; path: string; projectId: string } | undefined;
+  const row = sqlite.prepare("SELECT id, path, project_id AS projectId, identity FROM document_folders WHERE id = ? AND project_id = ? AND user_id = ?").get(folderId, projectId, userId) as { id: string; path: string; projectId: string; identity: string | null } | undefined;
   if (!row) throw new ProjectError(404, "folder_not_found");
   const path = canonicalFolder(input);
+  if (!confirmed) {
+    const here = folderIdentity(path);
+    const same = !!row.identity && !!here && (here === row.identity || anyDevice(here) === anyDevice(row.identity));
+    if (!same && !documentsFoundAt(userId, row, path)) throw new ProjectError(409, "folder_not_same");
+  }
   let outcome = moveWall(userId, row, path);
   if (outcome === "already_added") {
     const place = grantedPlace(path);

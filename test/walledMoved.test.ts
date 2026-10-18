@@ -304,6 +304,43 @@ test("found nowhere, its disk connected: nothing new is read outside its project
   assert.doesNotMatch(generalSearch(), /11 300|4 120/);
 });
 
+test("« Retrouver le dossier » pointed at another folder: said first (folder_not_same) and nothing changes; linked once the person confirms", async () => {
+  const garnier = join(base, "Externe", "Garnier");
+  mkdirSync(garnier, { recursive: true });
+  writeFileSync(join(garnier, "mandat-garnier.txt"), "Mandat Garnier : honoraires de 6 210 euros.");
+  const made = await app.inject({ method: "POST", url: "/api/v1/projects", headers: desktop, payload: { title: "Garnier", isolated: true, folder_path: garnier } });
+  assert.equal(made.statusCode, 201, made.body);
+  const project = (made.json().project as { id: string }).id;
+  await indexed();
+  const id = listFolders(owner).find((folder) => folder.project_id === project)!.id;
+  const folder = () => listFolders(owner).find((each) => each.id === id) as Folder & { state: string };
+  // Put where Twoody does not look (the Trash, say): found nowhere, everything else waits.
+  mkdirSync(join(base, "Corbeille"));
+  renameSync(garnier, join(base, "Corbeille", "Garnier"));
+  await indexed();
+  assert.equal(folder().state, "missing");
+  assert.ok(generalRoots().every((each) => each.paused));
+  // Another folder, neither the same one nor holding its documents: said, nothing done.
+  const other = join(base, "Autre-dossier");
+  mkdirSync(other);
+  writeFileSync(join(other, "sans-rapport.txt"), "Rien à voir avec Garnier.");
+  const asked = await app.inject({ method: "PUT", url: `/api/v1/projects/${project}/folders/${id}`, headers: desktop, payload: { path: other } });
+  assert.equal(asked.statusCode, 409, asked.body);
+  assert.equal(asked.json().error, "folder_not_same");
+  assert.deepEqual({ path: folder().path, state: folder().state }, { path: garnier, state: "missing" });
+  assert.ok(generalRoots().every((each) => each.paused), "still waiting: nothing was linked");
+  // Neither from a phone, confirmed or not.
+  assert.equal((await app.inject({ method: "PUT", url: `/api/v1/projects/${project}/folders/${id}`, headers: phone, payload: { path: other, confirm: true } })).statusCode, 404);
+  // The person says it is the one: linked, and nothing waits any more.
+  const linked = await app.inject({ method: "PUT", url: `/api/v1/projects/${project}/folders/${id}`, headers: desktop, payload: { path: other, confirm: true } });
+  assert.equal(linked.statusCode, 200, linked.body);
+  await indexed();
+  assert.deepEqual({ path: folder().path, state: folder().state }, { path: other, state: "ok" });
+  assert.ok(generalRoots().every((each) => !each.paused));
+  assert.match(projectSearch(project, "rien à voir"), /Rien à voir/);
+  assert.doesNotMatch(generalSearch("rien à voir"), /Rien à voir/);
+});
+
 test("its disk not connected: nothing waits, and none of its documents is read elsewhere meanwhile", async () => {
   const project = projects["Lefèvre"]!;
   const wall = wallOf(project);

@@ -252,12 +252,9 @@ function printsOf(userId: string, places: readonly WallPlace[], project: string 
   return byName.size ? { names: new Set(byName.keys()), byName, counts } : null;
 }
 
-/// Whether `at` holds what was indexed of the walled-off folder: one of its
-/// documents at the same place in it, of the same size and date — or it had
-/// none to compare.
-export function documentsThere(userId: string, place: Pick<WallPlace, "path">, at: string): boolean {
-  const documents = documentsOf(userId, place, 50);
-  if (!documents.length) return true;
+/// Whether one of `documents` is in `at` at the same place, of the same size
+/// and date.
+function oneThere(documents: ReadonlyArray<{ size: number; mtime: number; rel: string }>, at: string): boolean {
   return documents.some((document) => {
     try {
       const info = statSync(join(at, document.rel));
@@ -266,4 +263,22 @@ export function documentsThere(userId: string, place: Pick<WallPlace, "path">, a
       return false;
     }
   });
+}
+
+/// Whether `at` holds what was indexed of the walled-off folder: one of its
+/// documents at the same place in it, of the same size and date — or it had
+/// none to compare.
+export function documentsThere(userId: string, place: Pick<WallPlace, "path">, at: string): boolean {
+  const documents = documentsOf(userId, place, 50);
+  return !documents.length || oneThere(documents, at);
+}
+
+/// Whether `at` holds one of the documents indexed of the walled-off folder
+/// (the same place in it, size and date); false when none was indexed —
+/// nothing to know it by. « Retrouver le dossier » (projects/isolation.ts
+/// relinkProjectFolder): a folder that is neither the same one nor holds its
+/// documents is linked only once the person confirms.
+export function documentsFoundAt(userId: string, place: Pick<WallPlace, "path">, at: string): boolean {
+  const documents = documentsOf(userId, place, 50);
+  return documents.length > 0 && oneThere(documents, at);
 }
