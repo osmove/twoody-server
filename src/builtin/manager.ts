@@ -8,8 +8,10 @@ import { Writable } from "node:stream";
 
 import { outboundFetch } from "../outbound.js";
 import { accelerationArgs, retryOnCpu, selectRuntimeEngine, START_TIMEOUT_MS, type RuntimeEngine } from "./acceleration.js";
+import { loadCatalog } from "./catalog.js";
 import { failureOf, type RuntimeFailure } from "./failure.js";
 import { serverBinaryName } from "./runtimeManifest.js";
+import { createSlotSwitch, routerLoadedModel, routerQuiet, runtimeSlots, slotArgs } from "./slots.js";
 
 // llama.cpp's server, run by twoody-server itself on a computer without the
 // Desktop app: a Pi, a Linux server, a Docker container. Ported from
@@ -37,7 +39,13 @@ import { serverBinaryName } from "./runtimeManifest.js";
 //     server is stopped by the next start — only when its command line is
 //     a llama-server with our models folder, since pids are reused;
 //   - restarted after a crash, at most three times in ten minutes, with a
-//     growing wait between tries.
+//     growing wait between tries;
+//   - one slot, or two when the computer is shared with someone and has 24
+//     GB or more (slots.ts, the Desktop's rule; told by the bridge client,
+//     setShared): every model installed must take them, each slot its own
+//     window. A change starts the runtime again at a quiet moment — never
+//     during an answer, at most once every ten minutes —, and the model it
+//     held is loaded again (onSlotsSwitched).
 
 const FIRST_PORT = 47831;
 const PORTS_TRIED = 10;
@@ -107,6 +115,15 @@ export interface RuntimeManagerOptions {
   restartBackoffMs?: number[];
   /// Tests: the GPU probe of acceleration.ts.
   probe?: (binary: string) => Promise<string>;
+  /// Whether this computer is shared with someone, until setShared says
+  /// otherwise.
+  shared?: boolean;
+  /// After the runtime started again with other slots: the model it held
+  /// awake before (null when none), to load it again and read the starts
+  /// of the people's conversations, as after a sleep (engine.ts).
+  onSlotsSwitched?: (switched: { slots: number; baseUrl: string; wasLoaded: string | null }) => void;
+  /// Tests: how a pending switch waits for its moment (slots.ts createSlotSwitch).
+  slotSwitch?: { pollMs?: number; minIntervalMs?: number };
 }
 
 export interface RuntimeStatus {
@@ -123,6 +140,8 @@ export interface RuntimeStatus {
   threads: number | null;
   threadsBatch: number | null;
   idleSeconds: number;
+  /// The slots of the running process, or the ones it would start with.
+  slots: number;
 }
 
 export interface RuntimeManager {
@@ -143,6 +162,10 @@ export interface RuntimeManager {
   address(): Promise<{ baseUrl: string; key: string } | null>;
   available(): boolean;
   installedModels(): Promise<string[]>;
+  /// This computer is shared with someone now, or no longer is (the
+  /// account's grants, bridgeClient.ts): the slots follow, switched at a
+  /// quiet moment when the runtime runs.
+  setShared(shared: boolean): void;
 }
 
 /// The context the model gets: 8k on ARM Linux (a Pi's memory and speed),
@@ -173,9 +196,10 @@ export function platformArgs(platform: string, arch: string): string[] {
   return platform === "linux" && arch === "arm64" ? ["--ubatch-size", "128", "--load-mode", "none"] : [];
 }
 
-/// Memory a model needs to load: its file × 1.15, plus the KV cache of the context.
-export function memoryNeeded(fileBytes: number, ctx: number): number {
-  return Math.ceil(fileBytes * MODEL_OVERHEAD + ctx * KV_BYTES_PER_TOKEN);
+/// Memory a model needs to load: its file × 1.15, plus the KV cache of the
+/// context — of each slot's, with two (slots.ts).
+export function memoryNeeded(fileBytes: number, ctx: number, slots = 1): number {
+  return Math.ceil(fileBytes * MODEL_OVERHEAD + ctx * Math.max(1, slots) * KV_BYTES_PER_TOKEN);
 }
 
 /// MemAvailable of /proc/meminfo, in bytes; null elsewhere than Linux.
@@ -198,6 +222,8 @@ export function runtimeArgs(options: {
   threads: number | null;
   threadsBatch?: number | null;
   idleSeconds: number;
+  /// Slots, each with `ctx` tokens (slots.ts): one unless the computer is shared.
+  slots?: number;
   extra?: string[];
 }): string[] {
   return [
@@ -209,8 +235,7 @@ export function runtimeArgs(options: {
     "--offline",
     "--no-webui",
     "--cors-origins", "http://twoody.invalid",
-    "--parallel", "1",
-    "--ctx-size", String(options.ctx),
+    ...slotArgs(options.slots ?? 1, options.ctx),
     ...(options.threads ? ["--threads", String(options.threads)] : []),
     ...(options.threadsBatch ? ["--threads-batch", String(options.threadsBatch)] : []),
     ...(options.extra ?? []),
@@ -279,6 +304,9 @@ export function createRuntimeManager(options: RuntimeManagerOptions): RuntimeMan
   let crashes: number[] = [];
   let restartTimer: NodeJS.Timeout | null = null;
   let stopping = false;
+  let shared = options.shared ?? false;
+  /// The slots of the running process; null while none runs.
+  let runningSlots: number | null = null;
 
   const binaryPath = () => join(binaryDir, serverBinaryName(platform));
   const available = () => !managedByDesktop && existsSync(binaryPath());
@@ -312,6 +340,24 @@ export function createRuntimeManager(options: RuntimeManagerOptions): RuntimeMan
     } catch {
       return [];
     }
+  }
+
+  /// The slots the runtime starts with: two when the computer is shared,
+  /// from 24 GB, if every model installed takes them (its catalogue
+  /// figures, its file; the cache in 16 bits, as this runtime keeps it) —
+  /// the router loads whichever is asked with the same options.
+  async function plannedSlots(): Promise<number> {
+    if (!shared) return 1;
+    const ids = await installedModels();
+    if (ids.length === 0) return 1;
+    const catalog = loadCatalog(env).models;
+    let slots = Number.POSITIVE_INFINITY;
+    for (const id of ids) {
+      const entry = catalog.find((model) => model.id === id);
+      const bytes = await fs.stat(join(modelsDir, `${id}.gguf`)).then((stat) => stat.size, () => null);
+      slots = Math.min(slots, runtimeSlots({ totalMemory: totalMemory(), shared, modelBytes: bytes, figures: entry?.memory ?? null, f16Cache: true }));
+    }
+    return Number.isFinite(slots) ? slots : 1;
   }
 
   async function reservePort(): Promise<number> {
@@ -398,7 +444,7 @@ export function createRuntimeManager(options: RuntimeManagerOptions): RuntimeMan
     const loaded = baseUrl ? await loadedModel() : null;
     if (loaded === model) return;
     const { ctx } = settings();
-    const needed = memoryNeeded(size, ctx);
+    const needed = memoryNeeded(size, ctx, runningSlots ?? (await plannedSlots()));
     let free = await availableMemory().catch(() => null);
     if (free === null) {
       // No MemAvailable (macOS): the computer's memory, less a quarter for the rest.
@@ -439,14 +485,15 @@ export function createRuntimeManager(options: RuntimeManagerOptions): RuntimeMan
     const port = await reservePort();
     const url = `http://127.0.0.1:${port}/v1`;
     const { ctx, threads, threadsBatch, idleSeconds } = settings();
+    const slots = await plannedSlots();
     const childEnv = runtimeEnvironment();
 
     engine = await selectRuntimeEngine(binaryDir, platform, childEnv, cpuOnly, options.probe);
     const selected = engine;
     const output = runtimeLog(join(stateDir, "runtime.log"), apiKey);
-    output.write(`[twoody] acceleration=${selected.backend} devices=${selected.devices} cpu-fallback=${cpuOnly} ctx=${ctx} threads=${threads ?? "auto"}/${threadsBatch ?? "auto"}\n`);
+    output.write(`[twoody] acceleration=${selected.backend} devices=${selected.devices} cpu-fallback=${cpuOnly} ctx=${ctx} slots=${slots} threads=${threads ?? "auto"}/${threadsBatch ?? "auto"}\n`);
     const extra = platformArgs(platform, arch);
-    const proc = spawn(selected.binary, runtimeArgs({ backend: selected.backend, port, modelsDir, ctx, threads, threadsBatch, idleSeconds, extra }), {
+    const proc = spawn(selected.binary, runtimeArgs({ backend: selected.backend, port, modelsDir, ctx, threads, threadsBatch, idleSeconds, slots, extra }), {
       cwd: dirname(selected.binary),
       stdio: ["ignore", "pipe", "pipe"],
       // Nothing of the server's environment is the runtime's business.
@@ -478,7 +525,8 @@ export function createRuntimeManager(options: RuntimeManagerOptions): RuntimeMan
           baseUrl = url;
           lastFailure = null;
           wasRunning = true;
-          log(`[runtime] llama-server running on 127.0.0.1:${port} (${selected.backend}, ctx ${ctx})`);
+          runningSlots = slots;
+          log(`[runtime] llama-server running on 127.0.0.1:${port} (${selected.backend}, ctx ${ctx}${slots > 1 ? `, ${slots} slots` : ""})`);
           return url;
         }
       } catch {
@@ -509,6 +557,7 @@ export function createRuntimeManager(options: RuntimeManagerOptions): RuntimeMan
     const proc = child;
     child = null;
     baseUrl = null;
+    runningSlots = null;
     await fs.rm(pidFile, { force: true }).catch(() => undefined);
     if (!proc || proc.exitCode !== null || proc.signalCode !== null || proc.pid === undefined) return;
     const exited = new Promise<void>((resolve) => proc.once("exit", () => resolve()));
@@ -539,6 +588,23 @@ export function createRuntimeManager(options: RuntimeManagerOptions): RuntimeMan
       return null;
     }
   }
+
+  // Shared or no longer: the slots switched at a quiet moment, by starting
+  // the runtime again (its port and key stay); the model it held loaded
+  // again by the caller (onSlotsSwitched), as after a sleep.
+  const slotSwitch = createSlotSwitch({
+    needed: async () => Boolean(child && baseUrl) && runningSlots !== null && runningSlots !== (await plannedSlots()),
+    quiet: async () => (baseUrl ? routerQuiet(baseUrl, apiKey, outboundFetch as typeof fetch) : false),
+    apply: async () => {
+      const before = baseUrl;
+      const wasLoaded = before ? await routerLoadedModel(before, apiKey, outboundFetch as typeof fetch) : null;
+      log(`[runtime] ${shared ? "shared with someone" : "no longer shared"}: starting the runtime again with ${await plannedSlots()} slot(s)`);
+      const running = await manager.restart();
+      if (running) options.onSlotsSwitched?.({ slots: runningSlots ?? 1, baseUrl: running.baseUrl, wasLoaded });
+    },
+    log,
+    ...options.slotSwitch,
+  });
 
   const manager: RuntimeManager = {
     async ensure({ model } = {}) {
@@ -591,6 +657,7 @@ export function createRuntimeManager(options: RuntimeManagerOptions): RuntimeMan
         threads,
         threadsBatch,
         idleSeconds,
+        slots: runningSlots ?? 1,
       };
     },
     loadedModel,
@@ -607,6 +674,11 @@ export function createRuntimeManager(options: RuntimeManagerOptions): RuntimeMan
     },
     available,
     installedModels,
+    setShared(next) {
+      if (next === shared) return;
+      shared = next;
+      slotSwitch.request();
+    },
   };
   return manager;
 }

@@ -12,7 +12,9 @@
 // scripts/shared-compute-bench.mts, see AGENTS.md §5): the runtime asleep,
 // the model loads again in 1 to 2.3 s and reads everything from nothing;
 // the conversation going on, the next question reads only itself instead of
-// the whole last answer.
+// the whole last answer. On a computer with two slots (shared, 24 GB or
+// more: builtin/slots.ts) the warm is read on the guests' slot, where the
+// question will come — never on the owner's (bridgeClient.ts, `guest`).
 //
 // What a guest may make this computer do with it (AGENTS.md rule 12, the
 // account taken as possibly malicious; test/guestWarm.test.ts):

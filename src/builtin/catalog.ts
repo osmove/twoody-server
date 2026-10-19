@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { VERIFIED_MODELS } from "./catalogData.js";
 import type { MemoryFigures, MlxVariant, ModelFamily, ModelUse, VerifiedModel } from "./catalogTypes.js";
 import { catalogMemoryNeed, minRamFor } from "./memory.js";
+import { runtimeSlots } from "./slots.js";
 
 export type { MemoryFigures, MlxFile, MlxVariant, ModelFamily, ModelUse, VerifiedModel } from "./catalogTypes.js";
 export { CATALOG_VERIFIED_AT } from "./catalogData.js";
@@ -119,6 +120,10 @@ export interface MachineFacts {
   /// `dedicatedGpuMemory()` in acceleration.ts), in bytes; null or absent for
   /// none, an integrated one (it shares the system's memory) or unknown.
   dedicatedVramBytes?: number | null;
+  /// Shared with someone now (slots.ts): llama.cpp gives the people it is
+  /// shared with a slot of their own from 24 GB, and a model's « mémoire
+  /// nécessaire » counts it. Never changes which model is recommended.
+  shared?: boolean;
 }
 
 const GIB = 1024 ** 3;
@@ -268,7 +273,22 @@ export function catalogView(
     installed: installed.has(model.id),
     recommended: model.id === recommended,
     fits: modelFits(model, totalRamBytes),
-    memoryNeed: catalogMemoryNeed(model, totalRamBytes),
+    memoryNeed: catalogMemoryNeed(model, totalRamBytes, "llamacpp", catalogSlots(model, totalRamBytes, machine)),
     ...(mlx ? { mlx: { id: mlx.id, bytes: mlx.bytes, memoryNeed: catalogMemoryNeed({ ...model, mlx }, totalRamBytes, "mlx") } } : {}),
   }));
+}
+
+/// llama.cpp's slots for a catalogue model on this computer (slots.ts): two
+/// when it is shared with someone, from 24 GB, if the model takes them.
+export function catalogSlots(model: Pick<CatalogModel, "bytes" | "memory" | "vision">, totalRamBytes: number, machine: MachineFacts = {}): number {
+  return runtimeSlots({
+    totalMemory: totalRamBytes,
+    shared: machine.shared === true,
+    modelBytes: model.bytes,
+    figures: model.memory ?? null,
+    visionBytes: model.vision?.bytes ?? null,
+    // On a PC's graphics card of its own, llama.cpp's cache is in 16 bits.
+    deviceMemory: machine.dedicatedVramBytes ?? null,
+    f16Cache: !!machine.dedicatedVramBytes,
+  });
 }

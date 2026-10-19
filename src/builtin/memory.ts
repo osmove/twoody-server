@@ -10,6 +10,9 @@
 //        + state      = recurrent state (linear attention, Mamba…), fixed
 //        + 0.3 GiB    = the engine's work buffers
 //        + vision     = its vision file + 0.3 GiB to read an image (llama.cpp only)
+//        + another slot's KV cache, sliding layers and state, for each slot
+//          past the first (slots.ts: two on a computer shared with someone,
+//          from 24 GB; each slot has its own whole window)
 //
 // - weights: the GGUF file (llama.cpp maps it whole), or the MLX folder's
 //   safetensors;
@@ -61,6 +64,22 @@ export interface MemoryInput {
   context: number;
   engine: EngineKind;
   visionBytes?: number | null;
+  /// llama.cpp's slots, each with its own whole `context` (slots.ts): one,
+  /// unless the computer is shared. Ignored on MLX, which keeps a cache per
+  /// request as it comes (mlx-lm's batching) and reserves none ahead.
+  slots?: number;
+}
+
+/// What one llama.cpp slot holds for a window of `context` tokens: its KV
+/// cache, its sliding layers and its recurrent state. Measured with b11146
+/// on an M5 (19/10/2026): Qwen3.5 9B at 32 768 tokens, 544 MiB of q8_0
+/// cache and 50 MiB of state — the model's process 571 MB larger with a
+/// second slot (2 295 MB against 1 724 at load, the weights left out).
+export function slotMemory(figures: MemoryFigures, context: number, engine: EngineKind): number {
+  const factor = engine === "llamacpp" && figures.hybrid ? Q8_0_FACTOR : 1;
+  const kv = figures.kvBytesPerToken * context * factor;
+  const swa = figures.swa ? figures.swa.bytesPerToken * Math.min(context, figures.swa.window + SWA_BATCH) * factor : 0;
+  return kv + swa + figures.stateBytes;
 }
 
 /// The formula above, in bytes.
@@ -70,17 +89,23 @@ export function memoryNeed(input: MemoryInput): number {
   const kv = figures.kvBytesPerToken * context * factor;
   const swa = figures.swa ? figures.swa.bytesPerToken * Math.min(context, figures.swa.window + SWA_BATCH) * factor : 0;
   const vision = input.engine === "llamacpp" && input.visionBytes ? input.visionBytes + VISION_BUFFERS_BYTES : 0;
-  return input.weightsBytes + kv + swa + figures.stateBytes + WORK_BUFFERS_BYTES + vision;
+  // Summed as before for one slot, to the byte: the site's calculator and
+  // its Ruby port compare these figures exactly (memory-parity.json).
+  const extraSlots = input.engine === "llamacpp" ? Math.max(0, Math.floor(input.slots ?? 1) - 1) : 0;
+  const more = extraSlots > 0 ? extraSlots * slotMemory(figures, context, input.engine) : 0;
+  return input.weightsBytes + kv + swa + figures.stateBytes + WORK_BUFFERS_BYTES + vision + more;
 }
 
 /// What a catalogue entry needs on a computer with `totalMemory` bytes, as
 /// Twoody would run it there: llama.cpp with its vision file when it has
 /// one, or MLX (text only) when `engine` says so and the entry has an MLX
-/// folder. Null for an entry without figures (a test catalogue).
+/// folder. `slots`: llama.cpp's on this computer (slots.ts runtimeSlots).
+/// Null for an entry without figures (a test catalogue).
 export function catalogMemoryNeed(
   entry: { bytes: number; vision?: { bytes: number } | null; memory?: MemoryFigures | null; mlx?: { weightsBytes: number } | null },
   totalMemory: number,
   engine: EngineKind = "llamacpp",
+  slots = 1,
 ): number | null {
   if (!entry.memory) return null;
   const context = twoodyContext({ hybrid: entry.memory.hybrid, totalMemory });
@@ -88,7 +113,7 @@ export function catalogMemoryNeed(
     if (!entry.mlx) return null;
     return memoryNeed({ weightsBytes: entry.mlx.weightsBytes, figures: entry.memory, context, engine });
   }
-  return memoryNeed({ weightsBytes: entry.bytes, figures: entry.memory, context, engine, visionBytes: entry.vision?.bytes ?? null });
+  return memoryNeed({ weightsBytes: entry.bytes, figures: entry.memory, context, engine, visionBytes: entry.vision?.bytes ?? null, slots });
 }
 
 /// What a Mac lets its GPU use of its memory (Metal's

@@ -46,6 +46,7 @@ import { executeBridgeTask } from "./executors/index.js";
 import { configuredDefaultModel, downloadedModels, modelHeldNow } from "./executors/localModels.js";
 import { outboundFetch } from "./outbound.js";
 import { registerShareHostIdentity } from "./shares/hostIdentity.js";
+import { SHARED_CHECK_EVERY_MS, sharedFromGrants } from "./builtin/slots.js";
 
 /// What a worker that serves requests on shared folders declares.
 export const FOLDER_SHARE_CAPABILITY = "folder-share-provider";
@@ -167,6 +168,13 @@ export interface BridgeClientOptions {
   /// process in the Desktop's worker (bridgeWorker.ts). Without it, share
   /// requests are refused.
   serveShare?: ServeShare;
+  /// Told whether this computer is shared with someone now — an active,
+  /// unexpired grant of its models on the account (builtin/slots.ts
+  /// sharedFromGrants) —, asked at start, every SHARED_CHECK_EVERY_MS and
+  /// when a grant ends: what decides its runtime's slots when this server
+  /// runs its own (`twoody serve`, a Pi: engine.ts). Twoody Desktop asks in
+  /// its main process instead (computeSharing.ts), its worker passes none.
+  onComputeShared?: (shared: boolean) => void;
 }
 
 export type BridgeClientState = "online" | "auth_failed" | "unreachable";
@@ -284,19 +292,56 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   // holds only, rarely, one at a time; its answer is not this worker's to
   // report (no onServed, no heartbeat figures).
   const guestWarmer = createGuestWarmer({
-    run: (body) => executeBridgeTask("llm_infer", { openai_body_json: JSON.stringify(body) }, { onlyIfLoaded: true }),
+    // On the guests' slot, when the runtime has two (runtimeSlots.ts).
+    run: (body) => executeBridgeTask("llm_infer", { openai_body_json: JSON.stringify(body) }, { onlyIfLoaded: true, guest: true }),
     held: modelHeldNow,
     log: (_grantId, outcome) => console.log(`[bridge-client] guest warm: ${outcome}`),
   });
 
   void pollLoop();
+  // Whether this computer is shared now, for its runtime's slots.
+  let sharedTimer: NodeJS.Timeout | null = null;
+  if (opts.onComputeShared) void checkShared();
 
   return {
     stop() {
       stopped = true;
+      if (sharedTimer) clearTimeout(sharedTimer);
+      sharedTimer = null;
     },
     deviceId,
   };
+
+  /// The account's grants of this computer: shared or not, told to the host
+  /// on each clear answer; nothing said when the account cannot be asked
+  /// (what was known stands). Asked again when the first grant with an end
+  /// runs out.
+  async function checkShared(): Promise<void> {
+    if (stopped || !opts.onComputeShared) return;
+    let next = SHARED_CHECK_EVERY_MS;
+    try {
+      const root = opts.backendUrl.replace(/\/+$/, "").replace(/\/api\/v1$/, "");
+      const res = await outboundFetch(`${root}/api/v1/compute_grants`, {
+        method: "GET",
+        headers: { ...authHeaders, Accept: "application/json" },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (res.ok) {
+        const answer = sharedFromGrants(await res.json().catch(() => null), deviceId);
+        if (answer) {
+          opts.onComputeShared(answer.shared);
+          if (answer.until !== null) next = Math.min(next, Math.max(1_000, answer.until - Date.now() + 1_000));
+        }
+      } else {
+        await res.body?.cancel().catch(() => undefined);
+      }
+    } catch {
+      // asked again later
+    }
+    if (stopped) return;
+    sharedTimer = setTimeout(() => void checkShared(), next);
+    sharedTimer.unref?.();
+  }
 
   async function pollLoop() {
     let consecutiveFailures = 0;
@@ -478,6 +523,8 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
         const ended = guestWarmer.turnStarted(grantId);
         try {
           const result = (await executeBridgeTask("llm_infer", { openai_body_json: JSON.stringify(body) }, {
+            // On the guests' slot, when the runtime has two (runtimeSlots.ts).
+            guest: true,
             onDelta: onPiece,
             onStats: ({ model, completionTokens, latencyMs }) => {
               lastModel = model;

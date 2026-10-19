@@ -20,6 +20,8 @@ process.env.TWOODY_DATA_DIR = dataDir;
 const { startBridgeClient } = await import("../src/bridgeClient.js");
 const { createGuestWarmer, WARM_EVERY_MS } = await import("../src/compute/guestWarm.js");
 const { configureLocalModels } = await import("../src/executors/localModels.js");
+const { configureRuntimeKeys } = await import("../src/runtimeAuth.js");
+const { forgetRuntimeSlots } = await import("../src/runtimeSlots.js");
 const { createComputeIdentity, openComputeResponse, publicIdentity, sealComputeRequest } = await import("../src/compute/computeSeal.js");
 
 type Handler = (req: IncomingMessage, res: ServerResponse, path: string, body: string) => void;
@@ -74,12 +76,19 @@ type Status = Record<string, string | null>;
 /// (`null`: listed without one, as Ollama or LM Studio do), completions
 /// recorded.
 async function fakeRuntime(statuses: Status) {
-  const state = { statuses, questionMs: 0, goneAtRead: null as string | null };
+  const state = { statuses, questionMs: 0, goneAtRead: null as string | null, slots: 1 };
   const completions: Array<Record<string, unknown>> = [];
   const urls: string[] = [];
   const runtime = await server((req, res, path, body) => {
     if (path === "/v1/models") {
       return json(res, 200, { data: Object.entries(state.statuses).map(([id, status]) => (status === null ? { id } : { id, status: { value: status } })) });
+    }
+    // The router's /props of a model: its slots (runtimeSlots.ts), never
+    // loading it when asked not to.
+    if (path === "/props") {
+      const model = new URL(req.url ?? "/", "http://x").searchParams.get("model") ?? "";
+      if (req.url?.includes("autoload=false") && !["loaded", "sleeping"].includes(state.statuses[model] ?? "")) return json(res, 400, { error: { message: "model is not loaded" } });
+      return json(res, 200, { total_slots: state.slots, build_info: "b11146-7fe450e19" });
     }
     if (path === "/v1/chat/completions") {
       const asked = JSON.parse(body) as Record<string, unknown>;
@@ -333,4 +342,28 @@ test("a warm refused for its model still counts: the runtime cannot be probed fa
   assert.equal(await failing.instance.request("7", { model: "m" }), "failed");
   failing.tick(WARM_EVERY_MS);
   assert.equal(await failing.instance.request("7", { model: "m" }), "failed", "tried again only after the interval");
+});
+
+// A computer shared with someone, from 24 GB (19/10/2026, builtin/slots.ts):
+// llama.cpp has two slots, and what a guest asks — the warm and the
+// question — goes to theirs, slot 1, never to the owner's; whatever the
+// sealed body says (it cannot name one).
+test("with two slots, a guest's warm and question are read on the guests' slot; the body never chooses", async (t) => {
+  const { runtime, send } = await setup(t, { "Qwen3.5-9B": "loaded" });
+  configureRuntimeKeys({ [`${runtime.url}/v1`]: "runtime-key" });
+  t.after(() => configureRuntimeKeys({}));
+  forgetRuntimeSlots();
+  runtime.state.slots = 2;
+  await send(warm("Qwen3.5-9B", { id_slot: 0 }), 21);
+  await until(() => runtime.completions.length === 1);
+  await send({ model: "Qwen3.5-9B", max_tokens: 20, messages: [...MESSAGES.slice(0, -1), { role: "user", content: "Et toi ?" }], id_slot: 0 }, 21);
+  await until(() => runtime.completions.length === 2);
+  assert.deepEqual(runtime.completions.map((asked) => asked.id_slot), [1, 1]);
+  assert.match(runtime.urls[0]!, /\?autoload=false$/, "the warm still never loads a model");
+  // Not shared any more: one slot, nothing named.
+  forgetRuntimeSlots();
+  runtime.state.slots = 1;
+  await send({ model: "Qwen3.5-9B", max_tokens: 20, messages: [...MESSAGES.slice(0, -1), { role: "user", content: "Merci" }], id_slot: 1 }, 22);
+  await until(() => runtime.completions.length === 3);
+  assert.equal(runtime.completions[2]!.id_slot, undefined);
 });

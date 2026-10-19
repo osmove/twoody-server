@@ -39,11 +39,13 @@ import { startLearning } from "./memory/learner.js";
 import { startEmailSync } from "./email/sync.js";
 import { startMicrosoftGraphSync } from "./microsoft/sync.js";
 import { onTitled, startTitles } from "./discussionTitles.js";
-import { builtinAddress, initEngine, preloadBuiltin, stopEngine } from "./engine.js";
+import { builtinAddress, initEngine, noteEngineComputeShared, preloadBuiltin, stopEngine } from "./engine.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { desktopKeepsTunnelKey, tunnelKeyFromDesktop, type KeyParentPort } from "./tunnel/desktopKeyStore.js";
 import { applyReservedWord } from "./reservedWithdrawal.js";
+import { forgetRuntimeSlots, noteComputeShared } from "./runtimeSlots.js";
+import { forgetRuntimeReads } from "./routes/queries.js";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 const HOST = process.env.HOST ?? "0.0.0.0";
@@ -213,7 +215,8 @@ try {
   }
   // Requests on folders shared from this computer are served here, by this
   // very server (shares/serve.ts): it holds the documents.
-  const bridgeClient = bridgeOpts && bridgeAllowed ? startBridgeClient({ ...bridgeOpts, serveShare: serveShareInProcess }) : null;
+  // Shared with someone or not: this server's own runtime's slots (engine.ts).
+  const bridgeClient = bridgeOpts && bridgeAllowed ? startBridgeClient({ ...bridgeOpts, serveShare: serveShareInProcess, onComputeShared: noteEngineComputeShared }) : null;
   if (bridgeClient) {
     const caps = bridgeOpts!.capabilities?.length ? bridgeOpts!.capabilities.join(",") : "<none>";
     console.log(`  Bridge client connected to ${bridgeOpts!.backendUrl} (device id ${bridgeClient.deviceId.slice(0, 8)}…, capabilities: ${caps})\n`);
@@ -333,6 +336,17 @@ try {
         } catch (err) {
           console.warn(`  Could not apply the reserved features: ${err instanceof Error ? err.message : String(err)}`);
         }
+      }
+      // The Desktop's runtime and this computer's sharing (builtin/slots.ts):
+      // {type: "runtime-slots", shared, baseUrl?, switched?} — at start, and
+      // when the slots of its model's process were switched. What the
+      // runtime said of its slots is asked again; a switch let go of what
+      // it had read, as a sleep does.
+      if (type === "runtime-slots") {
+        const word = data as { shared?: unknown; baseUrl?: unknown; switched?: unknown };
+        forgetRuntimeSlots();
+        if (typeof word.shared === "boolean") noteComputeShared(word.shared);
+        if (word.switched === true && typeof word.baseUrl === "string") forgetRuntimeReads(word.baseUrl);
       }
     });
   }

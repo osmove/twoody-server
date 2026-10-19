@@ -115,7 +115,8 @@ export async function peerRoutes(app: FastifyInstance) {
       const extras: Body = {};
       for (const field of EXTRAS) if (body[field] !== undefined) extras[field] = body[field];
       // This computer's runtime, this computer's slots: the caller never
-      // names one (runtimeSlots.ts).
+      // names one (runtimeSlots.ts). The person's own computer asks as the
+      // owner: slot 0 when there are two (a computer shared with someone).
       const slot = await runtimeSlot(holder.baseUrl, model, purpose);
       if (slot !== null) extras.id_slot = slot;
 

@@ -30,7 +30,8 @@ One process manager only: the Desktop starts its embedded server with `TWOODY_RU
 
 ## 3. Headless process management
 Router mode like the Desktop: `--host 127.0.0.1`, ports from 47831, `--models-dir DATA_DIR/models`,
-`--models-max 1`, `--offline`, `--no-webui`, `--cors-origins http://twoody.invalid`, `--parallel 1`;
+`--models-max 1`, `--offline`, `--no-webui`, `--cors-origins http://twoody.invalid`, `--parallel 1` (two on a
+computer shared with someone, from 24 GB: §10);
 minimal env (PATH, HOME, TMPDIR, per-launch `LLAMA_API_KEY`); `runtime.pid`, and a leftover llama-server is
 stopped only if its command line has our models dir.
 - Started on demand (`manager.ensure()` on a chat to the built-in engine); status/heartbeat never start it.
@@ -198,3 +199,88 @@ meilleur », « je veux pouvoir utiliser MLX ».
   here is `src/visionStandIn.ts`: a turn with an image that the chosen local model refuses (`vision_unavailable`,
   which the MLX launcher answers) goes to a model of this computer's llama.cpp that reads images — the same model's
   GGUF first — and the final event says `vision_stand_in {from, to}` (test/visionStandIn.test.ts).
+
+## 10. Two slots on a computer shared with someone (19/10/2026)
+Jimmy: a second llama.cpp slot when the computer is shared — the owner's chat should not wait for a guest's
+answer, nor a guest for the owner's, and neither should lose its cache to the other.
+- **The rule** (`src/builtin/slots.ts`, copied by the Desktop): a computer used by its owner alone keeps one slot.
+  Shared — an active, unexpired grant of its models on the account (`ComputeGrant`, « Partager ce Mac »), for this
+  computer's bridge device id (`sharedFromGrants` on `GET /api/v1/compute_grants` `given`) — and 24 GB or more (23
+  GiB reported): two, slot 0 the owner's (their chat and its warms, their other devices, Twoody Code, the work in the
+  background), slot 1 the guests' (their questions and warms). 16 GB: one (below). 48 GB and more: room for three
+  or four one day (`sharedSlotsByMemory`), two for now (`MAX_SLOTS`): nothing measured there, the aim would be 8
+  tokens/s or more per conversation. A model that takes more than 45 % of the memory (Qwen3.6 35B-A3B on 24 and 32
+  GB: its cache was cut to fit, §8), one whose need with two slots passes what may hold it (the GPU's share of a
+  Mac, `gpuShare`; a PC's own graphics card less llama.cpp's 1 GiB margin, its cache in 16 bits), or one without the
+  catalogue's figures (a GGUF put in the folder by hand): one slot. Every catalogue model offered on 24 or 32 GB that
+  keeps one slot there is such a large one.
+- **Each slot its whole window**: `--parallel 2 --ctx-size <window × 2> --no-kv-unified --no-cache-idle-slots`
+  (`slotArgs`), in the Desktop's presets file only — the router's own command line overrides every model's preset
+  (llama.cpp b11146 `server-models.cpp load_models`: « overlay router's own CLI args on top of every model preset »),
+  so `--parallel` left it and `[*]` says `parallel = 1`; a flag is written `no-kv-unified = true`. Measured on
+  Jimmy's M5 24 GB, Qwen3.5 9B Q4_K_M with its vision file, the Desktop's settings (twoody-bench
+  `scripts/two-slots-router-bench.mjs`, `serve-router.sh` with `SLOTS=2 KV=split|unified|shared`): one pool of 32 768
+  tokens for both (the 18/10 measurement, `--kv-unified`) purged the owner's idle conversation of 19 161 tokens when a
+  guest's of 16 458 came — the owner's next message read 19 128 tokens again, 59.6 s instead of 1.7 s — and failed
+  both answers (« Context size has been exceeded », HTTP 500) when the two asked at once; split, nothing lost (the
+  owner's 18 606 tokens found again, 1.7 s; both at once answered, 3.2 s each), and faster (21.4 tokens/s alone, 14.4
+  each together, against 19.6 and 12.7 for the shared pool). llama.cpp's default `--cache-idle-slots` is left off:
+  with the cache split it only copies the idle slot into the prompt cache each time the other starts (with one pool
+  it also clears it) — memory and time for nothing, the slot keeping its own.
+- **What it costs**: 544 MiB of q8_0 cache and 50 MiB of state for the 9B at 32 768 tokens — the model's process
+  571 MB larger at load (2 295 MB against 1 724, the weights read in place left out). `memory.ts` counts it
+  (`slotMemory`, `memoryNeed`/`catalogMemoryNeed` `slots`), so the « Mémoire nécessaire » of Modèles (Desktop) and of
+  `GET /runtime/catalog` (`catalogSlots`, MachineFacts `shared`) say the shared computer's figure; one slot gives the
+  same bytes as before, and the site's calculator, which sizes a computer used by its owner, is unchanged. The prompt
+  cache gives the second slot back (`slotCacheRam`: 4 096 → 3 504 MiB for the 9B on 24 GB, never below half), so
+  that the model, both slots full and the cache full take what one slot did; measured peak 4 536 MB with two slots,
+  4 582 with one (the owner and the guest no longer pass through the cache).
+- **Where each call goes** (`src/runtimeSlots.ts`, from llama.cpp's `total_slots`, `/props?model=`, kept a minute and
+  forgotten when the slots switch): the owner's chat, warms and peers on 0; a guest's turn and warm on 1
+  (`executors/llmInfer.ts` `guest`, set by `bridgeClient.ts` only — the sealed body never names a slot: `bareCompletion`
+  keeps its messages and bounds, and `llmInfer` drops an `id_slot` it would carry); with one slot nothing is named,
+  as before. The Desktop's own calls (Twoody Code and the Agent through `ownerSlotFetch`, a model's warm-up through
+  `ownerSlotBody`) name slot 0: a request that names none goes, on a fresh two-slot runtime, to the last idle slot
+  (llama.cpp's LRU keeps the later of equals) — the guests'.
+- **The work in the background on the owner's slot**: measured, a guest who asks while the learner reads a
+  conversation waits for it on slot 1 (13.9 s to the first word), and starts at once on slot 0 (2.5 s, the learner's
+  reading shared); the owner's conversation, set aside in the prompt cache while it ran there, came back whole (4 685
+  tokens found, 0.36 s), as with one slot. The learner still stops when the owner asks (`onChatGeneration`).
+- **The switch** (`createSlotSwitch`): shared or no longer, the Desktop writes the presets again and has the router
+  read them (`GET /v1/models?reload=1`: a model whose preset changed is let go, its process stopped; the router keeps
+  its address and key) — only at a quiet moment (no model loading, every slot idle by `/slots?model=&autoload=false`,
+  a model asleep counted quiet and never woken to be asked), at most once every ten minutes, and only if the change
+  still stands then. Then, as after a sleep: the embedded server and the bridge worker forget the slots they knew
+  (« runtime-slots »), the server what the runtime had read (`forgetRuntimeReads`), and the model the router held
+  awake is loaded again with the owner's start (`modelWarmth`: « Chargement… », « Préparation… », `POST /queries/warm
+  {model, fresh}`), when that costs nothing (`builtinWarmDecision`). Measured (`--only reload`): the reload 0.19 s;
+  the owner's start read again 10.27 s after it, 10.28 s after a sleep; the next question 0.30 s with its 4 685
+  tokens found, a guest's first question on slot 1 0.48 s. `twoody serve` and a Pi: the same rule, every installed
+  model having to take two slots (one command line for all), the runtime started again at a quiet moment at the same
+  address, the model it held loaded again and the starts read (`engine.ts` `afterSlotsSwitched`,
+  `routes/queries.ts` `warmStartsNow`); its bridge client asks the account (`onComputeShared`).
+- **Is it shared?** The Desktop's main process asks the account (`computeSharing.ts`): at launch, every 15 minutes,
+  when « Partager ce Mac » shares or takes back, at sign-in and sign-out (signed out: not shared), and a second after
+  the first grant with an end runs out; the last clear answer is kept (`compute-sharing.json`), an answer it cannot
+  read changes nothing. The account is taken as possibly malicious (AGENTS.md rule 12): what it says only moves the
+  runtime between one slot and two — memory, and a reload at a quiet moment at most every ten minutes; who may ask
+  anything is decided as before (sealed turns, pinned keys).
+- **16 GB: one slot.** With the Desktop's 16 GB settings (2 GiB of prompt cache) the model's process was 596 MB larger
+  at load with a second slot and 794 MB larger at its peak (4 574 MB against 3 780) — with the weights some 9.9 GiB of
+  the 10.7 GiB a 16 GB Mac lets its GPU use, beside macOS and the app. Giving it back from the prompt cache would leave
+  1.4 GiB, about one of the owner's long conversations; and the two writing together went at 14 tokens/s each on the
+  M5, which the slower chips of 16 GB Macs would take under 8. Not shown safe: no 16 GB Mac to measure on.
+- **MLX: nothing to set.** mlx-lm 0.32.0 serves requests that come together in one batch (`ResponseGenerator`,
+  `BatchGenerator`, `--decode-concurrency 32 --prompt-concurrency 8` by default; Qwen3.5's caches — `KVCache`,
+  `ArraysCache` — can be merged) and keeps a cache per conversation in its prompt trie, bounded by
+  `--prompt-cache-bytes`; it reserves nothing per slot. A guest's question on a shared Mac does not wait for the
+  owner's answer there, shared or not; `/props` answers 404, so no slot is ever named. Not measured on MLX (not
+  installed on this Mac).
+- **Windows and Linux**: the same rule and code (the presets, the switch). On the processor (Linux, a PC without a
+  card) by the memory like a Mac; on a PC's own graphics card (Vulkan), by that card's memory, the cache in 16 bits
+  (no q8_0 without flash attention): the 9B and two windows of 32 768 tokens fit 16 GB, not 8. Not measured there.
+- **Through the real path** (`scripts/shared-compute-bench.mts`, its steps `during-owner` and `owner-during` added;
+  the Desktop's own presets for this Mac, shared or not, two passes each, the router started again before each):
+  the steps of 18/10 unchanged with two slots (first word 0.28–0.31 s); a guest's question while the owner's long
+  answer is written 0.39 and 0.40 s (22.31 and 22.39 s with one slot); the owner's while the guest's long answer is
+  written 0.42 and 0.42 s (30.22 and 33.73 s). Both writing: 11–13 tokens/s each, against 20–22 alone.

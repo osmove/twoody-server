@@ -58,7 +58,7 @@ import { createThinkFilter } from "../thinkFilter.js";
 import { hasIndexedDocuments, listFolders, searchPassages, indexStatus } from "../documents/library.js";
 import { LOCAL_ONLY, LocalOnlyError, outboundFetch } from "../outbound.js";
 import { probeRuntime } from "../localRuntime.js";
-import { engineRoute, isBuiltinUrl, localRuntimeReady } from "../engine.js";
+import { engineRoute, isBuiltinUrl, localRuntimeReady, onBuiltinSlotsSwitched } from "../engine.js";
 import { RuntimeError } from "../builtin/index.js";
 import { discussionTitle, typedText } from "../documentBlocks.js";
 import { loadPersonalData } from "./localSync.js";
@@ -220,6 +220,14 @@ export async function queryRoutes(app: FastifyInstance) {
   // read ahead before anyone asks (Jimmy, 03/10/2026: the first spoken
   // question of the morning read 2 477 tokens from nothing, 5 s).
   startWarmWatch();
+  // This server's own runtime started again with other slots (the computer
+  // became shared, or no longer is: builtin/slots.ts): what it had read is
+  // gone, as after a sleep; the model it held loaded again, the starts are
+  // read again now.
+  onBuiltinSlotsSwitched(({ baseUrl, wasLoaded }) => {
+    forgetRuntimeReads(baseUrl);
+    if (wasLoaded) void warmStartsNow();
+  });
   // The person is about to ask (a recording started on the phone, the
   // chat opened): what a new conversation starts with is read now, while
   // they speak or type.
@@ -2660,6 +2668,19 @@ export async function restoreWarmSeed(key: string): Promise<boolean> {
   return true;
 }
 
+/// The runtime at `baseUrl` let go of everything it had read — its model's
+/// process started again with other slots, the computer having become
+/// shared or no longer being so (builtin/slots.ts) —, as after a sleep: the
+/// next warm of each person's start reads it again rather than taking it as
+/// held (the Desktop then loads the model and has the owner's start read at
+/// once, POST /queries/warm {model, fresh}).
+export function forgetRuntimeReads(baseUrl: string): void {
+  const base = baseUrl.trim().replace(/\/+$/, "");
+  const ofBase = (key: string) => key.split("\n")[0]!.trim().replace(/\/+$/, "") === base;
+  for (const key of [...runtimeHolds.keys()]) if (ofBase(key)) runtimeHolds.delete(key);
+  for (const key of [...systemsSent.keys()]) if (ofBase(key)) systemsSent.delete(key);
+}
+
 /// A restart, for the tests: what was kept in memory is gone.
 export function forgetWarmStateForTests() {
   lastTurnInputs.clear();
@@ -2675,17 +2696,22 @@ let warmWatch: NodeJS.Timeout | null = null;
 /// (a new day, a memory learned while nothing ran).
 function startWarmWatch() {
   if (warmWatch || process.env.NODE_ENV === "test") return;
-  const check = async () => {
-    for (const key of new Set([...Object.keys(readWarmSeeds()), ...lastTurnInputs.keys()])) {
-      if (inflight() > 0) return;
-      if (projectOfKey(key)) continue;
-      if (await restoreWarmSeed(key)) await warmNewConversation(key).catch(() => "none");
-    }
-  };
-  const first = setTimeout(() => void check(), 30_000);
+  const first = setTimeout(() => void warmStartsNow(), 30_000);
   first.unref?.();
-  warmWatch = setInterval(() => void check(), WARM_WATCH_MS);
+  warmWatch = setInterval(() => void warmStartsNow(), WARM_WATCH_MS);
   warmWatch.unref?.();
+}
+
+/// The start of a new conversation of each person who chatted here, read
+/// again where it is not held (a runtime asleep is left so): what the watch
+/// does every few minutes, and what follows a switch of the server's own
+/// runtime's slots (engine.ts), the model loaded again.
+export async function warmStartsNow(): Promise<void> {
+  for (const key of new Set([...Object.keys(readWarmSeeds()), ...lastTurnInputs.keys()])) {
+    if (inflight() > 0) return;
+    if (projectOfKey(key)) continue;
+    if (await restoreWarmSeed(key)) await warmNewConversation(key).catch(() => "none");
+  }
 }
 
 function scheduleWarm(key: string, delayMs = WARM_DELAY_MS, wake = false) {

@@ -52,8 +52,9 @@ exist; embed on write and on vault sync, when idle; vectors keyed by model + con
 ## 4. Learning v2 (src/memory/learner.ts)
 « retiens que… » saves immediately. Per-message learnFromMessage removed. At once when the person starts a new
 conversation (learnSoon, once nothing is generating — Jimmy 01/10: no delay before the next one knows). Every 5 min: discussions idle ≥10 min with
-new user messages after learned_through (not « Aucune »/private); runs on pickBackground (trusted idle peers) or the
-local background slot. Input = user messages only (assistant turns ≤300 chars, « context, do not extract »), documents
+new user messages after learned_through (not « Aucune »/private); runs on pickBackground (trusted idle peers) or this
+computer's runtime — on the owner's slot 0 when it has two (a computer shared with someone, from 24 GB: the guests'
+slot 1 is never used for it, builtin/slots.ts, runtimeSlots.ts). Input = user messages only (assistant turns ≤300 chars, « context, do not extract »), documents
 and web blocks stripped. JSON-schema output {facts[{text, kind, entities, category, supersedes?, confidence,
 evidence}], entities[{name, kind, aliases, relation_to_user}]}. Drop if evidence isn't verbatim in a user message;
 +0.15 explicit first-person, −0.3 hedging; drop restatements (normalised or cosine > 0.9). ≥0.8 non-sensitive

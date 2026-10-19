@@ -33,6 +33,12 @@ const server = createServer((req, res) => {
     return res.end(JSON.stringify({ data, object: "list" }));
   }
   if (req.url === "/crash") process.exit(3);
+  // A slot busy while a file says so (builtinManager.test.ts: a switch of
+  // slots waits for a quiet moment).
+  if (req.url.startsWith("/slots")) {
+    const slots = Number(arg("--parallel")) || 1;
+    return res.end(JSON.stringify(Array.from({ length: slots }, (_, id) => ({ id, is_processing: existsSync(join(here, "busy")) }))));
+  }
   let body = "";
   req.on("data", (chunk) => (body += chunk));
   req.on("end", () => {

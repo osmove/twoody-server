@@ -289,3 +289,56 @@ test("the router's model list is read whichever form its status takes", () => {
   assert.equal(loadedFromModels({ data: [{ id: "a", status: { value: "loading" } }] }), null);
   assert.equal(loadedFromModels(null), null);
 });
+
+// A computer shared with someone, from 24 GB (19/10/2026, builtin/slots.ts):
+// two slots, each with the whole window; switched at a quiet moment only,
+// by starting the runtime again at the same address, and the model it held
+// loaded again by the caller (engine.ts).
+test("shared from 24 GB: the runtime starts again with two slots at a quiet moment, then with one when it no longer is", async () => {
+  const { make, records, binaryDir } = setup({ "Qwen3.5-9B-Q4_K_M": 1000 });
+  const switched: Array<{ slots: number; baseUrl: string; wasLoaded: string | null }> = [];
+  const manager = make({ arch: "x64", totalMemory: () => 24 * GIB, onSlotsSwitched: (done) => switched.push(done), slotSwitch: { pollMs: 20, minIntervalMs: 0 } });
+  const { baseUrl, key } = await manager.ensure();
+  const started = (parallel: string) => records().filter((record) => flag(record.argv, "--parallel") === parallel);
+  assert.equal(started("1").length, 1);
+  assert.equal(flag(started("1")[0].argv, "--ctx-size"), "16384");
+  assert.equal(manager.status().slots, 1);
+  // The model in memory, and an answer being written.
+  await fetch(`${baseUrl}/chat/completions`, { method: "POST", headers: { Authorization: `Bearer ${key}` }, body: JSON.stringify({ model: "Qwen3.5-9B-Q4_K_M" }) });
+  writeFileSync(join(binaryDir, "busy"), "");
+  manager.setShared(true);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(records().length, 1, "never during an answer");
+  rmSync(join(binaryDir, "busy"));
+  await waitFor(() => started("2").length === 1 && switched.length === 1);
+  const two = started("2")[0].argv;
+  assert.equal(flag(two, "--ctx-size"), "32768", "each slot its own 16 384 tokens");
+  assert.ok(two.includes("--no-kv-unified") && two.includes("--no-cache-idle-slots"));
+  assert.deepEqual(switched[0], { slots: 2, baseUrl, wasLoaded: "Qwen3.5-9B-Q4_K_M" });
+  assert.equal(manager.status().slots, 2);
+  assert.equal(manager.auth()?.key, key, "the same key");
+  // No longer shared: one slot again (the model was not loaded: nothing to load again).
+  manager.setShared(false);
+  await waitFor(() => started("1").length === 2 && switched.length === 2);
+  assert.deepEqual(switched[1], { slots: 1, baseUrl, wasLoaded: null });
+  await manager.stop();
+});
+
+test("shared, but 16 GB, or a model without the catalogue's figures: one slot; nothing restarted for nothing", async () => {
+  const small = setup({ "Qwen3.5-9B-Q4_K_M": 1000 });
+  const sixteen = small.make({ arch: "x64", totalMemory: () => 16 * GIB, shared: true, slotSwitch: { pollMs: 20, minIntervalMs: 0 } });
+  await sixteen.ensure();
+  sixteen.setShared(false);
+  sixteen.setShared(true);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(small.records().map((record) => flag(record.argv, "--parallel")), ["1"]);
+  await sixteen.stop();
+
+  const unknown = setup({ "Qwen3.5-9B-Q4_K_M": 1000, "Hand-Placed-Q4_K_M": 1000 });
+  const mixed = unknown.make({ arch: "x64", totalMemory: () => 32 * GIB, shared: true });
+  await mixed.ensure();
+  assert.deepEqual(unknown.records().map((record) => flag(record.argv, "--parallel")), ["1"], "every model installed must take two");
+  // The memory a load is checked against counts the slots.
+  assert.equal(memoryNeeded(1000, 8192, 2) - memoryNeeded(1000, 8192), 8192 * 64 * 1024);
+  await mixed.stop();
+});

@@ -23,6 +23,7 @@ import {
 import { isChatModel, probeRuntime } from "./localRuntime.js";
 import { outboundFetch } from "./outbound.js";
 import { addRuntimeKey } from "./runtimeAuth.js";
+import { forgetRuntimeSlots, noteComputeShared } from "./runtimeSlots.js";
 
 // The engine this computer answers with (« Moteur »,
 // docs/builtin-runtime-design.md §3-4): the built-in llama.cpp runtime that
@@ -110,6 +111,8 @@ export function initEngine(options: InitEngineOptions = {}): Engine {
     log: options.log,
     env: desktop ? { ...env, TWOODY_RUNTIME_OWNER: "desktop" } : env,
     settings: () => effectiveBuiltin(prefs.read().prefs.builtin, keepLoaded),
+    shared: sharedNow,
+    onSlotsSwitched: (switched) => void afterSlotsSwitched(switched, options.log),
     ...options.manager,
   });
   current = { paths, manager, prefs, managedByDesktop: desktop, env, platform, arch };
@@ -122,6 +125,57 @@ export function initEngine(options: InitEngineOptions = {}): Engine {
 
 export function engine(): Engine {
   return current ?? initEngine();
+}
+
+// ── Shared with someone: the runtime's slots (builtin/slots.ts) ────────
+// The bridge client asks the account whether this computer is shared
+// (bridgeClient.ts onComputeShared); this server's own runtime gives the
+// people it is shared with a slot of their own from 24 GB. Inside Twoody
+// Desktop, the Desktop decides for its runtime and says it by message.
+
+let sharedNow = false;
+const slotsSwitchedListeners: Array<(switched: { baseUrl: string; wasLoaded: string | null }) => void> = [];
+
+/// This computer is shared with someone now, or no longer is.
+export function noteEngineComputeShared(shared: boolean): void {
+  sharedNow = shared;
+  noteComputeShared(shared);
+  const e = current;
+  if (e && !e.managedByDesktop) e.manager.setShared(shared);
+}
+
+/// Called once the runtime started again with other slots (routes/queries.ts:
+/// what it had read is gone, the people's starts read again).
+export function onBuiltinSlotsSwitched(listener: (switched: { baseUrl: string; wasLoaded: string | null }) => void): void {
+  slotsSwitchedListeners.push(listener);
+}
+
+/// The model the runtime held is loaded again (one token, as at startup),
+/// as after a sleep; then the starts of the people's conversations.
+async function afterSlotsSwitched(switched: { slots: number; baseUrl: string; wasLoaded: string | null }, log?: (line: string) => void): Promise<void> {
+  forgetRuntimeSlots();
+  if (switched.wasLoaded) {
+    try {
+      const running = await ensureBuiltin(switched.wasLoaded);
+      const res = await outboundFetch(`${running.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${running.key}` },
+        body: JSON.stringify({ model: switched.wasLoaded, messages: [{ role: "user", content: "Hi" }], max_tokens: 1, stream: false, ...(switched.slots > 1 ? { id_slot: 0 } : {}) }),
+        signal: AbortSignal.timeout(10 * 60_000),
+      });
+      await res.body?.cancel().catch(() => undefined);
+      log?.(`[runtime] ${switched.wasLoaded} loaded again with ${switched.slots} slot(s)`);
+    } catch (err) {
+      log?.(`[runtime] ${switched.wasLoaded} not loaded again: ${err instanceof Error ? err.message : String(err)}; it loads on the next question`);
+    }
+  }
+  for (const listener of slotsSwitchedListeners) {
+    try {
+      listener({ baseUrl: switched.baseUrl, wasLoaded: switched.wasLoaded });
+    } catch {
+      // the next turn reads what it needs
+    }
+  }
 }
 
 /// SIGTERM, SIGINT: the runtime goes with the server.

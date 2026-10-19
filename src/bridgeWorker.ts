@@ -35,6 +35,7 @@
 import { readBridgeClientEnv, startBridgeClient, type BridgeClientHandle, type BridgeClientState } from "./bridgeClient.js";
 import { configureLocalModels } from "./executors/localModels.js";
 import { configureRuntimeKeys } from "./runtimeAuth.js";
+import { forgetRuntimeSlots } from "./runtimeSlots.js";
 import { createShareServeChannel } from "./shares/parentServe.js";
 
 interface ConfigureMessage {
@@ -59,7 +60,7 @@ interface ModelsMessage {
   runtimeKeys?: Record<string, string>;
 }
 
-type ParentMessage = ConfigureMessage | ModelsMessage | { type: "share-serve-result"; id?: unknown; result?: unknown } | { type: "stop" };
+type ParentMessage = ConfigureMessage | ModelsMessage | { type: "share-serve-result"; id?: unknown; result?: unknown } | { type: "runtime-slots" } | { type: "stop" };
 
 interface ParentPort {
   on(event: "message", listener: (event: { data: ParentMessage }) => void): void;
@@ -112,6 +113,10 @@ if (parentPort) {
       configureLocalModels({ endpoints: data.endpoints, defaultModel: data.defaultModel });
     } else if (data.type === "share-serve-result") {
       shares?.received(data);
+    } else if (data.type === "runtime-slots") {
+      // The Desktop switched its runtime's slots (builtin/slots.ts): a
+      // guest's next turn asks again how many it has before naming one.
+      forgetRuntimeSlots();
     } else if (data.type === "stop") {
       client?.stop();
       process.exit(0);

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { outboundFetch } from "../outbound.js";
 import { runtimeAuthHeaders } from "../runtimeAuth.js";
+import { runtimeSlot } from "../runtimeSlots.js";
 import { createThinkFilter } from "../thinkFilter.js";
 import { createCompletionAccumulator, createSseDataParser } from "./completionStream.js";
 import { resolveTarget } from "./localModels.js";
@@ -46,6 +47,12 @@ export interface LlmInferHooks {
   /// `?autoload=false`, and answers 400 « model is not loaded » rather than
   /// loading it — a model asleep is woken, it is still the one it holds.
   onlyIfLoaded?: boolean;
+  /// Someone this computer is shared with asks (a sealed turn, or its
+  /// warm): on llama.cpp's guest slot when the runtime has two — a shared
+  /// computer from 24 GB (builtin/slots.ts, runtimeSlots.ts) —, so that
+  /// neither waits for the owner's answer nor takes the owner's place in
+  /// the runtime's memory. The body never names a slot itself.
+  guest?: boolean;
 }
 
 export async function runLlmInfer(args: Record<string, unknown>, hooks: LlmInferHooks = {}): Promise<LlmInferResult> {
@@ -61,7 +68,9 @@ export async function runLlmInfer(args: Record<string, unknown>, hooks: LlmInfer
 
   const started = Date.now();
   const { endpoint, model } = await resolveTarget(body.model);
-  const request = { ...body, model, stream: true, stream_options: { include_usage: true } };
+  const slot = hooks.guest ? await runtimeSlot(endpoint, model, "guest", { autoload: !hooks.onlyIfLoaded }) : null;
+  const { id_slot: _named, ...asked } = body;
+  const request = { ...asked, model, stream: true, stream_options: { include_usage: true }, ...(slot !== null ? { id_slot: slot } : {}) };
 
   const post = (payload: object) =>
     outboundFetch(`${endpoint}/chat/completions${hooks.onlyIfLoaded ? "?autoload=false" : ""}`, {
