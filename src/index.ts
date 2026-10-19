@@ -45,6 +45,7 @@ import { dirname, join } from "node:path";
 import { desktopKeepsTunnelKey, tunnelKeyFromDesktop, type KeyParentPort } from "./tunnel/desktopKeyStore.js";
 import { applyReservedWord } from "./reservedWithdrawal.js";
 import { forgetRuntimeSlots, noteComputeShared } from "./runtimeSlots.js";
+import { slotsModeOf } from "./builtin/slots.js";
 import { forgetRuntimeReads } from "./routes/queries.js";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
@@ -338,14 +339,14 @@ try {
         }
       }
       // The Desktop's runtime and this computer's sharing (builtin/slots.ts):
-      // {type: "runtime-slots", shared, baseUrl?, switched?} — at start, and
-      // when the slots of its model's process were switched. What the
-      // runtime said of its slots is asked again; a switch let go of what
-      // it had read, as a sleep does.
+      // {type: "runtime-slots", shared, mode, baseUrl?, switched?} — at start,
+      // when either changes, and when the slots of its model's process were
+      // switched. What the runtime said of its slots is asked again; a switch
+      // let go of what it had read, as a sleep does.
       if (type === "runtime-slots") {
-        const word = data as { shared?: unknown; baseUrl?: unknown; switched?: unknown };
+        const word = data as { shared?: unknown; mode?: unknown; baseUrl?: unknown; switched?: unknown };
         forgetRuntimeSlots();
-        if (typeof word.shared === "boolean") noteComputeShared(word.shared);
+        if (typeof word.shared === "boolean") noteComputeShared(word.shared, word.mode === undefined ? undefined : slotsModeOf(word.mode));
         if (word.switched === true && typeof word.baseUrl === "string") forgetRuntimeReads(word.baseUrl);
       }
     });

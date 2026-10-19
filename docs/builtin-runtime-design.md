@@ -202,7 +202,20 @@ meilleur », « je veux pouvoir utiliser MLX ».
 
 ## 10. Two slots on a computer shared with someone (19/10/2026)
 Jimmy: a second llama.cpp slot when the computer is shared — the owner's chat should not wait for a guest's
-answer, nor a guest for the owner's, and neither should lose its cache to the other.
+answer, nor a guest for the owner's, and neither should lose its cache to the other. Then (same day): the person
+chooses, and « Automatique » counts the computer as shared only while it answers the people it is shared with.
+- **« Réponses en même temps »** (Desktop « Réglages » › « Partage » › « Partager ce Mac », `AnswersAtOnce.tsx`,
+  kept in `<userData>/runtime-slots.json`, `slotsPref.ts`): « Automatique (recommandé) » is the rule below;
+  « Une à la fois » one slot; « Deux en même temps » two on any computer, 16 GB included, shared or not, unless the
+  model's own figures show it cannot hold them (`SlotsMode`, `runtimeSlots({mode})`). The screen says the cost from
+  the measures below (about 0.6 GB more with Qwen3.5 9B; on 16 GB the prompt cache goes from 2 to 1.4 GB) and what the
+  engine does now. A change made there is applied as soon as no answer is being written (`request({asked: true})`),
+  whatever the last switch; every other one at most once every ten minutes.
+- **« Automatique » and the bridge**: the Desktop counts this computer as shared only with an active grant AND its
+  bridge running (« Répondre à mes autres appareils », the worker started — reaching the account or trying again).
+  Off: one slot. At a launch, until the page starts the bridge, it counts as it was when last seen, for two minutes
+  (`bridgeAnswers`, `compute-sharing.json` `bridge`), so that a shared Mac does not start with one slot to switch to two
+  seconds later. `twoody serve` keeps the rule on the grants alone: its bridge client is what asks.
 - **The rule** (`src/builtin/slots.ts`, copied by the Desktop): a computer used by its owner alone keeps one slot.
   Shared — an active, unexpired grant of its models on the account (`ComputeGrant`, « Partager ce Mac »), for this
   computer's bridge device id (`sharedFromGrants` on `GET /api/v1/compute_grants` `given`) — and 24 GB or more (23

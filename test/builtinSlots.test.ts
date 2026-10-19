@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { CATALOG } from "../src/builtin/catalog.js";
+import { CATALOG, catalogSlots } from "../src/builtin/catalog.js";
 import { catalogMemoryNeed, memoryNeed, slotMemory, twoodyContext } from "../src/builtin/memory.js";
 import {
   GUEST_SLOT,
@@ -24,6 +24,7 @@ import {
   sharedSlotsByMemory,
   slotArgs,
   slotCacheRam,
+  slotsModeOf,
 } from "../src/builtin/slots.js";
 
 const GIB = 1024 ** 3;
@@ -87,6 +88,35 @@ test("a model whose need with two slots passes what may hold it keeps one", () =
   // does not fit 8 GB (less llama.cpp's margin), fits 16.
   assert.equal(runtimeSlots({ totalMemory: 32 * GIB, shared: true, ...of(nine), deviceMemory: 8 * GIB, f16Cache: true }), 1);
   assert.equal(runtimeSlots({ totalMemory: 32 * GIB, shared: true, ...of(nine), deviceMemory: 16 * GIB, f16Cache: true }), 2);
+});
+
+// « Réponses en même temps » (19/10/2026, Jimmy): the rule, one, or two.
+test("the person's choice: « Une à la fois » one slot everywhere; « Deux en même temps » two on any computer, 16 GB included, shared or not", () => {
+  for (const gb of [8, 16, 24, 64]) {
+    assert.equal(runtimeSlots({ totalMemory: gb * GIB, shared: true, mode: "one", ...of(gb === 8 ? four : nine) }), 1, `one, ${gb} GB`);
+  }
+  assert.equal(runtimeSlots({ totalMemory: 15.9 * GIB, shared: false, mode: "two", ...of(nine) }), 2, "16 GB, not shared");
+  assert.equal(runtimeSlots({ totalMemory: 15.9 * GIB, shared: true, mode: "two", ...of(nine) }), 2);
+  assert.equal(runtimeSlots({ totalMemory: 8 * GIB, shared: false, mode: "two", ...of(four) }), 2, "even 8 GB, with the 4B");
+  // A large model is the person's to try, if it holds two by its figures.
+  assert.equal(runtimeSlots({ totalMemory: 32 * GIB, shared: false, mode: "two", ...of(large) }), 2);
+  // Unless its own figures show it cannot: the 35B-A3B on 24 GB (16.9 GiB with two, 16 the GPU may use).
+  assert.equal(runtimeSlots({ totalMemory: 24 * GIB, shared: true, mode: "two", ...of(large) }), 1);
+  // No figures to say it cannot: two, as asked.
+  assert.equal(runtimeSlots({ totalMemory: 16 * GIB, shared: false, mode: "two", modelBytes: 5e9, figures: null }), 2);
+  // MLX batches on its own: nothing to set, whatever the choice.
+  assert.equal(runtimeSlots({ totalMemory: 24 * GIB, shared: true, mode: "two", engine: "mlx", ...of(nine) }), 1);
+  // « Automatique » is the rule.
+  assert.equal(runtimeSlots({ totalMemory: 15.9 * GIB, shared: true, mode: "auto", ...of(nine) }), 1);
+  assert.equal(runtimeSlots({ totalMemory: 24 * GIB, shared: true, mode: "auto", ...of(nine) }), 2);
+  assert.equal(runtimeSlots({ totalMemory: 24 * GIB, shared: false, mode: "auto", ...of(nine) }), 1);
+  // The « Mémoire nécessaire » of a model on this computer follows the choice.
+  assert.equal(catalogSlots(nine, 15.9 * GIB, { slotsMode: "two" }), 2);
+  assert.equal(catalogSlots(nine, 24 * GIB, { shared: true, slotsMode: "one" }), 1);
+  assert.equal(catalogSlots(nine, 24 * GIB, { shared: true }), 2);
+  assert.equal(slotsModeOf("two"), "two");
+  assert.equal(slotsModeOf("three"), "auto");
+  assert.equal(slotsModeOf(undefined), "auto");
 });
 
 test("llama.cpp's options: each slot its own whole window, an idle one left alone", () => {
@@ -217,6 +247,51 @@ test("at most one switch every ten minutes, and a change taken back before its m
   wanted = 1;
   await time.advance(MIN_SWITCH_INTERVAL_MS);
   assert.deepEqual(applied, [0, MIN_SWITCH_INTERVAL_MS]);
+  toggle.stop();
+});
+
+test("asked by the person: as soon as it is quiet, whatever the last switch — never during an answer", async () => {
+  const time = clock();
+  let busy = false;
+  let wanted = 2;
+  let running = 1;
+  const applied: number[] = [];
+  const toggle = createSlotSwitch({
+    needed: async () => wanted !== running,
+    quiet: async () => !busy,
+    apply: async () => { running = wanted; applied.push(time.now()); },
+    now: time.now,
+    setTimer: time.setTimer,
+    pollMs: 2_000,
+  });
+  toggle.request();
+  await time.advance(0);
+  assert.deepEqual(applied, [0]);
+  // The account flips it a minute later: it waits for the ten minutes…
+  await time.advance(60_000);
+  wanted = 1;
+  toggle.request();
+  await time.advance(60_000);
+  assert.deepEqual(applied, [0]);
+  // …but the person chooses in « Réponses en même temps » while an answer is
+  // being written: at the first quiet look after it, not ten minutes on.
+  busy = true;
+  wanted = 2;
+  running = 2;
+  wanted = 1;
+  toggle.request({ asked: true });
+  await time.advance(4_000);
+  assert.deepEqual(applied, [0], "never during an answer");
+  busy = false;
+  await time.advance(2_000);
+  assert.deepEqual(applied, [0, 126_000]);
+  // The next automatic one waits ten minutes from there again.
+  wanted = 2;
+  toggle.request();
+  await time.advance(MIN_SWITCH_INTERVAL_MS - 1);
+  assert.equal(applied.length, 2);
+  await time.advance(1);
+  assert.deepEqual(applied, [0, 126_000, 126_000 + MIN_SWITCH_INTERVAL_MS]);
   toggle.stop();
 });
 

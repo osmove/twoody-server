@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { VERIFIED_MODELS } from "./catalogData.js";
 import type { MemoryFigures, MlxVariant, ModelFamily, ModelUse, VerifiedModel } from "./catalogTypes.js";
 import { catalogMemoryNeed, minRamFor } from "./memory.js";
-import { runtimeSlots } from "./slots.js";
+import { runtimeSlots, type SlotsMode } from "./slots.js";
 
 export type { MemoryFigures, MlxFile, MlxVariant, ModelFamily, ModelUse, VerifiedModel } from "./catalogTypes.js";
 export { CATALOG_VERIFIED_AT } from "./catalogData.js";
@@ -124,6 +124,8 @@ export interface MachineFacts {
   /// shared with a slot of their own from 24 GB, and a model's « mémoire
   /// nécessaire » counts it. Never changes which model is recommended.
   shared?: boolean;
+  /// « Réponses en même temps » (the Desktop's setting): the rule, one, two.
+  slotsMode?: SlotsMode;
 }
 
 const GIB = 1024 ** 3;
@@ -284,6 +286,7 @@ export function catalogSlots(model: Pick<CatalogModel, "bytes" | "memory" | "vis
   return runtimeSlots({
     totalMemory: totalRamBytes,
     shared: machine.shared === true,
+    mode: machine.slotsMode,
     modelBytes: model.bytes,
     figures: model.memory ?? null,
     visionBytes: model.vision?.bytes ?? null,

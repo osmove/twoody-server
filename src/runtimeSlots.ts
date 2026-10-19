@@ -1,4 +1,4 @@
-import { GUEST_SLOT, OWNER_SLOT } from "./builtin/slots.js";
+import { GUEST_SLOT, OWNER_SLOT, type SlotsMode } from "./builtin/slots.js";
 import { outboundFetch } from "./outbound.js";
 import { runtimeAuthHeaders } from "./runtimeAuth.js";
 
@@ -80,14 +80,21 @@ export function forgetRuntimeSlots(): void {
 
 // Whether this computer is shared with someone now, as the Desktop or the
 // bridge client last heard it from the account (builtin/slots.ts
-// sharedFromGrants): the memory a model needs here counts its slots
-// (GET /runtime/catalog, the iPhone's screen of this computer).
+// sharedFromGrants), and the Desktop's « Réponses en même temps »: the
+// memory a model needs here counts its slots (GET /runtime/catalog, the
+// iPhone's screen of this computer).
 let sharedHere = false;
+let modeHere: SlotsMode = "auto";
 
-export function noteComputeShared(shared: boolean): void {
+export function noteComputeShared(shared: boolean, mode?: SlotsMode): void {
   sharedHere = shared;
+  if (mode) modeHere = mode;
 }
 
 export function computeSharedHere(): boolean {
   return sharedHere;
+}
+
+export function slotsModeHere(): SlotsMode {
+  return modeHere;
 }

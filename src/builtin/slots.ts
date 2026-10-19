@@ -29,6 +29,13 @@
 //     need with two slots passes what the GPU may use, or one without the
 //     catalogue's figures (a GGUF put in the folder by hand: what a second
 //     slot costs is unknown): one slot.
+//   - The person may choose (19/10/2026, Jimmy: Desktop « Réglages » ›
+//     « Partage » › « Réponses en même temps »): « Automatique » is the rule
+//     above — the Desktop counts the computer as shared only while it also
+//     answers the people it is shared with (its bridge running); « Une à la
+//     fois » one slot; « Deux en même temps » two on any computer, 16 GB
+//     included, shared or not, unless the model's own figures show it cannot
+//     hold them (SlotsMode).
 //
 // Each slot has the model's whole window: the cache is split, not shared
 // (ctx-size = window × slots, kv-unified off), and an idle slot is left where
@@ -78,10 +85,22 @@ export function sharedSlotsByMemory(totalMemory: number): number {
   return 1;
 }
 
+/// « Réponses en même temps » (the Desktop's setting, slotsPref.ts there):
+/// the rule, one slot, or two.
+export type SlotsMode = "auto" | "one" | "two";
+export const SLOTS_MODES: readonly SlotsMode[] = ["auto", "one", "two"];
+
+export function slotsModeOf(value: unknown): SlotsMode {
+  return typeof value === "string" && (SLOTS_MODES as readonly string[]).includes(value) ? (value as SlotsMode) : "auto";
+}
+
 export interface SlotInput {
   totalMemory: number;
-  /// This computer is shared with someone now (sharedFromGrants).
+  /// This computer is shared with someone now (sharedFromGrants; in the
+  /// Desktop, and answering them: its bridge running).
   shared: boolean;
+  /// The person's choice (default: the rule).
+  mode?: SlotsMode;
   engine?: EngineKind;
   /// The model's file and its catalogue figures (memory.ts).
   modelBytes?: number | null;
@@ -99,17 +118,31 @@ export interface SlotInput {
 
 /// The slots of the model's process on this computer (the rule above).
 export function runtimeSlots(input: SlotInput): number {
-  if (!input.shared || (input.engine ?? "llamacpp") !== "llamacpp") return 1;
+  const mode = input.mode ?? "auto";
+  if (mode === "one" || (input.engine ?? "llamacpp") !== "llamacpp") return 1;
+  if (mode === "two") {
+    // The person's choice, whatever the memory and whether it is shared:
+    // two, unless the model's own figures show it cannot hold them.
+    if (!input.figures || !input.modelBytes) return 2;
+    return needWith(input, 2) <= roomFor(input) ? 2 : 1;
+  }
+  if (!input.shared) return 1;
   const wanted = Math.min(sharedSlotsByMemory(input.totalMemory), MAX_SLOTS);
   if (wanted < 2 || !input.figures || !input.modelBytes) return 1;
   if (largeForMemory(input.modelBytes, input.totalMemory)) return 1;
-  const room = input.deviceMemory && input.deviceMemory > 0
-    ? input.deviceMemory - GIB
-    : gpuShare(input.totalMemory / GIB) * input.totalMemory;
+  const room = roomFor(input);
   for (let slots = wanted; slots >= 2; slots -= 1) {
     if (needWith(input, slots) <= room) return slots;
   }
   return 1;
+}
+
+/// What may hold the model: a PC's own graphics card less llama.cpp's
+/// margin, else the share of the memory a Mac lets its GPU use.
+function roomFor(input: SlotInput): number {
+  return input.deviceMemory && input.deviceMemory > 0
+    ? input.deviceMemory - GIB
+    : gpuShare(input.totalMemory / GIB) * input.totalMemory;
 }
 
 function needWith(input: SlotInput, slots: number): number {
@@ -264,15 +297,18 @@ export async function routerReload(baseUrl: string, key: string, fetchImpl: Fetc
 
 export interface SlotSwitch {
   /// Something changed (shared or not, the models): look whether the
-  /// runtime must switch, and do it at the next quiet moment.
-  request(): void;
+  /// runtime must switch, and do it at the next quiet moment. `asked`: the
+  /// person chose it (« Réponses en même temps »): as soon as it is quiet,
+  /// whenever the last switch was.
+  request(options?: { asked?: boolean }): void;
   /// A switch waits for its moment.
   pending(): boolean;
   stop(): void;
 }
 
 /// Switches the runtime's slots at a quiet moment — never during an answer —
-/// and at most once every MIN_SWITCH_INTERVAL_MS. `needed` says whether what
+/// and at most once every MIN_SWITCH_INTERVAL_MS, unless the person asked for
+/// it (`request({asked: true})`: as soon as it is quiet). `needed` says whether what
 /// runs differs from what should (read again at the moment itself: a change
 /// taken back before then does nothing); `quiet` whether nothing is being
 /// generated; `apply` does it (the Desktop writes the presets and has the
@@ -301,6 +337,8 @@ export function createSlotSwitch(deps: {
   let again = false;
   let lastApplied: number | null = null;
   let stopped = false;
+  /// The person asked: the next switch does not wait for the interval.
+  let asked = false;
 
   const schedule = (ms: number) => {
     timer?.cancel();
@@ -318,8 +356,11 @@ export function createSlotSwitch(deps: {
     }
     running = true;
     try {
-      if (!(await deps.needed().catch(() => false))) return;
-      const wait = lastApplied === null ? 0 : lastApplied + minIntervalMs - now();
+      if (!(await deps.needed().catch(() => false))) {
+        asked = false;
+        return;
+      }
+      const wait = lastApplied === null || asked ? 0 : lastApplied + minIntervalMs - now();
       if (wait > 0) {
         schedule(wait);
         return;
@@ -329,6 +370,7 @@ export function createSlotSwitch(deps: {
         return;
       }
       lastApplied = now();
+      asked = false;
       await deps.apply();
     } catch (err) {
       deps.log?.(`[runtime] the slots could not be switched now: ${err instanceof Error ? err.message : String(err)}`);
@@ -343,13 +385,15 @@ export function createSlotSwitch(deps: {
   }
 
   return {
-    request() {
+    request(options = {}) {
       if (stopped) return;
+      if (options.asked) asked = true;
       if (running) {
         again = true;
         return;
       }
-      if (!timer) schedule(0);
+      // Asked by the person: no waiting out the interval already scheduled.
+      if (!timer || options.asked) schedule(0);
     },
     pending: () => timer !== null || running,
     stop() {

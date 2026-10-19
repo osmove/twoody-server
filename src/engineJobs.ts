@@ -18,7 +18,7 @@ import {
 } from "./builtin/index.js";
 import { engine } from "./engine.js";
 import { LOCAL_ONLY } from "./outbound.js";
-import { computeSharedHere } from "./runtimeSlots.js";
+import { computeSharedHere, slotsModeHere } from "./runtimeSlots.js";
 
 // Installing the built-in runtime and its models (docs/builtin-runtime-design.md
 // §4), for the /runtime routes and the `twoody-server runtime | models` commands.
@@ -67,7 +67,7 @@ export async function engineCatalog(): Promise<{ models: CatalogEntryView[]; ove
   const installed = await engine().manager.installedModels();
   // An Intel Mac runs its models on the processor (catalog.ts MachineFacts);
   // a computer shared with someone gives them a slot of their own from 24 GB.
-  return { models: catalogView(models, installed, totalmem(), engine().platform, { arch: engine().arch, shared: computeSharedHere() }), overridden };
+  return { models: catalogView(models, installed, totalmem(), engine().platform, { arch: engine().arch, shared: computeSharedHere(), slotsMode: slotsModeHere() }), overridden };
 }
 
 /// The runtime for this computer, installed when it is not there.
