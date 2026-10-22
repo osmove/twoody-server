@@ -66,6 +66,11 @@ async function ask(text: string, extra: Record<string, unknown> = {}) {
 test("a time in the person's zone: 18:00 in Paris in October is 16:00 UTC; a day alone rings at 09:00", () => {
   assert.equal(zonedInstant("2026-10-02T18:00", "Europe/Paris").toISOString(), "2026-10-02T16:00:00.000Z");
   assert.equal(zonedInstant("2026-12-24", "Europe/Paris").toISOString(), "2026-12-24T08:00:00.000Z");
+  // No zone from the request (the Desktop and the phone send none): the
+  // computer's, never UTC (22/10/2026: « vendredi à 10 h » rang at 12:00).
+  const here = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  assert.equal(zonedInstant("2026-10-23T10:00", null).toISOString(), zonedInstant("2026-10-23T10:00", here).toISOString());
+  assert.equal(new Intl.DateTimeFormat("en-GB", { timeZone: here, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(zonedInstant("2026-10-23T10:00", null)), "10:00");
   assert.equal(resolveProject(userId, "le mac mini")?.id, project.id);
   assert.equal(resolveProject(userId, "mariage"), null);
 });
@@ -85,6 +90,15 @@ test("« Rappelle-moi… »: a reminder, tied to the project, said under the ans
   assert.match(bodies.find((body) => body.tools)!.messages[0]!.content, /You can act for the user: create_reminder/);
   const opened = (await app.inject({ url: `/discussions/${final.discussion_id}`, headers })).json();
   assert.equal(opened.messages.at(-1).memory.actions[0].id, action.id, "said again when the conversation is opened");
+});
+
+test("a reminder asked from an app that sends no time zone rings at the hour said, on this computer's clock", async () => {
+  call = { name: "create_reminder", arguments: { text: "Appeler le notaire", when: "2026-10-23T10:00" } };
+  const final = await ask("Rappelle-moi vendredi à 10 h d'appeler le notaire.", { time_zone: undefined });
+  call = null;
+  const action = final.actions[0];
+  const here = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  assert.equal(new Intl.DateTimeFormat("en-GB", { timeZone: here, weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(action.at)), "Fri 10:00");
 });
 
 test("a project bought: its status changes; a project that does not exist is said, not invented", async () => {

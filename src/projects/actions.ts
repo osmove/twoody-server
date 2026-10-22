@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { sqlite } from "../db.js";
 import { normaliseName } from "../memory/entities.js";
 import { updateProject, PROJECT_STATUSES, type ProjectStatus } from "./projects.js";
+import { defaultTimeZone } from "../usagePeriods.js";
 
 // What the chat may do on the person's say (docs/projects-design.md §4, lot
 // P4): a reminder, a task, a project's status or due date. Only when they
@@ -93,8 +94,13 @@ export function resolveProject(userId: string, name: unknown): { id: string; tit
   return null;
 }
 
-/// « 2026-10-03T09:00 » in the person's time zone, as an instant.
-export function zonedInstant(local: string, timeZone: string | null): Date {
+/// « 2026-10-03T09:00 » in the person's time zone, as an instant. Without a
+/// zone from the request, the computer's own — this server runs on the
+/// person's computer. Until 22/10/2026 it was taken as UTC: neither Twoody
+/// Desktop nor the phone app sends `time_zone`, and « Rappelle-moi vendredi
+/// à 10 h » rang at 12:00 in Paris (found filming the site's video).
+export function zonedInstant(local: string, given: string | null): Date {
+  const timeZone = given ?? defaultTimeZone();
   const match = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?$/.exec(local.trim());
   if (!match) {
     const parsed = Date.parse(local);
@@ -103,7 +109,6 @@ export function zonedInstant(local: string, timeZone: string | null): Date {
   }
   const [, y, mo, d, h = "09", mi = "00"] = match;
   const asUtc = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi));
-  if (!timeZone) return new Date(asUtc);
   // The zone's offset at that moment: what its clock says for the UTC instant.
   const parts = new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
     .formatToParts(new Date(asUtc))
