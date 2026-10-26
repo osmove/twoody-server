@@ -870,6 +870,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
     // « Retiens que… »: kept before the answer, so that it can say so.
     const learning = memoryMode !== "none" && access.mode !== "only";
     const remembered = learning ? askedToRemember(typedText(content)) : null;
+    // Asked while nothing can be kept: the answer says so, never « noted ».
+    const notRememberedFact = learning ? null : askedToRemember(typedText(content));
+    const notRemembered = notRememberedFact ? { content: notRememberedFact, reason: access.mode === "only" ? "only_documents" as const : left.has("memory") ? "left_out" as const : "memory_off" as const } : null;
     // « Mémoire enregistrée » under the answer; « déjà en mémoire » when known.
     // In an isolated project, a note of the project, never a memory of the
     // person.
@@ -1572,6 +1575,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       documentNote: retrieved.note,
       local: provider.kind === "local_openai" || provider.kind === "peer_openai",
       remembered,
+      notRemembered,
       personal: personalNow,
       // Done already: the list, with the states from before, would only
       // contradict what was done.

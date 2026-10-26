@@ -226,6 +226,21 @@ test("« Retiens que… »: the answer says it was kept, or already known (« M�
   assert.equal((await ask({ text: "Bonjour", force_new_discussion: true })).final.remembered, undefined);
 });
 
+// « Je retiendrai ça » with Mémoire off under « Outils » (Jimmy, 26/10/2026).
+test("« Retiens que… » with Mémoire left out or « Aucune »: nothing kept, and the answer is told so", async () => {
+  const before = (sqlite.prepare("SELECT COUNT(*) AS n FROM memories").get() as { n: number }).n;
+  const leftOut = await ask({ text: "Retiens que ma copine s'appelle Claire Sophie.", force_new_discussion: true, capabilities_off: ["memory"] });
+  assert.equal(leftOut.status, 200);
+  assert.equal(leftOut.final.remembered, undefined, "no « Mémoire enregistrée »");
+  assert.match(leftOut.sent.at(-1)!.content, /\[NOT saved: this message asks to remember « Ma copine s'appelle Claire Sophie »/);
+  assert.match(leftOut.sent.at(-1)!.content, /under « Tools »|under « Outils »/);
+  const none = await ask({ text: "Retiens que je joue du basson.", force_new_discussion: true, memory_mode: "none" });
+  assert.match(none.sent.at(-1)!.content, /memory is off for this conversation/);
+  assert.equal((sqlite.prepare("SELECT COUNT(*) AS n FROM memories").get() as { n: number }).n, before);
+  const kept = await ask({ text: "Retiens que je joue du hautbois.", force_new_discussion: true });
+  assert.doesNotMatch(kept.sent.at(-1)!.content, /NOT saved/);
+});
+
 test("« Mémoire enregistrée » stays with the answer: a conversation opened again still says it", async () => {
   const kept = await ask({ text: "Retiens que je pars à Lisbonne en mai.", force_new_discussion: true });
   const opened = (await app.inject({ url: `/discussions/${kept.final.discussion_id}`, headers })).json();

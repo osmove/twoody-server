@@ -144,7 +144,8 @@ test("the day the person named wins: « vendredi » is the next Friday, « demai
   assert.equal(first.tool_choice, "required");
   assert.equal(first.max_tokens, 300, "a short round");
   const when = new Date(final.actions[0].at);
-  assert.equal(when.getUTCHours(), 16, "18:00 in Paris");
+  // Paris's hour, not UTC's: 16:00 UTC in summer time, 17:00 from the last Sunday of October.
+  assert.equal(new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Paris", hour: "2-digit", minute: "2-digit" }).format(when), "18:00");
   assert.equal(new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Paris", weekday: "long" }).format(when), "Friday");
   // On a Friday, « vendredi » is next week's: never further.
   assert.ok(when.getTime() - Date.now() <= 8 * 86_400_000, "this Friday, not the one after");

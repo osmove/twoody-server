@@ -21,6 +21,7 @@ const KEYS: Record<keyof UiLabels, string> = {
   desktop: "documents.shortcut.desktop",
   icloud: "documents.shortcut.icloud",
   tools: "chat.tools.title",
+  memory: "caps.memory.title",
 };
 
 function dictionary(language: UiLanguage): string {

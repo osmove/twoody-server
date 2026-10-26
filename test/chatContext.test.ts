@@ -217,6 +217,25 @@ test("a fact the user asked to remember is confirmed, not denied, from its own m
   assert.doesNotMatch(messages[0].content, /thé/, "the system prompt does not move for it");
 });
 
+// « Retiens que ma copine s'appelle Claire Sophie » with Mémoire off under
+// « Outils » was answered « Je retiendrai ça » (Jimmy, 26/10/2026).
+test("a fact asked to be remembered while nothing can be kept: the answer is told it was not, and why, in the person's app words", () => {
+  const leftOut = buildChatMessages(input({ content: "Retiens que je préfère le thé", locale: "fr-FR", notRemembered: { content: "Je préfère le thé", reason: "left_out" } }));
+  const last = leftOut.at(-1)!.content;
+  assert.match(last, /\[NOT saved: this message asks to remember « Je préfère le thé »/);
+  assert.match(last, /« Mémoire » is off for this message \(« Outils », below the message\)/);
+  assert.match(last, /Never say you will remember it/);
+  assert.doesNotMatch(last, /Just saved/);
+  assert.doesNotMatch(leftOut[0].content, /thé|NOT saved/, "the system prompt does not move for it");
+  const german = buildChatMessages(input({ content: "Merk dir, dass ich Tee mag", locale: "de-DE", notRemembered: { content: "Ich mag Tee", reason: "left_out" } })).at(-1)!.content;
+  assert.match(german, /« Gedächtnis » under « Werkzeuge »/);
+  const off = buildChatMessages(input({ content: "Retiens que je préfère le thé", notRemembered: { content: "Je préfère le thé", reason: "memory_off" } })).at(-1)!.content;
+  assert.match(off, /memory is off for this conversation/);
+  assert.doesNotMatch(off, /Outils/);
+  const only = buildChatMessages(input({ content: "Retiens que je préfère le thé", notRemembered: { content: "Je préfère le thé", reason: "only_documents" } })).at(-1)!.content;
+  assert.match(only, /while the user asks their documents only/);
+});
+
 test("memories learned during a conversation leave the system prompt as it was (prefix cache)", () => {
   const first = buildChatTurn(input({ memories: [{ kind: "user", title: null, content: "Architecte à Lyon." }], content: "Bonjour", currentId: "m1", discussionId: "d1" }));
   assert.match(first.messages[0].content, /- Architecte à Lyon\./);

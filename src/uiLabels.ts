@@ -34,19 +34,21 @@ export interface UiLabels {
   icloud: string;
   /// chat.tools.title: the « Outils » button under the message field
   tools: string;
+  /// caps.memory.title: « Mémoire », a line of « Outils »
+  memory: string;
 }
 
 export const UI_LABELS: Record<UiLanguage, UiLabels> = {
-  en: { capabilities: "Capabilities", home: "Home", connectors: "Connectors", bank: "Bank", email: "E-mails", documents: "Documents", addFolder: "Add a folder", downloads: "Downloads", desktop: "Desktop", icloud: "iCloud Drive", tools: "Tools" },
-  fr: { capabilities: "Capacités", home: "Maison", connectors: "Connecteurs", bank: "Banque", email: "E-mails", documents: "Documents", addFolder: "Ajouter un dossier", downloads: "Téléchargements", desktop: "Bureau", icloud: "iCloud Drive", tools: "Outils" },
-  de: { capabilities: "Fähigkeiten", home: "Zuhause", connectors: "Connectors", bank: "Bank", email: "E-Mails", documents: "Dokumente", addFolder: "Ordner hinzufügen", downloads: "Downloads", desktop: "Schreibtisch", icloud: "iCloud Drive", tools: "Werkzeuge" },
-  es: { capabilities: "Capacidades", home: "Casa", connectors: "Conectores", bank: "Banco", email: "Correos", documents: "Documentos", addFolder: "Añadir una carpeta", downloads: "Descargas", desktop: "Escritorio", icloud: "iCloud Drive", tools: "Herramientas" },
-  it: { capabilities: "Capacità", home: "Casa", connectors: "Connettori", bank: "Banca", email: "E-mail", documents: "Documenti", addFolder: "Aggiungi una cartella", downloads: "Download", desktop: "Scrivania", icloud: "iCloud Drive", tools: "Strumenti" },
-  pt: { capabilities: "Capacidades", home: "Casa", connectors: "Conectores", bank: "Banco", email: "E-mails", documents: "Documentos", addFolder: "Adicionar uma pasta", downloads: "Downloads", desktop: "Área de Trabalho", icloud: "iCloud Drive", tools: "Ferramentas" },
-  nl: { capabilities: "Mogelijkheden", home: "Thuis", connectors: "Koppelingen", bank: "Bank", email: "E-mail", documents: "Documenten", addFolder: "Map toevoegen", downloads: "Downloads", desktop: "Bureaublad", icloud: "iCloud Drive", tools: "Tools" },
-  ja: { capabilities: "機能", home: "スマートホーム", connectors: "コネクタ", bank: "銀行", email: "メール", documents: "文書", addFolder: "フォルダを追加", downloads: "ダウンロード", desktop: "デスクトップ", icloud: "iCloud Drive", tools: "ツール" },
-  zh: { capabilities: "能力", home: "家居", connectors: "连接器", bank: "银行", email: "电子邮件", documents: "文档", addFolder: "添加文件夹", downloads: "下载", desktop: "桌面", icloud: "iCloud Drive", tools: "工具" },
-  ko: { capabilities: "기능", home: "홈", connectors: "커넥터", bank: "은행", email: "이메일", documents: "문서", addFolder: "폴더 추가", downloads: "다운로드", desktop: "데스크탑", icloud: "iCloud Drive", tools: "도구" },
+  en: { capabilities: "Capabilities", home: "Home", connectors: "Connectors", bank: "Bank", email: "E-mails", documents: "Documents", addFolder: "Add a folder", downloads: "Downloads", desktop: "Desktop", icloud: "iCloud Drive", tools: "Tools", memory: "Memory" },
+  fr: { capabilities: "Capacités", home: "Maison", connectors: "Connecteurs", bank: "Banque", email: "E-mails", documents: "Documents", addFolder: "Ajouter un dossier", downloads: "Téléchargements", desktop: "Bureau", icloud: "iCloud Drive", tools: "Outils", memory: "Mémoire" },
+  de: { capabilities: "Fähigkeiten", home: "Zuhause", connectors: "Connectors", bank: "Bank", email: "E-Mails", documents: "Dokumente", addFolder: "Ordner hinzufügen", downloads: "Downloads", desktop: "Schreibtisch", icloud: "iCloud Drive", tools: "Werkzeuge", memory: "Gedächtnis" },
+  es: { capabilities: "Capacidades", home: "Casa", connectors: "Conectores", bank: "Banco", email: "Correos", documents: "Documentos", addFolder: "Añadir una carpeta", downloads: "Descargas", desktop: "Escritorio", icloud: "iCloud Drive", tools: "Herramientas", memory: "Memoria" },
+  it: { capabilities: "Capacità", home: "Casa", connectors: "Connettori", bank: "Banca", email: "E-mail", documents: "Documenti", addFolder: "Aggiungi una cartella", downloads: "Download", desktop: "Scrivania", icloud: "iCloud Drive", tools: "Strumenti", memory: "Memoria" },
+  pt: { capabilities: "Capacidades", home: "Casa", connectors: "Conectores", bank: "Banco", email: "E-mails", documents: "Documentos", addFolder: "Adicionar uma pasta", downloads: "Downloads", desktop: "Área de Trabalho", icloud: "iCloud Drive", tools: "Ferramentas", memory: "Memória" },
+  nl: { capabilities: "Mogelijkheden", home: "Thuis", connectors: "Koppelingen", bank: "Bank", email: "E-mail", documents: "Documenten", addFolder: "Map toevoegen", downloads: "Downloads", desktop: "Bureaublad", icloud: "iCloud Drive", tools: "Tools", memory: "Geheugen" },
+  ja: { capabilities: "機能", home: "スマートホーム", connectors: "コネクタ", bank: "銀行", email: "メール", documents: "文書", addFolder: "フォルダを追加", downloads: "ダウンロード", desktop: "デスクトップ", icloud: "iCloud Drive", tools: "ツール", memory: "記憶" },
+  zh: { capabilities: "能力", home: "家居", connectors: "连接器", bank: "银行", email: "电子邮件", documents: "文档", addFolder: "添加文件夹", downloads: "下载", desktop: "桌面", icloud: "iCloud Drive", tools: "工具", memory: "记忆" },
+  ko: { capabilities: "기능", home: "홈", connectors: "커넥터", bank: "은행", email: "이메일", documents: "문서", addFolder: "폴더 추가", downloads: "다운로드", desktop: "데스크탑", icloud: "iCloud Drive", tools: "도구", memory: "기억" },
 };
 
 /// The app's language for a locale as a client sends it (« de-DE »,

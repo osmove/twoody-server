@@ -240,6 +240,13 @@ export interface ChatContextInput {
   /// What this message asked to be remembered, already kept in Memories:
   /// the answer confirms it rather than saying it cannot remember.
   remembered?: string | null;
+  /// What this message asked to be remembered while nothing of it could be
+  /// kept: Mémoire off for it (« Outils »), or « Seulement mes documents ».
+  /// « Retiens que ma copine s'appelle Claire Sophie » with Mémoire off was
+  /// answered « Je retiendrai ça » (Jimmy, 26/10/2026): nothing was kept.
+  /// `left_out`: Mémoire switched off under « Outils »; `memory_off`: no
+  /// memory for this conversation or in the settings.
+  notRemembered?: { content: string; reason: "left_out" | "memory_off" | "only_documents" } | null;
   /// The person's contacts and calendar on this computer: the few that the
   /// message is about ride on it, when a model of this computer answers.
   personal?: { contacts: PersonalContact[]; events: PersonalEvent[] } | null;
@@ -658,6 +665,16 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
       : `[Just saved in the user's Memories on this computer, as their message asks: « ${input.remembered} ». ` +
         "Confirm it briefly in their language. You do remember things they ask you to, across conversations.]"
     : null;
+  const notRemembered = input.notRemembered
+    ? `[NOT saved: this message asks to remember « ${input.notRemembered.content} », but ` +
+      ({
+        only_documents: "nothing is kept in Memories while the user asks their documents only. ",
+        left_out: `« ${labels.memory} » is off for this message (« ${labels.tools} », below the message), so nothing of it was kept. `,
+        memory_off: "memory is off for this conversation, so nothing of it was kept. ",
+      })[input.notRemembered.reason] +
+      "Never say you will remember it, that it is noted or saved. Say in one short sentence, in their language, that you have not kept it and why" +
+      (input.notRemembered.reason === "left_out" ? `, and that they can turn on « ${labels.memory} » under « ${labels.tools} » and send it again.]` : ".]")
+    : null;
   // The first documents or web results since the system prompt was frozen
   // bring the sentence on how to read them.
   const formats = [
@@ -679,7 +696,7 @@ export function buildChatTurn(input: ChatContextInput): ChatTurn {
   // language of the examples, needs no reminder.
   const withData = !chatty && !!(input.fileListings?.length || input.excerpts?.length || input.homeDone || input.homeDevices || input.emailFound || input.googleDataFound || input.webUnavailable);
   const languageHint = spoken && ((usual && spoken !== usual) || (withData && spoken !== "fr")) ? `[Reply in ${languageName(spoken)}, the language of this message.]` : null;
-  const prompt = [remembered, ...formats, documentPolicy, newMemories, ...context, chatty ? null : library, chatty ? null : inventory, input.content, languageHint].filter(Boolean).join("\n\n");
+  const prompt = [remembered, notRemembered, ...formats, documentPolicy, newMemories, ...context, chatty ? null : library, chatty ? null : inventory, input.content, languageHint].filter(Boolean).join("\n\n");
 
   // A previous turn that failed mid-stream leaves a user message with
   // no reply. Fold the new prompt into it rather than sending two
@@ -857,9 +874,18 @@ function basePrompt(local: boolean): string {
     : "You are Twoody, a personal AI assistant.";
   return [
     identity,
-    "Reply in the language the user writes in. Be direct and concise, and use Markdown only when it helps.",
+    // « salut ça va ? » got « Salut, ça va. », « raconte-moi une histoire »
+    // got « Je ne connais pas d'histoire spécifique… », and « je n'ai pas le
+    // moral » an offer to search the documents (Jimmy, 26/10/2026, 9B): the
+    // prompt only said to be direct and concise. Twoody is kind, warm and
+    // helpful; concise is for questions and tasks.
+    "Reply in the language the user writes in. Be kind, warm and genuinely helpful, like a thoughtful friend who knows a lot: friendly and natural, never cold or robotic.",
+    "For questions and tasks, be direct and concise, and use Markdown only when it helps.",
+    "In small talk, answer as a person would: when asked how you are, say you are well and ask them back.",
+    "When the user shares a feeling or a hard moment, respond first with empathy: acknowledge what they feel in your own words, gently ask what is going on or how you can help, and let them lead; do not jump to solutions, and do not offer to look anything up.",
+    "When asked for a story, a joke, a poem or any other writing, write it right away, original and complete, without asking anything first and never saying you do not know one.",
     "You cannot browse the web, send messages or act outside this chat, so never claim that you did.",
-    "If you are unsure or lack the information, say so.",
+    "For facts, if you are unsure or lack the information, say so.",
     // « Je connais bien David Krehwinkel » from three facts the person gave
     // (01/10/2026): what Twoody knows is what it was told, no more.
     "When asked what you know about the user or someone in their life, it is only what they told you: say so plainly, never claim to know them well or personally, and add nothing to it.",
