@@ -48,9 +48,9 @@ export function documentPrompt(args: { project: string; brief: string | null; la
   const system = [
     `You read one document of the project « ${args.project} » and note what it says about the project, for the project's overview.`,
     args.brief ? `About the project: ${args.brief.replace(/\s+/g, " ").slice(0, 400)}` : null,
-    "Write one line per point, and nothing else:",
-    `kind | the point, one short sentence in ${language} | the document's own words it rests on, copied exactly as they are written (at most 25 words)`,
-    "kind is one of:",
+    "Write one line per point, in this form, and nothing else:",
+    `decision | <the point: one short sentence in ${language}> | <the words of the document it rests on, copied exactly as they are written, at most 25 words>`,
+    "The line starts with the point's kind — one of these five English words, as they are written here:",
     kinds,
     `Only what this document says — never a guess, never what is usual. Dates, names and figures as the document gives them; « today », « tomorrow » or « this week » written as the date they mean when the document is dated. A table: only what it says about choices made or the state of the project, never one line per row. At most ${MAX_POINTS_PER_PIECE} lines, the most important first. When the document says nothing of the kinds above, write only: none`,
   ].filter(Boolean).join("\n");
@@ -70,22 +70,41 @@ export interface RawPoint {
 /// The model's lines for a document: `kind | point | quote`. A line without
 /// a known kind, a point or a quote is left out; so is a point repeated.
 export function readPoints(answer: string): RawPoint[] {
+  return readPointLines(answer).points;
+}
+
+/// The same, with how many lines could not be read (a kind missing, the
+/// form not followed): said in the run's stats, never silently lost.
+export function readPointLines(answer: string): { points: RawPoint[]; unread: number } {
   const out: RawPoint[] = [];
   const seen = new Set<string>();
+  let unread = 0;
+  const kindOf = (part: string) => ITEM_KINDS[part.trim().toLowerCase().replace(/[\s-]+/g, "_").replace(/[^a-z_]/g, "")];
+  const clean = (part: string) => part.trim().replace(/^<|>$/g, "").replace(/^["“„«‚‘「]+|["”“»‘’」]+$/g, "").trim();
   for (const raw of answer.replace(/<think>[\s\S]*?(?:<\/think>|$)/g, "").split("\n")) {
-    const line = raw.trim().replace(/^[-*•\d.)\s]+(?=[a-z_ ]+\s*\|)/i, "");
-    const parts = line.split("|");
-    if (parts.length < 3) continue;
-    const kind = ITEM_KINDS[parts[0]!.trim().toLowerCase().replace(/[\s-]+/g, "_").replace(/[^a-z_]/g, "")];
-    const text = parts.slice(1, -1).join("|").trim().replace(/^["“„«]+|["”“»]+$/g, "").trim();
-    const quote = parts[parts.length - 1]!.trim().replace(/^["“„«‚‘]+|["”“»‘’]+$/g, "").trim();
-    if (!kind || !text || !quote || text.length > 500 || quote.length > 600) continue;
+    const line = raw.trim().replace(/^(?:[-*•]|\d+[.)])\s*/, "");
+    if (!line || /^none\.?$/i.test(line)) continue;
+    let parts = line.split("|");
+    // « kind | decision | … »: the form's own word copied before the kind.
+    while (parts.length > 2 && !kindOf(parts[0]!) && /^\s*(?:kind|type|\d+)\s*$/i.test(parts[0]!)) parts = parts.slice(1);
+    const kind = parts.length >= 2 ? kindOf(parts[0]!) : undefined;
+    if (!kind) {
+      if (line.includes("|")) unread += 1;
+      continue;
+    }
+    // « decision | the document's words »: the words are the point too.
+    const quote = clean(parts[parts.length - 1]!);
+    const text = parts.length > 2 ? clean(parts.slice(1, -1).join("|")) : quote;
+    if (!text || !quote || text.length > 500 || quote.length > 600) {
+      unread += 1;
+      continue;
+    }
     const key = `${kind}\u0000${text.toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push({ kind, text, quote });
   }
-  return out;
+  return { points: out, unread };
 }
 
 export interface SectionPoint {

@@ -127,3 +127,22 @@ version gave the same overview.
   ouvertes » (« Bedenkzeit bis Mitte März »), a conclusion of its own now and then (« implizit bestätigt »), an item
   id left in a line's text (« gestützt durch die Entscheidung i1 »). Instructions written for each made it worse (an
   invented deadline from the newest document's date, 20+ lines dropped): kept out.
+- Ten languages (27/10/2026, `--lang`, the same story written in each language, `scripts/project-overview-corpus.mts`;
+  one pass each, temperature 0). A first run lost whole answers in French, Spanish and Dutch (8, 7 and 5 of 15 gold
+  points): the model copied the form `kind | point | quote` word for word, the kind column held « brief » or a
+  number, and every line was dropped without a word. The form now names the five kinds in English, a line with a
+  leading column or with two columns is read, and unread lines are counted (`unread` in the run's stats). Then, first
+  overview / after the update, gold points in their section (anywhere):
+
+  | | de | en | fr | es | it | pt | nl | ja | zh | ko |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | first (of 16 de, 15) | 14 (16) | 10 (11) | 9 (11) | 13 (15) | 10 (14) | 14 (15) | 11 (13) | 12 (13) | 13 (13) | 11 (12) |
+  | update (of 19 de, 18) | 15 (18) | 14 (16) | 13 (13) | 13 (16) | 12 (15) | 14 (16) | 12 (14) | 14 (15) | 14 (15) | 13 (14) |
+
+  Everywhere: every quote found again in its document (39–90 per run), 0 line without a source, nothing from the
+  empty template, the two e-mails named and only they read (124–170 s), first overview 252–376 s. Stale, read by
+  hand: most of what the bench counts after the update is « lumo.com is given up » written in « Questions ouvertes »
+  (misplaced, not false); really stale, Aurin kept as the client's choice (en, fr, es, pt) and the 18 000 € budget
+  (en). Missed most often: « presented » (the shortlist shown to the client, 9 languages of 10), « invented names »
+  (6). German: one date the bench did not find in the line's documents (« von 28.02.2026 auf 07.03.2026 verschoben »,
+  the shift is said in two documents).

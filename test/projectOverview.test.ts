@@ -62,7 +62,7 @@ const { indexStatus, reindex } = await import("../src/documents/library.js");
 const { setSpotlightEnabled } = await import("../src/documents/spotlight.js");
 const { beginGeneration } = await import("../src/account/inflight.js");
 const { findQuote, foldQuote } = await import("../src/projects/overview/quotes.js");
-const { readLines, readPoints } = await import("../src/projects/overview/prompts.js");
+const { readLines, readPointLines, readPoints } = await import("../src/projects/overview/prompts.js");
 const { overviewsIdle, piecesOf, setQuietForTests, startOverviewUpdates, PIECE_CHARS } = await import("../src/projects/overview/run.js");
 setSpotlightEnabled(false);
 setQuietForTests(5, 0, 0);
@@ -135,6 +135,15 @@ test("the model's lines are read strictly", () => {
     { kind: "next_steps", text: "Recherche", quote: "Nächster Schritt: Recherche" },
   ]);
   assert.deepEqual(readPoints("none"), []);
+  // The form copied with its own word first, or the point left out: read all the same (Qwen3.5 9B in Dutch,
+  // Spanish and French, 27/10/2026: every line « kind | brief | … », every one lost before).
+  assert.deepEqual(readPointLines("kind | decision | Wir haben uns für Natur entschieden\nbrief | <Der Name hat drei Silben.> | <Der Name soll drei Silben haben>\nbesluit | Natur gekozen | We hebben gekozen\nfoo bar"), {
+    points: [
+      { kind: "decisions", text: "Wir haben uns für Natur entschieden", quote: "Wir haben uns für Natur entschieden" },
+      { kind: "brief", text: "Der Name hat drei Silben.", quote: "Der Name soll drei Silben haben" },
+    ],
+    unread: 1,
+  });
   const known = new Set(["i1", "i2", "i3"]);
   assert.deepEqual(readLines("- Natur gewählt [i1, i3]\n- Erfunden [i9]\n- Ohne\n1. Domain offen (i2).\n- Natur gewählt [i1]\n- Velora statt Natur (i3) gewählt [i1]", known), [
     { text: "Natur gewählt", refs: ["i1", "i3"] },

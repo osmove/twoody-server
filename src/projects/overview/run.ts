@@ -5,7 +5,7 @@ import { onIndexPass } from "../../documents/library.js";
 import { documentText } from "../../fileActions/plan.js";
 import { documentDate } from "../../fileActions/dates.js";
 import { findQuote } from "./quotes.js";
-import { documentPrompt, readLines, readPoints, SECTIONS, sectionPrompt, type SectionKind, type SectionPoint } from "./prompts.js";
+import { documentPrompt, readLines, readPointLines, SECTIONS, sectionPrompt, type SectionKind, type SectionPoint } from "./prompts.js";
 import {
   digestsOf,
   dropAllDigests,
@@ -73,6 +73,8 @@ export interface RunStats {
   points: number;
   /// Points left out: their quote is not in the document.
   dropped: number;
+  /// Lines of a document's points that could not be read (the form not followed).
+  unread: number;
   /// Lines left out: they named none of the points given.
   lines_dropped: number;
   calls: number;
@@ -145,7 +147,7 @@ export function setQuietForTests(pollMs: number, afterMs: number, gapMs = UPDATE
 async function drain(): Promise<void> {
   for (let job = queue.shift(); job; job = queue.shift()) {
     const started = Date.now();
-    const stats: RunStats = { documents_read: 0, points: 0, dropped: 0, lines_dropped: 0, calls: 0, ms: 0, outcome: "unchanged" };
+    const stats: RunStats = { documents_read: 0, points: 0, dropped: 0, unread: 0, lines_dropped: 0, calls: 0, ms: 0, outcome: "unchanged" };
     try {
       stats.outcome = await runProject(job, stats);
     } catch (err) {
@@ -226,7 +228,9 @@ async function readDocument(userId: string, project: { title: string; brief: str
   for (const [index, piece] of pieces.entries()) {
     const answer = await ask(userId, documentPrompt({ project: project.title, brief: project.brief, language, name: document.name, date: day(documentAt), piece: index + 1, pieces: pieces.length, text: piece }), 1_200, stats);
     model = answer.model ?? model;
-    for (const point of readPoints(answer.text)) {
+    const { points, unread } = readPointLines(answer.text);
+    stats.unread += unread;
+    for (const point of points) {
       const place = placeQuote(piece, point.quote);
       if (!place) {
         stats.dropped += 1;
