@@ -35,6 +35,16 @@ export function ocrAvailable(): boolean {
   return Boolean(process.env.TWOODY_OCR_BIN);
 }
 
+/// What reads scans here: « none », or the helper's engine — « vision »
+/// (Mac), « windows » (27/10/2026) — as the Desktop names it
+/// (TWOODY_OCR_ENGINE), else as this platform's helper would.
+export function ocrEngine(env: NodeJS.ProcessEnv = process.env): string {
+  if (!env.TWOODY_OCR_BIN) return "none";
+  const named = env.TWOODY_OCR_ENGINE?.trim().toLowerCase();
+  if (named && /^[a-z0-9-]{1,32}$/.test(named)) return named;
+  return process.platform === "win32" ? "windows" : process.platform === "darwin" ? "vision" : "other";
+}
+
 /// The text of the given pages (1-based), read by OCR; null when there is
 /// no helper, or it failed — the caller then keeps what it had.
 export async function ocrPages(path: string, pages: number[]): Promise<Map<number, string> | null> {

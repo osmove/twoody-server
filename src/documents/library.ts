@@ -1,14 +1,15 @@
 import {indexedDirectory, type IndexedEntry} from "./tree.js";
 import { indexSemantic } from "./semantic.js";
 import { and, eq } from "drizzle-orm";
-import { realpathSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative } from "node:path";
 import { generateId } from "../auth.js";
-import { db, documentFolders, documents, sqlite } from "../db.js";
+import { DATA_DIR, db, documentFolders, documents, sqlite } from "../db.js";
 import { chunkSections } from "./chunk.js";
 import { extractSections, maxBytesFor } from "./extract.js";
+import { ocrEngine } from "./ocr.js";
 import { folderRisk } from "./folderRisk.js";
 import { capabilityOn, setLocalCapability } from "../localCapabilities.js";
 import { folderReadable, walk } from "./walk.js";
@@ -345,6 +346,44 @@ function passEnded(userId: string): void {
   }
 }
 
+// Scans read since the index was made (27/10/2026: Windows reads them from
+// Desktop 0.13.115 on; a PDF indexed before, its scanned pages unread, is
+// unchanged on the disk and was never read again — found by the Windows
+// upgrade check). The engine each person's index was made with is kept
+// here; when scans are read and it was made without (or with another
+// engine), the next pass reads its PDFs again once, and indexes again only
+// those with a page read by OCR: a PDF with all its text keeps its index.
+// An index from before this file was made with Vision on a Mac, else
+// without.
+const OCR_MARKS = join(DATA_DIR, "documents-ocr.json");
+
+function ocrMarks(): Record<string, string> {
+  try {
+    const marks = JSON.parse(readFileSync(OCR_MARKS, "utf8"));
+    return marks && typeof marks === "object" ? marks : {};
+  } catch {
+    return {};
+  }
+}
+
+/// The people whose pass reads their PDFs again, scans in view.
+const rereading = new Set<string>();
+
+function scansRead(userId: string): string | null {
+  const engine = ocrEngine();
+  if (engine === "none") return null;
+  const made = ocrMarks()[userId] ?? (engine === "vision" ? "vision" : "none");
+  return made === engine ? null : engine;
+}
+
+function markScansRead(userId: string, engine: string): void {
+  try {
+    writeFileSync(OCR_MARKS, JSON.stringify({ ...ocrMarks(), [userId]: engine }), { mode: 0o600 });
+  } catch {
+    // read again at the next pass
+  }
+}
+
 export function indexStatus(userId: string): IndexStatus {
   return jobs.get(userId) ?? { running: false, total: 0, done: 0, current: null, started_at: null, finished_at: null };
 }
@@ -517,11 +556,18 @@ export async function reindex(userId: string): Promise<IndexStatus> {
       // Nothing new where it waits, nor where another project's folder was found.
       const todo = work.filter((item) => !paused(item.folderId) && !elsewhere(item.folderId, item.path));
       status.total = todo.length;
-      for (const item of todo) {
-        status.current = basename(item.path);
-        await indexFile(userId, item.folderId, item.path);
-        status.done += 1;
-        await new Promise((resolve) => setImmediate(resolve));
+      const engine = scansRead(userId);
+      if (engine) rereading.add(userId);
+      try {
+        for (const item of todo) {
+          status.current = basename(item.path);
+          await indexFile(userId, item.folderId, item.path);
+          status.done += 1;
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        if (engine) markScansRead(userId, engine);
+      } finally {
+        rereading.delete(userId);
       }
     }
   } finally {
@@ -660,7 +706,18 @@ async function indexFile(userId: string, given: string, path: string): Promise<v
     .from(documents)
     .where(and(eq(documents.userId, userId), eq(documents.path, path)))
     .all();
-  if (existing && existing.size === info.size && existing.mtimeMs === mtimeMs && existing.folderId === folderId) return;
+  let sections: Awaited<ReturnType<typeof extractSections>> | null = null;
+  if (existing && existing.size === info.size && existing.mtimeMs === mtimeMs && existing.folderId === folderId) {
+    // Unchanged; a PDF is read again once scans are read here, and kept as
+    // it was unless a page of it is read by OCR.
+    if (!rereading.has(userId) || extname(path).toLowerCase() !== ".pdf" || existing.status === "error") return;
+    try {
+      sections = await extractSections(path);
+    } catch {
+      return;
+    }
+    if (!sections.some((section) => section.ocr)) return;
+  }
   // Never across another project's walls, wherever they are now: what
   // Spotlight hands over is checked as the pass checks it.
   if (!mayIndex(userId, folderId, path, info.size, info.mtimeMs)) return;
@@ -675,7 +732,7 @@ async function indexFile(userId: string, given: string, path: string): Promise<v
     error = "too_large";
   } else {
     try {
-      chunks = chunkSections(await extractSections(path));
+      chunks = chunkSections(sections ?? (await extractSections(path)));
       if (chunks.length === 0) status = "empty";
     } catch (err) {
       status = "error";
