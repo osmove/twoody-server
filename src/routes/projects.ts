@@ -43,11 +43,11 @@ function fail(reply: FastifyReply, err: unknown) {
 
 const security: Array<Record<string, string[]>> = [{ bearerAuth: [] }, { userTokenAuth: [] }];
 
-type Auth = NonNullable<Awaited<ReturnType<typeof requireAuth>>>;
+export type Auth = NonNullable<Awaited<ReturnType<typeof requireAuth>>>;
 
 /// The person, and a project they may reach from here: an isolated one
 /// from this computer's app only — to anyone else it is « not found ».
-async function reach(req: FastifyRequest, reply: FastifyReply, id: string | null = null): Promise<Auth | null> {
+export async function reach(req: FastifyRequest, reply: FastifyReply, id: string | null = null): Promise<Auth | null> {
   const auth = await requireAuth(req, reply);
   if (!auth || !(await requirePerson(req, reply, auth))) return null;
   if (id !== null && projectIsolated(auth.userId, id) === true && !(await reachesWalledProjects(req, auth))) {

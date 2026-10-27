@@ -240,7 +240,7 @@ test("migration 16 gives a walled-off project's folder its identity and its disk
   db.prepare("INSERT INTO users (id, email, created_at) VALUES ('u1', 'u@example.com', 1)").run();
   db.prepare("INSERT INTO projects (id, user_id, title, status, isolated, created_at, updated_at) VALUES ('p1', 'u1', 'Tessane SAS', 'active', 1, 1, 1)").run();
   db.prepare("INSERT INTO document_folders (id, user_id, path, created_at, project_id) VALUES ('f1', 'u1', '/Users/claire/Cabinet', 1, NULL), ('f2', 'u1', '/Users/claire/Cabinet/Tessane', 2, 'p1')").run();
-  migrate(db, { dataDir: dir, log: quiet });
+  migrate(db, { dataDir: dir, log: quiet, upTo: 16 });
   assert.equal(schemaVersion(db), 16);
   assert.deepEqual(columns(db, "document_folders").slice(-2), ["identity", "volume"]);
   const rows = () => db.prepare("SELECT id, path, project_id, identity, volume FROM document_folders ORDER BY id").all();
@@ -255,4 +255,23 @@ test("migration 16 gives a walled-off project's folder its identity and its disk
   const fresh = new Database(join(freshDir, "local.db"));
   migrate(fresh, { dataDir: freshDir, log: quiet });
   assert.deepEqual(columns(fresh, "document_folders"), columns(db, "document_folders"));
+});
+
+test("migration 17 makes the tables of the projects' overviews, every project kept; run again, it changes nothing", async () => {
+  const { projectOverviews } = await import("../src/migrations/0017_project_overviews.ts");
+  const dir = mkdtempSync(join(tmpdir(), "twoody-migrations-"));
+  const db = new Database(join(dir, "local.db"));
+  migrate(db, { dataDir: dir, log: quiet, upTo: 16 });
+  db.prepare("INSERT INTO users (id, email, created_at) VALUES ('u1', 'u@example.com', 1)").run();
+  db.prepare("INSERT INTO projects (id, user_id, title, status, isolated, created_at, updated_at) VALUES ('p1', 'u1', 'Velora', 'active', 1, 1, 1)").run();
+  migrate(db, { dataDir: dir, log: quiet });
+  assert.equal(schemaVersion(db), 17);
+  assert.deepEqual(columns(db, "project_overviews"), ["id", "user_id", "project_id", "folder", "language", "sections", "documents", "built_at", "created_at", "updated_at", "deleted_at"]);
+  assert.deepEqual(columns(db, "project_overview_versions"), ["id", "overview_id", "sections", "documents", "changes", "status", "created_at", "updated_at", "decided_at"]);
+  assert.ok(columns(db, "project_document_digests").includes("items"));
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM projects").get() as { n: number }).n, 1);
+  const tables = () => JSON.stringify(["project_overviews", "project_overview_versions", "project_document_digests"].map((table) => columns(db, table)));
+  const before = tables();
+  projectOverviews(db);
+  assert.equal(tables(), before);
 });

@@ -17,6 +17,7 @@ import { folderShareNames } from "./0013_folder_share_names.js";
 import { peopleRows } from "./0014_people_rows.js";
 import { peerDocumentAudit } from "./0015_peer_document_audit.js";
 import { walledFolderPlaces } from "./0016_walled_folder_places.js";
+import { projectOverviews } from "./0017_project_overviews.js";
 
 // Versioned migrations (03/10/2026, docs/schema-convergence.md): the
 // database's version is SQLite's `user_version`. A database at 0 — fresh,
@@ -51,6 +52,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 14, name: "people_rows", up: (sqlite) => peopleRows(sqlite) },
   { version: 15, name: "peer_document_audit", up: peerDocumentAudit },
   { version: 16, name: "walled_folder_places", up: walledFolderPlaces },
+  { version: 17, name: "project_overviews", up: projectOverviews },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

@@ -98,6 +98,7 @@ import { ProjectError } from "../projects/projects.js";
 import { inProjectScope } from "../documents/retrieval.js";
 import { fileActionTurn } from "../fileActions/chat.js";
 import { setFileActionModel } from "../fileActions/run.js";
+import { setOverviewModel } from "../projects/overview/run.js";
 import { fileAction, setActionMessage } from "../fileActions/store.js";
 import { actionView } from "../fileActions/view.js";
 
@@ -213,6 +214,9 @@ export async function queryRoutes(app: FastifyInstance) {
   // What writes a Word or Excel document « Agir dans vos dossiers » makes
   // (src/fileActions/run.ts).
   setFileActionModel(fileActionCall);
+  // What reads a project's documents and writes its overview
+  // (src/projects/overview/run.ts).
+  setOverviewModel(overviewCall);
   // A memory saved, edited or learned: the next new conversation's start,
   // read ahead.
   onMemoriesChanged((userId) => { for (const key of warmKeysOf(userId)) scheduleWarm(key); });
@@ -2814,6 +2818,29 @@ async function fileActionCall(userId: string, model: string | null, prompt: Chat
     done();
   }
   return text;
+}
+
+/// A project's overview (src/projects/overview/run.ts): a document read, a
+/// section written. A model of this very computer — its default one — and
+/// never another computer nor a cloud provider: the documents never leave
+/// it. No reasoning, the background slot; the runner waits for the
+/// computer to be quiet and stops the call when an answer starts.
+async function overviewCall(userId: string, prompt: ChatMessage[], options: { maxTokens: number; signal: AbortSignal }): Promise<{ text: string; model: string | null }> {
+  const provider = await resolveProvider(userId);
+  if (provider.kind !== "local_openai" || !onThisComputer(provider)) throw new LocalLlmUnavailableError("Overviews are written by a model of this computer only");
+  if (!(await localRuntimeReady(provider.baseUrl, provider.model))) throw new LocalLlmUnavailableError("Local LLM provider is unavailable");
+  let text = "";
+  const asked = Date.now();
+  let first = 0;
+  const done = beginGeneration("background");
+  runtimeHolds.clear();
+  try {
+    const spent = await streamFromProvider(provider, prompt, 0, (delta) => { first ||= Date.now(); text += delta; }, options.signal, { purpose: "background", maxTokens: options.maxTokens });
+    recordModelCall(userId, "memory", provider.model, "this-computer", spent, messagesChars(prompt), text.length, asked, first, Date.now());
+  } finally {
+    done();
+  }
+  return { text: text.replace(/<think>[\s\S]*?(?:<\/think>|$)/g, ""), model: provider.model };
 }
 
 /// One call to a model other than the answer itself (a memory extraction,

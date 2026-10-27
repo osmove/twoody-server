@@ -326,6 +326,25 @@ const jobs = new Map<string, IndexStatus>();
 /// folder set): another pass follows it, which knows the new folder.
 const askedAgain = new Set<string>();
 
+const passListeners: Array<(userId: string) => void> = [];
+
+/// Called after every pass, and when one was asked with Documents off: the
+/// watches follow the folders (watch.ts), the project overviews look for
+/// changed documents (projects/overview).
+export function onIndexPass(listener: (userId: string) => void): void {
+  passListeners.push(listener);
+}
+
+function passEnded(userId: string): void {
+  for (const listener of passListeners) {
+    try {
+      listener(userId);
+    } catch {
+      // one listener's failure is not the pass's
+    }
+  }
+}
+
 export function indexStatus(userId: string): IndexStatus {
   return jobs.get(userId) ?? { running: false, total: 0, done: 0, current: null, started_at: null, finished_at: null };
 }
@@ -346,7 +365,10 @@ export async function reindex(userId: string): Promise<IndexStatus> {
     return current;
   }
   // Documents switched off in Capabilities: nothing is read.
-  if (!capabilityOn(userId, "documents")) return indexStatus(userId);
+  if (!capabilityOn(userId, "documents")) {
+    passEnded(userId);
+    return indexStatus(userId);
+  }
 
   const status: IndexStatus = {
     running: true,
@@ -509,6 +531,7 @@ export async function reindex(userId: string): Promise<IndexStatus> {
   }
   if (askedAgain.delete(userId) || followed) return reindex(userId);
   void indexSemantic(userId);
+  passEnded(userId);
   return status;
 }
 

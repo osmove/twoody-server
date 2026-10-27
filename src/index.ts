@@ -20,6 +20,8 @@ import {
 } from "./tunnel/index.js";
 import { adminToken } from "./adminAccess.js";
 import { reindex } from "./documents/library.js";
+import { startWatching } from "./documents/watch.js";
+import { startOverviewUpdates } from "./projects/overview/run.js";
 import { startUsageMaintenance } from "./usageStore.js";
 import { readFileSync } from "node:fs";
 import { setLocalPort } from "./account/approvals.js";
@@ -419,12 +421,19 @@ try {
   // had started, and the desktop asked it for a session (422).
   parentPort?.postMessage({ type: "listening", port: PORT });
 
+  let watching: ReturnType<typeof startWatching> | null = null;
   // Catch up with files added or changed while the server was off. A
   // few seconds after boot, so first requests are not competing with it.
   setTimeout(() => {
     for (const { id } of db.select({ id: users.id }).from(users).all()) {
       void reindex(id).catch((err) => app.log.error(err, "document indexing failed"));
     }
+    // From then on, a document added, changed or removed in a granted folder
+    // is noticed by itself (documents/watch.ts).
+    watching = startWatching();
+    // And the overviews of projects whose documents changed are brought up
+    // to date, as proposals (projects/overview/run.ts).
+    startOverviewUpdates();
   }, 3_000).unref();
 
   // Graceful shutdown so the mDNS cache doesn't keep stale entries
@@ -440,6 +449,7 @@ try {
         memorySync.stop();
         memoryWork.stop();
         learning.stop();
+        watching?.stop();
         titles.stop();
         emailSync.stop();
         graphSync.stop();

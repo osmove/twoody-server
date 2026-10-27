@@ -375,7 +375,7 @@ export async function startFakeBackend(options: { userToken?: string; loginLifet
 /// A model runtime speaking OpenAI's streaming chat: each answer is
 /// `reply(model)` in three pieces. `cutAfterFirst` drops the connection
 /// after the first piece.
-export async function startFakeRuntime(options: { models: string[]; reply?: (model: string) => string; cutAfterFirst?: boolean }): Promise<{ url: string; calls: Array<{ model: string; body: any }>; close(): Promise<void> }> {
+export async function startFakeRuntime(options: { models: string[]; reply?: (model: string, body: any) => string; cutAfterFirst?: boolean }): Promise<{ url: string; calls: Array<{ model: string; body: any }>; close(): Promise<void> }> {
   const calls: Array<{ model: string; body: any }> = [];
   const server = createServer(async (req, res) => {
     const path = new URL(req.url ?? "/", "http://x").pathname;
@@ -392,7 +392,7 @@ export async function startFakeRuntime(options: { models: string[]; reply?: (mod
         res.end(JSON.stringify({ error: "model not found" }));
         return;
       }
-      const text = options.reply?.(body.model) ?? `Réponse de ${body.model}.`;
+      const text = options.reply?.(body.model, body) ?? `Réponse de ${body.model}.`;
       const pieces = [text.slice(0, 4), text.slice(4, 10), text.slice(10)].filter(Boolean);
       res.writeHead(200, { "content-type": "text/event-stream" });
       for (const [i, piece] of pieces.entries()) {
