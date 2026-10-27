@@ -141,6 +141,10 @@ test("the model's lines are read strictly", () => {
     { text: "Domain offen", refs: ["i2"] },
     { text: "Velora statt Natur gewählt", refs: ["i1", "i3"] },
   ]);
+  assert.deepEqual(readLines("- Lumo statt Aurin, was die Entscheidung i1 ersetzt. [i2]\n- Version i9 bleibt [i3]", known), [
+    { text: "Lumo statt Aurin, was die Entscheidung ersetzt.", refs: ["i2", "i1"] },
+    { text: "Version i9 bleibt", refs: ["i3"] },
+  ]);
   const long = Array.from({ length: 30 }, (_, i) => `Absatz ${i} ${"x".repeat(900)}`).join("\n");
   const pieces = piecesOf(long);
   assert.ok(pieces.length >= 2 && pieces.every((piece) => piece.length <= PIECE_CHARS));

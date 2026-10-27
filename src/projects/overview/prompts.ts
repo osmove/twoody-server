@@ -155,6 +155,12 @@ export function readLines(answer: string, known: ReadonlySet<string>): Array<{ t
       for (const ref of ids.match(/i\d+/gi) ?? []) refs.push(ref.toLowerCase());
       return "";
     }).trim();
+    // A bare id left in the words (« … die Entscheidung i1 ersetzt »): taken, and out of the text.
+    line = line.replace(/\s*\b(i\d+)\b(?=[\s,.;:)]|$)/gi, (all, ref: string) => {
+      if (!known.has(ref.toLowerCase())) return all;
+      refs.push(ref.toLowerCase());
+      return "";
+    }).replace(/\s+([,.;:])/g, "$1").trim();
     const valid = [...new Set(refs.filter((ref) => known.has(ref)))];
     if (!line || !valid.length || /^none\.?$/i.test(line)) continue;
     const key = line.toLowerCase();

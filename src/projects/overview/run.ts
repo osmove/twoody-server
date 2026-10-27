@@ -428,7 +428,10 @@ async function runProject(job: Job, stats: RunStats): Promise<RunStats["outcome"
       sections.push({ kind, lines: before });
       continue;
     }
-    const lines = await writeSection(userId, project.title, overview.language, kind, candidates[kind], candidates, before, stats);
+    // A line kept but for a full stop, a space or a capital is the line that was there.
+    const fold = (text: string) => text.toLowerCase().replace(/[\s.;:,!。]+$/u, "").replace(/\s+/g, " ").trim();
+    const kept = new Map(before.map((line) => [fold(line.text), line.text]));
+    const lines = (await writeSection(userId, project.title, overview.language, kind, candidates[kind], candidates, before, stats)).map((line) => ({ ...line, text: kept.get(fold(line.text)) ?? line.text }));
     state.done += 1;
     sections.push({ kind, lines });
     const was = new Set(before.map((line) => line.text));
