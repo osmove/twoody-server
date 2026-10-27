@@ -45,8 +45,11 @@ function fakeModel(body: { messages: Array<{ role: string; content: string }> })
     return [...points, "decision | Der Kunde hat den Namen Zirkon gewählt. | Der Kunde hat sich endgültig für Zirkon entschieden"].join("\n");
   }
   if (system.startsWith("You write one section")) {
-    const points = [...user.matchAll(/^\[(i\d+)\] \([^)]*\) (.+)$/gm)].map((match) => `- ${match[2]} [${match[1]}]`);
-    return [...points, "- Eine Zeile ohne Quelle [i99]", "- Eine Zeile ohne Klammer"].join("\n");
+    const own = user.split("\n\nPoints of the other sections:")[0]!.split("\n\nThe section as it stands:")[0]!;
+    const points = [...own.matchAll(/^\[(i\d+)\] \([^)]*\) (.+)$/gm)].map((match) => `- ${match[2]} [${match[1]}]`);
+    // A line on another section's point only: never kept in this one.
+    const other = /Points of the other sections:\n\[(i\d+)\]/.exec(user)?.[1];
+    return [...points, "- Eine Zeile ohne Quelle [i99]", "- Eine Zeile ohne Klammer", ...(other ? [`- Eine fremde Zeile [${other}]`] : [])].join("\n");
   }
   return "Antwort.";
 }
@@ -133,9 +136,10 @@ test("the model's lines are read strictly", () => {
   ]);
   assert.deepEqual(readPoints("none"), []);
   const known = new Set(["i1", "i2", "i3"]);
-  assert.deepEqual(readLines("- Natur gewählt [i1, i3]\n- Erfunden [i9]\n- Ohne\n1. Domain offen (i2).\n- Natur gewählt [i1]", known), [
+  assert.deepEqual(readLines("- Natur gewählt [i1, i3]\n- Erfunden [i9]\n- Ohne\n1. Domain offen (i2).\n- Natur gewählt [i1]\n- Velora statt Natur (i3) gewählt [i1]", known), [
     { text: "Natur gewählt", refs: ["i1", "i3"] },
     { text: "Domain offen", refs: ["i2"] },
+    { text: "Velora statt Natur gewählt", refs: ["i1", "i3"] },
   ]);
   const long = Array.from({ length: 30 }, (_, i) => `Absatz ${i} ${"x".repeat(900)}`).join("\n");
   const pieces = piecesOf(long);
@@ -168,14 +172,14 @@ test("a walled-off project's overview: every document read, every line on its so
   assert.ok(lineTexts(overview, "next_steps").some((text: string) => text.includes("Markenrecherche")));
   // The point made up has no quote to stand on; the lines on nothing are dropped.
   const all = overview.sections.flatMap((section: { lines: Array<{ text: string; sources: Array<{ name: string; quote: string; path?: string }> }> }) => section.lines);
-  assert.ok(all.every((line: { text: string }) => !/Zirkon|ohne Quelle|ohne Klammer/i.test(line.text)));
+  assert.ok(all.every((line: { text: string }) => !/Zirkon|ohne Quelle|ohne Klammer|fremde Zeile/i.test(line.text)));
   assert.ok(all.every((line: { sources: unknown[] }) => line.sources.length > 0));
   const decision = all.find((line: { text: string }) => line.text.includes("Richtung Natur"))!;
   assert.equal(decision.sources[0]!.name, "Protokoll.txt");
   assert.equal(decision.sources[0]!.quote, "Wir haben uns für die Richtung Natur entschieden.");
   assert.ok(decision.sources[0]!.path?.endsWith("Protokoll.txt"), "this computer's app gets the path to open it");
   assert.equal(overview.last_run.dropped, 3, "one made-up point per document");
-  assert.equal(overview.last_run.lines_dropped, 10, "two lines on nothing per section");
+  assert.equal(overview.last_run.lines_dropped, 15, "two lines on nothing and one on another section's point only, per section");
   assert.equal(overview.proposal, null);
 
   // Nothing changed: nothing read nor written again.
@@ -187,7 +191,7 @@ test("a walled-off project's overview: every document read, every line on its so
   assert.equal((await overviewOf(walled)).proposal, null);
 });
 
-test("a document changed: only it is read again, only the sections it touches written again, as a proposal", async () => {
+test("a document changed: only it is read again, the sections written again from their lines, as a proposal", async () => {
   const documentsBefore = documentCalls().length;
   const sectionsBefore = sectionCalls().length;
   write(join(velora, "Protokoll.txt"), "Protokoll Workshop\nDatum: 20.02.2026\nWir haben uns für die Richtung Technik entschieden.\nOffen ist noch, ob die Domain frei ist.\nNächster Schritt: Markenrecherche durch Anna bis 01.03.2026.");
@@ -195,8 +199,11 @@ test("a document changed: only it is read again, only the sections it touches wr
   await new Promise((resolve) => setTimeout(resolve, 50));
   await overviewsIdle();
   assert.equal(documentCalls().length - documentsBefore, 1);
-  // The decision changed; the open question and the next step kept their quotes, so their points.
-  assert.equal(sectionCalls().length - sectionsBefore, 1);
+  // Every section written again from its lines (a point of one may change
+  // another's); only the decision's lines changed.
+  assert.equal(sectionCalls().length - sectionsBefore, 5);
+  assert.ok(sectionCalls().slice(sectionsBefore).every((call) => /The section as it stands:/.test(call.body.messages[1].content)));
+  assert.ok(sectionCalls().slice(sectionsBefore).every((call) => /Points of the other sections:/.test(call.body.messages[1].content)));
   const overview = await overviewOf(walled);
   assert.ok(lineTexts(overview, "decisions").some((text: string) => text.includes("Richtung Natur")), "the overview stays until the person applies");
   assert.ok(overview.proposal);

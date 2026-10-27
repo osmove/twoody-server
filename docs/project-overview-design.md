@@ -46,17 +46,20 @@ when the text has pages, and the document's date (a date written in it, `fileAct
 Kept in `project_document_digests` with the document's size and date as read: a document unchanged is never read again.
 
 **Written per section (reduce).** One call per section with that section's items, newest document first, as
-`[i12] (2026-03-12, Protokoll 3.docx) Der Name „Velora“ wurde gewählt.` The model writes at most 12 lines, each ending
-with the items it rests on (`[i12, i3]`); when a newer document changes what an older one said, the newer wins and the
-line says what it replaced. A line without a valid item is dropped; the sources of a line are its items' documents
-(name, page, quote). More items than fit (≈ 60 per call) are written in rounds, the lines of the previous round
-given as items of the next.
+`[i12] (2026-03-12, Protokoll 3.docx) Der Name „Velora“ wurde gewählt.`, and the other sections' items (the newest
+80), to see what a newer document changed elsewhere: an e-mail raising the budget is read as a decision and must
+still change the brief's budget; a decision settles an open question; a step done leaves the next steps (first bench,
+27/10/2026: the brief kept 18 000 € and 28.02 after the e-mail and the second briefing, and « lumo.com » stayed open
+after it was given up). The model writes at most 12 lines, each ending with the items it rests on (`[i12, i3]`, its
+own section's or another's); the newer wins and the line says what it replaced. A line without a valid item, or
+resting on other sections' items only, is dropped (the brief filled up with the decisions otherwise); the sources of a line are its items' documents (name, page, quote). More items than fit (≈ 60 per call)
+are written in rounds, the lines of the previous round given as items of the next.
 
 **Kept, never replaced by itself.** `project_overviews` holds the overview the person sees; every version is in
 `project_overview_versions` (nothing is deleted). The first one is made when the person asks (« Faire la synthèse »).
 After that, when documents of the project change (the watch, a pass, « Vérifier les changements »), the changed
-documents only are read again, and only the sections whose items changed are written again — with their lines as they
-stand, to be kept word for word where their items still say it. The result is a **proposal** (« Mise à jour proposée »):
+documents only are read again; when the items changed, every section is written again from its lines as they stand,
+to be kept word for word where their items still say it (an item of one section may change another's). The result is a **proposal** (« Mise à jour proposée »):
 the documents new, changed or gone, and per section the lines added and removed; « Appliquer » makes it the overview,
 « Ignorer » keeps the one there (the next change proposes again, from the overview kept). Never written over while the
 person reads it.
@@ -106,3 +109,21 @@ untouched.
   a real PC before saying anything.
 - OCR on Windows and Linux (scans without text).
 - The overview in the chat of a project's conversations, and on the iPhone.
+
+## 8. Measured (27/10/2026, Qwen3.5 9B Q4_K_M, M5 24 Go on mains, twoody-bench scripts/project-overview-bench.mts)
+14 documents (docx, xlsx, pdf, md, txt, an empty template), then two e-mails added. Temperature 0: two passes of one
+version gave the same overview.
+- First version (each section its own items only): 156 s for 14 documents and 5 sections; 12/16 gold points in their
+  section (15 anywhere); **2 stale** (the brief kept 18 000 € and the 28.02 deadline, changed by an e-mail and the
+  second briefing, both read as decisions); the update named the two e-mails and wrote only 3 sections, but « lumo.com »
+  stayed an open question after it was given up.
+- With the other sections' items and every section rewritten on an update (kept, server ab945e3 + this change):
+  first overview 200–280 s, 14–15/16 gold points in their section (16 anywhere), **0 stale**, 0 line without a
+  source, every quote found again in its document (38–63), nothing from the empty template, no date absent from its
+  documents; the update 90–130 s (2 documents read, 5 sections written), DPMA filing and the EUIPO date in, the
+  « lumo.com » question gone or turned into a fact.
+- Still wrong, the model's: a step already done kept in « Prochaines étapes » (the linguistic check of 03.03), a
+  deadline taken from an e-mail's own date (« Logo-Skizzen bis 12.03. »), a fact or a request in « Questions
+  ouvertes » (« Bedenkzeit bis Mitte März »), a conclusion of its own now and then (« implizit bestätigt »), an item
+  id left in a line's text (« gestützt durch die Entscheidung i1 »). Instructions written for each made it worse (an
+  invented deadline from the newest document's date, 20+ lines dropped): kept out.

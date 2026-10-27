@@ -252,16 +252,21 @@ interface Candidate {
   sources: Source[];
 }
 
+/// The other sections' points given with a section, newest first: what a
+/// newer document changed elsewhere (the budget raised in an e-mail, a
+/// question settled by a decision) shows there.
+export const MAX_OTHER_POINTS = 80;
+
 /// A section's lines from its points: in one call, or in rounds when there
 /// are too many (the lines of a round are the points of the next).
-async function writeSection(userId: string, project: string, language: string, kind: SectionKind, points: Candidate[], currentLines: Line[] | null, stats: RunStats): Promise<Line[]> {
+async function writeSection(userId: string, project: string, language: string, kind: SectionKind, points: Candidate[], all: Record<SectionKind, Candidate[]>, currentLines: Line[] | null, stats: RunStats): Promise<Line[]> {
   if (!points.length) return [];
   let candidates = [...points].sort((a, b) => b.at - a.at);
   while (candidates.length > MAX_POINTS_PER_CALL) {
     const next: Candidate[] = [];
     for (let start = 0; start < candidates.length; start += MAX_POINTS_PER_CALL) {
       const group = candidates.slice(start, start + MAX_POINTS_PER_CALL);
-      for (const line of await writeOnce(userId, project, language, kind, group, null, stats)) {
+      for (const line of await writeOnce(userId, project, language, kind, group, [], null, stats)) {
         const at = Math.max(...line.sources.map((source) => (source.date ? Date.parse(source.date) : 0)));
         next.push({ ref: "", date: day(at || null), at, document: [...new Set(line.sources.map((source) => source.name))].slice(0, 3).join(", "), text: line.text, sources: line.sources });
       }
@@ -270,18 +275,28 @@ async function writeSection(userId: string, project: string, language: string, k
     if (next.length >= candidates.length || !next.length) break;
     candidates = next.sort((a, b) => b.at - a.at);
   }
-  return writeOnce(userId, project, language, kind, candidates.slice(0, MAX_POINTS_PER_CALL * 2), currentLines, stats);
+  const others = SECTIONS.filter((other) => other !== kind)
+    .flatMap((section) => all[section].map((candidate) => ({ ...candidate, section })))
+    .sort((a, b) => b.at - a.at)
+    .slice(0, MAX_OTHER_POINTS);
+  return writeOnce(userId, project, language, kind, candidates.slice(0, MAX_POINTS_PER_CALL * 2), others, currentLines, stats);
 }
 
-async function writeOnce(userId: string, project: string, language: string, kind: SectionKind, candidates: Candidate[], currentLines: Line[] | null, stats: RunStats): Promise<Line[]> {
+async function writeOnce(userId: string, project: string, language: string, kind: SectionKind, candidates: Candidate[], others: Array<Candidate & { section: SectionKind }>, currentLines: Line[] | null, stats: RunStats): Promise<Line[]> {
   const numbered = candidates.map((candidate, index) => ({ ...candidate, ref: `i${index + 1}` }));
-  const byRef = new Map(numbered.map((candidate) => [candidate.ref, candidate]));
+  const context = others.map((candidate, index) => ({ ...candidate, ref: `i${numbered.length + index + 1}` }));
+  // A line may rest on another section's point too (« 22 000 € instead of 18 000 € »).
+  const byRef = new Map([...numbered, ...context].map((candidate) => [candidate.ref, candidate]));
   const refOfKey = new Map<string, string>();
-  for (const candidate of numbered) for (const source of candidate.sources) if (!refOfKey.has(source.key)) refOfKey.set(source.key, candidate.ref);
+  for (const candidate of [...numbered, ...context]) for (const source of candidate.sources) if (!refOfKey.has(source.key)) refOfKey.set(source.key, candidate.ref);
   const current = currentLines?.map((line) => ({ text: line.text, refs: [...new Set(line.sources.map((source) => refOfKey.get(source.key)).filter((ref): ref is string => !!ref))] }));
   const sectionPoints: SectionPoint[] = numbered.map((candidate) => ({ ref: candidate.ref, date: candidate.date, document: candidate.document, text: candidate.text }));
-  const answer = await ask(userId, sectionPrompt({ project, language, kind, points: sectionPoints, ...(current?.length ? { current } : {}) }), 1_500, stats);
-  const lines = readLines(answer.text, new Set(byRef.keys()));
+  const otherPoints = context.map((candidate) => ({ ref: candidate.ref, date: candidate.date, document: candidate.document, text: candidate.text, section: candidate.section }));
+  const answer = await ask(userId, sectionPrompt({ project, language, kind, points: sectionPoints, ...(otherPoints.length ? { others: otherPoints } : {}), ...(current?.length ? { current } : {}) }), 1_500, stats);
+  // A line stands on a point of its own section (another section's point
+  // may only change it): the brief never fills up with the decisions.
+  const own = new Set(numbered.map((candidate) => candidate.ref));
+  const lines = readLines(answer.text, new Set(byRef.keys())).filter((line) => line.refs.some((ref) => own.has(ref)));
   const written = answer.text.split("\n").filter((line) => /^\s*(?:[-*•]|\d+[.)])\s+\S/.test(line)).length;
   stats.lines_dropped += Math.max(0, written - lines.length);
   return lines.map((line) => {
@@ -382,7 +397,7 @@ async function runProject(job: Job, stats: RunStats): Promise<RunStats["outcome"
     state.total = SECTIONS.length;
     const sections: Section[] = [];
     for (const kind of SECTIONS) {
-      sections.push({ kind, lines: await writeSection(userId, project.title, overview.language, kind, candidates[kind], null, stats) });
+      sections.push({ kind, lines: await writeSection(userId, project.title, overview.language, kind, candidates[kind], candidates, null, stats) });
       state.done += 1;
     }
     saveOverview(fresh, sections, documents, "built");
@@ -397,9 +412,12 @@ async function runProject(job: Job, stats: RunStats): Promise<RunStats["outcome"
     if (JSON.stringify(signatures) !== JSON.stringify(latest?.documents?.signatures ?? {}) || JSON.stringify(unreadable) !== JSON.stringify(fresh.documents?.unreadable ?? [])) saveDocumentsOnly(fresh, { ...documents, keys: fresh.documents?.keys ?? keys });
     return "unchanged";
   }
-  // The sections whose points changed since the overview the person sees,
-  // written again from its lines; the others kept word for word.
-  const changed = SECTIONS.filter((kind) => !sameSet(keys[kind], fresh.documents?.keys?.[kind]));
+  // Every section written again from its lines as they stand (kept word for
+  // word where their points still say them): a point of one section may
+  // change another's (an e-mail raising the budget is read as a decision; a
+  // decision settles an open question). A section without points and
+  // without lines costs no call.
+  const changed = SECTIONS.filter((kind) => candidates[kind].length || (fresh.sections!.find((section) => section.kind === kind)?.lines.length ?? 0) > 0);
   state.done = 0;
   state.total = changed.length;
   const sections: Section[] = [];
@@ -410,7 +428,7 @@ async function runProject(job: Job, stats: RunStats): Promise<RunStats["outcome"
       sections.push({ kind, lines: before });
       continue;
     }
-    const lines = await writeSection(userId, project.title, overview.language, kind, candidates[kind], before, stats);
+    const lines = await writeSection(userId, project.title, overview.language, kind, candidates[kind], candidates, before, stats);
     state.done += 1;
     sections.push({ kind, lines });
     const was = new Set(before.map((line) => line.text));

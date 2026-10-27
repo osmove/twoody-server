@@ -10,10 +10,10 @@ export const SECTIONS = ["brief", "decisions", "status", "next_steps", "open_que
 export type SectionKind = (typeof SECTIONS)[number];
 
 const SECTION_ASK: Record<SectionKind, { title: string; about: string; point: string }> = {
-  brief: { title: "What the brief asks for", about: "goals, requirements, constraints, target audience, budget, deadlines set by the client or the brief", point: "what the brief or the client asks for: a goal, a requirement, a constraint, the audience, the budget, a deadline" },
-  decisions: { title: "Decisions", about: "what was decided or chosen, when and by whom when it is said", point: "something decided, chosen, approved or rejected (by whom and when, when it says so)" },
-  status: { title: "Where the project stands", about: "what is done, delivered, under way or waiting, as of the newest documents", point: "where the project stands: something done, delivered, sent, under way or waiting" },
-  next_steps: { title: "Next steps", about: "what is to be done next, by whom and by when when it is said", point: "something to be done next (by whom and when, when it says so)" },
+  brief: { title: "What the brief asks for", about: "goals, requirements, constraints, target audience, budget, deadlines set by the client or the brief, as they stand now", point: "what the brief or the client asks for: a goal, a requirement, a constraint, the audience, the budget, a deadline — also when this document sets or changes one" },
+  decisions: { title: "Decisions", about: "what was decided or chosen, when and by whom when it is said", point: "something decided, chosen, approved or rejected (by whom and when, when it says so); a change of a requirement, the budget or a deadline is brief" },
+  status: { title: "Where the project stands", about: "what is done, delivered, sent, under way or waiting, as of the newest documents", point: "where the project stands: something done, delivered, sent, paid, under way or waiting" },
+  next_steps: { title: "Next steps", about: "what is still to be done, by whom and by when when it is said", point: "something to be done next (by whom and when, when it says so)" },
   open_questions: { title: "Open questions", about: "what is still to be clarified, checked or decided", point: "a question still open: something to clarify, check or decide" },
 };
 
@@ -52,7 +52,7 @@ export function documentPrompt(args: { project: string; brief: string | null; la
     `kind | the point, one short sentence in ${language} | the document's own words it rests on, copied exactly as they are written (at most 25 words)`,
     "kind is one of:",
     kinds,
-    `Only what this document says — never a guess, never what is usual. Dates, names and figures as the document gives them. At most ${MAX_POINTS_PER_PIECE} lines, the most important first. When the document says nothing of the kinds above, write only: none`,
+    `Only what this document says — never a guess, never what is usual. Dates, names and figures as the document gives them; « today », « tomorrow » or « this week » written as the date they mean when the document is dated. A table: only what it says about choices made or the state of the project, never one line per row. At most ${MAX_POINTS_PER_PIECE} lines, the most important first. When the document says nothing of the kinds above, write only: none`,
   ].filter(Boolean).join("\n");
   const head = `Document: « ${args.name} »${args.date ? ` (dated ${args.date})` : ""}${args.pieces > 1 ? ` — part ${args.piece} of ${args.pieces}` : ""}`;
   return [
@@ -96,28 +96,36 @@ export interface SectionPoint {
   text: string;
 }
 
-/// What a section is asked: its points (newest document first), and the
-/// section as it stands when it is brought up to date.
-export function sectionPrompt(args: { project: string; language: string; kind: SectionKind; points: SectionPoint[]; current?: Array<{ text: string; refs: string[] }> }): Array<{ role: "system" | "user"; content: string }> {
+export const SECTION_TITLES: Record<SectionKind, string> = Object.fromEntries(SECTIONS.map((kind) => [kind, SECTION_ASK[kind].title])) as Record<SectionKind, string>;
+
+/// What a section is asked: its points (newest document first), the other
+/// sections' points (a newer one may change, answer or close one of its
+/// lines: the budget raised in an e-mail, a question settled by a
+/// decision), and the section as it stands when it is brought up to date.
+export function sectionPrompt(args: { project: string; language: string; kind: SectionKind; points: SectionPoint[]; others?: Array<SectionPoint & { section: SectionKind }>; current?: Array<{ text: string; refs: string[] }> }): Array<{ role: "system" | "user"; content: string }> {
   const language = LANGUAGE_NAMES[args.language] ?? "English";
   const ask = SECTION_ASK[args.kind];
   const system = [
     `You write one section of the overview of the project « ${args.project} »: « ${ask.title} » — ${ask.about}.`,
-    "You are given the points read in the project's documents, newest document first, each with its id, the document's date and its name.",
-    `Write the section in ${language}: one line per point, each starting with "- ", at most 12 lines, the most important first.`,
+    "You are given the points of this section read in the project's documents, newest document first, each with its id, the document's date and its name; and the points of the other sections, to see what newer documents changed.",
+    `Write the section in ${language}, as things stand at the newest documents: one line per point, each starting with "- ", at most 12 lines, the most important first.`,
     "End each line with the ids of the points it rests on, in square brackets, like [i3, i12].",
-    "Merge the points that say the same thing into one line, with all their ids. When a newer document changes what an older one said, keep what the newer one says, and say in a few words what it replaced, with the ids of both.",
-    args.kind === "status" ? "Say as of when, with the date of the newest document that says it." : null,
-    "Use only these points: add nothing they do not say, no advice, no conclusion. Write only the lines.",
+    "Merge the points that say the same thing into one line, with all their ids. When a newer point — of this section or another — changes, answers or replaces what an older one said, write what stands now, say in a few words what it replaced, and give the ids of both.",
+    args.kind === "next_steps" ? "Leave out a step a newer point shows done, overtaken or no longer wanted. Never give a step a date its points do not give." : null,
+    args.kind === "open_questions" ? "Leave out a question a newer point answers or settles. A fact is not a question." : null,
+    args.kind === "status" ? "Say as of when, with the date of the newest document that says it. Leave out what only says that a document or a meeting exists." : null,
+    "Write lines of this section only; the other sections' points serve only to see what changed. Use only these points: add nothing they do not say, no advice, no conclusion. Write only the lines.",
     args.current?.length
       ? "The section as it stands is given too. Keep each of its lines word for word when the points still say it (with their ids); change only what new or changed points change; leave out a line none of the points say any more."
       : null,
   ].filter(Boolean).join("\n");
-  const points = args.points.map((point) => `[${point.ref}] (${point.date ?? "undated"}, ${point.document}) ${point.text}`).join("\n");
-  const current = args.current?.length ? `\n\nThe section as it stands:\n${args.current.map((line) => `- ${line.text}${line.refs.length ? ` [${line.refs.join(", ")}]` : ""}`).join("\n")}` : "";
+  const line = (point: SectionPoint) => `[${point.ref}] (${point.date ?? "undated"}, ${point.document}) ${point.text}`;
+  const points = args.points.map(line).join("\n");
+  const others = args.others?.length ? `\n\nPoints of the other sections:\n${args.others.map((point) => `${line(point)} (${SECTION_ASK[point.section].title})`).join("\n")}` : "";
+  const current = args.current?.length ? `\n\nThe section as it stands:\n${args.current.map((each) => `- ${each.text}${each.refs.length ? ` [${each.refs.join(", ")}]` : ""}`).join("\n")}` : "";
   return [
     { role: "system", content: system },
-    { role: "user", content: `Points:\n${points}${current}` },
+    { role: "user", content: `Points of this section:\n${points}${others}${current}` },
   ];
 }
 
@@ -142,8 +150,8 @@ export function readLines(answer: string, known: ReadonlySet<string>): Array<{ t
       line = line.slice(0, match.index).trimEnd();
       match = tail.exec(line);
     }
-    // Ids written inside the line (« … [i3] and … [i4] »): taken and removed.
-    line = line.replace(/\s*\[\s*((?:i\d+\s*[,;]?\s*)+)\]/gi, (_all, ids: string) => {
+    // Ids written inside the line (« … [i3] and … [i4] », « (i2) »): taken and removed.
+    line = line.replace(/\s*[[(]\s*((?:i\d+\s*[,;]?\s*)+)[\])]/gi, (_all, ids: string) => {
       for (const ref of ids.match(/i\d+/gi) ?? []) refs.push(ref.toLowerCase());
       return "";
     }).trim();
