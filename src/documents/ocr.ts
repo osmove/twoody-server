@@ -2,12 +2,13 @@ import { execFile } from "node:child_process";
 import { access, constants } from "node:fs/promises";
 
 // Scanned pages, read on this computer. TWOODY_OCR_BIN names the helper the
-// Mac app ships — twoody-ocr, Apple's Vision framework, no network — and
-// the extractor asks it only for the pages of a PDF that carry no text of
-// their own. Without it (another platform, the server run on its own) a
-// scan stays unread, as before.
+// Desktop ships — twoody-ocr: on a Mac, Apple's Vision framework; on
+// Windows (27/10/2026), the character recognition built into Windows, with
+// the languages installed on the PC; no network either way — and the
+// extractor asks it only for the pages of a PDF that carry no text of their
+// own. Without it (Linux, the server run on its own) a scan stays unread.
 //
-// The helper answers {"engine":"vision","pages":[{"page":1,"text":"…"}]}.
+// The helper answers {"engine":"vision"|"windows","pages":[{"page":1,"text":"…"}]}.
 //
 // Languages (10/10/2026: a Japanese scan came out as garbage — the helper
 // was asked for French and English only): the helper's own choice by

@@ -30,7 +30,7 @@ folder the person chooses for it (`project_overviews.folder`, a granted folder o
 the system's dialog, granted then if it was not), never a document of another project's walled-off folder
 (`folderLayout().projectOf`), plus the documents tied to it (`project_documents`) on this computer. Only indexed
 documents with text (`documents.status = 'indexed'`); the others are counted and named (« sans texte » : a scan on
-Windows, where there is no OCR yet).
+Linux, where there is no OCR yet, or in a language whose recognizer Windows does not have).
 
 **Read once per document (map).** Each document's text (its chunks, `documentText`) is given to the model of this
 computer — never another computer nor a cloud model: the documents never leave it, walled-off or not — in pieces of
@@ -107,7 +107,7 @@ untouched.
 ## 7. Not in this lot
 - OneDrive files « online only » (not on the disk): read by Windows on demand, which downloads them; to be checked on
   a real PC before saying anything.
-- OCR on Windows and Linux (scans without text).
+- OCR on Linux (scans without text). Windows: its own OCR since Desktop 0.13.115 (`twoody-desktop/native/twoody-ocr-win`).
 - The overview in the chat of a project's conversations, and on the iPhone.
 
 ## 8. Measured (27/10/2026, Qwen3.5 9B Q4_K_M, M5 24 Go on mains, twoody-bench scripts/project-overview-bench.mts)
