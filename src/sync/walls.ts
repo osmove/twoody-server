@@ -26,7 +26,7 @@ import type Database from "better-sqlite3-multiple-ciphers";
 /// The shared tables of schema/contract.json (`tables`).
 export const SHAREABLE_TABLES = [
   "discussions", "messages", "message_traces", "memories", "memory_candidates", "projects",
-  "tasks", "reminders", "notes", "events", "contacts", "folder_shares",
+  "tasks", "reminders", "notes", "events", "contacts", "folder_shares", "answer_votes",
 ] as const;
 
 /// schema/contract.json `never_leave.walled_projects.tables`.
@@ -41,6 +41,7 @@ export const WALLED_PROJECT_PATHS: Record<string, string> = {
   events: "project_id",
   folder_shares: "folder_id → document_folders",
   document_folders: "project_id",
+  answer_votes: "discussion_id → discussions",
 };
 
 const NAME = /^[a-z_]+$/;

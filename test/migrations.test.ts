@@ -264,7 +264,7 @@ test("migration 17 makes the tables of the projects' overviews, every project ke
   migrate(db, { dataDir: dir, log: quiet, upTo: 16 });
   db.prepare("INSERT INTO users (id, email, created_at) VALUES ('u1', 'u@example.com', 1)").run();
   db.prepare("INSERT INTO projects (id, user_id, title, status, isolated, created_at, updated_at) VALUES ('p1', 'u1', 'Velora', 'active', 1, 1, 1)").run();
-  migrate(db, { dataDir: dir, log: quiet });
+  migrate(db, { dataDir: dir, log: quiet, upTo: 17 });
   assert.equal(schemaVersion(db), 17);
   assert.deepEqual(columns(db, "project_overviews"), ["id", "user_id", "project_id", "folder", "language", "sections", "documents", "built_at", "created_at", "updated_at", "deleted_at"]);
   assert.deepEqual(columns(db, "project_overview_versions"), ["id", "overview_id", "sections", "documents", "changes", "status", "created_at", "updated_at", "decided_at"]);
@@ -274,4 +274,19 @@ test("migration 17 makes the tables of the projects' overviews, every project ke
   const before = tables();
   projectOverviews(db);
   assert.equal(tables(), before);
+});
+
+test("migration 18 makes the table of the 👍 / 👎 under the answers, one per answer; run again, it changes nothing", async () => {
+  const { answerVotes } = await import("../src/migrations/0018_answer_votes.ts");
+  const dir = mkdtempSync(join(tmpdir(), "twoody-migrations-"));
+  const db = new Database(join(dir, "local.db"));
+  migrate(db, { dataDir: dir, log: quiet, upTo: 17 });
+  migrate(db, { dataDir: dir, log: quiet });
+  assert.equal(schemaVersion(db), 18);
+  assert.deepEqual(columns(db, "answer_votes"), ["id", "user_id", "message_id", "discussion_id", "vote", "reason", "comment", "model", "created_at", "updated_at", "deleted_at"]);
+  db.prepare("INSERT INTO answer_votes (id, user_id, message_id, vote, created_at, updated_at) VALUES ('v1', 'u1', 'm1', 'up', 1, 1)").run();
+  assert.throws(() => db.prepare("INSERT INTO answer_votes (id, user_id, message_id, vote, created_at, updated_at) VALUES ('v2', 'u1', 'm1', 'down', 1, 1)").run(), /UNIQUE/);
+  const before = JSON.stringify(columns(db, "answer_votes"));
+  answerVotes(db);
+  assert.equal(JSON.stringify(columns(db, "answer_votes")), before);
 });

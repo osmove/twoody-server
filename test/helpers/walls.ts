@@ -51,6 +51,7 @@ export function seedWalls(db: Database.Database): SeededWalls {
     add(bucket, "messages", { id: `m-${discussion}`, discussion_id: discussion, role: "user", content: "…" });
     add(bucket, "message_traces", { id: `t-${discussion}`, discussion_id: discussion, kind: "chat" });
     add(bucket, "memory_candidates", { id: `c-${discussion}`, discussion_id: discussion, content: "…" });
+    add(bucket, "answer_votes", { id: `v-${discussion}`, discussion_id: discussion, message_id: `m-${discussion}`, vote: "down" });
   }
   add(open, "message_traces", { id: "t-no-discussion", discussion_id: null, kind: "learn" });
   for (const [project, bucket] of [["p-walled", walled], ["p-open", open], [null, open]] as const) {

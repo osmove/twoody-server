@@ -201,6 +201,17 @@
       "revoked_reason": { "type": "text", "values": ["owner", "grantee", "organization", "eligibility", "host"] },
       "created_at": { "type": "datetime" },
       "updated_at": { "type": "datetime" }
+    },
+    "answer_votes": {
+      "id": { "type": "uuid" },
+      "message_id": { "type": "uuid" },
+      "vote": { "type": "text", "values": ["up", "down"] },
+      "reason": { "type": "text", "values": ["wrong", "not_done", "said_done", "language", "too_long", "other"] },
+      "comment": { "type": "text" },
+      "model": { "type": "text" },
+      "created_at": { "type": "datetime" },
+      "updated_at": { "type": "datetime" },
+      "deleted_at": { "type": "datetime" }
     }
   },
   "local_columns": {
@@ -285,6 +296,10 @@
       "organization_id": "the organization's account id as text (organization_id on the account); organizations.uuid does not exist yet (open item)",
       "organization_name": "the organization's name as the account gave it, for this computer's screens",
       "published_at": "when this computer last told the account: its own bookkeeping"
+    },
+    "answer_votes": {
+      "user_id": "@local_user",
+      "discussion_id": "the conversation of this computer, to show the votes with its answers: the account gets the answer's id only"
     }
   },
   "account_columns": {
@@ -397,6 +412,12 @@
       "organization_id": "the organization (bigint); the Mac keeps it as text",
       "status": "active or revoked, as the account routes requests; the Mac reads it from revoked_at",
       "revoked_by_id": "who ended the share on the account (a person); why is revoked_reason, shared"
+    },
+    "answer_votes": {
+      "user_id": "@account_user",
+      "app": "which app sent the vote (desktop, ios, android)",
+      "app_version": "the version of that app",
+      "telemetry": "the answer's technical details (names, counts, sizes, times, never a word of the conversation): sent only while « Partager des diagnostics » is ticked, never for a walled-off project"
     }
   },
   "never_leave": {
@@ -412,7 +433,8 @@
         "reminders": "project_id",
         "events": "project_id",
         "folder_shares": "folder_id → document_folders",
-        "document_folders": "project_id"
+        "document_folders": "project_id",
+        "answer_votes": "discussion_id → discussions"
       },
       "not_concerned": {
         "memories": "nothing of a walled-off project becomes a memory (« Retiens que… » there is a project note: project_notes, local only)",

@@ -23,6 +23,7 @@ const { MEMORY_KINDS } = await import("../src/vault/contracts.ts");
 const { PROJECT_SIZES, PROJECT_SOURCES, PROJECT_STATUSES } = await import("../src/projects/projects.ts");
 const { CONTACT_RELATION_TYPES } = await import("../src/memory/discover.ts");
 const { REVOKED_REASONS, SHARE_KINDS, SHARE_RIGHTS } = await import("../src/shares/store.ts");
+const { ANSWER_VOTES, VOTE_REASONS } = await import("../src/routes/answerVotes.ts");
 const { leavingWhere, mayLeave, SHAREABLE_TABLES, WALLED_PROJECT_PATHS } = await import("../src/sync/walls.ts");
 const { assertWallsHold, seedWalls } = await import("./helpers/walls.ts");
 
@@ -57,6 +58,8 @@ const VALUES_HERE: Record<string, readonly string[]> = {
   "folder_shares.kind": SHARE_KINDS,
   "folder_shares.access_right": SHARE_RIGHTS,
   "folder_shares.revoked_reason": REVOKED_REASONS,
+  "answer_votes.vote": ANSWER_VOTES,
+  "answer_votes.reason": VOTE_REASONS,
 };
 
 function migrated() {
