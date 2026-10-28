@@ -468,6 +468,10 @@ export const documentFolders = sqliteTable("document_folders", {
   // disk holding it. NULL for every other folder.
   identity: text("identity"),
   volume: text("volume"),
+  // Its files only online (OneDrive, iCloud Drive…): « read » when the person
+  // chose to have them downloaded and read; NULL, left unread (migration 19,
+  // src/documents/cloudFiles.ts).
+  cloudFiles: text("cloud_files"),
 });
 
 /// One row per indexed file. The text itself lives in the

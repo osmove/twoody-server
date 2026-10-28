@@ -342,7 +342,7 @@ function documentsNow(userId: string, projectId: string, isolated: boolean, over
   const readable = documents.filter((document) => document.status === "indexed");
   const unreadable = documents
     .filter((document) => document.status !== "indexed")
-    .map((document) => ({ document_id: document.id, name: document.name, reason: document.status === "empty" ? "no_text" : document.error === "too_large" ? "too_large" : "failed" }));
+    .map((document) => ({ document_id: document.id, name: document.name, reason: document.status === "empty" ? "no_text" : document.status === "online_only" ? "online_only" : document.error === "too_large" ? "too_large" : "failed" }));
   return { readable, unreadable };
 }
 

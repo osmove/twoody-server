@@ -10,6 +10,7 @@ import { DATA_DIR, db, documentFolders, documents, sqlite } from "../db.js";
 import { chunkSections } from "./chunk.js";
 import { extractSections, maxBytesFor } from "./extract.js";
 import { ocrEngine } from "./ocr.js";
+import { onlineOnly } from "./cloudFiles.js";
 import { folderRisk } from "./folderRisk.js";
 import { capabilityOn, setLocalCapability } from "../localCapabilities.js";
 import { folderReadable, walk } from "./walk.js";
@@ -176,10 +177,11 @@ export function listFolders(userId: string) {
               COUNT(*) AS total,
               SUM(status = 'indexed') AS indexed,
               SUM(status = 'empty') AS empty,
-              SUM(status = 'error') AS failed
+              SUM(status = 'error') AS failed,
+              SUM(status = 'online_only') AS online
          FROM documents WHERE user_id = ? GROUP BY folder_id`,
     )
-    .all(userId) as Array<{ folderId: string; total: number; indexed: number; empty: number; failed: number }>;
+    .all(userId) as Array<{ folderId: string; total: number; indexed: number; empty: number; failed: number; online: number }>;
   const byFolder = new Map(counts.map((row) => [row.folderId, row]));
 
   const rows = db
@@ -208,6 +210,10 @@ export function listFolders(userId: string) {
       indexed: count?.indexed ?? 0,
       without_text: count?.empty ?? 0,
       failed: count?.failed ?? 0,
+      // Only online (OneDrive, iCloud Drive…), left unread unless the person
+      // has them downloaded (`cloud_files` « read », cloudFiles.ts).
+      online_only: count?.online ?? 0,
+      cloud_files: folder.cloudFiles === "read" ? "read" : null,
       ignored: ignoredByFolder.get(folder.id) ?? 0,
       // The isolated project it belongs to (src/projects/isolation.ts):
       // searched in that project's conversations only, never elsewhere.
@@ -368,6 +374,33 @@ function ocrMarks(): Record<string, string> {
 
 /// The people whose pass reads their PDFs again, scans in view.
 const rereading = new Set<string>();
+/// The files the pass under way leaves unread: only online (cloudFiles.ts),
+/// in a folder whose files only online are not to be downloaded.
+const onlineOnlyNow = new Set<string>();
+
+/// Of the files a pass is about to read — new, changed, left unread before
+/// for being only online, PDFs read again for their scans — those only
+/// online, in a folder that does not have them downloaded.
+async function filesOnlyOnline(userId: string, todo: Array<{ folderId: string; path: string }>, rereadingPdfs: boolean): Promise<Set<string>> {
+  const reading = new Set(
+    (sqlite.prepare("SELECT id FROM document_folders WHERE user_id = ? AND cloud_files = 'read'").all(userId) as Array<{ id: string }>).map((row) => row.id),
+  );
+  const known = new Map(
+    (sqlite.prepare("SELECT path, size, mtime_ms AS mtimeMs, folder_id AS folderId, status FROM documents WHERE user_id = ?").all(userId) as Array<{ path: string; size: number; mtimeMs: number; folderId: string; status: string }>).map((row) => [row.path, row]),
+  );
+  const candidates: string[] = [];
+  for (const item of todo) {
+    if (reading.has(item.folderId)) continue;
+    const row = known.get(item.path);
+    if (!row || row.status === "online_only" || (rereadingPdfs && extname(item.path).toLowerCase() === ".pdf")) {
+      candidates.push(item.path);
+      continue;
+    }
+    const info = await stat(item.path).catch(() => null);
+    if (info && (info.size !== row.size || Math.floor(info.mtimeMs) !== row.mtimeMs || row.folderId !== item.folderId)) candidates.push(item.path);
+  }
+  return onlineOnly(candidates);
+}
 
 function scansRead(userId: string): string | null {
   const engine = ocrEngine();
@@ -558,6 +591,8 @@ export async function reindex(userId: string): Promise<IndexStatus> {
       status.total = todo.length;
       const engine = scansRead(userId);
       if (engine) rereading.add(userId);
+      const cloud = await filesOnlyOnline(userId, todo, !!engine);
+      for (const path of cloud) onlineOnlyNow.add(path);
       try {
         for (const item of todo) {
           status.current = basename(item.path);
@@ -568,6 +603,7 @@ export async function reindex(userId: string): Promise<IndexStatus> {
         if (engine) markScansRead(userId, engine);
       } finally {
         rereading.delete(userId);
+        for (const path of cloud) onlineOnlyNow.delete(path);
       }
     }
   } finally {
@@ -707,10 +743,14 @@ async function indexFile(userId: string, given: string, path: string): Promise<v
     .where(and(eq(documents.userId, userId), eq(documents.path, path)))
     .all();
   let sections: Awaited<ReturnType<typeof extractSections>> | null = null;
-  if (existing && existing.size === info.size && existing.mtimeMs === mtimeMs && existing.folderId === folderId) {
+  if (existing && existing.size === info.size && existing.mtimeMs === mtimeMs && existing.folderId === folderId && existing.status === "online_only") {
+    // Left unread for being only online: read now that it is on the computer
+    // (or that the person has the folder's files downloaded).
+    if (onlineOnlyNow.has(path)) return;
+  } else if (existing && existing.size === info.size && existing.mtimeMs === mtimeMs && existing.folderId === folderId) {
     // Unchanged; a PDF is read again once scans are read here, and kept as
     // it was unless a page of it is read by OCR.
-    if (!rereading.has(userId) || extname(path).toLowerCase() !== ".pdf" || existing.status === "error") return;
+    if (!rereading.has(userId) || extname(path).toLowerCase() !== ".pdf" || existing.status === "error" || onlineOnlyNow.has(path)) return;
     try {
       sections = await extractSections(path);
     } catch {
@@ -727,7 +767,10 @@ async function indexFile(userId: string, given: string, path: string): Promise<v
   let error: string | null = null;
   let chunks: ReturnType<typeof chunkSections> = [];
 
-  if (info.size > maxBytesFor(path)) {
+  if (onlineOnlyNow.has(path)) {
+    // Only online: reading it would download it (cloudFiles.ts).
+    status = "online_only";
+  } else if (info.size > maxBytesFor(path)) {
     status = "error";
     error = "too_large";
   } else {
@@ -963,4 +1006,13 @@ export function browseDocuments(userId: string, folderId: string, directory = ""
   const files = sqlite.prepare("SELECT id, name, path, status, mtime_ms AS modified_at FROM documents WHERE user_id = ? AND folder_id = ?").all(userId, folderId) as IndexedEntry[];
   const entries = indexedDirectory(folder.path, files, directory);
   return {entries: entries.slice(offset, offset + 100), total: entries.length, next_offset: offset + 100 < entries.length ? offset + 100 : null, directory};
+}
+
+
+/// « Les télécharger et les lire »: the folder's files only online are read
+/// from the next pass on (the system downloads each as it is read), or left
+/// unread again. False when the folder is not the person's.
+export function setCloudFiles(userId: string, folderId: string, read: boolean): boolean {
+  const result = sqlite.prepare("UPDATE document_folders SET cloud_files = ? WHERE id = ? AND user_id = ?").run(read ? "read" : null, folderId, userId);
+  return result.changes > 0;
 }

@@ -253,7 +253,7 @@ test("migration 16 gives a walled-off project's folder its identity and its disk
   assert.equal(JSON.stringify([columns(db, "document_folders"), rows()]), before);
   const freshDir = mkdtempSync(join(tmpdir(), "twoody-migrations-"));
   const fresh = new Database(join(freshDir, "local.db"));
-  migrate(fresh, { dataDir: freshDir, log: quiet });
+  migrate(fresh, { dataDir: freshDir, log: quiet, upTo: 16 });
   assert.deepEqual(columns(fresh, "document_folders"), columns(db, "document_folders"));
 });
 
@@ -281,7 +281,7 @@ test("migration 18 makes the table of the 👍 / 👎 under the answers, one per
   const dir = mkdtempSync(join(tmpdir(), "twoody-migrations-"));
   const db = new Database(join(dir, "local.db"));
   migrate(db, { dataDir: dir, log: quiet, upTo: 17 });
-  migrate(db, { dataDir: dir, log: quiet });
+  migrate(db, { dataDir: dir, log: quiet, upTo: 18 });
   assert.equal(schemaVersion(db), 18);
   assert.deepEqual(columns(db, "answer_votes"), ["id", "user_id", "message_id", "discussion_id", "vote", "reason", "comment", "model", "created_at", "updated_at", "deleted_at"]);
   db.prepare("INSERT INTO answer_votes (id, user_id, message_id, vote, created_at, updated_at) VALUES ('v1', 'u1', 'm1', 'up', 1, 1)").run();
@@ -289,4 +289,19 @@ test("migration 18 makes the table of the 👍 / 👎 under the answers, one per
   const before = JSON.stringify(columns(db, "answer_votes"));
   answerVotes(db);
   assert.equal(JSON.stringify(columns(db, "answer_votes")), before);
+});
+
+test("migration 19 gives each granted folder its choice for files only online, left unread by default; run again, it changes nothing", async () => {
+  const { cloudFiles } = await import("../src/migrations/0019_cloud_files.ts");
+  const dir = mkdtempSync(join(tmpdir(), "twoody-migrations-"));
+  const db = new Database(join(dir, "local.db"));
+  migrate(db, { dataDir: dir, log: quiet, upTo: 18 });
+  db.prepare("INSERT INTO users (id, email, created_at) VALUES ('u1', 'u@example.com', 1)").run();
+  db.prepare("INSERT INTO document_folders (id, user_id, path, created_at) VALUES ('f1', 'u1', '/Users/x/OneDrive/Velora', 1)").run();
+  migrate(db, { dataDir: dir, log: quiet });
+  assert.equal(schemaVersion(db), 19);
+  assert.ok(columns(db, "document_folders").includes("cloud_files"));
+  assert.equal((db.prepare("SELECT cloud_files FROM document_folders WHERE id = 'f1'").get() as { cloud_files: string | null }).cloud_files, null);
+  cloudFiles(db);
+  assert.equal(columns(db, "document_folders").filter((name) => name === "cloud_files").length, 1);
 });

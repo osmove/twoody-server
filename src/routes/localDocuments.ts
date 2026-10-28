@@ -26,6 +26,7 @@ import {
   reindex,
   removeFolder,
   searchPassages,
+  setCloudFiles,
 } from "../documents/library.js";
 import { MAX_FILES_PER_FOLDER, SKIPPED_BUNDLES, SKIPPED_DIRECTORIES } from "../documents/walk.js";
 import { checkWalls } from "../documents/wallPlaces.js";
