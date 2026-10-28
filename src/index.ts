@@ -443,7 +443,8 @@ try {
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, async () => {
       try {
-        bridgeClient?.stop();
+        // What the bridge holds goes back to the account before the exit.
+        await bridgeClient?.stop().catch(() => {});
         accountService.stop();
         vaultService?.stop();
         memorySync.stop();

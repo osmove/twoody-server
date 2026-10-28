@@ -180,9 +180,17 @@ export interface BridgeClientOptions {
 export type BridgeClientState = "online" | "auth_failed" | "unreachable";
 
 export interface BridgeClientHandle {
-  stop(): void;
+  /// Stops polling and gives back to the account the tasks this run holds
+  /// and has not finished (`released`): the next run of this computer answers
+  /// them, or their waiter is told at once (twoody-backend
+  /// BridgeTasksController#release_task!). Resolves once told, or after
+  /// RELEASE_BUDGET_MS.
+  stop(): Promise<void>;
   deviceId: string;
 }
+
+/// How long a stopping run waits for the account to take back its tasks.
+export const RELEASE_BUDGET_MS = 1_500;
 
 export function readBridgeClientEnv(): BridgeClientOptions | null {
   const backendUrl = process.env.TWOODY_BACKEND_URL;
@@ -258,10 +266,21 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
     ...(opts.capabilities ?? []),
     ...(opts.serveShare && !opts.capabilities?.includes(FOLDER_SHARE_CAPABILITY) ? [FOLDER_SHARE_CAPABILITY] : []),
   ];
+  // This run of the bridge, named afresh at each start: a later run tells
+  // the account that whatever this one claimed and left will never be
+  // answered by it (28/10/2026: Twoody quit to update 4 s after it picked a
+  // guest's question, which then held her grant's only place for 90 s).
+  const worker = randomUUID().replace(/-/g, "");
+  // Tasks claimed and not finished, and those given back on stop (their
+  // late outcome is not reported: the next run answers them).
+  const inFlight = new Set<string>();
+  const released = new Set<string>();
+  let pollAbort: AbortController | null = null;
   /// Sent with every request to the backend.
   const authHeaders: Record<string, string> = {
     "X-User-Token": opts.userToken,
     "X-Bridge-Device-Id": deviceId,
+    "X-Bridge-Worker": worker,
     ...(opts.deviceToken ? { "X-Device-Token": opts.deviceToken } : {}),
   };
   // The keys of sealed turns for the people this computer is shared with
@@ -304,10 +323,22 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
   if (opts.onComputeShared) void checkShared();
 
   return {
-    stop() {
+    async stop() {
       stopped = true;
       if (sharedTimer) clearTimeout(sharedTimer);
       sharedTimer = null;
+      // A poll still open could claim a task this run will never answer.
+      pollAbort?.abort();
+      const held = [...inFlight];
+      for (const id of held) released.add(id);
+      if (held.length === 0) return;
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        Promise.allSettled(held.map((id) => patchTask(id, { status: "released" }))),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, RELEASE_BUDGET_MS); timer.unref?.(); }),
+      ]);
+      if (timer) clearTimeout(timer);
+      console.log(`[bridge-client] stopped: ${held.length} unfinished task(s) given back to the account`);
     },
     deviceId,
   };
@@ -403,6 +434,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
 
   async function pollOnce(waitSeconds: number): Promise<Task | null> {
     const controller = new AbortController();
+    pollAbort = controller;
     const timer = setTimeout(() => controller.abort(), POLL_BUDGET_MS);
     try {
       const headers: Record<string, string> = {
@@ -447,16 +479,33 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
       }
 
       const task = (await res.json()) as Task;
+      // Claimed while this run was stopping: given back rather than run.
+      if (stopped) {
+        released.add(task.id);
+        await patchTask(task.id, { status: "released" }).catch(() => {});
+        return null;
+      }
       return task;
     } finally {
       clearTimeout(timer);
+      if (pollAbort === controller) pollAbort = null;
     }
   }
 
   async function handleTask(task: Task) {
+    inFlight.add(task.id);
+    try {
+      await runAndReport(task);
+    } finally {
+      inFlight.delete(task.id);
+    }
+  }
+
+  async function runAndReport(task: Task) {
     const started = Date.now();
     try {
       const result = await runTask(task);
+      if (released.has(task.id)) return;
       await patchTask(task.id, { status: "done", result });
       const elapsed = Date.now() - started;
       console.log(
@@ -479,6 +528,7 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
         elapsed_ms: elapsed,
         error_message: message,
       });
+      if (released.has(task.id)) return;
       await patchTask(task.id, { status: "error", error_message: message }).catch((err) => {
         console.warn(
           `[bridge-client] could not PATCH error for task ${task.id}: ${err instanceof Error ? err.message : err}`,
@@ -590,7 +640,8 @@ export function startBridgeClient(opts: BridgeClientOptions): BridgeClientHandle
     body:
       | { status: "done"; result: unknown }
       | { status: "error"; error_message: string }
-      | { status: "streaming"; delta: string },
+      | { status: "streaming"; delta: string }
+      | { status: "released" },
   ) {
     const res = await outboundFetch(`${opts.backendUrl}/bridge/tasks/${id}`, {
       method: "PATCH",

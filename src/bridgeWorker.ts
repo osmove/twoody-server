@@ -74,7 +74,7 @@ let client: BridgeClientHandle | null = null;
 const shares = parentPort ? createShareServeChannel(parentPort) : null;
 
 function start(options: Omit<ConfigureMessage, "type" | "endpoints" | "defaultModel">) {
-  client?.stop();
+  void client?.stop();
   client = startBridgeClient({
     backendUrl: options.backendUrl.replace(/\/+$/, ""),
     userToken: options.userToken,
@@ -118,8 +118,7 @@ if (parentPort) {
       // guest's next turn asks again how many it has before naming one.
       forgetRuntimeSlots();
     } else if (data.type === "stop") {
-      client?.stop();
-      process.exit(0);
+      void stopAndExit();
     }
   });
   parentPort.postMessage({ type: "ready", computeKeyStore: true });
@@ -132,9 +131,13 @@ if (parentPort) {
   start(env);
 }
 
+/// Gives back what this run holds (bridgeClient stop, at most
+/// RELEASE_BUDGET_MS), then exits.
+async function stopAndExit(): Promise<never> {
+  await client?.stop().catch(() => {});
+  process.exit(0);
+}
+
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.on(signal, () => {
-    client?.stop();
-    process.exit(0);
-  });
+  process.on(signal, () => void stopAndExit());
 }

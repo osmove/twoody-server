@@ -257,7 +257,7 @@ export function startAccountService(options: {
     heartbeatTimer = null;
     approvals?.stop();
     approvals = null;
-    bridge?.stop();
+    void bridge?.stop();
     bridge = null;
     bridgeDeviceUuid = null;
     bridgeWanted = null;
