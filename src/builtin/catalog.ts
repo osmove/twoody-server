@@ -120,6 +120,12 @@ export interface MachineFacts {
   /// `dedicatedGpuMemory()` in acceleration.ts), in bytes; null or absent for
   /// none, an integrated one (it shares the system's memory) or unknown.
   dedicatedVramBytes?: number | null;
+  /// The memory installed, when the system lets programs see less of it
+  /// (Windows: the firmware and an integrated graphics chip keep a part — a
+  /// 32 GB PC with a Radeon 780M may show 27.7 GiB; 28/10/2026, Namestorm's
+  /// PC): the size the rule below reads, as the person counts it. What a
+  /// model fits in stays the memory seen.
+  installedRamBytes?: number | null;
   /// Shared with someone now (slots.ts): llama.cpp gives the people it is
   /// shared with a slot of their own from 24 GB, and a model's « mémoire
   /// nécessaire » counts it. Never changes which model is recommended.
@@ -155,6 +161,9 @@ export const VRAM_FOR_9B_BYTES = 9.5 * GIB;
 ///     long. The 9B from 32 GB.
 ///   - a PC whose graphics card holds the 9B whole (VRAM_FOR_9B_BYTES) and
 ///     16 GB of memory: the 9B.
+/// A PC's size is the memory installed when the system says (installedRamBytes),
+/// never more than a third above what it lets programs see (a graphics chip
+/// may keep 8 GB of 32).
 /// The person can always choose the other size.
 export function recommendedModel(
   totalRamBytes: number,
@@ -171,8 +180,11 @@ export function recommendedModel(
   const candidates = firstChoices.some((model) => model.recommendable) ? firstChoices.filter((model) => model.recommendable) : firstChoices;
   const sorted = [...candidates].sort((a, b) => a.minRamGb - b.minRamGb);
   const unifiedMemory = platform === "darwin" && machine.arch !== "x64";
-  const largeCard = (machine.dedicatedVramBytes ?? 0) >= VRAM_FOR_9B_BYTES && ramGb + 0.5 >= 16;
-  if (!unifiedMemory && !largeCard && ramGb + 0.5 < 32) return sorted[0];
+  // The size as installed: what a part kept by the firmware or a graphics
+  // chip hides from programs, a third at most (a 32 GB PC seen as 24 to 28).
+  const installedGb = Math.min(Math.max(ramGb, (machine.installedRamBytes ?? 0) / GIB), (ramGb * 4) / 3);
+  const largeCard = (machine.dedicatedVramBytes ?? 0) >= VRAM_FOR_9B_BYTES && installedGb + 0.5 >= 16;
+  if (!unifiedMemory && !largeCard && installedGb + 0.5 < 32) return sorted[0];
   // A "16 GB" Mac reports a little under 16 GiB.
   const fitting = sorted.filter((model) => model.minRamGb <= ramGb + 0.5);
   return fitting.length > 0 ? fitting[fitting.length - 1] : sorted[0];

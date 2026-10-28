@@ -125,6 +125,21 @@ test("CPU-only Windows and Linux recommend 9B from 32 GiB, keeping both choices"
   }
 });
 
+// Namestorm's PC (28/10/2026): 32 GB with a Radeon 780M, which keeps part of
+// it — Windows lets programs see some 27.7 GiB, and the 4B was offered. The
+// size the rule reads is the memory installed, a third above what is seen
+// at most; what a model fits in stays the memory seen.
+test("a PC whose graphics chip or firmware keeps part of its 32 GB gets the 9B, as installed", () => {
+  const pick = (seenGb: number, installedGb: number | null) => recommendedModel(seenGb * GIB, CATALOG, "win32", { installedRamBytes: installedGb === null ? null : installedGb * GIB })!.id;
+  assert.equal(pick(27.7, 32), "Qwen3.5-9B-Q4_K_M");
+  assert.equal(pick(24, 32), "Qwen3.5-9B-Q4_K_M");
+  assert.equal(pick(27.7, null), "Qwen3.5-4B-Q4_K_M", "unknown: as before");
+  assert.equal(pick(13.9, 16), "Qwen3.5-4B-Q4_K_M", "16 GB stays on the 4B");
+  assert.equal(pick(8, 64), "Qwen3.5-4B-Q4_K_M", "never more than a third above what is seen");
+  assert.equal(pick(31.5, 16), "Qwen3.5-9B-Q4_K_M", "less installed than seen: what is seen");
+  assert.equal(recommendedModel(27.7 * GIB, CATALOG, "linux", { installedRamBytes: 32 * GIB })!.id, "Qwen3.5-9B-Q4_K_M");
+});
+
 // A first launch on a modest computer (10/10/2026): where the engine runs
 // the model decides as much as how much memory there is.
 test("an Intel Mac runs on its processor: the 4B below 32 GB, like a PC without a graphics card", () => {
