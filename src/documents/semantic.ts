@@ -178,10 +178,14 @@ export async function indexSemantic(userId: string) {
     job.running = false;
   }
 }
+/// The passages nearest the question by meaning, best first; `documentIds`:
+/// the nearest in those documents too, ahead of the others (retrieval.ts,
+/// the documents a question names).
 export async function semanticPassages(
   userId: string,
   question: string,
   folderIds: string[],
+  documentIds?: string[],
 ): Promise<Passage[]> {
   if (!folderIds.length || !enabledFor(userId)) return [];
   try {
@@ -193,6 +197,8 @@ export async function semanticPassages(
       JOIN documents d ON d.id=c.document_id JOIN document_folders f ON f.id=d.folder_id AND f.user_id=d.user_id
       WHERE e.user_id=? AND e.model=? AND d.folder_id IN (${folderIds.map(() => "?").join(",")})`);
     const top: Array<Passage & { score: number }> = [];
+    const named = new Set(documentIds ?? []);
+    const topNamed: Array<Passage & { score: number }> = [];
     for (const raw of rows.iterate(userId, MODEL, ...folderIds)) {
       const row = raw as {
         document_id: string;
@@ -210,7 +216,7 @@ export async function semanticPassages(
         continue;
       const score = vectorScore(vector, row.vector);
       if (score < 0.35) continue;
-      top.push({
+      const passage: Passage & { score: number } = {
         document_id: row.document_id,
         name: row.name,
         path: row.path,
@@ -220,11 +226,15 @@ export async function semanticPassages(
         match: "semantic",
         cosine: score,
         score,
-      });
-      top.sort((a, b) => b.score - a.score);
-      if (top.length > 12) top.pop();
+      };
+      for (const list of named.has(row.document_id) ? [top, topNamed] : [top]) {
+        list.push(passage);
+        list.sort((a, b) => b.score - a.score);
+        if (list.length > 12) list.pop();
+      }
     }
-    return top.map(({ score: _score, ...passage }) => passage);
+    const seen = new Set<Passage & { score: number }>();
+    return [...topNamed, ...top].filter((passage) => !seen.has(passage) && seen.add(passage)).map(({ score: _score, ...passage }) => passage);
   } catch {
     const job = jobs.get(userId) ?? { running: false, error: false };
     job.error = true;

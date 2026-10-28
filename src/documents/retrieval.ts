@@ -99,6 +99,57 @@ async function withinDeadline<T>(work: Promise<T>, ms: number | undefined): Prom
   const late = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), Math.max(0, ms)); });
   try { return await Promise.race([work.then(value => ({ value })), late]); } finally { clearTimeout(timer); }
 }
+/// « Résume », « summarise », in the app's ten languages: the document read from its start.
+const SUMMARY = /r[ée]sum|summar|zusammenfass|resumen|resum[ae]|riassum|riepilog|samenvat|要約|まとめ|总结|摘要|概括|요약/i;
+
+/// Where a document is, as its words can name it: its name and its path in its granted folder.
+function placeOf(file: { name: string; path: string; folder_path: string }): string {
+  return `${file.name} ${relativeToFolder(file.folder_path, file.path)}`;
+}
+
+/// The documents a question names, in tiers: those whose place holds the
+/// most of its naming words first, then fewer. A word names when it is in
+/// the place of some documents but not of most (« Voltrad », « Briefing »,
+/// « Ferrand »; not the client's own name in a folder of that client only).
+/// `first`: documents named outright (their full name, a follow-up's).
+function namedTiers(all: Array<{ id: string; name: string; path: string; folder_path: string }>, terms: string[], first: string[]): { tiers: string[][]; naming: string[] } {
+  const places = all.map(file => ({ id: file.id, place: placeOf(file) }));
+  const naming = terms.filter(term => {
+    const count = places.filter(({ place }) => termsFound(place, [term]) > 0).length;
+    return count > 0 && count <= Math.max(1, Math.floor(all.length / 2));
+  });
+  const counts = places.map(({ id, place }) => ({ id, count: naming.length ? termsFound(place, naming) : 0 })).filter(({ count }) => count > 0);
+  const levels = [...new Set(counts.map(({ count }) => count))].sort((a, b) => b - a);
+  const tiers = levels.map(level => counts.filter(({ count }) => count >= level).map(({ id }) => id));
+  return { tiers: first.length ? [first, ...tiers] : tiers, naming };
+}
+
+/// The text without its words that are these terms; itself when nothing else would be left.
+function withoutWords(text: string, terms: string[]): string {
+  if (!terms.length) return text;
+  const kept = text.split(/(?<=[^\p{L}\p{N}])|(?=[^\p{L}\p{N}])/u).filter(word => !/[\p{L}\p{N}]/u.test(word) || termsFound(word, terms) === 0);
+  const rest = kept.join("");
+  return queryTerms(rest).length ? rest : text;
+}
+
+/// The lists' passages taken in turn — each one's first, then each one's
+/// second… —, each passage once.
+function inTurn(lists: Passage[][], limit: number): Passage[] {
+  const seen = new Set<string>();
+  const out: Passage[] = [];
+  for (let rank = 0; out.length < limit && lists.some(list => rank < list.length); rank++) {
+    for (const list of lists) {
+      const passage = list[rank];
+      if (!passage || out.length >= limit) continue;
+      const key = `${passage.document_id}:${passage.page}:${passage.text}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(passage);
+    }
+  }
+  return out;
+}
+
 export function followUpQuestion(question: string): boolean {
   return /\b(résum\w*|resum\w*|summari\w*|celui|celle|lequel|laquelle|celui-ci|celui-là|ce document|ce fichier|it|that document|this file|plus récent|latest|most recent)\b/i.test(question);
 }
@@ -139,10 +190,10 @@ async function retrieve(userId: string, question: string, history: Turn[], folde
         Math.min(1_500, options.semanticDeadlineMs !== undefined ? Math.max(100, options.semanticDeadlineMs / 2) : 1_500),
       ).catch(() => null)
     : Promise.resolve(null);
-  const all = sqlite.prepare(`SELECT d.id, d.name, d.mtime_ms, d.chars FROM documents d
+  const all = sqlite.prepare(`SELECT d.id, d.name, d.mtime_ms, d.chars, d.path, f.path AS folder_path FROM documents d
     JOIN document_folders f ON f.id=d.folder_id AND f.user_id=d.user_id
     WHERE d.user_id=? AND d.folder_id IN (${scope}) AND d.status='indexed'
-    ORDER BY d.mtime_ms DESC, d.name`).all(userId, ...folderIds) as Array<{id: string; name: string; mtime_ms: number; chars: number}>;
+    ORDER BY d.mtime_ms DESC, d.name`).all(userId, ...folderIds) as Array<{id: string; name: string; mtime_ms: number; chars: number; path: string; folder_path: string}>;
   const priorUser = [...history].reverse().find(row => row.role === "user")?.content ?? "";
   const priorAssistant = [...history].reverse().find(row => row.role === "assistant");
   const followUp = followUpQuestion(question);
@@ -178,19 +229,46 @@ async function retrieve(userId: string, question: string, history: Turn[], folde
   const folderInventory = /(?:dossiers?.*(?:accès|acces|access)|(?:accès|acces|access).*dossiers?)/i.test(question);
   // « Salut », « ça va ? »: nothing to look for, so no passage and no source.
   if (!followUp && !referenced.length && smallTalk(question)) return { passages: [] as Passage[], files: [] as FileRow[], total: 0, semantic: "not_needed" };
-  let passages = folderInventory ? [] : searchPassages(userId, contextual, limit, folderIds);
+  // The documents the question names, by their file's name or a folder's
+  // (« Briefing_Voltrad_v2.docx », « Clients/Ferrand/ »): searched by what
+  // they say — those naming the most of its words, then the others —, and
+  // everywhere, the lists taken in turn: the named ones' best first, then
+  // the best anywhere (a word of the question in the names of three reports
+  // must not keep out the handbook that answers). Before (28/10/2026), a name
+  // decided alone: one file named, its first six passages in order (the
+  // answer on page 5 never given); several, nothing else; a client's name in
+  // every file's name, the opening of each (doc-search bench: 54 % and 34 %
+  // of the answers given, words only).
+  // A file named outright, or by the previous answer: searched before the others.
+  const outright = explicit.length ? explicit : followUp && referenced.length ? referenced : [];
+  const { tiers, naming } = namedTiers(all, currentTerms, outright.map(file => file.id));
+  // In them, what the question asks of them: « Loyer mensuel… Dubreuil » in
+  // the Dubreuil folder looks for « loyer mensuel », or the e-mail that
+  // repeats « Dubreuil » outranks the lease's rent clause, which does not.
+  const asked = withoutWords(contextual, naming);
+  // « Résume-le », « résume mon CV Product Owner »: the one document named,
+  // read from its start — and a question with nothing but its name.
+  const wholeDocument = referenced.length === 1 && (SUMMARY.test(question) || termsFound(placeOf(referenced[0]), currentTerms) >= currentTerms.length);
+  let passages: Passage[] = [];
+  if (!folderInventory && !wholeDocument) {
+    // One or two documents named: as many of their passages as it takes.
+    // Both the question without those names and the whole question: « CARMF »
+    // names the contributions sheet, and is what is asked of it too.
+    const lists = tiers.flatMap(ids => [...new Set([asked, contextual])].map(text => searchPassages(userId, text, limit, folderIds, ids, ids.length <= 2 ? limit : undefined)));
+    passages = inTurn([...lists, searchPassages(userId, contextual, limit, folderIds)], limit);
+  }
   let semantic: SemanticOutcome = "not_needed";
-  if (!folderInventory && referenced.length !== 1) {
+  if (!folderInventory && !wholeDocument) {
     if (options.semantic === false) semantic = "off";
     else {
-      const found = await withinDeadline(semanticPassages(userId, contextual, folderIds), options.semanticDeadlineMs);
+      const found = await withinDeadline(semanticPassages(userId, contextual, folderIds, tiers[0]), options.semanticDeadlineMs);
       semantic = found ? "used" : "deadline";
       passages = fusePassages(passages, found?.value ?? [], limit);
     }
   }
   // A summary needs the actual document, not only the passages matching "résume".
   // Six chunks are bounded; disclose coverage instead of promising a full read.
-  if (referenced.length === 1) {
+  if (wholeDocument) {
     const file = referenced[0];
     passages = sqlite.prepare(`SELECT c.document_id,d.name,d.path,c.page,c.text,
       substr(c.text,1,240) AS snippet FROM document_chunks c JOIN documents d ON d.id=c.document_id
@@ -217,8 +295,6 @@ async function retrieve(userId: string, question: string, history: Turn[], folde
     passages = passages.length + extra.length <= limit ? [...passages, ...extra] : [...passages.slice(0, limit - extra.length), ...extra];
   }
   if (referenced.length > 1) {
-    const ids = new Set(referenced.map(file => file.id));
-    passages = passages.filter(passage => ids.has(passage.document_id));
     if (!passages.length) {
       for (const file of referenced.slice(0, limit)) {
         const first = sqlite.prepare(`SELECT c.document_id,d.name,d.path,c.page,c.text,

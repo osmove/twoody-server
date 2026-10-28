@@ -865,10 +865,14 @@ export interface Passage {
 
 const MAX_PASSAGES_PER_DOCUMENT = 3;
 
-/// Best passages for a question, best first (see selectPassages).
-export function searchPassages(userId: string, question: string, limit = 6, folderIds?: string[]): Passage[] {
-  if (folderIds?.length === 0) return [];
-  const scope = folderIds ? ` AND d.folder_id IN (${folderIds.map(() => "?").join(",")})` : "";
+/// Best passages for a question, best first (see selectPassages);
+/// `documentIds`: in those documents only (retrieval.ts, the documents a
+/// question names), `perDocument` passages of each at most.
+export function searchPassages(userId: string, question: string, limit = 6, folderIds?: string[], documentIds?: string[], perDocument = MAX_PASSAGES_PER_DOCUMENT): Passage[] {
+  if (folderIds?.length === 0 || documentIds?.length === 0) return [];
+  const scope = (folderIds ? ` AND d.folder_id IN (${folderIds.map(() => "?").join(",")})` : "")
+    + (documentIds ? ` AND d.id IN (${documentIds.map(() => "?").join(",")})` : "");
+  const scopeParams = [...(folderIds ?? []), ...(documentIds ?? [])];
   const match = buildMatchQuery(question);
   const grams = buildGramsQuery(question);
   if (!match && !grams) return [];
@@ -876,7 +880,7 @@ export function searchPassages(userId: string, question: string, limit = 6, fold
   let rows: Array<Passage & { score: number }>;
   try {
     rows = grams
-      ? gramRows(userId, match, grams, queryTerms(question), scope, folderIds ?? [], limit * 4)
+      ? gramRows(userId, match, grams, queryTerms(question), scope, scopeParams, limit * 4)
       : sqlite
       .prepare(
         `SELECT c.document_id, d.name, d.path, c.page, c.text,
@@ -888,17 +892,17 @@ export function searchPassages(userId: string, question: string, limit = 6, fold
           ORDER BY score
           LIMIT ?`,
       )
-      .all(match, userId, ...(folderIds ?? []), limit * 4) as Array<Passage & { score: number }>;
+      .all(match, userId, ...scopeParams, limit * 4) as Array<Passage & { score: number }>;
   } catch {
     return []; // a malformed MATCH expression must not break a chat turn
   }
   const terms = queryTerms(question);
-  const content = selectPassages(rows, terms, limit, MAX_PASSAGES_PER_DOCUMENT).map(({ score: _score, ...passage }) => ({ ...passage, match: "content" as const }));
+  const content = selectPassages(rows, terms, limit, perDocument).map(({ score: _score, ...passage }) => ({ ...passage, match: "content" as const }));
   // No reindex or schema migration needed: existing libraries benefit too.
   // Only granted-folder-relative paths count, never the user's home path.
   const candidates = sqlite.prepare(`SELECT d.id, d.name, d.path, f.path AS folder_path
     FROM documents d JOIN document_folders f ON f.id = d.folder_id AND f.user_id = d.user_id
-    WHERE d.user_id = ? AND d.status = 'indexed' ${scope}`).all(userId, ...(folderIds ?? [])) as Array<{ id: string; name: string; path: string; folder_path: string }>;
+    WHERE d.user_id = ? AND d.status = 'indexed' ${scope}`).all(userId, ...scopeParams) as Array<{ id: string; name: string; path: string; folder_path: string }>;
   const named = candidates.map((doc) => ({ ...doc, score: metadataScore(doc.name, join(basename(doc.folder_path), relative(doc.folder_path, doc.path)), terms) }))
     .filter((doc) => doc.score > 0).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)).slice(0, limit);
   const names: Passage[] = [];
@@ -909,10 +913,13 @@ export function searchPassages(userId: string, question: string, limit = 6, fold
     const first = sqlite.prepare("SELECT page, text FROM document_chunks WHERE document_id = ? AND user_id = ? ORDER BY rowid LIMIT 1").get(doc.id, userId) as { page: number | null; text: string } | undefined;
     if (first) names.push({ document_id: doc.id, name: doc.name, path: doc.path, ...first, snippet: first.text.slice(0, 240), match: "name" });
   }
-  // File-name hits first, then content, then folder-only hits. Keep diversity
-  // without letting a folder name push all relevant body passages away.
+  // What the passages say first, then the opening of the files named by the
+  // question that said nothing of it. A name used to come first: a client's
+  // name is in most of its files' names (« Briefing_Voltrad_v2.docx »), and
+  // « …Voltrad… » got the first passage of each of them, in the order of
+  // their names, and none that answered (doc-search bench, 28/10/2026).
   const direct = new Set(named.filter((doc) => metadataScore(doc.name, "", terms) > 0).map((doc) => doc.id));
-  const combined = [...names.filter((passage) => direct.has(passage.document_id)), ...content, ...names];
+  const combined = [...content, ...names.filter((passage) => direct.has(passage.document_id)), ...names];
   const seen = new Set<string>();
   return combined.filter((passage) => {
     const key = `${passage.document_id}:${passage.page}:${passage.text}`;
