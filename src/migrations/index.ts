@@ -20,6 +20,7 @@ import { walledFolderPlaces } from "./0016_walled_folder_places.js";
 import { projectOverviews } from "./0017_project_overviews.js";
 import { answerVotes } from "./0018_answer_votes.js";
 import { cloudFiles } from "./0019_cloud_files.js";
+import { projectTags } from "./0020_project_tags.js";
 
 // Versioned migrations (03/10/2026, docs/schema-convergence.md): the
 // database's version is SQLite's `user_version`. A database at 0 — fresh,
@@ -57,6 +58,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 17, name: "project_overviews", up: projectOverviews },
   { version: 18, name: "answer_votes", up: answerVotes },
   { version: 19, name: "cloud_files", up: cloudFiles },
+  { version: 20, name: "project_tags", up: projectTags },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

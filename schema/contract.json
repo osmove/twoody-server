@@ -112,6 +112,7 @@
       "size": { "type": "text", "values": ["small", "medium", "large", "critical"] },
       "status": { "type": "text", "values": ["idea", "active", "paused", "blocked", "done", "dropped"], "local_values": ["idea", "active", "paused", "done", "dropped"], "gap": "the Mac has no « blocked » status yet (src/projects/projects.ts PROJECT_STATUSES): open item of docs/schema-convergence.md" },
       "brief": { "type": "text" },
+      "tags": { "type": "text_array" },
       "started_at": { "type": "datetime" },
       "due_at": { "type": "datetime" },
       "done_at": { "type": "datetime" },

@@ -53,6 +53,8 @@ export interface ProjectInput {
   size?: ProjectSize;
   status?: ProjectStatus;
   brief?: string | null;
+  /// The person's own words for it (« client », « 2026 »): 12 at most, 40 characters each.
+  tags?: string[];
   due_at?: string | null;
   budget_cents?: number | null;
   currency?: string | null;
@@ -61,7 +63,17 @@ export interface ProjectInput {
 interface Row {
   id: string; user_id: string; entity_id: string | null; title: string; kind: string; size: string; status: string; brief: string | null;
   started_at: number | null; due_at: number | null; done_at: number | null; budget_cents: number | null; currency: string | null;
-  source: string; created_at: number; updated_at: number; isolated: number; reference: string | null;
+  source: string; created_at: number; updated_at: number; isolated: number; reference: string | null; tags: string;
+}
+
+/// A project's tags as stored (a JSON array), whatever an older row holds.
+function tagsOf(raw: string | null | undefined): string[] {
+  try {
+    const value: unknown = JSON.parse(raw ?? "[]");
+    return Array.isArray(value) ? value.filter((tag): tag is string => typeof tag === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 const iso = (ms: number | null) => (ms === null || ms === undefined ? null : new Date(ms).toISOString());
@@ -101,6 +113,19 @@ export function readProjectInput(raw: unknown, creating: boolean): ProjectInput 
     if (body.brief !== null && (typeof body.brief !== "string" || body.brief.length > MAX_BRIEF)) throw new ProjectError(422, "invalid_brief");
     out.brief = typeof body.brief === "string" && body.brief.trim() ? body.brief.trim() : null;
   }
+  if (body.tags !== undefined) {
+    if (!Array.isArray(body.tags) || body.tags.some((tag) => typeof tag !== "string")) throw new ProjectError(422, "invalid_tags");
+    // Each once, as typed, without its « # »; the same word in another case is the same tag.
+    const seen = new Set<string>();
+    const tags = (body.tags as string[]).map((tag) => tag.trim().replace(/^#+/, "").replace(/\s+/g, " ")).filter((tag) => {
+      const key = tag.toLocaleLowerCase();
+      if (!tag || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (tags.length > 12 || tags.some((tag) => tag.length > 40)) throw new ProjectError(422, "invalid_tags");
+    out.tags = tags;
+  }
   if (body.due_at !== undefined) {
     if (body.due_at !== null && (typeof body.due_at !== "string" || Number.isNaN(Date.parse(body.due_at)))) throw new ProjectError(422, "invalid_due_at");
     out.due_at = body.due_at as string | null;
@@ -127,11 +152,11 @@ export function createProject(userId: string, input: ProjectInput, source: Proje
   if (input.isolated) {
     const id = randomUUID();
     const status = input.status ?? "active";
-    sqlite.prepare(`INSERT INTO projects (id, user_id, entity_id, title, kind, size, status, brief, started_at, due_at, done_at, budget_cents, currency, source, created_at, updated_at, isolated, reference)
-      VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, 1, ?)`).run(
+    sqlite.prepare(`INSERT INTO projects (id, user_id, entity_id, title, kind, size, status, brief, started_at, due_at, done_at, budget_cents, currency, source, created_at, updated_at, isolated, reference, tags)
+      VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, 1, ?, ?)`).run(
       id, userId, title, input.kind ?? "work", input.size ?? "medium", status, input.brief ?? null,
       status === "active" ? now : null, input.due_at ? Date.parse(input.due_at) : null, status === "done" ? now : null,
-      source, now, now, input.reference ?? null,
+      source, now, now, input.reference ?? null, JSON.stringify(input.tags ?? []),
     );
     return id;
   }
@@ -141,11 +166,11 @@ export function createProject(userId: string, input: ProjectInput, source: Proje
   if (existing) return existing.id;
   const id = randomUUID();
   const status = input.status ?? "active";
-  sqlite.prepare(`INSERT INTO projects (id, user_id, entity_id, title, kind, size, status, brief, started_at, due_at, done_at, budget_cents, currency, source, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+  sqlite.prepare(`INSERT INTO projects (id, user_id, entity_id, title, kind, size, status, brief, started_at, due_at, done_at, budget_cents, currency, source, created_at, updated_at, tags)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     id, userId, entity.id, title, input.kind ?? "other", input.size ?? "small", status, input.brief ?? null,
     status === "active" ? now : null, input.due_at ? Date.parse(input.due_at) : null, status === "done" ? now : null,
-    input.budget_cents ?? null, input.currency ?? null, source, now, now,
+    input.budget_cents ?? null, input.currency ?? null, source, now, now, JSON.stringify(input.tags ?? []),
   );
   // The profile's « Projects under way » may change: read ahead again.
   memoriesChanged(userId);
@@ -160,7 +185,7 @@ export function updateProject(userId: string, id: string, input: ProjectInput, n
   if (input.isolated !== undefined && input.isolated !== (row.isolated === 1)) throw new ProjectError(422, "isolated_fixed");
   const status = input.status ?? row.status;
   sqlite.prepare(`UPDATE projects SET title = ?, kind = ?, size = ?, status = ?, brief = ?, due_at = ?, budget_cents = ?, currency = ?,
-    started_at = ?, done_at = ?, reference = ?, updated_at = ? WHERE id = ?`).run(
+    started_at = ?, done_at = ?, reference = ?, tags = ?, updated_at = ? WHERE id = ?`).run(
     input.title ?? row.title, input.kind ?? row.kind, input.size ?? row.size, status,
     input.brief !== undefined ? input.brief : row.brief,
     input.due_at !== undefined ? (input.due_at ? Date.parse(input.due_at) : null) : row.due_at,
@@ -169,6 +194,7 @@ export function updateProject(userId: string, id: string, input: ProjectInput, n
     row.started_at ?? (status === "active" ? now : null),
     status === "done" ? row.done_at ?? now : null,
     input.reference !== undefined ? input.reference : row.reference,
+    input.tags !== undefined ? JSON.stringify(input.tags) : row.tags,
     now, id,
   );
   if (row.isolated === 1) return;
@@ -233,7 +259,7 @@ function serialize(row: Row) {
   const count = (sql: string) => (sqlite.prepare(sql).get(row.id, row.user_id) as { n: number }).n;
   const lastTalk = (sqlite.prepare("SELECT MAX(last_activity_at) AS at FROM discussions WHERE project_id = ? AND user_id = ?").get(row.id, row.user_id) as { at: number | null }).at;
   return {
-    id: row.id, title: row.title, kind: row.kind, size: row.size, status: row.status, brief: row.brief, source: row.source,
+    id: row.id, title: row.title, kind: row.kind, size: row.size, status: row.status, brief: row.brief, tags: tagsOf(row.tags), source: row.source,
     isolated: row.isolated === 1, reference: row.reference,
     // An isolated project's documents: the folders it owns (isolation.ts).
     folders: row.isolated === 1 ? isolatedFolders(row.user_id, row.id) : [],
@@ -339,6 +365,7 @@ export function projectCards(userId: string, text: string, memoryIds: Array<stri
     const lines = [
       `${row.title} — ${head}`,
       row.brief ? `Notes: ${row.brief.replace(/\s+/g, " ").slice(0, 200)}` : null,
+      tagsOf(row.tags).length ? `Tags: ${tagsOf(row.tags).join(", ")}` : null,
       tasks.length ? `Open tasks: ${tasks.join("; ")}` : null,
       reminders.length ? `Reminders: ${reminders.join("; ")}` : null,
       facts.length ? `What they said: ${facts.join(" · ")}` : null,

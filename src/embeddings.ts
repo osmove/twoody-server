@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { randomBytes } from "node:crypto";
-import { endianness } from "node:os";
+import { endianness, totalmem } from "node:os";
 import { normalizedVector } from "./documents/vectorMath.js";
 import { outboundFetch } from "./outbound.js";
 
@@ -57,6 +57,17 @@ export function vectorScore(query: Float32Array, blob: Buffer): number {
 
 /// Whether the model and the runtime that serves it are on this computer
 /// (the Desktop downloads them with « Rechercher par le sens »).
+/// Where the vectors are computed: on a Mac with Apple silicon and 24 GB or
+/// more, on its graphics chip — 7.6 passages a second instead of 0.9 on two
+/// cores (M5, 24 GB, Qwen3 Embedding 0.6B, 28/10/2026: a folder of 1,300
+/// documents, 8,525 passages, about 19 minutes instead of 2 h 40); the documents
+/// wait while an answer is written (semantic.ts). Below, the chat model
+/// needs that memory (docs/builtin-runtime-design.md §10: 9.9 of the 10.7 GiB
+/// a 16 GB Mac's graphics chip can take); elsewhere, not measured: as before.
+export function embeddingGpuLayers(platform: string, arch: string, totalBytes: number): string {
+  return platform === "darwin" && arch === "arm64" && totalBytes >= 24 * 1024 ** 3 ? "99" : "0";
+}
+
 export function embeddingFilesPresent(): boolean {
   return existsSync(process.env.TWOODY_EMBEDDING_MODEL ?? "") && existsSync(process.env.TWOODY_EMBEDDING_BINARY ?? "");
 }
@@ -106,7 +117,8 @@ async function engine(): Promise<{ url: string; key: string }> {
     const key = randomBytes(32).toString("hex"),
       url = `http://127.0.0.1:${port}`;
     // Small independent CPU worker: two threads leave the chat model's
-    // GPU/RAM budget alone, and a Pi's other cores to the chat model.
+    // GPU/RAM budget alone, and a Pi's other cores to the chat model — except
+    // on a Mac with Apple silicon and room to spare (embeddingGpuLayers).
     const proc = spawn(
       binary,
       [
@@ -122,7 +134,7 @@ async function engine(): Promise<{ url: string; key: string }> {
         "--ubatch-size", "2048",
         "--parallel", "1",
         "--threads", "2",
-        "--n-gpu-layers", "0",
+        "--n-gpu-layers", embeddingGpuLayers(process.platform, process.arch, totalmem()),
         "--log-disable",
       ],
       { stdio: "ignore", windowsHide: true },

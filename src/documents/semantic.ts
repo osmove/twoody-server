@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { sqlite } from "../db.js";
+import { inflight } from "../account/inflight.js";
 import { EMBED_MODEL, embed as embedText, embeddingFilesPresent, stopEmbeddings, vectorScore, vectorView } from "../embeddings.js";
 import type { Passage } from "./library.js";
 
@@ -42,6 +43,27 @@ export function semanticStatus(userId: string) {
     limit: MAX_CHUNKS,
   };
 }
+/// How far « Rechercher par le sens » has read, per folder or per document:
+/// its passages, and those that have their vector for the current model
+/// (Jimmy, 28/10/2026: « qu'on voie pour chaque document s'il a été
+/// vectorisé »). Empty while the search by meaning is off. A passage beyond
+/// the index's limit (MAX_CHUNKS) never gets one: `limit` says so.
+export function meaningProgress(userId: string, by: "folder" | "document", ids: string[]): Map<string, { passages: number; embedded: number }> {
+  const out = new Map<string, { passages: number; embedded: number }>();
+  if (!ids.length || !enabledFor(userId)) return out;
+  const key = by === "folder" ? "d.folder_id" : "d.id";
+  for (let i = 0; i < ids.length; i += 500) {
+    const batch = ids.slice(i, i + 500);
+    const rows = sqlite.prepare(`SELECT ${key} AS id, COUNT(*) AS passages, COUNT(e.position) AS embedded
+      FROM document_chunks c JOIN documents d ON d.id=c.document_id
+      LEFT JOIN document_embeddings e ON e.document_id=c.document_id AND e.position=c.position AND e.model=?
+      WHERE c.user_id=? AND ${key} IN (${batch.map(() => "?").join(",")}) GROUP BY ${key}`)
+      .all(MODEL, userId, ...batch) as Array<{ id: string; passages: number; embedded: number }>;
+    for (const row of rows) out.set(row.id, { passages: row.passages, embedded: row.embedded });
+  }
+  return out;
+}
+
 export function setSemantic(userId: string, enabled: boolean) {
   sqlite
     .prepare(
@@ -124,7 +146,7 @@ export async function indexSemantic(userId: string) {
       JOIN documents d ON d.id=c.document_id JOIN document_folders f ON f.id=d.folder_id AND f.user_id=c.user_id
       LEFT JOIN document_embeddings e ON e.document_id=c.document_id AND e.position=c.position AND e.model=?
       LEFT JOIN document_labels l ON l.document_id=c.document_id
-      WHERE c.user_id=? ORDER BY c.document_id,c.position LIMIT ?`,
+      WHERE c.user_id=? ORDER BY d.path,c.position LIMIT ?`,
       )
       .all(MODEL, userId, MAX_CHUNKS) as Array<{
       document_id: string;
@@ -141,6 +163,9 @@ export async function indexSemantic(userId: string) {
         if (!row.category) changed.add(row.document_id);
         continue;
       }
+      // An answer being written goes first: the documents wait for it (the
+      // vectors may share the graphics chip with the chat model, embeddings.ts).
+      while (inflight("chat") > 0 && enabledFor(userId)) await new Promise((resolve) => setTimeout(resolve, 500));
       const vector = await embed(row.text);
       changed.add(row.document_id);
       // Revocation/reindex can occur while the worker is busy. Never resurrect removed data.

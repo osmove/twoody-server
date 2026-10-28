@@ -298,10 +298,24 @@ test("migration 19 gives each granted folder its choice for files only online, l
   migrate(db, { dataDir: dir, log: quiet, upTo: 18 });
   db.prepare("INSERT INTO users (id, email, created_at) VALUES ('u1', 'u@example.com', 1)").run();
   db.prepare("INSERT INTO document_folders (id, user_id, path, created_at) VALUES ('f1', 'u1', '/Users/x/OneDrive/Velora', 1)").run();
-  migrate(db, { dataDir: dir, log: quiet });
+  migrate(db, { dataDir: dir, log: quiet, upTo: 19 });
   assert.equal(schemaVersion(db), 19);
   assert.ok(columns(db, "document_folders").includes("cloud_files"));
   assert.equal((db.prepare("SELECT cloud_files FROM document_folders WHERE id = 'f1'").get() as { cloud_files: string | null }).cloud_files, null);
   cloudFiles(db);
   assert.equal(columns(db, "document_folders").filter((name) => name === "cloud_files").length, 1);
+});
+
+test("migration 20 gives each project its tags, none at first; run again, it changes nothing", async () => {
+  const { projectTags } = await import("../src/migrations/0020_project_tags.ts");
+  const dir = mkdtempSync(join(tmpdir(), "twoody-migrations-"));
+  const db = new Database(join(dir, "local.db"));
+  migrate(db, { dataDir: dir, log: quiet, upTo: 19 });
+  db.prepare("INSERT INTO users (id, email, created_at) VALUES ('u1', 'u@example.com', 1)").run();
+  db.prepare("INSERT INTO projects (id, user_id, title, created_at, updated_at) VALUES ('p1', 'u1', 'Achat d’un Mac mini', 1, 1)").run();
+  migrate(db, { dataDir: dir, log: quiet });
+  assert.equal(schemaVersion(db), 20);
+  assert.equal((db.prepare("SELECT tags FROM projects WHERE id = 'p1'").get() as { tags: string }).tags, "[]");
+  projectTags(db);
+  assert.equal(columns(db, "projects").filter((name) => name === "tags").length, 1);
 });

@@ -1,5 +1,5 @@
 import {indexedDirectory, type IndexedEntry} from "./tree.js";
-import { indexSemantic } from "./semantic.js";
+import { indexSemantic, meaningProgress } from "./semantic.js";
 import { and, eq } from "drizzle-orm";
 import { readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -183,6 +183,7 @@ export function listFolders(userId: string) {
     )
     .all(userId) as Array<{ folderId: string; total: number; indexed: number; empty: number; failed: number; online: number }>;
   const byFolder = new Map(counts.map((row) => [row.folderId, row]));
+  const meaning = meaningProgress(userId, "folder", counts.map((row) => row.folderId));
 
   const rows = db
     .select()
@@ -214,6 +215,8 @@ export function listFolders(userId: string) {
       // has them downloaded (`cloud_files` « read », cloudFiles.ts).
       online_only: count?.online ?? 0,
       cloud_files: folder.cloudFiles === "read" ? "read" : null,
+      // « Rechercher par le sens »: its passages and those read for it (null while it is off).
+      meaning: meaning.get(folder.id) ?? null,
       ignored: ignoredByFolder.get(folder.id) ?? 0,
       // The isolated project it belongs to (src/projects/isolation.ts):
       // searched in that project's conversations only, never elsewhere.
@@ -964,9 +967,11 @@ export function listDocuments(userId: string, folderId: string, offset = 0, limi
     FROM documents d JOIN document_folders f ON f.id = d.folder_id AND f.user_id = d.user_id
     LEFT JOIN document_labels l ON l.document_id=d.id AND EXISTS(SELECT 1 FROM document_semantic_settings s WHERE s.user_id=d.user_id AND s.enabled=1)
     WHERE d.user_id = ? AND d.folder_id = ? ORDER BY ${order} d.name COLLATE NOCASE, d.id LIMIT ? OFFSET ?`)
-    .all(userId, folderId, limit, offset);
+    .all(userId, folderId, limit, offset) as Array<{ id: string } & Record<string, unknown>>;
   const count = sqlite.prepare("SELECT COUNT(*) AS total FROM documents WHERE user_id = ? AND folder_id = ?").get(userId, folderId) as { total: number };
-  return { files, total: count.total, offset, limit };
+  // Each file's passages read for « Rechercher par le sens » (null while it is off).
+  const meaning = meaningProgress(userId, "document", files.map((file) => file.id));
+  return { files: files.map((file) => ({ ...file, meaning: meaning.get(file.id) ?? null })), total: count.total, offset, limit };
 }
 
 export function hasIndexedDocuments(userId: string): boolean {
