@@ -417,6 +417,7 @@
       "user_id": "@account_user",
       "app": "which app sent the vote (desktop, ios, android)",
       "app_version": "the version of that app",
+      "installation_uuid": "the Desktop installation that gave the vote without an account (its random id, as its diagnostics), until it signs in to one",
       "telemetry": "the answer's technical details (names, counts, sizes, times, never a word of the conversation): sent only while « Partager des diagnostics » is ticked, never for a walled-off project"
     }
   },
