@@ -340,30 +340,44 @@ export function projectsLine(userId: string): string | null {
   return `Projects under way: ${rows.map((row) => `${row.title}${row.size === "critical" ? " (critical)" : ""}${row.due_at ? ` (due ${day(row.due_at)})` : ""}`).join("; ")}.`;
 }
 
+/// The ordinary project a conversation is in — started from its page, or
+/// tied to it when the project it proposed was accepted (learner.ts) — while
+/// it is not dropped. A walled-off one is isolation.ts's (isolatedProjectOf).
+export function projectOfConversation(userId: string, discussionId: string): { id: string; title: string } | null {
+  const row = sqlite.prepare(`SELECT p.id, p.title FROM discussions d JOIN projects p ON p.id = d.project_id AND p.user_id = d.user_id
+    WHERE d.id = ? AND d.user_id = ? AND p.isolated = 0 AND p.status != 'dropped'`).get(discussionId, userId) as { id: string; title: string } | undefined;
+  return row ?? null;
+}
+
 /// The cards of the projects a message is about — named (its name, an
 /// alias) or reached through the memories given with it: status, due
 /// date, open tasks, next reminders, the last facts. At most two, ~600
 /// characters each, in the message (never the system prompt).
-export function projectCards(userId: string, text: string, memoryIds: Array<string | null> = []): Array<{ id: string; title: string; card: string }> {
+/// `inConversation`: the project the conversation is in
+/// (projectOfConversation), whose card comes first on every message of it,
+/// named or not. `facts: false` (« Mémoire » off): the card without what
+/// was learned of it — its name, notes, tags, tasks and reminders only.
+export function projectCards(userId: string, text: string, memoryIds: Array<string | null> = [], inConversation: string | null = null, { facts: withFacts = true }: { facts?: boolean } = {}): Array<{ id: string; title: string; card: string }> {
   const named = new Set(entitiesInText(userId, text).map((link) => link.entity_id));
   const viaMemories = memoryIds.filter((id): id is string => !!id);
   if (viaMemories.length) {
     for (const row of sqlite.prepare(`SELECT entity_id FROM memory_entities WHERE memory_id IN (${viaMemories.map(() => "?").join(",")})`).all(...viaMemories) as Array<{ entity_id: string }>) named.add(row.entity_id);
   }
-  if (!named.size) return [];
-  const rows = sqlite.prepare(`SELECT * FROM projects WHERE user_id = ? AND status != 'dropped' AND isolated = 0 AND entity_id IN (${[...named].map(() => "?").join(",")}) ORDER BY updated_at DESC LIMIT 2`).all(userId, ...named) as Row[];
+  if (!named.size && !inConversation) return [];
+  const byEntity = named.size ? `entity_id IN (${[...named].map(() => "?").join(",")})` : "0";
+  const rows = sqlite.prepare(`SELECT * FROM projects WHERE user_id = ? AND status != 'dropped' AND isolated = 0 AND (id = ? OR ${byEntity}) ORDER BY id = ? DESC, updated_at DESC LIMIT 2`).all(userId, inConversation ?? "", ...named, inConversation ?? "") as Row[];
   const at = (ms: number | null) => (ms ? new Date(ms).toISOString().slice(0, 10) : null);
   return rows.map((row) => {
     const tasks = (sqlite.prepare("SELECT title, due_at FROM tasks WHERE project_id = ? AND user_id = ? AND done_at IS NULL ORDER BY due_at IS NULL, due_at LIMIT 4").all(row.id, userId) as Array<{ title: string; due_at: number | null }>)
       .map((task) => (task.due_at ? `${task.title} (${at(task.due_at)})` : task.title));
     const reminders = (sqlite.prepare("SELECT COALESCE(title, text) AS text, notify_at FROM reminders WHERE project_id = ? AND user_id = ? AND status = 'active' ORDER BY notify_at LIMIT 3").all(row.id, userId) as Array<{ text: string; notify_at: number | null }>)
       .map((reminder) => (reminder.notify_at ? `${reminder.text} (${at(reminder.notify_at)})` : reminder.text));
-    const facts = row.entity_id
+    const facts = row.entity_id && withFacts
       ? (sqlite.prepare(`SELECT m.content FROM memories m JOIN memory_entities l ON l.memory_id = m.id WHERE l.entity_id = ? AND m.user_id = ? AND m.superseded_by_id IS NULL AND m.tags NOT LIKE '%"sensitive"%' ORDER BY m.created_at DESC LIMIT 3`).all(row.entity_id, userId) as Array<{ content: string }>).map((fact) => fact.content.replace(/\s+/g, " ").slice(0, 160))
       : [];
     const head = [`${KIND_WORDS[row.kind] ?? "project"}`, (PROJECT_SIZES as readonly string[]).includes(row.size) ? row.size : "small", row.status, row.due_at ? `due ${day(row.due_at)}` : null, row.budget_cents ? `budget ${(row.budget_cents / 100).toFixed(0)} ${row.currency ?? ""}`.trim() : null].filter(Boolean).join(", ");
     const lines = [
-      `${row.title} — ${head}`,
+      `${row.title} — ${head}${row.id === inConversation ? " (this conversation was started in this project)" : ""}`,
       row.brief ? `Notes: ${row.brief.replace(/\s+/g, " ").slice(0, 200)}` : null,
       tagsOf(row.tags).length ? `Tags: ${tagsOf(row.tags).join(", ")}` : null,
       tasks.length ? `Open tasks: ${tasks.join("; ")}` : null,

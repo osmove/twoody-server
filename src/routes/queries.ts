@@ -11,7 +11,7 @@ import { askedToRemember, rememberFacts } from "../memoryLearning.js";
 import { learnAfterAnswer, learnSoon, setLearningModel, type LearnMessages } from "../memory/learner.js";
 import { onMemoriesChanged } from "../memory/changes.js";
 import { recordTrace, type ToolCallTrace, type TurnPrompt, type TurnTrace } from "../diagnostics/traces.js";
-import { projectCards } from "../projects/projects.js";
+import { projectCards, projectOfConversation } from "../projects/projects.js";
 import { personCards } from "../people/cards.js";
 import { ACTION_TOOLS, askedAction, runAction, type ChatAction } from "../projects/actions.js";
 import { createHash } from "node:crypto";
@@ -670,6 +670,9 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
   // The isolated project the conversation is in, if any: its documents, its
   // notes, and nothing that reaches outside it unless the message asks.
   const isolated = isolatedProjectOf(discussion.id, auth.userId);
+  // An ordinary project it is in (started from the project's page): its card
+  // on every message, its tasks and reminders (projects.ts, actions.ts).
+  const inProject = isolated ? null : projectOfConversation(auth.userId, discussion.id);
   if (isolated && !(walledReach || (await reachesWalledProjects(req, auth)))) return refuse(403, { error: "desktop_app_only" });
   if (isolated?.closed) return refuse(409, { error: "project_closed" });
   if (isolated) {
@@ -1486,7 +1489,7 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
         toolCallsTraced.push(traced);
         let result: string;
         try {
-          const action = runAction(auth.userId, name, args, validTimeZone(parsed.time_zone), new Date(), typedText(content), isolated ? { id: isolated.id, title: isolated.title } : null);
+          const action = runAction(auth.userId, name, args, validTimeZone(parsed.time_zone), new Date(), typedText(content), isolated ? { id: isolated.id, title: isolated.title } : null, inProject);
           actionsDone.push(action);
           result = `Done (${action.type} « ${action.title} »${action.at ? `, ${action.at}` : ""}${action.project ? `, project « ${action.project.title} »` : ""}). Tell the user in one short sentence.`;
         } catch (err) {
@@ -1524,7 +1527,11 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       mode: memoryMode,
       documentMode: access.mode,
     });
-    const cards = memoryMode === "full" && access.mode !== "only" && !isolated ? projectCards(auth.userId, typedText(content), relevant.items.map((item) => item.id)) : [];
+    // A conversation started in a project has its card even with « Mémoire »
+    // off: chosen by the person, without what was learned of it.
+    const cards = access.mode === "only" || isolated ? []
+      : memoryMode === "full" ? projectCards(auth.userId, typedText(content), relevant.items.map((item) => item.id), inProject?.id ?? null)
+      : inProject ? projectCards(auth.userId, "", [], inProject.id, { facts: false }) : [];
     trace.projects = cards.map((card) => card.title);
     // The people it is about (docs/people-design.md §6): never in a walled-off
     // project's conversation; their cards' details only with Contacts on.
@@ -1570,7 +1577,8 @@ async function handleQueriesRequest(req: FastifyRequest, reply: FastifyReply) {
       googleDataTools: toolsFor(provider) && googleTools.length ? googleTools.map((tool) => tool.function.name) : null,
       // The projects the message is about (named, or through the memories
       // given with it): their cards, with the message.
-      projectCards: memoryMode === "full" ? cards.map((card) => card.card) : [],
+      // Chosen above for the memory mode (with it off, the card of the project the conversation is in).
+      projectCards: cards.map((card) => card.card),
       personCards: people.map((card) => card.card),
       documentFiles: listingOnly ? [] : retrieved.files,
       documentFileTotal: listingOnly ? 0 : retrieved.total,

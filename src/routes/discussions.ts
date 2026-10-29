@@ -12,6 +12,7 @@ import { discussionContext } from "./queries.js";
 import { readMemoryMode } from "../chatContext.js";
 import { discussionTitle } from "../documentBlocks.js";
 import { isolatedProjectOf } from "../projects/isolation.js";
+import { projectOfConversation } from "../projects/projects.js";
 import { reachesWalledProjects, walledConversation } from "../projects/walledAccess.js";
 import { isThisComputersApp } from "./usage.js";
 import { actionsOfMessages } from "../fileActions/store.js";
@@ -236,6 +237,9 @@ export async function discussionRoutes(app: FastifyInstance) {
         // The isolated project (client file) it is in: its title, for the
         // chat (src/projects/isolation.ts).
         isolated_project: isolated,
+        // The ordinary project it was started in (projects.ts
+        // projectOfConversation): its name above it, for the person.
+        project:          !isolated && person ? projectOfConversation(auth.userId, discussion.id) : null,
         // What was learned from it (« Mémoire mise à jour »): the person's.
         memory_notices:   (await mayReachHistory(req, auth)) ? noticesOf(auth.userId, discussion.id) : [],
         summary:          context.summary,

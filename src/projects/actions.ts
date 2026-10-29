@@ -120,8 +120,11 @@ export function zonedInstant(local: string, given: string | null): Date {
 /// `within`: the isolated project (client file) the conversation is in —
 /// what is created there is its own (its deadlines), and no other project is
 /// named or changed from it (isolation.ts).
-export function runAction(userId: string, name: string, args: Record<string, unknown>, timeZone: string | null, now = new Date(), said = "", within: { id: string; title: string } | null = null): ChatAction {
-  const project = within ?? resolveProject(userId, args.project);
+/// `inProject`: the ordinary project the conversation is in
+/// (projectOfConversation) — a task or reminder that names no project known
+/// is its; a project's change still names the project.
+export function runAction(userId: string, name: string, args: Record<string, unknown>, timeZone: string | null, now = new Date(), said = "", within: { id: string; title: string } | null = null, inProject: { id: string; title: string } | null = null): ChatAction {
+  const project = within ?? resolveProject(userId, args.project) ?? (name === "update_project" ? null : inProject);
   // The day the person named wins over the model's reading of it.
   const day = namedDay(said, timeZone, now);
   if (name === "create_reminder") {

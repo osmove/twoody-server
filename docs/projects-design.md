@@ -33,6 +33,11 @@ gives about a project name its entity, so they link to it. Same evidence check: 
   project, `update_project` (status, due date) — each shown to the person (« Rappel créé : … · Annuler »).
 - The profile names the active large projects in one line (« Projets en cours : achat maison, mariage »): stable all
   day, so the prompt cache holds.
+- A conversation started in a project (29/10/2026: « Nouvelle conversation dans ce projet » on its page, Desktop;
+  `project_id` on the first message, `discussions.project_id`; `projectOfConversation`): the project's card on every
+  message of it, named or not, first of the two — with « Mémoire » off too, without what was learned of it (the
+  person chose the project); a task or a reminder that names no known project is the project's; `GET
+  /discussions/:id` says `project`. A dropped project is no conversation's any more. Nothing is walled off (§8).
 
 ## 5. Screens
 Mac and iPhone: « Projets » — active first; each with its memories, tasks, reminders, events, conversations,
