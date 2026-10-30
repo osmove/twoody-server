@@ -61,8 +61,13 @@ RUN npm run build \
 
 # The engine: fetched by the server's own installer, from the pinned host
 # only, refused unless its SHA-256 is the manifest's.
+# The installer checks what llama-server links to: OpenMP must be there (the
+# official amd64 build needs libgomp1, as the final image below).
 FROM build AS runtime
-RUN TWOODY_DATA_DIR=/tmp/runtime-data TWOODY_RUNTIME_DIR=/opt/twoody/runtime \
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgomp1 \
+ && rm -rf /var/lib/apt/lists/* \
+ && TWOODY_DATA_DIR=/tmp/runtime-data TWOODY_RUNTIME_DIR=/opt/twoody/runtime \
     node bin/twoody-server.mjs runtime install \
  && rm -rf /tmp/runtime-data
 
@@ -70,8 +75,7 @@ FROM ${NODE_IMAGE}
 LABEL org.opencontainers.image.title="Twoody Server" \
       org.opencontainers.image.description="Self-hosted, local-first Twoody backend, with llama.cpp" \
       org.opencontainers.image.vendor="Osmove" \
-      org.opencontainers.image.url="https://twoody.com" \
-      org.opencontainers.image.licenses="BUSL-1.1"
+      org.opencontainers.image.url="https://twoody.com"
 
 # What llama-server links to beyond glibc: OpenMP (the official amd64
 # build) and OpenSSL. Then the check: nothing it or its CPU variants load

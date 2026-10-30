@@ -62,10 +62,10 @@ from twoody-npm.
   github.com/orgs/osmove/packages → `twoody-server` → Package settings →
   Change visibility → Public, or every Pi has to `docker login ghcr.io`.
 - **License**: the npm tarball and the image carry the compiled server
-  (`dist/`) under BUSL-1.1, not the TypeScript sources. `package.json`
+  (`dist/`, without comments), not the TypeScript sources, under the
+  proprietary LICENSE (free use under Twoody's terms of use). `package.json`
   has no `repository` field on purpose, because the repository is private.
-  twoody-cli (the `twoody` npm package, bundled `lib/twoody.mjs`) and
-  twoody-pypi are under the same BUSL-1.1 terms and Change Date.
+  twoody-cli and twoody-pypi carry the same LICENSE.
 
 ## Each release
 

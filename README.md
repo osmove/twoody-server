@@ -52,14 +52,6 @@ runtime. Three ways to install it:
 | npm | Node.js 22+ | `npm install -g twoody-server`, or `npm install -g twoody` (the Twoody CLI, whose `twoody serve` runs this server) |
 | pip | Python 3.9+ and Node.js 22+ | `pip install twoody` (runs the `twoody` npm package through `npx`: `twoody serve`) |
 
-> **Not published yet (1 Oct 2026).** Version 0.2.0 is on none of these
-> registries: npm still serves `twoody@0.1.0` (the old CLI) and
-> `twoody-server@0.0.1` (April 2026), PyPI has no `twoody` project, and no
-> `ghcr.io/osmove/twoody-server` image exists. Today the server is
-> installed from a checkout: `docker compose up -d --build`, or
-> `scripts/install-linux.sh` ([below](#installer-script-from-a-checkout)).
-> The commands above are for the day Jimmy publishes (PUBLISHING.md).
-
 The npm command:
 
 ```bash
@@ -480,11 +472,6 @@ folder on an encrypted volume — `docs/encrypted-storage.md` sets one up on
 Raspberry Pi OS; the server says at start, in `/health` (`data_at_rest`)
 and in Twoody Desktop's « Appareils » when it is not.
 
-Jimmy's own Pi does not use either path: it runs the server as the user
-service `twoody-next` (port 3031, data in `~/twoody-next/data`), installed
-from an `npm pack` tarball; the procedure is in `~/Dev/twoody/AGENTS.md`
-§6.
-
 ### Stopping a reply
 
 `POST /queries` aborts its request to the runtime (or to a cloud provider)
@@ -659,9 +646,8 @@ missing, so a vanilla install without whisper.cpp keeps booting.
 `/home/pi/.twoody/data/` (the SQLite DB + WAL + setup token) from the
 Pi to `~/Library/Twoody/backups/<TIMESTAMP>/` on the Mac every 12 h
 and keep the last 14 snapshots. Pair with `latest` symlink for easy
-recovery. The script reads the default data directory: the `twoody-next`
-service on Jimmy's Pi keeps its data in `~/twoody-next/data` instead
-(`--data-dir`), which it does not cover as written.
+recovery. The script reads the default data directory; a server started with
+`--data-dir` elsewhere needs the script pointed there.
 
 
 ## Documents
@@ -715,6 +701,6 @@ and moves fixture documents into `~/.Trash`.
 
 ## License
 
-Twoody Server is licensed under BSL 1.1 with a change date of
-2030-04-21, after which the covered version converts to Apache 2.0. See
+Free to install and use, for personal and professional purposes alike,
+under the terms of use of Twoody (https://www.twoody.com/terms): see
 [LICENSE](LICENSE).
