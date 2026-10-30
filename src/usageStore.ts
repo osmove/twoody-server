@@ -10,7 +10,7 @@ import { generateId } from "./auth.js";
 
 /// « peer »: an answer this computer wrote for another computer of the
 /// account (routes/peer.ts) — recorded here, never posted by a client.
-export type UsageSource = "chat" | "code" | "agent" | "memory" | "peer";
+export type UsageSource = "chat" | "code" | "agent" | "memory" | "peer" | "api";
 export const USAGE_SOURCES: readonly UsageSource[] = ["chat", "code", "agent", "memory"];
 
 export interface UsageEventInput {

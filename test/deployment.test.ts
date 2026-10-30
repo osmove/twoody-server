@@ -18,6 +18,7 @@ const example = readFileSync(join(root, "scripts", "twoody-server.env.example"),
 /// desktop, provided by the system, or belonging to a test.
 const NOT_FOR_A_HUMAN = new Set([
   "TWOODY_RUNTIME_KEYS", // the desktop mints one per launch and sends it by message
+  "TWOODY_DISCOVERY_FILE", // where the server says its address for the `twoody` command (developerApi/discovery.ts): the bench's fake home, or « off »
   "TWOODY_DEVICE_TOKEN", // the app that owns the session supplies it
   "TWOODY_SPEECH_HELPER", // Twoody Desktop names its Mac speech helper (native/speech)
   "TWOODY_COMPUTE_KEYS_PATH", // where a bridge worker run apart keeps its keys (shares/hostIdentity.ts); the Desktop's is found by itself

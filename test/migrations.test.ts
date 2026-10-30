@@ -313,9 +313,23 @@ test("migration 20 gives each project its tags, none at first; run again, it cha
   migrate(db, { dataDir: dir, log: quiet, upTo: 19 });
   db.prepare("INSERT INTO users (id, email, created_at) VALUES ('u1', 'u@example.com', 1)").run();
   db.prepare("INSERT INTO projects (id, user_id, title, created_at, updated_at) VALUES ('p1', 'u1', 'Achat d’un Mac mini', 1, 1)").run();
-  migrate(db, { dataDir: dir, log: quiet });
+  migrate(db, { dataDir: dir, log: quiet, upTo: 20 });
   assert.equal(schemaVersion(db), 20);
   assert.equal((db.prepare("SELECT tags FROM projects WHERE id = 'p1'").get() as { tags: string }).tags, "[]");
   projectTags(db);
   assert.equal(columns(db, "projects").filter((name) => name === "tags").length, 1);
+});
+
+test("migration 21 makes the table of the local API keys, empty; run again, it changes nothing", async () => {
+  const { apiKeys } = await import("../src/migrations/0021_api_keys.ts");
+  const dir = mkdtempSync(join(tmpdir(), "twoody-migrations-"));
+  const db = new Database(join(dir, "local.db"));
+  migrate(db, { dataDir: dir, log: quiet, upTo: 20 });
+  db.prepare("INSERT INTO users (id, email, created_at) VALUES ('u1', 'u@example.com', 1)").run();
+  migrate(db, { dataDir: dir, log: quiet });
+  assert.equal(schemaVersion(db), 21);
+  assert.deepEqual(columns(db, "api_keys").sort(), ["created_at", "id", "last_used_at", "name", "prefix", "revoked_at", "token_digest", "updated_at", "user_id"]);
+  assert.equal((db.prepare("SELECT count(*) AS n FROM api_keys").get() as { n: number }).n, 0);
+  apiKeys(db);
+  assert.equal((db.prepare("SELECT count(*) AS n FROM users").get() as { n: number }).n, 1);
 });

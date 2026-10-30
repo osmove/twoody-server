@@ -62,6 +62,7 @@ import { peerRoutes } from "./routes/peer.js";
 import { peersRoutes } from "./routes/peers.js";
 import { peerDocumentRoutes } from "./routes/peerDocuments.js";
 import { runtimeRoutes } from "./routes/runtime.js";
+import { developerApiRoutes } from "./routes/developerApi.js";
 import { requireAdminAccess } from "./adminAccess.js";
 import { requireAuth } from "./auth.js";
 import { outboundFetch } from "./outbound.js";
@@ -147,6 +148,7 @@ export async function buildApp() {
         { name: "realtime", description: "Realtime voice session proxies" },
         { name: "members", description: "Household members and enrollment assets" },
         { name: "documents", description: "Granted folders, local index and search" },
+        { name: "developer", description: "OpenAI-compatible API for this computer's programs, with a local API key" },
       ],
       components: {
         securitySchemes: {
@@ -279,6 +281,9 @@ export async function buildApp() {
   // This computer's documents, for the account's computers it trusts
   // (docs/mesh-design.md §2).
   await app.register(peerDocumentRoutes, { prefix: "/api/v1" });
+  // The developer API: OpenAI's /v1/* for this machine's programs, with a
+  // local API key, and the keys (docs/developer-api-design.md).
+  await app.register(developerApiRoutes);
 
   app.get("/admin", {
     schema: {

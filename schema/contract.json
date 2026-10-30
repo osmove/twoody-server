@@ -446,6 +446,7 @@
     }
   },
   "local_only": {
+    "api_keys": "local API keys (migration 21, docs/developer-api-design.md): a key opens this computer's models to this computer's programs (/v1/*); only its SHA-256 is kept, and it never leaves the computer",
     "bank_category_rules": "@local_bank",
     "bank_imports": "@local_bank",
     "bank_transaction_imports": "@local_bank",

@@ -1,20 +1,14 @@
 import type { FastifyInstance } from "fastify";
 import { requireAuth } from "../auth.js";
-import { atCapacity, beginGeneration } from "../account/inflight.js";
-import { buildStatus, localModels, noteModelUsed } from "../account/statusSource.js";
+import { atCapacity } from "../account/inflight.js";
+import { buildStatus, localModels } from "../account/statusSource.js";
 import type { Purpose } from "../account/status.js";
 import { DATA_DIR } from "../db.js";
 import { dataAtRest } from "../dataAtRest.js";
-import { LocalOnlyError, outboundFetch } from "../outbound.js";
 import { unpairSession } from "../pairing.js";
-import { runtimeAuthHeaders } from "../runtimeAuth.js";
-import { runtimeSlot } from "../runtimeSlots.js";
-import { ensureBuiltin, isBuiltinUrl } from "../engine.js";
-import { RuntimeError } from "../builtin/index.js";
-import { recordUsageEvent } from "../usageStore.js";
 import { clientOf } from "./usage.js";
-import { withTimings } from "./queries.js";
 import { peerVaultRoutes } from "./peerVault.js";
+import { relayCompletion, startHolder, type Fail } from "../runtimeRelay.js";
 
 // What this computer answers to another computer of the same account
 // (docs/multi-computer-design.md §3), through the sealed tunnel:
@@ -32,10 +26,8 @@ import { peerVaultRoutes } from "./peerVault.js";
 
 const MAX_MESSAGES = 64;
 const MAX_TOKENS = 4096;
-/// The fields passed to the runtime; anything else is dropped.
-const PASSED = ["model", "messages", "tools", "tool_choice", "max_tokens", "temperature", "top_p", "stop", "stream", "stream_options", "response_format", "seed"] as const;
-/// The runtime-specific switches (reasoning), dropped on a runtime that refuses them.
-const EXTRAS = ["chat_template_kwargs", "reasoning_effort", "thinking_budget_tokens"] as const;
+
+const fail: Fail = (reply, status, code, message) => reply.code(status).send({ error: code, message });
 
 type Body = Record<string, unknown>;
 
@@ -96,157 +88,20 @@ export async function peerRoutes(app: FastifyInstance) {
       if (!holder) return reply.code(404).send({ error: "no_model", message: `${model} is not on this computer` });
       // The built-in runtime is started for it (engine.ts); a model that
       // would not fit in memory now is refused like a busy computer.
-      if (isBuiltinUrl(holder.baseUrl)) {
-        try {
-          await ensureBuiltin(model);
-        } catch (err) {
-          if (!(err instanceof RuntimeError)) throw err;
-          const status = err.code === "insufficient_memory" ? 503 : err.status;
-          return reply.code(status).send({ error: err.code === "insufficient_memory" ? "busy" : "runtime_unavailable", message: err.message });
-        }
-      }
-
-      const payload: Body = {};
-      for (const field of PASSED) if (body[field] !== undefined) payload[field] = body[field];
-      const requested = typeof body.max_tokens === "number" && body.max_tokens > 0 ? Math.floor(body.max_tokens) : MAX_TOKENS;
-      payload.max_tokens = Math.min(requested, MAX_TOKENS);
-      const stream = payload.stream === true;
-      if (stream) payload.stream_options = { include_usage: true };
-      const extras: Body = {};
-      for (const field of EXTRAS) if (body[field] !== undefined) extras[field] = body[field];
-      // This computer's runtime, this computer's slots: the caller never
-      // names one (runtimeSlots.ts). The person's own computer asks as the
-      // owner: slot 0 when there are two (a computer shared with someone).
-      const slot = await runtimeSlot(holder.baseUrl, model, purpose);
-      if (slot !== null) extras.id_slot = slot;
-
-      const end = beginGeneration(purpose);
-      const upstream = new AbortController();
-      reply.raw.on("close", () => {
-        if (!reply.raw.writableFinished) upstream.abort();
+      if (!(await startHolder(holder.baseUrl, model, reply, fail))) return;
+      return relayCompletion({
+        req,
+        reply,
+        userId: auth.userId,
+        baseUrl: holder.baseUrl,
+        model,
+        body,
+        purpose,
+        maxTokens: MAX_TOKENS,
+        source: "peer",
+        client: clientOf(auth),
+        fail,
       });
-      const endpoint = `${holder.baseUrl}/chat/completions`;
-      const post = (json: Body) =>
-        outboundFetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...runtimeAuthHeaders(holder.baseUrl) },
-          body: JSON.stringify(json),
-          signal: upstream.signal,
-        });
-      const started = Date.now();
-      let first = 0;
-      try {
-        let response: Response;
-        try {
-          response = await post({ ...payload, ...extras });
-          if ((response.status === 400 || response.status === 422) && Object.keys(extras).length > 0) {
-            await response.body?.cancel().catch(() => undefined);
-            response = await post(payload);
-          }
-        } catch (err) {
-          if (err instanceof LocalOnlyError) throw err;
-          return reply.code(503).send({ error: "runtime_unavailable", message: "the model runtime on this computer does not answer" });
-        }
-        noteModelUsed(model);
-        if (!response.ok) {
-          const text = await response.text().catch(() => "");
-          return reply.code(response.status >= 500 ? 502 : response.status).type("application/json").send(text || JSON.stringify({ error: "runtime_error" }));
-        }
-
-        // What the runtime said it spent, read on the way through.
-        let usage: { prompt_tokens: number; completion_tokens: number; cached_tokens?: number | null } | null = null;
-        let timings: Record<string, unknown> | null = null;
-        let written = 0;
-        const readEvent = (json: Record<string, unknown>) => {
-          const u = json.usage as { prompt_tokens?: unknown; completion_tokens?: unknown; prompt_tokens_details?: { cached_tokens?: unknown } } | undefined;
-          if (u && typeof u.prompt_tokens === "number") {
-            usage = {
-              prompt_tokens: u.prompt_tokens,
-              completion_tokens: typeof u.completion_tokens === "number" ? u.completion_tokens : 0,
-              ...(typeof u.prompt_tokens_details?.cached_tokens === "number" ? { cached_tokens: u.prompt_tokens_details.cached_tokens } : {}),
-            };
-          }
-          if (json.timings && typeof json.timings === "object") timings = json.timings as Record<string, unknown>;
-          const choice = (json.choices as Array<{ delta?: { content?: unknown; reasoning?: unknown; reasoning_content?: unknown }; message?: { content?: unknown } }> | undefined)?.[0];
-          for (const part of [choice?.delta?.content, choice?.delta?.reasoning, choice?.delta?.reasoning_content, choice?.message?.content]) {
-            if (typeof part === "string" && part) {
-              first ||= Date.now();
-              written += part.length;
-            }
-          }
-        };
-
-        if (!stream) {
-          const text = await response.text();
-          try {
-            readEvent(JSON.parse(text));
-          } catch {
-            // passed on as it came
-          }
-          reply.code(200).type(response.headers.get("content-type") ?? "application/json").send(text);
-        } else {
-          reply.hijack();
-          reply.raw.writeHead(200, {
-            "Content-Type": response.headers.get("content-type") ?? "text/event-stream",
-            "Cache-Control": "no-cache, no-transform",
-            "X-Accel-Buffering": "no",
-          });
-          const reader = response.body!.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            reply.raw.write(value);
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() ?? "";
-            for (const line of lines) {
-              if (!line.startsWith("data: ")) continue;
-              const raw = line.slice(6).trim();
-              if (!raw || raw === "[DONE]") continue;
-              try {
-                readEvent(JSON.parse(raw));
-              } catch {
-                // not ours to judge
-              }
-            }
-          }
-          reply.raw.end();
-        }
-        const ended = Date.now();
-        const reported = withTimings(usage, timings);
-        try {
-          recordUsageEvent({
-            userId: auth.userId,
-            source: "peer",
-            model,
-            client: clientOf(auth),
-            promptTokens: reported?.prompt_tokens ?? Math.ceil(JSON.stringify(payload.messages).length / 3.5),
-            completionTokens: reported?.completion_tokens ?? Math.ceil(written / 3.5),
-            cachedTokens: reported?.cached_tokens ?? null,
-            promptMs: reported?.prompt_ms ?? null,
-            generationMs: reported?.generation_ms ?? (first ? ended - first : null),
-            ttftMs: first ? first - started : null,
-            estimated: !reported,
-          });
-        } catch {
-          // counted next time
-        }
-      } catch (err) {
-        if (upstream.signal.aborted) {
-          if (!reply.raw.writableEnded) reply.raw.end();
-          return;
-        }
-        if (reply.sent || reply.raw.headersSent) {
-          reply.raw.end();
-          return;
-        }
-        if (err instanceof LocalOnlyError) return reply.code(403).send({ error: "local_only", message: err.message });
-        return reply.code(502).send({ error: "runtime_error", message: "the model runtime on this computer failed" });
-      } finally {
-        end();
-      }
     },
   });
 }

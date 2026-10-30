@@ -49,6 +49,7 @@ import { applyReservedWord } from "./reservedWithdrawal.js";
 import { forgetRuntimeSlots, noteComputeShared } from "./runtimeSlots.js";
 import { slotsModeOf } from "./builtin/slots.js";
 import { forgetRuntimeReads } from "./routes/queries.js";
+import { clearDiscovery, writeDiscovery } from "./developerApi/discovery.js";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 const HOST = process.env.HOST ?? "0.0.0.0";
@@ -119,6 +120,10 @@ function readPackageVersion(): string {
 try {
   await app.listen({ port: PORT, host: HOST });
   console.log(`\nTwoody Server ready on http://${HOST}:${PORT}\n`);
+  // Where the `twoody` command and the programs of this machine find it
+  // (developerApi/discovery.ts): the Desktop's server says it is one.
+  writeDiscovery(PORT, desktopChild ? "desktop" : "server", readPackageVersion());
+  process.once("exit", () => clearDiscovery());
   if (LOCAL_ONLY) {
     console.log("  Local-only mode: calls outside this machine / the private network are refused.\n");
   }
