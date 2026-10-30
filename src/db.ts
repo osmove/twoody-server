@@ -1,4 +1,4 @@
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { drizzle } from "./drizzleSqlite.js";
 import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
 import { join } from "path";
 import { homedir } from "os";

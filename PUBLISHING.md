@@ -1,24 +1,20 @@
 # Publishing Twoody Server
 
-## State on 1 October 2026: nothing of 0.2.0 is published
+## State on 30 October 2026
 
 Publishing is Jimmy's to do (his npm, PyPI and GitHub accounts); an agent
 prepares and checks, it does not publish. As of today:
 
 | Where | What is there |
 |-------|---------------|
-| npm `twoody` | `0.1.0`, the old CLI (its postinstall fetched a binary from the private twoody-cli repository) |
-| npm `twoody-server` | `0.0.1`, published 25 April 2026; not this server's 0.2.0 |
+| npm `twoody-server` | `0.2.0`, published 30 October 2026; `0.2.1` ready (dependency fixes: drizzle-orm 0.45, zod removed, `npm audit` clean) |
+| npm `twoody` | `0.1.0`, the old CLI; `0.2.0` packed and checked, not published yet |
 | PyPI `twoody` | no project |
-| `ghcr.io/osmove/twoody-server` | no image |
+| `ghcr.io/osmove/twoody-server` | `0.2.0`, private until Jimmy makes the package public |
 | `https://twoody.com/install.sh` | 404 |
 
-So every "install with npm / pip / Docker image" line in README.md and in
-twoody-cli / twoody-pypi describes the future. Until the steps below are
-run, the server is installed from a checkout (README.md « Docker »,
-« Installer script »). The versions to publish are already set to 0.2.0 in
-`twoody-server/package.json`, `twoody-cli/package.json` (which depends on
-`twoody-server ^0.2.0`) and `twoody-pypi`.
+`twoody-cli` depends on `twoody-server ^0.2.0`, so an installed `twoody`
+takes the newest 0.2.x server.
 
 ## What gets published
 
