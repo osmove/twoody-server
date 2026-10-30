@@ -109,7 +109,8 @@ conversation of any project.
 - `twoody list`, `twoody ps` (in memory), `twoody pull <model>`, `twoody rm <model>`: through `/api/v1/runtime`
   (`routes/runtime.ts`, owner of this machine — the same console rule as above).
 - `twoody api-key create [name] | list | revoke <id>`: through `/api/v1/api_keys`; the key made for the command
-  itself is kept in `~/.twoody/config.json` (0600).
+  itself is kept in `~/.twoody/api-keys.json` (0600), one per server address; on a fresh `twoody serve` with no
+  owner yet, the command makes this user its owner with the setup token the server left in its data folder.
 - Server: the one `~/.twoody/local-server.json` names, else 127.0.0.1:47821, else 127.0.0.1:3000; `--server <url>` or
   `TWOODY_SERVER_URL` to choose.
 
