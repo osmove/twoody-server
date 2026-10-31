@@ -153,7 +153,9 @@ test("every task in clear is refused before it runs: no runtime, no Home Assista
   // The heartbeat lists the runtime's models (GET …/models); no completion was asked.
   assert.deepEqual(runtime.calls.filter((call) => !call.path.endsWith("/models")), [], "the model was never asked");
   assert.ok(!account.calls.some((call) => call.path.startsWith("/smart_home")), "no Home Assistant state pushed to the account");
-  assert.ok(account.calls.every((call) => !call.body.includes("1234")), "no document text reached the account");
+  // The document's own words: "1234" alone turns up in a timestamp or an id
+  // of a heartbeat now and then (CI, Node 24, 31/10/2026).
+  assert.ok(account.calls.every((call) => !call.body.includes("porte est 1234")), "no document text reached the account");
   // What the worker says it takes: sealed shared turns only, whatever the environment.
   const said = account.calls.find((call) => call.path === "/bridge/tasks/next")!.capabilities ?? "";
   assert.deepEqual(said.split(",").filter(Boolean), ["local-llm-provider"]);
