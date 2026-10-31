@@ -7,11 +7,11 @@ prepares and checks, it does not publish. As of today:
 
 | Where | What is there |
 |-------|---------------|
-| npm `twoody-server` | `0.2.1` (latest), published 31 October 2026: drizzle-orm 0.45, zod removed, `npm audit` clean; `0.2.0` on 30 October |
+| npm `twoody-server` | `0.2.1` (latest), published 31 October 2026: drizzle-orm 0.45, zod removed, `npm audit` clean; `0.2.0` on 30 October; `0.2.2` (`twoody-server api-key`, tag `v0.2.2`) to publish |
 | npm `twoody` | `0.2.0` (latest), published 31 October 2026; `0.1.0` was the old CLI |
 | PyPI `twoody` | `0.2.0`, published 31 October 2026 (account `jimdou`); runs `twoody@0.2.0` from npm |
 | Homebrew `osmove/twoody/twoody` | formula for `twoody` 0.2.0 pushed; Homebrew's npm only takes packages published more than a day ago, so `brew install` works from the evening of 31 October 2026 (24 h after `twoody-server` 0.2.0) |
-| `ghcr.io/osmove/twoody-server` | `0.2.0` and `0.2.1`, private until Jimmy makes the package public |
+| `ghcr.io/osmove/twoody-server` | `0.2.2` (latest), public since 31 October 2026 (the organization's package settings allow public packages); checked by an anonymous pull: `twoody-server api-key create` in the container, `/v1/models` from the host with `-e TWOODY_API_ALLOW_NETWORK=1 -p 127.0.0.1:3000:3000` |
 | `https://twoody.com/install.sh` | 404 |
 
 `twoody-cli` depends on `twoody-server ^0.2.1`, so an installed `twoody`
