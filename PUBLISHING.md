@@ -10,7 +10,7 @@ prepares and checks, it does not publish. As of today:
 | npm `twoody-server` | `0.2.1` (latest), published 31 October 2026: drizzle-orm 0.45, zod removed, `npm audit` clean; `0.2.0` on 30 October |
 | npm `twoody` | `0.2.0` (latest), published 31 October 2026; `0.1.0` was the old CLI |
 | PyPI `twoody` | `0.2.0`, published 31 October 2026 (account `jimdou`); runs `twoody@0.2.0` from npm |
-| Homebrew `osmove/twoody/twoody` | formula for `twoody` 0.2.0 pushed; Homebrew's npm only takes packages published more than a day ago, so `brew install` works from 1 November 2026 |
+| Homebrew `osmove/twoody/twoody` | formula for `twoody` 0.2.0 pushed; Homebrew's npm only takes packages published more than a day ago, so `brew install` works from the evening of 31 October 2026 (24 h after `twoody-server` 0.2.0) |
 | `ghcr.io/osmove/twoody-server` | `0.2.0` and `0.2.1`, private until Jimmy makes the package public |
 | `https://twoody.com/install.sh` | 404 |
 
