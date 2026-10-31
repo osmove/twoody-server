@@ -1,20 +1,26 @@
 # Publishing Twoody Server
 
-## State on 30 October 2026
+## State on 31 October 2026
 
 Publishing is Jimmy's to do (his npm, PyPI and GitHub accounts); an agent
 prepares and checks, it does not publish. As of today:
 
 | Where | What is there |
 |-------|---------------|
-| npm `twoody-server` | `0.2.0`, published 30 October 2026; `0.2.1` ready (dependency fixes: drizzle-orm 0.45, zod removed, `npm audit` clean) |
-| npm `twoody` | `0.1.0`, the old CLI; `0.2.0` packed and checked, not published yet |
-| PyPI `twoody` | no project |
-| `ghcr.io/osmove/twoody-server` | `0.2.0`, private until Jimmy makes the package public |
+| npm `twoody-server` | `0.2.1` (latest), published 31 October 2026: drizzle-orm 0.45, zod removed, `npm audit` clean; `0.2.0` on 30 October |
+| npm `twoody` | `0.2.0` (latest), published 31 October 2026; `0.1.0` was the old CLI |
+| PyPI `twoody` | `0.2.0`, published 31 October 2026 (account `jimdou`); runs `twoody@0.2.0` from npm |
+| Homebrew `osmove/twoody/twoody` | formula for `twoody` 0.2.0 pushed; Homebrew's npm only takes packages published more than a day ago, so `brew install` works from 1 November 2026 |
+| `ghcr.io/osmove/twoody-server` | `0.2.0` and `0.2.1`, private until Jimmy makes the package public |
 | `https://twoody.com/install.sh` | 404 |
 
-`twoody-cli` depends on `twoody-server ^0.2.0`, so an installed `twoody`
-takes the newest 0.2.x server.
+`twoody-cli` depends on `twoody-server ^0.2.1`, so an installed `twoody`
+takes the newest 0.2.x server from 0.2.1 on.
+
+Build the PyPI files from a clean copy (`git archive HEAD`) right before
+uploading: on 31 October the `dist/` of the working copy still held a 0.2.0
+built on 29 September under another licence. A version number can never be
+uploaded twice to PyPI.
 
 ## What gets published
 
