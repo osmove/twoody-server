@@ -1,11 +1,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { authenticate, requireAuth } from "../auth.js";
+import { authenticate, requireAuth, verifySetupToken } from "../auth.js";
 import { atCapacity } from "../account/inflight.js";
 import { localModels } from "../account/statusSource.js";
 import { forwardedByProxy, isLoopbackAddress, viaTunnel } from "../adminAccess.js";
 import { createApiKey, KeyLimitError, listApiKeys, revokeApiKey, verifyApiKey } from "../developerApi/keys.js";
 import { EMBED_MODEL, embed, embeddingFilesPresent } from "../embeddings.js";
 import { ownerRequest } from "../localAccess.js";
+import { ensureLocalUser } from "../pairing.js";
 import { relayCompletion, startHolder, type Fail } from "../runtimeRelay.js";
 import { ownerHere } from "../sessionTrust.js";
 import { soleUserId } from "../shares/serve.js";
@@ -31,9 +32,18 @@ import { addressedToLoopback, fromOtherPage } from "../webOrigin.js";
 //   POST   /api/v1/api_keys        { name } → the token, shown once
 //   DELETE /api/v1/api_keys/:id    revoked, kept
 //
-// TWOODY_API_ALLOW_NETWORK=1 (the Docker image, whose port is published on
-// the host's loopback) lets a key in from another address; a browser page
-// stays refused.
+// TWOODY_API_ALLOW_NETWORK=1 lets a key in from another address: given to
+// the Docker image (`docker run -e TWOODY_API_ALLOW_NETWORK=1 -p
+// 127.0.0.1:3000:3000`), whose host's programs reach it from the bridge's
+// address, never loopback. Off in the image itself: a Raspberry Pi publishes
+// its port to the house. A browser page stays refused either way; making
+// keys is never widened by it (keyOwner).
+//
+// A server nobody has set up yet (Docker, twoody serve) has no owner to own
+// a key. The console of this machine makes one there when it also gives the
+// setup token (X-Twoody-Setup-Token, read from the data directory by
+// `twoody-server api-key create`): the same owner /auth/pair makes from
+// anywhere for that token alone, so nothing is widened.
 
 const MAX_MESSAGES = 512;
 const MAX_TOKENS = 32_768;
@@ -57,6 +67,12 @@ export function apiCallerHere(req: FastifyRequest): boolean {
   if (fromOtherPage(req) || viaTunnel(req)) return false;
   if (networkAllowed()) return true;
   return isLoopbackAddress(req.ip) && addressedToLoopback(req) && !forwardedByProxy(req);
+}
+
+function setupTokenOf(req: FastifyRequest): boolean {
+  const value = req.headers["x-twoody-setup-token"];
+  const token = Array.isArray(value) ? value[0] : value;
+  return typeof token === "string" && token.trim() !== "" && verifySetupToken(token);
 }
 
 function bearerOf(req: FastifyRequest): string | null {
@@ -92,11 +108,14 @@ async function waitForRoom(): Promise<boolean> {
 
 /// The owner, for the keys: this machine's console (or the admin token),
 /// or the owner's session from here. Their user id, or the refusal sent.
-async function keyOwner(req: FastifyRequest, reply: FastifyReply): Promise<string | null> {
+/// `makeOwner`: on a server with no owner yet, the console that gives the
+/// setup token makes it (see above).
+async function keyOwner(req: FastifyRequest, reply: FastifyReply, makeOwner = false): Promise<string | null> {
   if (ownerRequest(req)) {
-    const userId = (await authenticate(req))?.userId ?? soleUserId();
+    let userId = (await authenticate(req))?.userId ?? soleUserId();
+    if (!userId && makeOwner && setupTokenOf(req)) userId = ensureLocalUser().id;
     if (!userId) {
-      reply.code(409).send({ error: "setup_required", message: "This Twoody server has no owner yet: run `twoody setup` first." });
+      reply.code(409).send({ error: "setup_required", message: "This Twoody server has no owner yet: run `twoody setup` first, or `twoody-server api-key create` on its machine." });
       return null;
     }
     return userId;
@@ -207,7 +226,7 @@ export async function developerApiRoutes(app: FastifyInstance) {
   app.post<{ Body: { name?: string } }>("/api/v1/api_keys", {
     schema: { tags: ["developer"], summary: "Make a local API key (owner only); its token is shown once" },
     handler: async (req, reply) => {
-      const userId = await keyOwner(req, reply);
+      const userId = await keyOwner(req, reply, true);
       if (!userId) return;
       try {
         const { token, key } = createApiKey(userId, req.body?.name);

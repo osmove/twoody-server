@@ -262,6 +262,25 @@ The image (`Dockerfile`):
   `docker run ghcr.io/osmove/twoody-server --help`, and has the command
   for `docker exec` (`twoody-server models add …`).
 
+For the OpenAI-compatible API of the container (`/v1/models`,
+`/v1/chat/completions`, `/v1/embeddings`; `docs/developer-api-design.md`),
+publish its port on the host's loopback only and let the host's programs in,
+then make a key inside the container (the first one also makes the server's
+owner, with its setup token):
+
+```bash
+docker run -d --init --name twoody -p 127.0.0.1:3000:3000 \
+  -e TWOODY_API_ALLOW_NETWORK=1 -v twoody:/data ghcr.io/osmove/twoody-server
+docker exec twoody twoody-server models add Qwen3.5-4B-Q4_K_M
+docker exec twoody twoody-server api-key create "my script"
+curl http://127.0.0.1:3000/v1/models -H "Authorization: Bearer twk_…"
+```
+
+`TWOODY_API_ALLOW_NETWORK=1` lets a key in from another address than the
+container's loopback, which is where Docker's port forwarding arrives from:
+with `-p 3000:3000` instead, every machine of the network that has a key could
+call the API.
+
 To give the server documents, mount them read-only (for example
 `/home/pi/Documents:/documents:ro`, commented in the compose file) and
 grant `/documents` from the app. A bind mount instead of the named

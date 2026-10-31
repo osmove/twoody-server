@@ -62,8 +62,10 @@ A request to `/v1/*` is answered only when both hold:
    forwarded by a proxy (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`), not sent by a browser from a web page (an
    `Origin` other than the server's own, or `Sec-Fetch-Site` other than `none` / `same-origin`, `webOrigin.ts`). A
    site's own domain never gets that far (`hostGuard`, 421). `TWOODY_API_ALLOW_NETWORK=1` lifts the address rule
-   only — for the Docker image, whose port is published on the host's loopback (`-p 127.0.0.1:3000:3000`); the
-   tunnel and web pages stay refused.
+   only — given to the Docker image when its port is published on the host's loopback (`docker run -e
+   TWOODY_API_ALLOW_NETWORK=1 -p 127.0.0.1:3000:3000 …`), whose host's programs arrive from the bridge's address;
+   off in the image itself (a Raspberry Pi publishes its port to the house); the tunnel and web pages stay refused,
+   and making keys is never widened by it.
 2. **It carries a live local API key**: `Authorization: Bearer twk_…`. A key is `twk_` and 43 characters of
    base64url (256 bits of randomness), stored as its SHA-256 only (`api_keys`, migration 21, local only in
    `schema/contract.json`); looked up by its digest and compared again in constant time; revoked keys are refused.
@@ -76,6 +78,11 @@ ownerRequest` accepts: from this machine, no admin token set; or the admin token
 machine or through the tunnel of its own key (`sessionTrust.ts ownerHere`, the Desktop's window). Never a phone or
 a device paired by code, a peer, a household member, nor anything from a web page. On a fresh `twoody serve` with no
 owner yet: 409 `setup_required` (`twoody setup` first; `twoody api-key create` does it for you on this machine).
+The console that also sends the setup token (`X-Twoody-Setup-Token`) on `POST /api/v1/api_keys` makes that owner
+itself (31/10/2026, for Docker: `docker exec <container> twoody-server api-key create`, `src/cli/apiKeys.ts`, which
+reads the token from the data directory): the same passwordless owner `/auth/pair` makes from anywhere for the token
+alone, with no session made, so nothing is widened; listing and revoking never make one, and once there is an owner
+the token makes no other (`test/developerApiFirstOwner.attack.test.ts`).
 
 ## 4. Threat model and security review (rule 12)
 
@@ -93,6 +100,7 @@ devices (`sessionTrust.ts` is unchanged: no new session origin, no new rule).
 | A forged, revoked or empty key, a session token as a key, Basic auth | 401 `invalid_api_key` | « no key, a forged key… » |
 | A key used on `/api/v1/memories`, `/discussions`, `/me`, documents, or to make more keys | 401 / 403: a key is not a session | « a key opens /v1/* and nothing of Twoody's own » |
 | A code-paired phone, a peer, the owner's token through the tunnel or from the network making a key | 401 / 403 | « only the owner here makes keys » |
+| The setup token sent to make the first owner from the network, Docker's bridge (with `TWOODY_API_ALLOW_NETWORK` too), the tunnel, a proxy or a page; a wrong or empty token from the console; the token again once there is an owner | Refused, no owner and no key made; never a second owner | `test/developerApiFirstOwner.attack.test.ts` |
 | A key read from the database | Only its SHA-256 is stored; the list shows 12 characters | « the list never shows a token » |
 | The request smuggling Twoody's context (`user`, unknown fields) or receiving the person's | Unknown fields dropped; the runtime gets the messages as sent, no memory, document or system prompt added; nothing kept but a usage event | « a key from this machine… » |
 
