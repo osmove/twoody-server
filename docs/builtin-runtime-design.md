@@ -132,8 +132,8 @@ l'avancement … à quel moment je peux commencer à l'utiliser sans avoir un lo
   01/11/2026: the server asks the Desktop, as share-call does (`src/desktopModels.ts`: `model-call`
   install/remove/cancel, `model-progress`), so `twoody pull` / `twoody rm` and the person's other devices work there;
   the Desktop downloads as « Modèles » does and shows the progress. The iPhone's screen does not offer it yet.
-  Known: after the last model is removed, `/v1/models` still names it (not « loaded ») while the stopped runtime
-  does not answer: the provider's stored model is the fallback of `localModels` for a runtime not started yet.
+  While its runtime does not answer (not started yet, or stopped once the last model was removed), `/v1/models`
+  lists the models the Desktop says are on its disk (`builtin-models`), none in memory.
 
 ## 9. A verified catalogue of some fifty models, what each needs in memory, and MLX (15/10/2026)
 Jimmy: « un catalogue d'environ 50 modèles, plusieurs versions de chaque famille », « un écran Modèles bien

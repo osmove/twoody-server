@@ -49,6 +49,7 @@ import { applyReservedWord } from "./reservedWithdrawal.js";
 import { forgetRuntimeSlots, noteComputeShared } from "./runtimeSlots.js";
 import { slotsModeOf } from "./builtin/slots.js";
 import { forgetRuntimeReads } from "./routes/queries.js";
+import { noteDesktopModels } from "./account/statusSource.js";
 import { relayModelsThroughDesktop } from "./desktopModels.js";
 import { clearDiscovery, writeDiscovery } from "./developerApi/discovery.js";
 
@@ -354,6 +355,14 @@ try {
       // when either changes, and when the slots of its model's process were
       // switched. What the runtime said of its slots is asked again; a switch
       // let go of what it had read, as a sleep does.
+      // The models on the Desktop's disk (account/statusSource.ts):
+      // {type: "builtin-models", baseUrl, ids} at start and after each change.
+      if (type === "builtin-models") {
+        const word = data as { baseUrl?: unknown; ids?: unknown };
+        if (typeof word.baseUrl === "string" && Array.isArray(word.ids)) {
+          noteDesktopModels(word.baseUrl, word.ids.filter((id): id is string => typeof id === "string" && /^[\w.-]{1,120}$/.test(id)).slice(0, 200));
+        }
+      }
       if (type === "runtime-slots") {
         const word = data as { shared?: unknown; mode?: unknown; baseUrl?: unknown; switched?: unknown };
         forgetRuntimeSlots();

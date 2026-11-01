@@ -55,6 +55,15 @@ export function localRuntimes(userId?: string | null): Array<{ baseUrl: string; 
   return out;
 }
 
+/// The models on the Desktop's disk, by its runtime's address (the message
+/// `builtin-models`, index.ts): listed while that runtime does not answer —
+/// not started yet, or stopped once its last model was removed — instead of
+/// the model its provider was set up with.
+const desktopModels = new Map<string, string[]>();
+export function noteDesktopModels(baseUrl: string, ids: string[]): void {
+  desktopModels.set(baseUrl.replace(/\/+$/, ""), ids);
+}
+
 /// The models the runtimes hold, each with the runtime that holds it.
 export async function localModels(userId?: string | null): Promise<Array<{ id: string; baseUrl: string; loaded: boolean }>> {
   const out: Array<{ id: string; baseUrl: string; loaded: boolean }> = [];
@@ -71,7 +80,7 @@ export async function localModels(userId?: string | null): Promise<Array<{ id: s
   for (const runtime of localRuntimes(userId)) {
     if (active && runtime.baseUrl === active.baseUrl.replace(/\/+$/, "")) continue;
     const probe = await probeRuntime(runtime.baseUrl).catch(() => null);
-    const listed = probe?.models ?? (runtime.model ? [runtime.model] : []);
+    const listed = probe?.models ?? desktopModels.get(runtime.baseUrl) ?? (runtime.model ? [runtime.model] : []);
     // A runtime that does not answer (stopped, not started yet) holds nothing
     // in memory, whatever model its provider names (01/11/2026: `twoody list`
     // said « in memory » after the Desktop's last model was removed).
