@@ -69,6 +69,49 @@ from twoody-npm.
   has no `repository` field on purpose, because the repository is private.
   twoody-cli and twoody-pypi carry the same LICENSE.
 
+## Trusted publishing (prepared 1 November 2026)
+
+npm and PyPI let a GitHub workflow publish without a token (OIDC): the
+registry trusts one workflow of one repository, named once in the
+package's settings. Then a pushed tag publishes, and nobody types a
+password, a one-time code or a token. The workflows:
+
+| Package | Repository | Workflow | Started by |
+|---|---|---|---|
+| npm `twoody-server` (and the Docker image, `docker.yml`) | `osmove/twoody-server` | `npm-publish.yml` | tag `v<version>` |
+| npm `twoody` | `osmove/twoody-cli` | `npm-publish.yml` | tag `v<version>` |
+| PyPI `twoody` | `osmove/twoody-pypi` (private) | `pypi-publish.yml`, environment `pypi` | tag `v<version>` |
+
+Each checks that the tag is the package's version and that the version is
+not on the registry yet, runs the tests, then publishes.
+
+Once, by Jimmy (signed in to each site):
+
+1. npmjs.com › `twoody-server` › Settings › Trusted Publisher › GitHub
+   Actions: organization `osmove`, repository `twoody-server`, workflow
+   `npm-publish.yml`, environment empty. Save.
+2. The same for `twoody`: repository `twoody-cli`, workflow `npm-publish.yml`.
+3. pypi.org › Your projects › `twoody` › Manage › Publishing › Add a new
+   publisher › GitHub: owner `osmove`, repository `twoody-pypi`, workflow
+   `pypi-publish.yml`, environment `pypi`.
+4. Once a tag has published through them: on npm, Settings › Publishing
+   access › « Require two-factor authentication and disallow tokens »; on
+   PyPI, the API tokens can be removed.
+
+A release, then (the order matters: the CLI locks a server that is on npm,
+the launcher runs a CLI that is on npm):
+
+1. Versions bumped and committed (§ Each release).
+2. twoody-server: `git tag v<version> && git push origin v<version>` —
+   npm and the Docker image.
+3. twoody-cli, once that server is on npm: `npm install --package-lock-only`,
+   commit, then its tag.
+4. twoody-pypi, once that CLI is on npm: its tag.
+5. Homebrew: the formula 24 h after the npm releases.
+
+The steps below (clean clone, `npm publish`, `twine upload`) stay the way
+by hand.
+
 ## Each release
 
 Bump the version in the places that name it:

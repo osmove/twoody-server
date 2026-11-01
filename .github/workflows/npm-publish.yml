@@ -1,0 +1,60 @@
+name: npm publish
+
+# Publishes twoody-server to npm when a v* tag is pushed (the same tag builds
+# the Docker image, docker.yml). No npm token: npm's trusted publishing
+# (OIDC) lets this workflow, and only it, publish the package, once Jimmy
+# has named it on npmjs.com › twoody-server › Settings › « Trusted
+# Publisher » (GitHub Actions, osmove/twoody-server, npm-publish.yml).
+# PUBLISHING.md, « Trusted publishing ».
+#
+# The tag must be the version of package.json (v0.2.4 for 0.2.4); the tests
+# pass first; a version already on npm is not published again.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # npm 11.5.1 or later publishes with OIDC; Node 24 ships it.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: The tag is the package's version
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          test "${GITHUB_REF_NAME}" = "v${version}" || { echo "::error::tag ${GITHUB_REF_NAME} but package.json says ${version}"; exit 1; }
+          if npm view "twoody-server@${version}" version >/dev/null 2>&1; then
+            echo "::error::twoody-server ${version} is already on npm"; exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      # prepack empties dist/ and builds it again.
+      - name: Publish
+        run: npm publish --access public
+
+      - name: On npm
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          for i in $(seq 1 30); do
+            [ "$(npm view "twoody-server@${version}" version 2>/dev/null)" = "${version}" ] && { echo "twoody-server ${version} is on npm"; exit 0; }
+            sleep 10
+          done
+          echo "::warning::published, not listed by npm yet"
