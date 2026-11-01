@@ -127,9 +127,13 @@ l'avancement … à quel moment je peux commencer à l'utiliser sans avoir un lo
   runs, the 9B 64/67, no regression row. Said done without acting: 0 by the bench's count in both runs, but in the
   first one « Allume la lumière de la cuisine » with Home Assistant refusing the token was answered « La lumière de la
   cuisine s'allume. », which the bench did not count then (it does now); the same case passed 3/3 in three more runs.
-- **Not done**: installing a model from the iPhone (the Desktop owns the downloads; the server answers 409
-  `managed_by_desktop` — it would need the server to ask the Desktop, as share-call does); a real percentage while
-  loading (llama.cpp reports none: still the time against the last load).
+- **Not done**: a real percentage while loading (llama.cpp reports none: still the time against the last load).
+  Installing a model through the server next to the Desktop (409 `managed_by_desktop` until then) was done on
+  01/11/2026: the server asks the Desktop, as share-call does (`src/desktopModels.ts`: `model-call`
+  install/remove/cancel, `model-progress`), so `twoody pull` / `twoody rm` and the person's other devices work there;
+  the Desktop downloads as « Modèles » does and shows the progress. The iPhone's screen does not offer it yet.
+  Known: after the last model is removed, `/v1/models` still names it (not « loaded ») while the stopped runtime
+  does not answer: the provider's stored model is the fallback of `localModels` for a runtime not started yet.
 
 ## 9. A verified catalogue of some fifty models, what each needs in memory, and MLX (15/10/2026)
 Jimmy: « un catalogue d'environ 50 modèles, plusieurs versions de chaque famille », « un écran Modèles bien

@@ -228,3 +228,56 @@ test("when the Desktop runs the runtime: 409 managed_by_desktop, and no engine p
   const providers = (await app.inject({ method: "GET", url: "/providers", headers: owner })).json().providers;
   assert.ok(!providers.some((p: { id: string }) => p.id === "engine"));
 });
+
+// 01/11/2026: `twoody pull` / `twoody rm` next to the Desktop — the Desktop
+// does it (desktopModels.ts), over its port, as share-call does.
+test("when the Desktop runs the runtime and listens: it installs and removes, its progress is the job's", async () => {
+  await resetEngine();
+  start({ desktop: true });
+  const { relayModelsThroughDesktop } = await import("../src/desktopModels.js");
+  const handlers: Array<(event: { data: unknown }) => void> = [];
+  const asked: Array<{ op: string; model: string }> = [];
+  let answerInstall: (() => void) | null = null;
+  const port = {
+    on: (_event: "message", handler: (event: { data: unknown }) => void) => void handlers.push(handler),
+    postMessage(message: unknown) {
+      const call = message as { type: string; id: string; op: string; model: string };
+      asked.push({ op: call.op, model: call.model });
+      const say = (data: unknown) => setImmediate(() => handlers.forEach((handler) => handler({ data })));
+      if (call.op === "install") {
+        // Another model's progress first: not this job's.
+        say({ type: "model-progress", id: "Other-Q4", state: "downloading", received: 9, total: 99, bytesPerSecond: 1 });
+        say({ type: "model-progress", id: call.model, state: "downloading", received: 40, total: 100, bytesPerSecond: 20 });
+        answerInstall = () => say({ type: "model-call-result", id: call.id, ok: true });
+      } else if (call.op === "remove") {
+        say({ type: "model-call-result", id: call.id, ok: call.model === "Tiny-Q8_0", code: "Not A Code!", message: "x".repeat(900) });
+      }
+    },
+  };
+  const undo = relayModelsThroughDesktop(port as never);
+  try {
+    // Never another computer of the account.
+    assert.equal((await app.inject({ method: "POST", url: "/runtime/models", headers: askedByComputer, payload: { id: "Tiny-Q8_0" }, ...lan })).statusCode, 403);
+    assert.equal(asked.length, 0);
+    const install = await app.inject({ method: "POST", url: "/runtime/models", headers: owner, payload: { id: "Tiny-Q8_0" } });
+    assert.equal(install.statusCode, 202);
+    assert.equal(install.json().job.model, "Tiny-Q8_0");
+    assert.deepEqual(asked, [{ op: "install", model: "Tiny-Q8_0" }]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const during = (await app.inject({ method: "GET", url: "/runtime/jobs/current", headers: owner })).json().job;
+    assert.equal(during.state, "downloading");
+    assert.equal(during.received, 40);
+    assert.equal(during.total, 100);
+    answerInstall!();
+    assert.equal((await jobSettled())?.state, "done");
+    // Not in the catalogue: never asked of the Desktop.
+    assert.equal((await app.inject({ method: "DELETE", url: "/runtime/models/Not-There", headers: owner })).statusCode, 404);
+    assert.equal(asked.length, 1);
+    assert.equal((await app.inject({ method: "DELETE", url: "/runtime/models/Tiny-Q8_0", headers: owner })).statusCode, 204);
+    assert.deepEqual(asked.at(-1), { op: "remove", model: "Tiny-Q8_0" });
+  } finally {
+    undo();
+  }
+  // The Desktop gone: as before.
+  assert.equal((await app.inject({ method: "POST", url: "/runtime/models", headers: owner, payload: { id: "Tiny-Q8_0" } })).json().error, "managed_by_desktop");
+});

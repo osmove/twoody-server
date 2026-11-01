@@ -16,6 +16,7 @@ import {
   type CatalogModel,
   type InstalledRuntime,
 } from "./builtin/index.js";
+import { desktopModelHost, type DesktopModelHost } from "./desktopModels.js";
 import { engine } from "./engine.js";
 import { LOCAL_ONLY } from "./outbound.js";
 import { computeSharedHere, slotsModeHere } from "./runtimeSlots.js";
@@ -48,6 +49,13 @@ export interface ModelJob {
 let job: ModelJob | null = null;
 let controller: AbortController | null = null;
 let running: Promise<void> | null = null;
+/// The job is the Desktop's download (desktopModels.ts): cancelled there.
+let onDesktop = false;
+
+// A model of several gigabytes on a slow line: the Desktop's answer is
+// waited for that long at most, its progress said meanwhile.
+const DESKTOP_INSTALL_MS = 12 * 60 * 60 * 1000;
+const DESKTOP_REMOVE_MS = 60 * 1000;
 
 const log = (line: string) => console.log(`  ${line}`);
 
@@ -104,6 +112,7 @@ export async function jobSettled(): Promise<ModelJob | null> {
 
 export function cancelJob(): ModelJob | null {
   if (!job || !controller || ["done", "failed", "cancelled"].includes(job.state)) return currentJob();
+  if (onDesktop) void desktopModelHost()?.call("cancel", job.model, DESKTOP_REMOVE_MS);
   controller.abort();
   return currentJob();
 }
@@ -117,7 +126,8 @@ function catalogModel(id: string): CatalogModel | null {
 export function startModelJob(id: string, options: { force?: boolean; log?: (line: string) => void } = {}): ModelJob {
   const e = engine();
   const say = options.log ?? log;
-  if (e.managedByDesktop) throw new JobError("managed_by_desktop", 409, "the Desktop app installs this computer's models");
+  const desktop = e.managedByDesktop ? desktopModelHost() : null;
+  if (e.managedByDesktop && !desktop) throw new JobError("managed_by_desktop", 409, "the Desktop app installs this computer's models");
   const model = catalogModel(id);
   if (!model) throw new JobError("unknown_model", 404, `${id} is not in the catalogue`);
   if (job && !["done", "failed", "cancelled"].includes(job.state)) {
@@ -127,6 +137,8 @@ export function startModelJob(id: string, options: { force?: boolean; log?: (lin
   if (!options.force && !modelFits(model, totalmem())) {
     throw new JobError("insufficient_memory", 507, `${model.name} needs ${model.minRamGb} GB of memory; this computer has ${Math.round(totalmem() / 1024 ** 3)} GB`);
   }
+  if (desktop) return startDesktopJob(desktop, model);
+  onDesktop = false;
   const { overridden } = loadCatalog(e.env);
   controller = new AbortController();
   const signal = controller.signal;
@@ -181,6 +193,50 @@ export function startModelJob(id: string, options: { force?: boolean; log?: (lin
   return currentJob()!;
 }
 
+/// The same job, made by the Desktop: its progress copied in, its answer
+/// the job's end. The Desktop restarts its runtime and picks the default
+/// model itself.
+function startDesktopJob(desktop: DesktopModelHost, model: CatalogModel): ModelJob {
+  onDesktop = true;
+  controller = new AbortController();
+  const signal = controller.signal;
+  const mine: ModelJob = {
+    id: `job-${Date.now().toString(36)}`,
+    model: model.id,
+    state: "downloading",
+    received: 0,
+    total: model.bytes,
+    bytes_per_second: 0,
+    error: null,
+    message: null,
+    started_at: new Date().toISOString(),
+    finished_at: null,
+  };
+  job = mine;
+  desktop.onProgress((progress) => {
+    if (progress.model !== model.id || mine.finished_at) return;
+    mine.state = progress.state === "downloading" ? "downloading" : "verifying";
+    mine.received = progress.received;
+    if (progress.total) mine.total = progress.total;
+    mine.bytes_per_second = progress.bytesPerSecond;
+  });
+  running = (async () => {
+    const answer = await desktop.call("install", model.id, DESKTOP_INSTALL_MS);
+    desktop.onProgress(null);
+    mine.finished_at = new Date().toISOString();
+    if (answer.ok) {
+      mine.state = "done";
+      mine.received = mine.total;
+    } else if (signal.aborted || answer.code === "cancelled") {
+      Object.assign(mine, { state: "cancelled", error: "cancelled", message: "cancelled" });
+    } else {
+      const message = answer.code === "busy" ? "Twoody Desktop is installing another model" : answer.message ?? answer.code ?? "failed";
+      Object.assign(mine, { state: "failed", error: answer.code ?? "failed", message });
+    }
+  })();
+  return currentJob()!;
+}
+
 /// After a model is added or removed: the default model is one that is
 /// there, and a running runtime is restarted (the router reads its folder
 /// when it starts).
@@ -199,8 +255,17 @@ async function afterModelsChanged(change: { installed?: string; removed?: string
 /// Removes an installed model of the catalogue (or any GGUF of the models folder).
 export async function removeEngineModel(id: string): Promise<void> {
   const e = engine();
-  if (e.managedByDesktop) throw new JobError("managed_by_desktop", 409, "the Desktop app removes this computer's models");
+  const desktop = e.managedByDesktop ? desktopModelHost() : null;
+  if (e.managedByDesktop && !desktop) throw new JobError("managed_by_desktop", 409, "the Desktop app removes this computer's models");
   if (!/^[\w.-]{1,80}$/.test(id)) throw new JobError("unknown_model", 404, `${id} is not installed`);
+  if (desktop) {
+    // The Desktop removes the models of its catalogue, as its own screen does.
+    if (!catalogModel(id)) throw new JobError("unknown_model", 404, `${id} is not installed`);
+    const answer = await desktop.call("remove", id, DESKTOP_REMOVE_MS);
+    if (answer.ok) return;
+    if (answer.code === "busy") throw new JobError("job_running", 409, `${id} is being installed`);
+    throw new JobError("unknown_model", 404, answer.message ?? `${id} is not installed`);
+  }
   if (job && job.model === id && !["done", "failed", "cancelled"].includes(job.state)) cancelJob();
   const known = catalogModel(id);
   const installed = await e.manager.installedModels();

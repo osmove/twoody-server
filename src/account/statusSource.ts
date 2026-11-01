@@ -72,7 +72,10 @@ export async function localModels(userId?: string | null): Promise<Array<{ id: s
     if (active && runtime.baseUrl === active.baseUrl.replace(/\/+$/, "")) continue;
     const probe = await probeRuntime(runtime.baseUrl).catch(() => null);
     const listed = probe?.models ?? (runtime.model ? [runtime.model] : []);
-    const loaded = await loadedModels(runtime.baseUrl, listed);
+    // A runtime that does not answer (stopped, not started yet) holds nothing
+    // in memory, whatever model its provider names (01/11/2026: `twoody list`
+    // said « in memory » after the Desktop's last model was removed).
+    const loaded = probe && !probe.reachable ? new Set<string>() : await loadedModels(runtime.baseUrl, listed);
     for (const id of listed) {
       if (!isChatModel(id) || out.some((m) => m.id === id)) continue;
       out.push({ id, baseUrl: runtime.baseUrl, loaded: loaded.has(id) });

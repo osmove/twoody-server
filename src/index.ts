@@ -49,6 +49,7 @@ import { applyReservedWord } from "./reservedWithdrawal.js";
 import { forgetRuntimeSlots, noteComputeShared } from "./runtimeSlots.js";
 import { slotsModeOf } from "./builtin/slots.js";
 import { forgetRuntimeReads } from "./routes/queries.js";
+import { relayModelsThroughDesktop } from "./desktopModels.js";
 import { clearDiscovery, writeDiscovery } from "./developerApi/discovery.js";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
@@ -330,6 +331,9 @@ try {
     // And the requests on folders shared with the person, which the Desktop
     // seals with the person's device keys (shares/guest.ts).
     relayShareCallsThroughDesktop(parentPort);
+    // And `twoody pull` / `twoody rm`, and the person's other devices: the
+    // Desktop installs and removes this computer's models (desktopModels.ts).
+    relayModelsThroughDesktop(parentPort);
     parentPort.on("message", ({ data }) => {
       const type = (data as { type?: unknown } | null)?.type;
       if (type === "account" || type === "tunnel") desktopAccount(data);
@@ -492,6 +496,13 @@ try {
     });
   }
 } catch (err) {
+  // A port another program holds (a web app's dev server often takes 3000):
+  // said in a sentence, with the option that picks another, not as a log line.
+  if ((err as NodeJS.ErrnoException)?.code === "EADDRINUSE") {
+    console.error(`\nPort ${PORT} is already used by another program on this computer.`);
+    console.error(`Start Twoody Server on another port: --port ${PORT + 1} (or PORT=${PORT + 1}).\n`);
+    process.exit(1);
+  }
   app.log.error(err);
   process.exit(1);
 }
