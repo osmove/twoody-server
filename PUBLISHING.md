@@ -7,10 +7,10 @@ prepares and checks, it does not publish. As of today:
 
 | Where | What is there |
 |-------|---------------|
-| npm `twoody-server` | `0.2.2` (latest), published 31 October 2026 from a clean clone of tag `v0.2.2` (`twoody-server api-key`; shasum 60af0b2a…); `0.2.1` the same morning: drizzle-orm 0.45, zod removed, `npm audit` clean; `0.2.0` on 30 October |
-| npm `twoody` | `0.2.0` (latest), published 31 October 2026; `0.1.0` was the old CLI |
+| npm `twoody-server` | `0.2.3` (latest), published 1 November 2026 from a clean clone of `1620cf1` (the Desktop installs the models `twoody pull` asks for, a taken port said in words); `0.2.2` published 31 October 2026 from a clean clone of tag `v0.2.2` (`twoody-server api-key`; shasum 60af0b2a…); `0.2.1` the same morning: drizzle-orm 0.45, zod removed, `npm audit` clean; `0.2.0` on 30 October |
+| npm `twoody` | `0.2.1` (latest), published 1 November 2026 from a clean clone of `ca2f181` (starts Twoody Server in the background, clearer errors, `run` installs a missing model); `0.2.0` on 31 October; `0.1.0` was the old CLI |
 | PyPI `twoody` | `0.2.0`, published 31 October 2026 (account `jimdou`); runs `twoody@0.2.0` from npm |
-| Homebrew `osmove/twoody/twoody` | formula for `twoody` 0.2.0 pushed; Homebrew's npm only takes packages published more than a day ago, so `brew install` works from the evening of 31 October 2026 (24 h after `twoody-server` 0.2.0) |
+| Homebrew `osmove/twoody/twoody` | formula for `twoody` 0.2.0 (0.2.1 to push from the afternoon of 2 November 2026, 24 h after `twoody-server` 0.2.3); Homebrew's npm only takes packages published more than a day ago, so `brew install` works from the evening of 31 October 2026 (24 h after `twoody-server` 0.2.0) |
 | `ghcr.io/osmove/twoody-server` | `0.2.2` (latest), public since 31 October 2026 (the organization's package settings allow public packages); checked by an anonymous pull: `twoody-server api-key create` in the container, `/v1/models` from the host with `-e TWOODY_API_ALLOW_NETWORK=1 -p 127.0.0.1:3000:3000` |
 | `https://twoody.com/install.sh` | 404 |
 
