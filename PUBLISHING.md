@@ -109,11 +109,15 @@ Check: `docker pull ghcr.io/osmove/twoody-server:0.2.0` on a Pi, then
 
 Publish from a clean clone, not from the shared checkout: `prepack`
 builds whatever is in `src/`, other sessions' unfinished work included.
+Clone it in a plain folder of the home folder, never under `/tmp` nor in a
+hidden folder: some tests add a folder of the clone to Documents, and
+Twoody refuses temporary and hidden folders (18 failures from
+`/tmp/twoody-server-release` on 1 November 2026).
 
 ```bash
-rm -rf /tmp/twoody-server-release
-git clone ~/Dev/twoody/twoody-server /tmp/twoody-server-release
-cd /tmp/twoody-server-release
+rm -rf ~/twoody-server-release
+git clone ~/Dev/twoody/twoody-server ~/twoody-server-release
+cd ~/twoody-server-release
 npm ci
 npm run typecheck && npm test
 npm pack --dry-run          # bin/, dist/, openapi.json, README.md, LICENSE, package.json
@@ -129,9 +133,9 @@ clone, for the same reason as the server:
 ```bash
 cd ~/Dev/twoody/twoody-cli
 npm install --package-lock-only && git commit -m "Lock twoody-server 0.2.0" package-lock.json
-rm -rf /tmp/twoody-cli-release
-git clone ~/Dev/twoody/twoody-cli /tmp/twoody-cli-release
-cd /tmp/twoody-cli-release
+rm -rf ~/twoody-cli-release
+git clone ~/Dev/twoody/twoody-cli ~/twoody-cli-release
+cd ~/twoody-cli-release
 npm ci
 npm test
 npm pack --dry-run          # bin/twoody.js, lib/twoody.mjs, README.md, LICENSE, package.json
