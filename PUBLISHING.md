@@ -9,7 +9,7 @@ prepares and checks, it does not publish. As of today:
 |-------|---------------|
 | npm `twoody-server` | `0.2.3` (latest), published 1 November 2026 from a clean clone of `1620cf1` (the Desktop installs the models `twoody pull` asks for, a taken port said in words); `0.2.2` published 31 October 2026 from a clean clone of tag `v0.2.2` (`twoody-server api-key`; shasum 60af0b2a…); `0.2.1` the same morning: drizzle-orm 0.45, zod removed, `npm audit` clean; `0.2.0` on 30 October |
 | npm `twoody` | `0.2.1` (latest), published 1 November 2026 from a clean clone of `ca2f181` (starts Twoody Server in the background, clearer errors, `run` installs a missing model); `0.2.0` on 31 October; `0.1.0` was the old CLI |
-| PyPI `twoody` | `0.2.0`, published 31 October 2026 (account `jimdou`); runs `twoody@0.2.0` from npm |
+| PyPI `twoody` | `0.2.1`, published 1 November 2026 by trusted publishing (tag `v0.2.1` of osmove/twoody-pypi, the first release that way); runs `twoody@0.2.1` from npm; `0.2.0` on 31 October (account `jimdou`) |
 | Homebrew `osmove/twoody/twoody` | formula for `twoody` 0.2.0 (0.2.1 to push from the afternoon of 2 November 2026, 24 h after `twoody-server` 0.2.3); Homebrew's npm only takes packages published more than a day ago, so `brew install` works from the evening of 31 October 2026 (24 h after `twoody-server` 0.2.0) |
 | `ghcr.io/osmove/twoody-server` | `0.2.3` (latest, 1 November 2026, from the tag `v0.2.3`); public since 31 October 2026 (the organization's package settings allow public packages); checked by an anonymous pull: `twoody-server api-key create` in the container, `/v1/models` from the host with `-e TWOODY_API_ALLOW_NETWORK=1 -p 127.0.0.1:3000:3000` |
 | `https://twoody.com/install.sh` | 404 |
@@ -69,7 +69,7 @@ from twoody-npm.
   has no `repository` field on purpose, because the repository is private.
   twoody-cli and twoody-pypi carry the same LICENSE.
 
-## Trusted publishing (prepared 1 November 2026)
+## Trusted publishing (in place since 1 November 2026)
 
 npm and PyPI let a GitHub workflow publish without a token (OIDC): the
 registry trusts one workflow of one repository, named once in the
@@ -85,7 +85,10 @@ password, a one-time code or a token. The workflows:
 Each checks that the tag is the package's version and that the version is
 not on the registry yet, runs the tests, then publishes.
 
-Once, by Jimmy (signed in to each site):
+Done by Jimmy on 1 November 2026 (npm with `npm trust github <package>
+--repo osmove/<repo> --file npm-publish.yml --allow-publish`, the
+« GitHub Actions » button of npmjs.com doing nothing that day; `npm trust
+list <package>` shows them). Once, by Jimmy (signed in to each site):
 
 1. npmjs.com › `twoody-server` › Settings › Trusted Publisher › GitHub
    Actions: organization `osmove`, repository `twoody-server`, workflow
