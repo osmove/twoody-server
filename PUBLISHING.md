@@ -11,7 +11,7 @@ prepares and checks, it does not publish. As of today:
 | npm `twoody` | `0.2.1` (latest), published 1 November 2026 from a clean clone of `ca2f181` (starts Twoody Server in the background, clearer errors, `run` installs a missing model); `0.2.0` on 31 October; `0.1.0` was the old CLI |
 | PyPI `twoody` | `0.2.0`, published 31 October 2026 (account `jimdou`); runs `twoody@0.2.0` from npm |
 | Homebrew `osmove/twoody/twoody` | formula for `twoody` 0.2.0 (0.2.1 to push from the afternoon of 2 November 2026, 24 h after `twoody-server` 0.2.3); Homebrew's npm only takes packages published more than a day ago, so `brew install` works from the evening of 31 October 2026 (24 h after `twoody-server` 0.2.0) |
-| `ghcr.io/osmove/twoody-server` | `0.2.2` (latest), public since 31 October 2026 (the organization's package settings allow public packages); checked by an anonymous pull: `twoody-server api-key create` in the container, `/v1/models` from the host with `-e TWOODY_API_ALLOW_NETWORK=1 -p 127.0.0.1:3000:3000` |
+| `ghcr.io/osmove/twoody-server` | `0.2.3` (latest, 1 November 2026, from the tag `v0.2.3`); public since 31 October 2026 (the organization's package settings allow public packages); checked by an anonymous pull: `twoody-server api-key create` in the container, `/v1/models` from the host with `-e TWOODY_API_ALLOW_NETWORK=1 -p 127.0.0.1:3000:3000` |
 | `https://twoody.com/install.sh` | 404 |
 
 `twoody-cli` depends on `twoody-server ^0.2.1`, so an installed `twoody`
